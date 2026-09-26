@@ -33,11 +33,23 @@
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   int issued;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ((user_context*)user_ctx)->provisioning_faulted = 1;
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -109,8 +121,15 @@ int main(void)
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
 
+  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
+      != AZ_IOT_OK)
+  {
+    goto cleanup;
+  }
+  if (az_iot_connection_client_register_mqtt_factory(
+          &connection_client, az_iot_paho_factory_create_v5())
       != AZ_IOT_OK)
   {
     goto cleanup;
@@ -124,7 +143,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
@@ -132,6 +151,8 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
+    az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    (void)sample_get_hub_profile(&connection_client, &profile);
     fprintf(
         stderr,
         "[custom_cert] connected with %s identity\n",

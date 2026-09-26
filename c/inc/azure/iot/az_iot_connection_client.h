@@ -483,11 +483,11 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only), which is what this SDK can honor
-     * today: it does not yet consume the service's twin-push dispatch, so
-     * advertising a push would ask for messages the client would drop. Read the
-     * twin with az_iot_twin_client_get() instead. Ignored for Classic hubs and
-     * for DPS sessions.
+     * Both default to false (pull-only). With push_desired, the service pushes
+     * the desired snapshot on connect instead of the gen2 twin client fetching
+     * it. With push_reported, a pushed reported section reaches
+     * az_iot_gen2_twin_client_set_reported_handler(); without a handler it is
+     * dropped. Ignored for Classic hubs and for DPS sessions.
      *
      * Appended, like the options above it and for the same reason: this struct
      * is filled by callers, so a member inserted anywhere else would shift
@@ -631,6 +631,46 @@ extern "C"
    *
    * It and the event itself are valid only until the callback returns; copy any
    * value that must be retained. */
+/** @brief Bound on the service error text retained for an event. Longer
+ * messages are truncated; a shortened diagnostic still names the cause. */
+#define AZ_IOT_CONN_ERROR_MESSAGE_MAX 128
+
+  /**
+   * @brief Which codebook decodes az_iot_connection_error_detail.code.
+   *
+   * Names the DICTIONARY, not the connection -- which connection an event is
+   * about is az_iot_connection_state_event.scope. A hub CONNACK and a DPS
+   * CONNACK are both _MQTT; only the registration verdict is _DPS.
+   */
+  typedef enum az_iot_connection_error_source
+  {
+    AZ_IOT_CONN_ERR_SRC_NONE = 0,
+    /** @brief Below MQTT: TLS, socket, DNS. `code` is adapter-defined. */
+    AZ_IOT_CONN_ERR_SRC_TRANSPORT,
+    /** @brief A code off the wire: CONNACK, SUBACK, or a server-sent MQTT 5
+     * DISCONNECT reason. */
+    AZ_IOT_CONN_ERR_SRC_MQTT,
+    /** @brief The provisioning service's own verdict. `code` is
+     * `extended_error_code` (e.g. 401001). */
+    AZ_IOT_CONN_ERR_SRC_DPS
+  } az_iot_connection_error_source;
+
+  /**
+   * @brief Diagnostic detail for a failure. Never branch on it: `reason` is the
+   * classification the SDK acts on, this is the evidence behind it.
+   */
+  typedef struct az_iot_connection_error_detail
+  {
+    uint32_t _internal_size;
+    /** @brief What `code` means. _NONE when no code was available. */
+    az_iot_connection_error_source source;
+    /** @brief The code itself. 0 means "none supplied" and is ambiguous. */
+    int32_t code;
+    /** @brief Service-supplied text, empty when there is none. DPS supplies it;
+     * MQTT does not. Callback lifetime -- copy to retain. */
+    az_span message;
+  } az_iot_connection_error_detail;
+
   typedef struct az_iot_connection_state_event
   {
     uint32_t _internal_size;
@@ -640,6 +680,16 @@ extern "C"
     az_iot_connection_state state;
     az_iot_result reason;
     const az_iot_hub_profile* profile;
+    /* Whether another attempt at this CAUSE could plausibly succeed. Says
+     * nothing about whether the SDK will try: with retries disabled the
+     * application owns the ladder, and this is what tells it a retry is worth
+     * making. A best-effort classification -- `reason`, `error->source` and
+     * `error->code` remain the authority for an application that wants to
+     * decide for itself. */
+    bool is_retriable;
+    /* Diagnostic detail, or NULL when none is available. Valid only until the
+     * callback returns. */
+    const az_iot_connection_error_detail* error;
   } az_iot_connection_state_event;
 
   typedef void (*az_iot_connection_state_callback)(
@@ -1116,6 +1166,35 @@ extern "C"
      * faster than the service asked, which is how a throttled fleet turns into
      * a blocked one. */
     uint32_t dps_pending_retry_after_secs;
+
+    /* Diagnostic detail for the failure currently being reported on
+     * `error_scope`.
+     *
+     * Staged rather than passed to set_state_to(): a failure is recorded in an
+     * adapter callback and reported later from the pump (the `deferred` /
+     * `dps_pending_finalize` queues), so the two are not the same call.
+     *
+     * NOT consumed by the first transition that carries it. One failure
+     * produces a SEQUENCE -- DISCONNECTING, IDLE, then RECONNECTING or
+     * FAULTED -- all reporting the same thing, so it rides every one of them.
+     * Consuming it on the first left the terminal event, the one applications
+     * act on, with nothing. It is discarded instead when the scope next
+     * reaches CONNECTING or CONNECTED, which is when it stops describing
+     * anything current. Scoped, so a DPS verdict cannot attach to a hub event
+     * that runs in between.
+     *
+     * The message is COPIED, not referenced. It arrives as a span into the
+     * adapter's inbound buffer, and that buffer is reused or freed as soon as
+     * the adapter's callback returns -- BEFORE the pump dispatches the
+     * transition that reports it. The public event still promises only
+     * callback lifetime; this buffer is what makes that promise keepable.
+     * Truncated rather than grown: a shortened diagnostic still names the
+     * cause. */
+    az_iot_connection_error_source error_source;
+    az_iot_connection_scope error_scope;
+    int32_t error_code;
+    char error_message[AZ_IOT_CONN_ERROR_MESSAGE_MAX];
+    size_t error_message_len;
     bool dps_enrolling; /* CSR-based enrollment active for this DPS session */
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 

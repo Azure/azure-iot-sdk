@@ -140,9 +140,8 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - `connectionProfile` is a `readOnly` **string** property on `DeviceRegistrationResult`, arriving with `assignedHub` / `deviceId` / `issuedCertificateChain`. There is **no** numeric `hub_version` on the wire.
 - Values: `"classic"` (Classic MQTT 3.x hub) and `"mqttV5"` (MQTT 5 hub). **Absent or null resolves to `classic`.**
 - It is an **extensible union** — the spec states future hub capabilities pass through without a breaking change. The SDK must therefore expect values it does not know, and must preserve the raw string rather than collapsing it to a closed enum.
-- **The SDK currently cannot receive this field.** `azure-sdk-for-c` hardcodes `AZ_IOT_PROVISIONING_SERVICE_VERSION "2019-03-31"`, and the api-version travels in the DPS CONNECT username built by `az_iot_provisioning_client_get_user_name()`. Raising it is a prerequisite, not a detail — see [eng/client-separation.md §2](eng/client-separation.md#2-the-connection-profile).
-- **Development bridge while the api-version is parked:** `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=classic|mqttV5` replaces only an absent/null profile after ASSIGNED; the DPS-assigned host/device remain authoritative, and an explicit wire profile always wins. Invalid values fault the assignment. This exists to unblock P1d/P2–P6 and must not become a production deployment contract.
-- **DECIDED:** the DPS exchange moves to the preview api-version, and `azure-sdk-for-c` is **patched in this repo** to allow it.
+- **Device-facing API version:** the common connection client builds the DPS CONNECT username with `2026-11-02-preview` for both CSR and non-CSR sessions, including provision-only ADU. The pinned `azure-sdk-for-c` remains unmodified; its `get_user_name()` helper would still emit `2019-03-31`.
+- **Development override:** `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=classic|mqttV5` replaces only an absent/null profile after ASSIGNED; the DPS-assigned host/device remain authoritative, and an explicit wire profile always wins. Invalid values fault the assignment. It is not a production deployment contract.
 - **DECIDED:** `"classic"` maps to gen1, `"mqttV5"` maps to gen2 (for now).
 - **DECIDED:** an unrecognised profile **fails the connection** (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`). The profile is not expected to break, but devices must be defensive about service-side hazards they cannot verify.
 
@@ -155,7 +154,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).
 - Single-threaded contract: every state transition and the user state-callback fires from inside `az_iot_connection_client_do_work()`. `on_mqtt_event()` is called from the adapter's `process_loop()` (which `do_work()` drives), and any state change requiring teardown of the active adapter is *deferred* out of the callback to avoid destroying the adapter while it is still on the call stack.
 - Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version`. The SDK internally maps services to required versions (DPS/Classic → v3.1.1, Hub-Next → v5) and selects the matching registered factory at connection time.
-- Without DPS, direct-host opens default to `HUB_CLASSIC` (v3.1.1). DPS overrides this via the **internal-only** `az_iot_connection_client__set_session_role()` (header `src/core/internal/connection_client_internal.h`, NOT part of the public ABI) before driving the post-provisioning open.
+- The session role is settled at init and DPS overrides it via the **internal-only** `az_iot_connection_client__set_session_role()` (header `src/core/internal/connection_client_internal.h`, NOT part of the public ABI) before driving the post-provisioning open.
 - Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the inbound dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
 
 ### Reconnect (Phase 2.2)

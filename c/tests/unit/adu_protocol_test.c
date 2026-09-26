@@ -333,6 +333,9 @@ static void report_drops_installed_update_id_when_absent(void** state)
   (void)state;
   uint8_t buf[512];
   size_t len = 0;
+  az_iot_adu_step_result step = { 0 };
+  step.outcome = AZ_IOT_ADU_OUTCOME_SKIPPED;
+  step.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   az_iot_adu_report report = { 0 };
   report.workflow_id = "wf-1";
   report.installed_update_id = NULL;
@@ -340,15 +343,15 @@ static void report_drops_installed_update_id_when_absent(void** state)
   report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   report.result_code = 1;
   report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
 
   assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
   buf[len] = '\0';
-  /* Dropped, not serialized as null. */
-  assert_null(strstr((const char*)buf, "installedUpdateId"));
-  assert_null(strstr((const char*)buf, "null"));
-  assert_non_null(strstr((const char*)buf, "\"outcome\":\"IN_PROGRESS\""));
-  /* resultDetails is optional and must be absent when unset. */
-  assert_null(strstr((const char*)buf, "resultDetails"));
+  assert_string_equal(
+      (const char*)buf,
+      "{\"workflowId\":\"wf-1\",\"installResult\":{\"outcome\":\"IN_PROGRESS\","
+      "\"failureOrigin\":\"NOT_APPLICABLE\",\"resultCode\":1,\"extendedResultCodes\":\"0\"}}");
 }
 
 /* The contract ties outcome and failureOrigin together. Catching a mismatched
@@ -520,16 +523,20 @@ static void a_truncated_response_body_is_rejected(void** state)
 /* Per-step results are a MAP keyed step_0, step_1, ... -- NOT a JSON array. The
  * index is the only thing carrying step identity, so emitting an array would
  * lose it. */
-static void step_results_serialize_as_an_indexed_map(void** state)
+static void terminal_failure_step_results_match_the_dps_shape(void** state)
 {
   (void)state;
   uint8_t buf[1024];
   size_t len = 0;
 
-  az_iot_adu_client_step_result steps[2];
+  az_iot_adu_step_result steps[2];
   memset(steps, 0, sizeof(steps));
+  steps[0].outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  steps[0].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
   steps[0].result_code = 700;
   steps[0].extended_result_code = 0;
+  steps[1].outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  steps[1].failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
   steps[1].result_code = -1;
   steps[1].extended_result_code = (int32_t)0x80000001;
   steps[1].result_details = AZ_SPAN_FROM_STR("step two failed");
@@ -547,16 +554,64 @@ static void step_results_serialize_as_an_indexed_map(void** state)
   buf[len] = '\0';
   const char* json = (const char*)buf;
 
-  assert_non_null(strstr(json, "\"stepResults\""));
-  assert_non_null(strstr(json, "\"step_0\""));
-  assert_non_null(strstr(json, "\"step_1\""));
-  /* A map, not an array. */
-  assert_null(strstr(json, "\"stepResults\":["));
-  assert_non_null(strstr(json, "\"resultCode\":700"));
-  assert_non_null(strstr(json, "\"step two failed\""));
-  /* Per-step codes use the same bare-hex form as the aggregate. */
-  assert_non_null(strstr(json, "\"extendedResultCodes\":\"80000001\""));
-  assert_null(strstr(json, "0x80000001"));
+  assert_string_equal(
+      json,
+      "{\"workflowId\":\"wf-1\",\"installResult\":{\"outcome\":\"FAILED\","
+      "\"failureOrigin\":\"AGENT_CORE\",\"resultCode\":-1,"
+      "\"extendedResultCodes\":\"80000001\",\"stepResults\":{\"step_0\":{"
+      "\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\","
+      "\"resultCode\":700,\"extendedResultCodes\":\"0\"},\"step_1\":{"
+      "\"outcome\":\"FAILED\",\"failureOrigin\":\"AGENT_CORE\",\"resultCode\":-1,"
+      "\"extendedResultCodes\":\"80000001\",\"resultDetails\":\"step two failed\"}}}}");
+}
+
+static void terminal_success_step_results_match_the_dps_shape(void** state)
+{
+  (void)state;
+  uint8_t buf[768];
+  size_t len = 0;
+
+  az_iot_adu_step_result step = { 0 };
+  step.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  step.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  step.result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
+
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-success";
+  report.outcome = AZ_IOT_ADU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = AZ_IOT_ADU_AGENT_RESULT_CODE_SUCCESS;
+  report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  assert_int_equal(az_iot_adu__build_report_request(&report, buf, sizeof(buf), &len), AZ_IOT_OK);
+  buf[len] = '\0';
+  assert_string_equal(
+      (const char*)buf,
+      "{\"workflowId\":\"wf-success\",\"installResult\":{\"outcome\":\"SUCCEEDED\","
+      "\"failureOrigin\":\"NOT_APPLICABLE\",\"resultCode\":700,"
+      "\"extendedResultCodes\":\"0\",\"stepResults\":{\"step_0\":{"
+      "\"outcome\":\"SUCCEEDED\",\"failureOrigin\":\"NOT_APPLICABLE\","
+      "\"resultCode\":700,\"extendedResultCodes\":\"0\"}}}}");
+}
+
+static void terminal_step_results_must_be_complete(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  az_iot_adu_step_result step = { 0 };
+  az_iot_adu_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_ADU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_ADU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = -1;
+  report.extended_result_codes = "1";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  assert_int_equal(
+      az_iot_adu__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* Omitted entirely when there are none -- an empty map is a different statement
@@ -1148,7 +1203,9 @@ int main(void)
     cmocka_unit_test(a_malformed_response_body_is_rejected),
     cmocka_unit_test(a_report_with_a_partial_installed_update_id_is_rejected),
     cmocka_unit_test(a_truncated_response_body_is_rejected),
-    cmocka_unit_test(step_results_serialize_as_an_indexed_map),
+    cmocka_unit_test(terminal_failure_step_results_match_the_dps_shape),
+    cmocka_unit_test(terminal_success_step_results_match_the_dps_shape),
+    cmocka_unit_test(terminal_step_results_must_be_complete),
     cmocka_unit_test(no_step_results_means_no_key),
     cmocka_unit_test(both_error_signals_are_read_from_the_body),
     cmocka_unit_test(a_numeric_only_body_is_still_usable),

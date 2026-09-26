@@ -290,9 +290,10 @@ int main(void)
       = { .version = AZ_IOT_MQTT_VERSION_3_1_1, .create = standin_create, .factory_ctx = NULL };
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.host = "example.invalid";
-  copts.client_id = "hsm-sign-callback-sample";
-  copts.connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  /* Placeholder provisioning settings: the stand-in adapter fails the first
+   * connect, which is the DPS one, after the signature has been made. */
+  copts.dps.id_scope = "0ne00000000";
+  copts.dps.registration_id = "hsm-sign-callback-sample";
   copts.certificate_provider = &provider.base;
 
   int rc = 1;

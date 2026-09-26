@@ -461,6 +461,26 @@ az_iot_result az_iot_adu__build_report_request(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (report->step_results_count < 0
+      || report->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || (report->step_results_count > 0 && report->step_results == NULL))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (report->outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS)
+  {
+    for (int32_t i = 0; i < report->step_results_count; ++i)
+    {
+      const az_iot_adu_step_result* step = &report->step_results[i];
+      if (step->outcome == AZ_IOT_ADU_OUTCOME_IN_PROGRESS || outcome_name(step->outcome) == NULL
+          || failure_origin_name(step->failure_origin) == NULL
+          || ((step->outcome == AZ_IOT_ADU_OUTCOME_FAILED)
+              == (step->failure_origin == AZ_IOT_ADU_FAILURE_ORIGIN_NOT_APPLICABLE)))
+      {
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+    }
+  }
 
   az_json_writer jw;
   if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
@@ -516,8 +536,10 @@ az_iot_result az_iot_adu__build_report_request(
 
   /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
    * index carries the step identity, so ordering is the only thing that ties a
-   * result back to its step. Omitted entirely when there are none. */
-  if (az_result_succeeded(r) && report->step_results != NULL && report->step_results_count > 0)
+   * result back to its step. Omitted for in-progress reports and when there
+   * are none. */
+  if (az_result_succeeded(r) && report->outcome != AZ_IOT_ADU_OUTCOME_IN_PROGRESS
+      && report->step_results != NULL && report->step_results_count > 0)
   {
     r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
     if (az_result_succeeded(r))
@@ -526,7 +548,7 @@ az_iot_result az_iot_adu__build_report_request(
     }
     for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
     {
-      const az_iot_adu_client_step_result* step = &report->step_results[i];
+      const az_iot_adu_step_result* step = &report->step_results[i];
 
       char key[16];
       az_iot_span_writer kw;
@@ -542,6 +564,14 @@ az_iot_result az_iot_adu__build_report_request(
       if (az_result_succeeded(r))
       {
         r = az_json_writer_append_begin_object(&jw);
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "outcome", outcome_name(step->outcome));
+      }
+      if (az_result_succeeded(r))
+      {
+        r = write_string_property(&jw, "failureOrigin", failure_origin_name(step->failure_origin));
       }
       if (az_result_succeeded(r))
       {

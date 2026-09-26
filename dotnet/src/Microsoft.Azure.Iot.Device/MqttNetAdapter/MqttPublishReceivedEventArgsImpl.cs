@@ -6,7 +6,7 @@ using MQTTnet;
 
 namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 {
-    internal class MqttPublishReceivedEventArgsImpl : MqttPublishReceivedEventArgs //TODO naming "Impl"
+    internal class MqttPublishReceivedEventArgsImpl : MqttPublishReceivedEventArgs
     {
         private MqttApplicationMessageReceivedEventArgs _underlyingEventArgs;
         public MqttPublishReceivedEventArgsImpl(MqttApplicationMessageReceivedEventArgs UnderlyingEventArgs)

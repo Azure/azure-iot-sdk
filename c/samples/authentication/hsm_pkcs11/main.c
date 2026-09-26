@@ -5,11 +5,11 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hsm_pkcs11 - sample.
  *
- * Connect to an IoT Hub with a device private key that NEVER LEAVES the
- * hardware (design decision D8). The provider hands the SDK a key REFERENCE --
- * an RFC 7512 "pkcs11:" URI plus the id of the OpenSSL provider that owns it --
- * instead of a key, and the Paho adapter signs the TLS handshake through that
- * token.
+ * Connect to whichever hub DPS assigns -- Classic (gen1) or AEG (gen2) -- with a
+ * device private key that NEVER LEAVES the hardware (design decision D8). The
+ * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
+ * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
+ * adapter signs the TLS handshake through that token.
  *
  * The device certificate is still an ordinary PEM file: a certificate is public
  * and there is nothing to protect. Only the key is custodial.
@@ -17,6 +17,12 @@
  * What the integrator supplies is the token: any PKCS#11 module works
  * (SoftHSM2, a TPM through tpm2-pkcs11, an ATECC608, a smart card). The URI
  * names the object inside it; the SDK never learns anything else about it.
+ *
+ * Key custody is generation-agnostic -- the token signs a TLS handshake and
+ * neither MQTT version is visible to it. So, as in every unified sample (see
+ * samples/unified/telemetry), both MQTT adapters are registered and the
+ * telemetry client is built only once CONNECTED, for the profile DPS assigned.
+ * The custody code is the same either way.
  *
  * Requirements on the host:
  *   - OpenSSL 3.0+ and an OpenSSL 3.x provider for the token, e.g.
@@ -169,15 +175,25 @@ static const az_iot_certificate_provider_vtable k_hsm_vtable = {
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   az_iot_result conn_reason;
-  az_iot_connection_profile connection_profile;
-  int profile_valid;
   int send_done;
   az_iot_result send_status;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ((user_context*)user_ctx)->provisioning_faulted = 1;
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -186,16 +202,9 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     return;
   }
 
-  az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
   user_context* ctx = (user_context*)user_ctx;
-  ctx->conn_state = s;
-  ctx->conn_reason = reason;
-  if (s == AZ_IOT_CONN_STATE_CONNECTED && event->profile)
-  {
-    ctx->connection_profile = event->profile->connection_profile;
-    ctx->profile_valid = 1;
-  }
+  ctx->conn_state = event->state;
+  ctx->conn_reason = event->reason;
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -229,8 +238,11 @@ int main(void)
   user_context user_ctx = { 0 };
   hsm_provider provider = { .base = { .vtable = &k_hsm_vtable }, .config = &config };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_gen1_telemetry_client gen1_telemetry = { 0 };
-  az_iot_gen2_telemetry_client gen2_telemetry = { 0 };
+  /* Only the one matching `profile` is initialized, once CONNECTED. */
+  az_iot_gen1_telemetry_client gen1 = { 0 };
+  az_iot_gen2_telemetry_client gen2 = { 0 };
+  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  int telemetry_initialized = 0;
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.client_id = config.reg_id;
@@ -252,6 +264,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
+  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -264,6 +277,7 @@ int main(void)
   {
     goto cleanup;
   }
+
   az_iot_result open_rc = az_iot_connection_client_open(&connection_client);
   if (open_rc != AZ_IOT_OK)
   {
@@ -276,7 +290,7 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
@@ -284,23 +298,35 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    az_iot_result telemetry_result = !user_ctx.profile_valid
-        ? AZ_IOT_ERR_INTERNAL
-        : (user_ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-               ? az_iot_gen2_telemetry_client_init(&gen2_telemetry, &connection_client)
-               : az_iot_gen1_telemetry_client_init(&gen1_telemetry, &connection_client));
     fprintf(stderr, "[hsm_pkcs11] connected; the handshake signed inside the token\n");
+
+    az_iot_result init_rc = AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+    if (sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK)
+    {
+      if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      {
+        init_rc = az_iot_gen2_telemetry_client_init(&gen2, &connection_client);
+      }
+      else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+      {
+        init_rc = az_iot_gen1_telemetry_client_init(&gen1, &connection_client);
+      }
+    }
+    telemetry_initialized = (init_rc == AZ_IOT_OK);
 
     static const uint8_t payload[] = "{\"custody\":\"hardware\"}";
     az_iot_telemetry_message msg = { 0 };
     msg.payload = payload;
     msg.payload_len = sizeof(payload) - 1;
 
-    if (telemetry_result == AZ_IOT_OK
-        && (user_ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-                ? az_iot_gen2_telemetry_client_send(&gen2_telemetry, &msg, on_send_done, &user_ctx)
-                : az_iot_gen1_telemetry_client_send(&gen1_telemetry, &msg, on_send_done, &user_ctx))
-            == AZ_IOT_OK)
+    az_iot_result sent = AZ_IOT_ERR_NOT_INITIALIZED;
+    if (telemetry_initialized)
+    {
+      sent = profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
+          ? az_iot_gen2_telemetry_client_send(&gen2, &msg, on_send_done, &user_ctx)
+          : az_iot_gen1_telemetry_client_send(&gen1, &msg, on_send_done, &user_ctx);
+    }
+    if (sent == AZ_IOT_OK)
     {
       for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
       {
@@ -329,8 +355,17 @@ int main(void)
   }
 
 cleanup:
-  az_iot_gen1_telemetry_client_destroy(&gen1_telemetry);
-  az_iot_gen2_telemetry_client_destroy(&gen2_telemetry);
+  if (telemetry_initialized)
+  {
+    if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+    {
+      az_iot_gen2_telemetry_client_destroy(&gen2);
+    }
+    else
+    {
+      az_iot_gen1_telemetry_client_destroy(&gen1);
+    }
+  }
   az_iot_connection_client_destroy(&connection_client);
   hsm_config_release(&config);
   return rc;

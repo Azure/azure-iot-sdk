@@ -13,19 +13,6 @@ add_executable(az_iot_sample_auth_custom_provider_template
 target_link_libraries(az_iot_sample_auth_custom_provider_template PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_custom_provider_template)
 
-# Direct hub connect (no DPS): caller supplies the hub FQDN + X.509 device
-# credentials and selects the hub flavor (Classic v3.1.1 or Next/AEG v5) via
-# opts.connection_profile. Needs the Paho adapter to connect; the PEM provider ships
-# in az_iot_core.
-if(AZ_IOT_WITH_PAHO)
-    add_executable(az_iot_sample_auth_direct_hub
-        direct-hub/main.c ${_auth_common}/sample_utils.c)
-    target_include_directories(az_iot_sample_auth_direct_hub PRIVATE ${_auth_common})
-    target_link_libraries(az_iot_sample_auth_direct_hub
-        PRIVATE az_iot_gen1 az_iot_gen2 az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_sample_auth_direct_hub)
-endif()
-
 # The DPS-CSR and hub-renewal samples need the Paho adapter to connect and the
 # OpenSSL "managed" provider for real CSR generation + persistence.
 if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
@@ -33,7 +20,7 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
         dps_csr_managed/main.c ${_auth_common}/sample_utils.c)
     target_include_directories(az_iot_sample_auth_dps_csr_managed PRIVATE ${_auth_common})
     target_link_libraries(az_iot_sample_auth_dps_csr_managed
-        PRIVATE az_iot_core az_iot_adapter_paho az_iot_certificate_provider_managed)
+        PRIVATE az_iot_gen1 az_iot_adapter_paho az_iot_certificate_provider_managed)
     az_iot_apply_warnings(az_iot_sample_auth_dps_csr_managed)
 
     add_executable(az_iot_sample_auth_hub_renew
@@ -77,7 +64,8 @@ endif()
 # D8 non-extractable key custody, key-reference route. Needs the Paho adapter to
 # link, and OpenSSL 3.0+ at RUN time (the provider that owns the token) -- which
 # is a deployment property, not a build one, so it builds wherever Paho does and
-# reports a clear error when the provider is absent.
+# reports a clear error when the provider is absent. Serves either hub
+# generation, so it links both gen1 and gen2.
 if(AZ_IOT_WITH_PAHO)
     add_executable(az_iot_sample_auth_hsm_pkcs11
         hsm_pkcs11/main.c ${_auth_common}/sample_utils.c)

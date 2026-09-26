@@ -41,7 +41,7 @@ ctest --preset windows-msvc-debug -C Debug
 Run a sample binary:
 
 ```sh
-./build/linux-gcc-debug/samples/az_iot_sample_telemetry_gen1
+./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
 ## Project layout
@@ -50,7 +50,7 @@ Run a sample binary:
 inc/azure/iot/        public headers
 src/{core,features}/ implementation
 adapters/{paho,rust_mqtt}/ MQTT adapters
-samples/                  examples
+samples/                  examples (unified/, gen2/, authentication/, adu/)
 tests/                    ctest suites
 tests/conformance/        reusable MQTT iface conformance suite
 docs/                     design + dev notes
@@ -139,7 +139,7 @@ int main(void)
     return 1;
   }
 
-  /* Connection client — DPS runs internally when host == NULL */
+  /* Connection client — DPS runs internally */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope         = getenv("AZ_IOT_ID_SCOPE");
   copts.dps.registration_id  = getenv("AZ_IOT_REGISTRATION_ID");
@@ -214,24 +214,13 @@ int main(void)
 }
 ```
 
-The full source is in [samples/telemetry_gen1/main.c](samples/telemetry_gen1/main.c). Each sample
-is a no-op when its required env vars are unset, so a default build matrix without
-cloud resources stays green.
+A fuller version is [samples/unified/connect_first/main.c](samples/unified/connect_first/main.c); [samples/unified/telemetry/main.c](samples/unified/telemetry/main.c) builds before `open()` and also handles a device moved to the other hub generation.
 
 ## Samples
 
-| Sample | What it shows |
-| --- | --- |
-| [telemetry_gen1](samples/telemetry_gen1/) | DPS provisioning + `do_work()` pump + a telemetry send to a Classic hub. The starting point. |
-| [telemetry_gen2](samples/telemetry_gen2/) | The same send to an AEG hub over MQTT v5, where properties are user properties rather than topic segments. |
-| [connection_profile_fallback](samples/connection_profile_fallback/) | Neither of the above, for one binary that must serve both: open first, ask `get_hub_profile()` what it reached, then build the matching client. Only when the generation cannot be known up front. |
-| [twin_get_patch](samples/twin_get_patch/) | `twin_get` + `patch_reported`, and desired-property delivery. |
-| [direct_method_responder_gen1](samples/direct_method_responder_gen1/) | Answer direct methods on a Classic hub, where one handler receives every name and must route and refuse them itself. |
-| [direct_method_responder_gen2](samples/direct_method_responder_gen2/) | The same on an AEG hub, where methods are declared up front and a probe lets the device decline with a reason before the arguments are sent. |
-| [direct_method_slow_responder_gen1](samples/direct_method_slow_responder_gen1/) | Answer a Classic direct method after its handler returned, against the device's own response timeout. |
-| [direct_method_slow_responder_gen2](samples/direct_method_slow_responder_gen2/) | The same on AEG, declaring the time the work needs so callers who cannot wait are turned away at the probe. |
-| [c2d_receiver_gen1](samples/c2d_receiver_gen1/) | Receive cloud-to-device messages on a Classic hub, where properties are decoded out of the topic. |
-| [c2d_receiver_gen2](samples/c2d_receiver_gen2/) | The same on an AEG hub, where the presence handshake already carries the subscription and properties need no decoding. |
-| [file_upload](samples/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. |
-| [authentication](samples/authentication/) | Certificate providers, CSR enrollment, operational certificates. |
-| [adu](samples/adu/) | Device Update agent: manifest verify, download, install, report. |
+Samples are grouped like the .NET SDK's: [samples/unified](samples/unified/) serve
+whichever hub generation DPS assigns, [samples/gen2](samples/gen2/) serve AEG hubs
+only. There is no Classic-only group; the Classic-only samples
+(`unified/file_upload`, `authentication/dps_csr_managed`,
+`authentication/hub_renew`) exit non-zero on an MQTT v5 hub. Layout,
+configuration and the full list are in [samples/README.md](samples/README.md).

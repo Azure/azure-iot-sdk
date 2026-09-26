@@ -33,18 +33,25 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      c: ${{ steps.filter.outputs.c }}
+      c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # `every`: a file counts only if it matches all patterns of a filter,
+          # so the `!` patterns exclude Markdown. Hence one filter per path root.
+          predicate-quantifier: every
           filters: |
             c:
               - 'c/**'
+              - '!c/**/*.md'
+            common:
               - 'common/**'
-              # A change to this workflow decides what the build/test legs do,
-              # so it has to run them.
+              - '!common/**/*.md'
+            # A change to this workflow decides what the build/test legs do,
+            # so it has to run them.
+            workflow:
               - '.github/workflows/ci-c.yml'
 
   build:
@@ -404,7 +411,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '43'
+      EXPECTED_TESTS: '45'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

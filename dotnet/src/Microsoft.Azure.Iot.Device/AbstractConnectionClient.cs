@@ -3,8 +3,8 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.Gen2.Connection;
-using Microsoft.Azure.Iot.Device.Gen2.Twin;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -41,13 +41,9 @@ namespace Microsoft.Azure.Iot.Device
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
-        private const string ProvisioningApiVersion = "2021-10-01"; // TODO 2026-11-02-preview is required for connection profile fields, but is not available yet.
-
-        // Issuing an operational certificate from a certificate signing request is not part of the GA API version
-        // above: Device Provisioning Service rejects a registration request that carries a "csr" field unless the
-        // connection asked for a version that knows about it. Only used when the caller supplies a request, so a
-        // registration without one keeps the GA version.
-        private const string ProvisioningCertificateSigningRequestApiVersion = "2025-07-01-preview";
+        // Used for every DPS session. Required for the "connectionProfile" registration result field and supports
+        // certificate signing requests.
+        private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
@@ -55,10 +51,10 @@ namespace Microsoft.Azure.Iot.Device
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        // The abstract methods cover all the differences between a gen2 client and a unified client.
+        // The abstract methods cover all the differences between an MQTTv5 client and a unified client.
         public abstract MqttConnect MqttConnectOverride(MqttConnect connect);
 
-        // In gen2 case, SUB to devicebound, send birth message, wait for birth ack. In gen1 case, send all DM/Twin/Telem SUBs.
+        // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 
@@ -198,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                ConnectionProfile = provisioningResult.ConnectionProfile,
+                ConnectionProfile = provisioningResult.ConnectionProfile ?? Provisioning.Models.ConnectionProfile.Classic,
             };
 
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
@@ -264,7 +260,7 @@ namespace Microsoft.Azure.Iot.Device
             // started is no longer wanted.
             CancelCurrentReprovisioning();
 
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection }, cancellationToken);
+            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
             CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
@@ -345,6 +341,8 @@ namespace Microsoft.Azure.Iot.Device
                     TcpPort = 8883,
                     WebsocketPort = 443,
                     ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
+                    RemoteCertificateValidationCallback = CurrentConnectionContext.AuthenticationProvider.RemoteCertificateValidationCallback,
+                    LocalCertificateSelectionCallback = CurrentConnectionContext.AuthenticationProvider.LocalCertificateSelectionCallback,
                     ClientId = deviceId,
 
                     // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
@@ -638,8 +636,7 @@ namespace Microsoft.Azure.Iot.Device
             MqttConnect connect = CreateProvisioningConnectPacket(
                 authentication,
                 provisioningSettings.IdScope,
-                provisioningSettings.GlobalEndpointAddress,
-                provisioningSettings.CertificateSigningRequest != null);
+                provisioningSettings.GlobalEndpointAddress);
 
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
@@ -680,7 +677,7 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttClientDisconnectOptionsReason.NormalDisconnection };
+                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
 
                 try
                 {
@@ -775,7 +772,7 @@ namespace Microsoft.Azure.Iot.Device
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
-                throw new Exception("todo");
+                throw new Exception($"DPS did not grant QoS 1 for the mandatory response-topic subscription; received SUBACK reason '{subscribeResults.Items.FirstOrDefault()!.ReasonCode}'.");
             }
         }
 
@@ -881,7 +878,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint, bool isCertificateSigningRequest)
+        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
         {
             string hostName = globalDeviceEndpoint;
 
@@ -890,7 +887,7 @@ namespace Microsoft.Azure.Iot.Device
                 ProvisioningUsernameFormat,
                 idScope,
                 authentication.GetRegistrationId(),
-                isCertificateSigningRequest ? ProvisioningCertificateSigningRequestApiVersion : ProvisioningApiVersion,
+                ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
 
@@ -902,6 +899,8 @@ namespace Microsoft.Azure.Iot.Device
                 WebsocketPort = 443,
                 WebsocketUri = $"wss://{hostName}:443",
                 ClientCertificate = authentication.ClientCertificate,
+                RemoteCertificateValidationCallback = authentication.RemoteCertificateValidationCallback,
+                LocalCertificateSelectionCallback = authentication.LocalCertificateSelectionCallback,
                 CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
                 CleanStart = true,
                 SessionExpiryInterval = 0,

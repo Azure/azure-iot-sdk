@@ -21,7 +21,7 @@
 <!-- Section 1: New API walkthrough -->
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 28px;">
 <tr><td style="font-size: 18px; font-weight: 600; color: #0078D4; padding-bottom: 8px;">1. New Library &mdash; Complete Sample (Annotated)</td></tr>
-<tr><td style="font-size: 12px; color: #666; padding-bottom: 8px;">Source: <code>samples/telemetry_gen1/main.c</code> &mdash; <b>~95 lines of functional code</b> (excluding comments, blank lines, and logging)</td></tr>
+<tr><td style="font-size: 12px; color: #666; padding-bottom: 8px;">Source: former Classic-only <code>samples/telemetry_gen1/main.c</code>, since replaced by <code>samples/unified/telemetry/main.c</code> (which also serves AEG hubs and device moves) &mdash; <b>~95 lines of functional code</b> (excluding comments, blank lines, and logging)</td></tr>
 <tr><td>
 <table width="100%" cellpadding="10" cellspacing="0" border="0" style="background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
 <tr><td style="font-family: 'Cascadia Code', Consolas, 'Courier New', monospace; font-size: 11.5px; white-space: pre-wrap; line-height: 1.7; color: #1e1e1e;">
@@ -60,7 +60,7 @@
     az_iot_certificate_provider_pem_init(&amp;certs, &amp;pem);
 
     <span style="color: #6a9955;">// ─── Step 2: Connection client (DPS is automatic) ────────</span>
-    <span style="color: #6a9955;">// When host==NULL and id_scope is provided, DPS provisioning</span>
+    <span style="color: #6a9955;">// When id_scope is provided, DPS provisioning</span>
     <span style="color: #6a9955;">// happens internally during open() — no separate API needed</span>
     az_iot_connection_client_options copts = az_iot_connection_client_options_default();
     copts.dps.id_scope = id_scope;
@@ -473,7 +473,7 @@ IoTHub_Deinit();
 </td></tr></table>
 
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid #e0e0e0; padding-top: 8px;">
-<tr><td style="font-size: 11px; color: #999;">Comparison based on <code>azure-iot-sdk/samples/telemetry_gen1/main.c</code> vs <code>azure-iot-sdk-c</code> samples <code>prov_dev_client_ll_x509_sample.c</code> + <code>iothub_ll_telemetry_sample.c</code> &bull; May 2026</td></tr>
+<tr><td style="font-size: 11px; color: #999;">Comparison based on the former <code>azure-iot-sdk/samples/telemetry_gen1/main.c</code> vs <code>azure-iot-sdk-c</code> samples <code>prov_dev_client_ll_x509_sample.c</code> + <code>iothub_ll_telemetry_sample.c</code> &bull; May 2026</td></tr>
 </table>
 
 </body>

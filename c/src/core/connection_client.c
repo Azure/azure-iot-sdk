@@ -40,6 +40,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
+#include "internal/proto3.h"
 #include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
@@ -96,21 +97,17 @@
 #define DPS_REGISTER_CSR_MEMBER_SUFFIX "\""
 #define DPS_REGISTER_PAYLOAD_MEMBER_PREFIX "\"payload\":"
 
-/* CSR-based operational-certificate issuance (Azure Device Registration / ADR)
- * requires a newer DPS API version than the azure-sdk-for-c default GA version
- * ("2019-03-31"), which does not support it. When enrolling for an operational
- * certificate the DPS MQTT username is rebuilt with this version. */
-#define DPS_CSR_API_VERSION "2025-07-01-preview"
-#define DPS_USERNAME_CSR_INFIX "/registrations/"
-#define DPS_USERNAME_CSR_SUFFIX "/api-version=" DPS_CSR_API_VERSION
+/* The pinned azure-sdk-for-c helper emits 2019-03-31. Build the CONNECT
+ * username here for every DPS session, including CSR and provision-only ADU. */
+#define DPS_API_VERSION "2026-11-02-preview"
+#define DPS_USERNAME_INFIX "/registrations/"
+#define DPS_USERNAME_SUFFIX "/api-version=" DPS_API_VERSION
 
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN "issuedCertificateChain"
 /* The hub generation the device was assigned to. A string, and an extensible
- * union: absent or null means "classic". New in api-version 2026-11-02-preview,
- * which this repo patches azure-sdk-for-c up to -- see
- * patches/azure-sdk-for-c/0001-dps-api-version.patch. */
+ * union: absent or null means "classic". New in api-version 2026-11-02-preview. */
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_CLASSIC_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
@@ -147,8 +144,9 @@
 #define PRESENCE_TYPE_BIRTH "birth:1"
 #define PRESENCE_TYPE_BIRTH_ACK "birth-ack"
 /* Connection nonce carried as MQTT v5 Correlation Data on the birth PUBLISH and
- * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce. */
-#define PRESENCE_NONCE_LEN 16u
+ * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce, and
+ * is the same width every AEG correlation id uses. */
+#define PRESENCE_NONCE_LEN AZ_IOT_CORRELATION_UUID_LEN
 
 /* The nonce is a UUID, so two of its octets carry RFC 4122 metadata: octet 6
  * holds the version in its high nibble and octet 8 the variant in its high
@@ -170,38 +168,17 @@
 #define PRESENCE_HI_NIBBLE(byte) (((byte) >> PRESENCE_NIBBLE_BITS) & PRESENCE_NIBBLE_MASK)
 #define PRESENCE_LO_NIBBLE(byte) ((byte) & PRESENCE_NIBBLE_MASK)
 
-/* proto3 wire format, as much of it as the birth encoder and the birth-ack
- * decoder need. A record is a varint key -- field number in the high bits, wire
- * type in the low three -- followed by a payload whose shape the wire type
- * gives. See https://protobuf.dev/programming-guides/encoding/. */
+/* proto3 field keys for the birth encoder. A record is a varint key -- field
+ * number in the high bits, wire type in the low three. Decoding goes through
+ * internal/proto3.h; the birth is three fixed bool fields, which is cheaper to
+ * emit directly than to frame. */
 #define PROTO_WIRE_TYPE_VARINT 0u
-#define PROTO_WIRE_TYPE_64BIT 1u
-#define PROTO_WIRE_TYPE_LEN_DELIM 2u
-#define PROTO_WIRE_TYPE_32BIT 5u
 #define PROTO_WIRE_TYPE_BITS 3u
-#define PROTO_WIRE_TYPE_MASK 0x07u
-#define PROTO_WIRE_32BIT_SIZE 4u
-#define PROTO_WIRE_64BIT_SIZE 8u
-#define PROTO_KEY_FIELD_NUMBER(key) ((key) >> PROTO_WIRE_TYPE_BITS)
-#define PROTO_KEY_WIRE_TYPE(key) ((uint8_t)((key) & PROTO_WIRE_TYPE_MASK))
 /* Single-byte key for a varint field. Valid for field numbers 1..15, which is
  * every field this client encodes. */
 #define PROTO_KEY_VARINT(field) \
   ((uint8_t)(((field) << PROTO_WIRE_TYPE_BITS) | PROTO_WIRE_TYPE_VARINT))
 #define PROTO_BOOL_TRUE 0x01u
-
-/* A varint carries seven payload bits per byte; the high bit says another byte
- * follows. Bits 0..62 come from nine such groups and bit 63 from a tenth, so
- * PROTO_VARINT_MAX_SHIFT is the last shift a legal uint64 can reach. */
-#define PROTO_VARINT_CONTINUATION_BIT 0x80u
-#define PROTO_VARINT_PAYLOAD_MASK 0x7Fu
-#define PROTO_VARINT_PAYLOAD_BITS 7u
-#define PROTO_VARINT_VALUE_BITS 64u
-#define PROTO_VARINT_MAX_SHIFT 63u
-/* Largest payload the tenth byte may carry: at shift 63 only bit 63 fits. */
-#define PROTO_VARINT_TOP_BIT_MAX 1u
-#define PROTO_VARINT_PAYLOAD(byte) ((byte) & PROTO_VARINT_PAYLOAD_MASK)
-#define PROTO_VARINT_HAS_CONTINUATION(byte) (((byte) & PROTO_VARINT_CONTINUATION_BIT) != 0u)
 
 /* Field numbers from presence.proto. */
 #define PRESENCE_BIRTH_FIELD_SESSION_PRESENT 1u
@@ -295,12 +272,174 @@ static bool have_state_observers(const az_iot_connection_client* c)
   return false;
 }
 
+/**
+ * @brief Stage diagnostic detail for the next state event on @p scope.
+ *
+ * Scoped so a DPS verdict cannot attach to a hub event that runs in between.
+ * @p message is not copied: it must stay valid until the pump dispatches, which
+ * is the lifetime the public event promises.
+ */
+static void stage_error(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_connection_error_source source,
+    int32_t code,
+    az_span message)
+{
+  c->error_scope = scope;
+  c->error_source = source;
+  c->error_code = code;
+
+  /* COPIED, not referenced. `message` spans the adapter's inbound buffer, and
+   * that buffer is reused or freed the moment the adapter's callback returns --
+   * before the pump dispatches the transition that reports this. Holding the
+   * span would be a use-after-free that only a memory checker catches, because
+   * the bytes usually still look right. */
+  c->error_message_len = 0;
+  int32_t n = az_span_size(message);
+  if (n > 0)
+  {
+    size_t copy_n = (size_t)n;
+    if (copy_n > sizeof(c->error_message))
+    {
+      copy_n = sizeof(c->error_message);
+    }
+    memcpy(c->error_message, az_span_ptr(message), copy_n);
+    c->error_message_len = copy_n;
+  }
+}
+
+/**
+ * @brief Stage whatever codes an adapter event carried, for @p scope.
+ *
+ * transport_code wins when both are present: a failure below MQTT is the more
+ * specific fact, and a wire code alongside it would be describing the session
+ * that never formed. Neither present stages nothing, which is correct -- an
+ * adapter that reports no codes is conformant.
+ */
+static void stage_error_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt);
+
+/** @brief Discard staged detail; the failure it described is no longer current. */
+static void clear_staged_error(az_iot_connection_client* c)
+{
+  c->error_source = AZ_IOT_CONN_ERR_SRC_NONE;
+  c->error_code = 0;
+  c->error_message_len = 0;
+}
+
+/**
+ * @brief Would another attempt at this cause plausibly succeed?
+ *
+ * A property of the CAUSE, not of SDK intent -- an application that disabled
+ * retries owns the ladder and needs this to decide whether to bother. Errs
+ * toward retriable: a wrong "do not retry" strands a device that would have
+ * recovered, while a wrong "retriable" costs one more attempt.
+ */
+static void stage_error_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt)
+{
+  if (evt == NULL)
+  {
+    return;
+  }
+  /* Only a failure-bearing event stages. A SUBACK that SUCCEEDED also carries a
+   * protocol_code -- the granted QoS -- and staging that would hand a later
+   * failure a code describing something that worked. A server-sent MQTT 5
+   * DISCONNECT is the exception that is not flagged by status: the session
+   * ended cleanly as far as the transport is concerned, and the reason code is
+   * the whole point of the event. */
+  bool bears_failure = (evt->status != AZ_IOT_OK)
+      || (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED && evt->protocol_code != 0);
+  if (!bears_failure)
+  {
+    return;
+  }
+  if (evt->transport_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_TRANSPORT, evt->transport_code, AZ_SPAN_EMPTY);
+  }
+  else if (evt->protocol_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, AZ_SPAN_EMPTY);
+  }
+}
+
+static bool reason_is_retriable(az_iot_result reason)
+{
+  /* Exhaustive on purpose: -Werror=switch-enum makes a new result code a
+   * compile error here, so classifying it is a decision someone has to take
+   * rather than one that defaults silently. */
+  switch (reason)
+  {
+    /* The credential or the identity is refused. Retrying with the same inputs
+     * returns the same answer; the application has to change something. */
+    case AZ_IOT_ERR_AUTH:
+    case AZ_IOT_ERR_IDENTITY_REJECTED:
+    case AZ_IOT_ERR_CREDENTIAL_INCOMPLETE:
+    /* The assigned generation is not one the attached feature clients can use.
+     * Re-provisioning returns the same assignment. */
+    case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
+    case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
+    /* The broker refused the filter itself. */
+    case AZ_IOT_ERR_SUBSCRIPTION_REFUSED:
+    /* Caller, build or programming faults: retrying re-runs the same bad call. */
+    case AZ_IOT_ERR_INVALID_ARG:
+    case AZ_IOT_ERR_NOT_SUPPORTED:
+    case AZ_IOT_ERR_NOT_ENOUGH_SPACE:
+    case AZ_IOT_ERR_OUT_OF_MEMORY:
+    case AZ_IOT_ERR_NOT_INITIALIZED:
+    case AZ_IOT_ERR_ALREADY_INITIALIZED:
+    case AZ_IOT_ERR_NOT_FOUND:
+    case AZ_IOT_ERR_DETACHED:
+    case AZ_IOT_ERR_PROTOCOL:
+      return false;
+
+    /* Transport and service conditions that commonly clear on their own. */
+    case AZ_IOT_ERR_NOT_CONNECTED:
+    case AZ_IOT_ERR_TIMEOUT:
+    case AZ_IOT_ERR_TLS:
+    case AZ_IOT_ERR_MQTT:
+    case AZ_IOT_ERR_BUSY:
+    case AZ_IOT_ERR_INTERNAL:
+    /* A DPS verdict is retriable as a class: the commonest are a throttle, a
+     * server error, or an enrollment that does not exist YET on first boot.
+     * The permanent ones are distinguishable through error->code, which is why
+     * the code travels. */
+    case AZ_IOT_ERR_DPS:
+      return true;
+
+    /* Not a failure; set_state_to() never asks about AZ_IOT_OK. */
+    case AZ_IOT_OK:
+    default:
+      return false;
+  }
+}
+
 static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
     az_iot_connection_state next,
     az_iot_result reason)
 {
+  /* One failure produces a SEQUENCE of transitions -- a dying session reports
+   * DISCONNECTING, then IDLE, then RECONNECTING or FAULTED -- and they are all
+   * reporting the same failure, so the detail rides all of them rather than
+   * being consumed by whichever ran first. (It was: the terminal event, the one
+   * an application acts on, arrived with nothing.)
+   *
+   * It is discarded when the scope starts a NEW attempt or succeeds, which is
+   * the point at which the old evidence stops describing anything current. */
+  if (scope == c->error_scope
+      && (next == AZ_IOT_CONN_STATE_CONNECTING || next == AZ_IOT_CONN_STATE_CONNECTED))
+  {
+    clear_staged_error(c);
+  }
+
   /* Per scope, deliberately. A single comparison here would swallow
    * HUB:CONNECTING straight after DPS:CONNECTING purely because the VALUE
    * matched -- which is exactly why a DPS+hub run used to be reported as one
@@ -321,13 +460,32 @@ static void set_state_to(
     return;
   }
   az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_connection_error_detail detail = {
+    ._internal_size = sizeof(az_iot_connection_error_detail),
+    .source = AZ_IOT_CONN_ERR_SRC_NONE,
+    .code = 0,
+    .message = AZ_SPAN_EMPTY,
+  };
   az_iot_connection_state_event event = {
     ._internal_size = sizeof(az_iot_connection_state_event),
     .scope = scope,
     .state = next,
     .reason = reason,
     .profile = NULL,
+    .is_retriable = (reason != AZ_IOT_OK) && reason_is_retriable(reason),
+    .error = NULL,
   };
+  /* Detail rides only an event that is actually reporting a failure, and only
+   * on the scope it was recorded for. */
+  if (reason != AZ_IOT_OK && c->error_source != AZ_IOT_CONN_ERR_SRC_NONE && c->error_scope == scope)
+  {
+    detail.source = c->error_source;
+    detail.code = c->error_code;
+    detail.message = (c->error_message_len > 0)
+        ? az_span_create((uint8_t*)c->error_message, (int32_t)c->error_message_len)
+        : AZ_SPAN_EMPTY;
+    event.error = &detail;
+  }
   /* The profile rides the events that settle "which hub generation is this?":
    * HUB:CONNECTED, and the two failures that are ABOUT the profile.
    *
@@ -1474,6 +1632,11 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     return;
   }
 
+  /* Before the switch, so every failure route below carries its code without
+   * each one having to remember. Staged, not dispatched: the transition that
+   * reports it may not run until the pump drains the deferred queue. */
+  stage_error_from_event(c, AZ_IOT_CONN_SCOPE_DPS, evt);
+
   switch (evt->kind)
   {
     case AZ_IOT_MQTT_EVT_CONNECTED:
@@ -1690,6 +1853,17 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
               (const char*)az_span_ptr(payload_span));
+          /* The service's own verdict -- 401001 "IoTHub not found" is this
+           * path. Both are parsed already and were being thrown away, which is
+           * what made "registration failed" and "no hub linked" the same
+           * opaque AZ_IOT_ERR_DPS. The message spans the inbound buffer and so
+           * lives exactly as long as the event that carries it. */
+          stage_error(
+              c,
+              AZ_IOT_CONN_SCOPE_DPS,
+              AZ_IOT_CONN_ERR_SRC_DPS,
+              (int32_t)resp.registration_state.extended_error_code,
+              resp.registration_state.error_message);
           dps_finalize(c, AZ_IOT_ERR_DPS, false);
           return;
         }
@@ -1771,6 +1945,18 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* All DPS features share the CONNECT API version, including registration,
+   * CSR issuance, and update requests on a provision-only session. */
+  char dps_username[AZ_IOT_MQTT_USERNAME_BUF];
+  const char* username_parts[] = {
+    c->opts.dps.id_scope, DPS_USERNAME_INFIX, c->opts.dps.registration_id, DPS_USERNAME_SUFFIX
+  };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(dps_username), NULL, username_parts, 4)
+      != AZ_IOT_OK)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
   const az_iot_mqtt_factory* f = find_factory(c, AZ_IOT_MQTT_VERSION_3_1_1);
   if (!f)
   {
@@ -1792,33 +1978,6 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   resolve_connect_transport(c, &copts, 0);
   resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
-  /* Build the DPS MQTT username. CSR-based operational-certificate issuance
-   * (Azure Device Registration) requires a newer DPS API version than the
-   * azure-sdk-for-c default (2019-03-31); build the username with it when
-   * enrolling, otherwise use the SDK helper for the default version. */
-  char dps_username[AZ_IOT_MQTT_USERNAME_BUF];
-  if (c->opts.dps.request_operational_certificate)
-  {
-    const char* username_parts[] = { c->opts.dps.id_scope,
-                                     DPS_USERNAME_CSR_INFIX,
-                                     c->opts.dps.registration_id,
-                                     DPS_USERNAME_CSR_SUFFIX };
-    if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(dps_username), NULL, username_parts, 4)
-        != AZ_IOT_OK)
-    {
-      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-    }
-  }
-  else
-  {
-    size_t dps_username_len = 0;
-    ar = az_iot_provisioning_client_get_user_name(
-        &c->dps_prov, dps_username, sizeof(dps_username), &dps_username_len);
-    if (az_result_failed(ar))
-    {
-      return AZ_IOT_ERR_INTERNAL;
-    }
-  }
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
 
@@ -2165,13 +2324,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* A stalled handshake is timed out from do_work().                            */
 /* ------------------------------------------------------------------------- */
 
-/* Fill `out` with the per-connection nonce: a fresh RFC 4122 version 4 UUID,
- * regenerated on every CONNECT attempt (not per successful CONNACK). It is
- * echoed on the birth-ack so the SDK can discard acks from a prior attempt.
- * Uses the same LCG as the CSR request-id generator, advanced through the
- * client's rng_state and salted by the attempt count so successive attempts
- * never collide. */
-static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+/* Fill `out` with a fresh RFC 4122 version 4 UUID drawn from the client's PRNG.
+ * Uses the same LCG as the CSR request-id generator, advanced through rng_state
+ * and salted by the attempt count so successive draws never collide. Uniqueness
+ * (not cryptographic strength) is what these identifiers need. */
+static void gen_uuid_v4(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
 {
   for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
   {
@@ -2192,6 +2349,15 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
       = PRESENCE_UUID_STAMP_VERSION_4(out[PRESENCE_UUID_VERSION_OCTET]);
   out[PRESENCE_UUID_VARIANT_OCTET]
       = PRESENCE_UUID_STAMP_VARIANT_RFC4122(out[PRESENCE_UUID_VARIANT_OCTET]);
+}
+
+/* Fill `out` with the per-connection nonce: a fresh UUID regenerated on every
+ * CONNECT attempt (not per successful CONNACK). It is echoed on the birth-ack
+ * so the SDK can discard acks from a prior attempt, and it tags the
+ * backend-initiated dev-bound traffic belonging to this connection. */
+static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+{
+  gen_uuid_v4(c, out);
 }
 
 /* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
@@ -2264,48 +2430,6 @@ static size_t presence_encode_birth(
   return n;
 }
 
-/* Read a proto3 varint from buf[*pos]. Returns false on a truncated or
- * over-long (> 10 byte) encoding, which ends parsing of the message.
- *
- * 10 bytes is the widest legal uint64: nine 7-bit groups cover bits 0..62 and
- * the tenth contributes bit 63 alone. So `shift` must still be accepted at
- * PROTO_VARINT_MAX_SHIFT and only rejected once it passes that, which is why
- * the bound below is checked after the shift advances rather than before the
- * byte is consumed.
- *
- * Because that tenth byte can carry only bit 63, its payload must be 0 or 1.
- * A larger one sets bits the value cannot hold; the shift would drop them and
- * the wrapped remainder would pass for a valid version. Reject it instead: a
- * twin version that silently wraps is worse than a decode that stops. */
-static bool presence_read_varint(const uint8_t* buf, size_t len, size_t* pos, uint64_t* out)
-{
-  uint64_t v = 0;
-  unsigned shift = 0;
-  while (*pos < len)
-  {
-    uint8_t b = buf[(*pos)++];
-    if (shift == PROTO_VARINT_MAX_SHIFT && PROTO_VARINT_PAYLOAD(b) > PROTO_VARINT_TOP_BIT_MAX)
-    {
-      return false;
-    }
-    if (shift < PROTO_VARINT_VALUE_BITS)
-    {
-      v |= ((uint64_t)PROTO_VARINT_PAYLOAD(b)) << shift;
-    }
-    if (!PROTO_VARINT_HAS_CONTINUATION(b))
-    {
-      *out = v;
-      return true;
-    }
-    shift += PROTO_VARINT_PAYLOAD_BITS;
-    if (shift > PROTO_VARINT_MAX_SHIFT)
-    {
-      return false;
-    }
-  }
-  return false;
-}
-
 /* Decode the twin recovery state the service returns on the birth-ack
  * (presence.proto BirthAck): desired_version (field 10) and reported_version
  * (field 11), both varints. These are the authoritative versions as of birth
@@ -2324,18 +2448,19 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
   size_t pos = 0;
   while (pos < len)
   {
-    uint64_t key = 0;
-    if (!presence_read_varint(buf, len, &pos, &key))
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
       return;
     }
-    uint64_t field = PROTO_KEY_FIELD_NUMBER(key);
-    uint8_t wire = PROTO_KEY_WIRE_TYPE(key);
 
-    if (wire == PROTO_WIRE_TYPE_VARINT)
+    if (wire == AZ_IOT_PROTO3_WIRE_VARINT
+        && (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
+            || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION))
     {
       uint64_t v = 0;
-      if (!presence_read_varint(buf, len, &pos, &v))
+      if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
       {
         return;
       }
@@ -2343,43 +2468,14 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
       {
         c->presence.desired_version = v;
       }
-      else if (field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION)
+      else
       {
         c->presence.reported_version = v;
       }
     }
-    else if (wire == PROTO_WIRE_TYPE_LEN_DELIM)
+    else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
     {
-      uint64_t n = 0;
-      if (!presence_read_varint(buf, len, &pos, &n))
-      {
-        return;
-      }
-      if (n > (uint64_t)(len - pos))
-      {
-        return;
-      }
-      pos += (size_t)n;
-    }
-    else if (wire == PROTO_WIRE_TYPE_32BIT)
-    {
-      if (len - pos < PROTO_WIRE_32BIT_SIZE)
-      {
-        return;
-      }
-      pos += PROTO_WIRE_32BIT_SIZE;
-    }
-    else if (wire == PROTO_WIRE_TYPE_64BIT)
-    {
-      if (len - pos < PROTO_WIRE_64BIT_SIZE)
-      {
-        return;
-      }
-      pos += PROTO_WIRE_64BIT_SIZE;
-    }
-    else
-    {
-      return; /* groups (3/4) and unknown wire types: stop */
+      return;
     }
   }
 }
@@ -2762,6 +2858,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
   {
     return;
   }
+
+  /* See the DPS handler: staged here so every failure route below inherits it. */
+  stage_error_from_event(c, AZ_IOT_CONN_SCOPE_HUB, evt);
 
   switch (evt->kind)
   {
@@ -4420,6 +4519,39 @@ az_iot_result az_iot_connection_client__presence_twin_versions(
   *out_desired_version = client->presence.desired_version;
   *out_reported_version = client->presence.reported_version;
   return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__gen_uuid(
+    az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return;
+  }
+  gen_uuid_v4(client, out);
+}
+
+az_iot_result az_iot_connection_client__presence_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
+bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_desired;
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)

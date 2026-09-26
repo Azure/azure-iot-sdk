@@ -3,18 +3,19 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* MQTT v5 twin client.
+/**
+ * @file
+ * @brief MQTT v5 twin client.
  *
- *   GET            : ih/{device_id}/srv/twin/get + correlation_data
- *   PATCH reported : ih/{device_id}/srv/twin/reported + correlation_data
- *   GET response   : ih/{device_id}/dev/twin/get/response + correlation_data
- *   Reported ack   : ih/{device_id}/dev/twin/reported/response + correlation_data
- *   Desired        : ih/{device_id}/dev/twin/desired
+ * Device -> service on `ih/{id}/srv/twin`, service -> device on `ih/{id}/dev/twin`,
+ * protobuf bodies (common/Protos/twin.proto) at QoS 0, message kind in the `type`
+ * user property. GET and reported patch correlate on a per-request UUID;
+ * twin-push and desired-patch carry the connection's birth nonce.
  *
- * Requests correlate on MQTT v5 correlation data carrying the decimal request
- * id, rather than the `$rid` Classic puts in the topic. No subscription of its
- * own: the presence handshake already holds "ih/{device_id}/dev/#", which
- * covers all three inbound topics.
+ * Desired state is level-triggered: the client tracks the service's desired
+ * version and the version last delivered to the handler. An in-order patch is
+ * delivered; whenever the device is otherwise behind, one desired snapshot GET
+ * is issued. Nothing is buffered or replayed.
  */
 #include <stdbool.h>
 #include <string.h>
@@ -24,50 +25,67 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
+#include "internal/proto3.h"
+#include "internal/reconnect.h"
 #include "internal/span_writer.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX 192
 
-/* Topic space. The inbound prefix is what the handlers measure a delivered
- * topic against; the suffixes are the exact leaves under it. */
 #define TWIN_TOPIC_ROOT "ih/"
-#define TWIN_INBOUND_PREFIX "/dev/twin/"
-#define TWIN_INBOUND_GET_RESPONSE "get/response"
-#define TWIN_INBOUND_REPORTED_RESPONSE "reported/response"
-#define TWIN_INBOUND_DESIRED "desired"
-#define TWIN_OUTBOUND_GET "/srv/twin/get"
-#define TWIN_OUTBOUND_REPORTED "/srv/twin/reported"
+#define TWIN_INBOUND_SUFFIX "/dev/twin"
+#define TWIN_OUTBOUND_SUFFIX "/srv/twin"
 
-/* The pending slot kind values stored in _internal.pending[].kind */
+/* Outbound `type` values carry the schema version; inbound ones are matched as
+ * "<name>:" TWIN_SCHEMA_VERSION. */
+#define TWIN_TYPE_KEY "type"
+#define TWIN_SCHEMA_VERSION "1"
+#define TWIN_CONTENT_TYPE "application/protobuf"
+#define TWIN_TYPE_GET "get:1"
+#define TWIN_TYPE_REPORTED_PATCH "reported-patch:1"
+#define TWIN_TYPE_GET_RESPONSE "get-response"
+#define TWIN_TYPE_PATCH_RESPONSE "reported-patch-response"
+#define TWIN_TYPE_TWIN_PUSH "twin-push"
+#define TWIN_TYPE_DESIRED_PATCH "desired-patch"
+
+/* twin.proto field numbers. */
+#define TWIN_F_GET_SECTIONS 1u
+#define TWIN_F_GET_IF_NOT_MATCH_DESIRED 2u
+#define TWIN_F_GET_IF_NOT_MATCH_REPORTED 3u
+#define TWIN_F_SECTION_VERSION 1u
+#define TWIN_F_SECTION_PAYLOAD 2u
+#define TWIN_F_PUSH_DESIRED 1u
+#define TWIN_F_PUSH_REPORTED 2u
+#define TWIN_F_PATCH_VERSION 1u
+#define TWIN_F_PATCH_PAYLOAD 2u
+#define TWIN_F_GET_RESP_DESIRED_VERSION 1u
+#define TWIN_F_GET_RESP_REPORTED_VERSION 2u
+#define TWIN_F_GET_RESP_DESIRED_PAYLOAD 3u
+#define TWIN_F_GET_RESP_REPORTED_PAYLOAD 4u
+#define TWIN_F_REPORTED_IF_MATCH 1u
+#define TWIN_F_REPORTED_PAYLOAD 2u
+#define TWIN_F_PATCH_RESP_RESULT 1u
+#define TWIN_F_PATCH_RESP_VERSION 2u
+
+/* Largest TwinGet body: three varint fields, each a one-byte key (field <= 15)
+ * and a value of at most AZ_IOT_PROTO3_VARINT_MAX_BYTES. */
+#define TWIN_GET_BODY_MAX (3u * (1u + AZ_IOT_PROTO3_VARINT_MAX_BYTES))
+
 #define TWIN_PENDING_NONE 0
 #define TWIN_PENDING_GET 1
 #define TWIN_PENDING_PATCH 2
 
-/* Longest decimal request id this client mints, plus the NUL. Matches the
- * AZ_IOT_*_BUF naming used for the connection client's scratch bounds. */
-#define TWIN_RID_BUF 16
-
-/* Internal shorthand to access _internal fields */
 #define TI(t) ((t)->_internal)
+
+/* The public arrays are sized by the public constant but filled and compared
+ * with the core's; fail the build if they diverge. */
+typedef char az_iot_twin_correlation_id_len_agrees
+    [(AZ_IOT_GEN2_TWIN_CORRELATION_ID_LEN == AZ_IOT_CORRELATION_UUID_LEN) ? 1 : -1];
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Find the pending slot matching a given request-id. Returns slot index or -1. */
-static int find_pending_by_rid(az_iot_gen2_twin_client* t, uint32_t rid)
-{
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
-  {
-    if (TI(t).pending[i].in_use && TI(t).pending[i].rid == rid)
-    {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/* Allocate an unused pending slot. Returns slot index or -1 if full. */
+/** @brief Index of a free pending slot, or -1. */
 static int alloc_pending(az_iot_gen2_twin_client* t)
 {
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
@@ -80,97 +98,226 @@ static int alloc_pending(az_iot_gen2_twin_client* t)
   return -1;
 }
 
-/* Decode the decimal request id carried in correlation data.
- *
- * Parsed straight off the wire bytes at their exact length: az_span_atou32
- * rejects an embedded non-digit and anything past UINT32_MAX, so neither "1x"
- * nor an over-long run of digits can be truncated or wrapped into a live
- * request id. Returns false when the message carries no usable correlator. */
-static bool rid_from_correlation_data(const az_iot_mqtt_message* msg, uint32_t* out_rid)
+/** @brief True when the `type` user property is exactly "<want>:1". */
+static bool type_is(const az_iot_mqtt_message* msg, const char* want)
 {
-  if (!msg->correlation_data || msg->correlation_data_len == 0)
+  for (size_t i = 0; i < msg->user_properties_count; ++i)
   {
-    return false;
+    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
+    if (!up->key || strcmp(up->key, TWIN_TYPE_KEY) != 0)
+    {
+      continue;
+    }
+    if (!up->value)
+    {
+      return false;
+    }
+    size_t n = strlen(want);
+    return strncmp(up->value, want, n) == 0 && up->value[n] == ':'
+        && strcmp(up->value + n + 1, TWIN_SCHEMA_VERSION) == 0;
   }
-  az_span text = az_span_create(
-      (uint8_t*)(uintptr_t)msg->correlation_data, (int32_t)msg->correlation_data_len);
-  return az_span_atou32(text, out_rid) == AZ_OK;
+  return false;
 }
 
-/* True when @p topic is exactly the inbound topic ending in @p suffix.
- *
- * Inbound handlers are registered by prefix and the dispatch table takes the
- * longest match, so a message published to a longer topic under the same root
- * -- ".../dev/twin/desired/extra" -- still arrives here. The protocol has three
- * exact leaves and nothing below them, so anything longer is not part of it.
- * prefix_len is 0 until bind_topics() runs, which rejects everything. */
-static bool topic_is(az_iot_gen2_twin_client* t, const char* topic, const char* suffix)
+/** @brief True when @p topic is exactly `ih/{id}/dev/twin` (dispatch matches by prefix). */
+static bool topic_is_inbound(const az_iot_gen2_twin_client* t, const char* topic)
 {
-  size_t prefix_len = TI(t).inbound_prefix_len;
-  return prefix_len > 0 && strlen(topic) > prefix_len && strcmp(topic + prefix_len, suffix) == 0;
+  return TI(t).inbound_topic_len > 0 && strlen(topic) == TI(t).inbound_topic_len;
 }
 
-/* Mint the next request id, skipping 0 so it never collides with the value a
- * message carrying no correlation data decodes to. */
-static uint32_t next_rid(az_iot_gen2_twin_client* t)
+/** @brief True when @p msg carries @p id as its Correlation Data. */
+static bool correlation_is(const az_iot_mqtt_message* msg, const uint8_t* id)
 {
-  uint32_t rid = TI(t).next_rid++;
-  if (TI(t).next_rid == 0)
+  return msg->correlation_data && msg->correlation_data_len == AZ_IOT_CORRELATION_UUID_LEN
+      && memcmp(msg->correlation_data, id, AZ_IOT_CORRELATION_UUID_LEN) == 0;
+}
+
+/** @brief Pending slot answered by @p msg, or -1. */
+static int find_pending_by_correlation_id(
+    const az_iot_gen2_twin_client* t,
+    const az_iot_mqtt_message* msg)
+{
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
-    TI(t).next_rid = 1;
+    if (TI(t).pending[i].in_use && correlation_is(msg, TI(t).pending[i].correlation_id))
+    {
+      return i;
+    }
   }
-  return rid;
+  return -1;
+}
+
+/** @brief True when a backend-initiated message belongs to the current connection. */
+static bool matches_connection(const az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
+{
+  uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
+  return az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
+      && correlation_is(msg, birth_nonce);
+}
+
+/** @brief Raise the tracked service desired version; versions only move forward. */
+static void note_desired_service_version(az_iot_gen2_twin_client* t, uint64_t version)
+{
+  if (version > TI(t).desired_properties_service_version)
+  {
+    TI(t).desired_properties_service_version = version;
+  }
+}
+
+static uint64_t deadline_from_now(const az_iot_gen2_twin_client* t)
+{
+  return az_iot_time_mono_ms() + TI(t).request_timeout_ms;
 }
 
 /* ------------------------------------------------------------------------- */
-/* completing a pending request                                              */
+/* publishing                                                                */
 /* ------------------------------------------------------------------------- */
 
-/* Release slot @p idx and hand the GET outcome to its callback.
+/** @brief Build `ih/{device_id}<suffix>`. */
+static az_iot_result build_topic(
+    az_iot_connection_client* conn,
+    const char* suffix,
+    char (*topic)[AZ_IOT_TWIN_TOPIC_MAX],
+    size_t* out_len)
+{
+  const char* device_id = az_iot_connection_client__device_id(conn);
+  if (!device_id)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: the device id is not assigned yet");
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  const char* parts[] = { TWIN_TOPIC_ROOT, device_id, suffix };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*topic), out_len, parts, 3) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF("gen2_twin: the '%s' topic did not fit AZ_IOT_TWIN_TOPIC_MAX bytes", suffix);
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  return AZ_IOT_OK;
+}
+
+/** @brief Mint a fresh id into @p correlation_id and publish a twin request under it. */
+static az_iot_result publish_twin(
+    az_iot_gen2_twin_client* t,
+    const char* type_value,
+    const uint8_t* body,
+    size_t body_len,
+    uint8_t* correlation_id)
+{
+  char topic[AZ_IOT_TWIN_TOPIC_MAX];
+  az_iot_result r = build_topic(TI(t).conn, TWIN_OUTBOUND_SUFFIX, &topic, NULL);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  az_iot_connection_client__gen_uuid(TI(t).conn, correlation_id);
+
+  az_iot_mqtt_user_property type_prop = { TWIN_TYPE_KEY, type_value };
+  az_iot_mqtt_message out = { 0 };
+  out.topic = topic;
+  out.payload = body;
+  out.payload_len = body_len;
+  out.qos = AZ_IOT_MQTT_QOS_0; /* answered by a response message, not a PUBACK */
+  out.content_type = TWIN_CONTENT_TYPE;
+  out.user_properties = &type_prop;
+  out.user_properties_count = 1;
+  out.correlation_data = correlation_id;
+  out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
+
+  r = az_iot_connection_client__publish(TI(t).conn, &out, NULL, NULL);
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARNF(
+        "gen2_twin: the '%s' publish was refused (%s)", type_value, az_iot_result_to_string(r));
+  }
+  return r;
+}
+
+/** @brief Encode TwinGet from @p opts. */
+static bool encode_get_body(
+    const az_iot_gen2_twin_get_options* opts,
+    uint8_t* body,
+    size_t cap,
+    size_t* out_len)
+{
+  *out_len = 0;
+  return az_iot_proto3_write_varint_field(
+             body, cap, out_len, TWIN_F_GET_SECTIONS, (uint64_t)opts->sections)
+      && (!opts->if_not_match_desired
+          || az_iot_proto3_write_varint_field(
+              body, cap, out_len, TWIN_F_GET_IF_NOT_MATCH_DESIRED, opts->if_not_match_desired))
+      && (!opts->if_not_match_reported
+          || az_iot_proto3_write_varint_field(
+              body, cap, out_len, TWIN_F_GET_IF_NOT_MATCH_REPORTED, opts->if_not_match_reported));
+}
+
+/**
+ * @brief Issue the SDK's desired-snapshot GET when the handler is behind.
  *
- * The slot is released BEFORE the callback runs so a callback that re-issues
- * its request immediately can claim it. */
-static void invoke_get_cb(
+ * At most one is in flight. `if_not_match` is the delivered version, so a
+ * handler already current gets no payload back.
+ */
+static void request_snapshot_if_behind(az_iot_gen2_twin_client* t)
+{
+  if (!TI(t).desired_handler || TI(t).snapshot.in_flight
+      || (!TI(t).desired_snapshot_required
+          && TI(t).desired_properties_service_version <= TI(t).desired_properties_device_version))
+  {
+    return;
+  }
+  if (!az_iot_connection_client__is_connected(TI(t).conn))
+  {
+    TI(t).desired_catch_up_pending = true; /* issued on hub CONNECTED */
+    return;
+  }
+
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED;
+  opts.if_not_match_desired
+      = TI(t).desired_snapshot_required ? 0u : TI(t).desired_properties_device_version;
+
+  uint8_t body[TWIN_GET_BODY_MAX];
+  size_t body_len = 0;
+  if (!encode_get_body(&opts, body, sizeof(body), &body_len)
+      || publish_twin(t, TWIN_TYPE_GET, body, body_len, TI(t).snapshot.correlation_id) != AZ_IOT_OK)
+  {
+    return; /* re-evaluated on the next desired event */
+  }
+  TI(t).snapshot.in_flight = true;
+  TI(t).snapshot.deadline_ms = deadline_from_now(t);
+  TI(t).desired_catch_up_pending = false;
+}
+
+/* ------------------------------------------------------------------------- */
+/* completing requests                                                       */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Free slot @p idx, then report to its callback (so the callback may reuse it). */
+static void release_pending(
     az_iot_gen2_twin_client* t,
     int idx,
     az_iot_result status,
-    const uint8_t* payload,
-    size_t payload_len)
+    const az_iot_gen2_twin_state* twin,
+    const az_iot_gen2_twin_patch_result* result)
 {
-  az_iot_twin_get_callback cb = TI(t).pending[idx].cb.get_cb;
+  int kind = TI(t).pending[idx].kind;
   void* ctx = TI(t).pending[idx].user_ctx;
-  TI(t).pending[idx].in_use = false;
-  TI(t).pending[idx].kind = TWIN_PENDING_NONE;
-  if (cb)
+  az_iot_gen2_twin_get_callback get_cb = TI(t).pending[idx].cb.get_cb;
+  az_iot_gen2_twin_patch_ack_callback patch_cb = TI(t).pending[idx].cb.patch_cb;
+
+  memset(&TI(t).pending[idx], 0, sizeof(TI(t).pending[idx]));
+
+  if (kind == TWIN_PENDING_GET && get_cb)
   {
-    bool ok = (status == AZ_IOT_OK);
-    cb(status, ok ? payload : NULL, ok ? payload_len : 0, ctx);
+    get_cb(status, twin, ctx);
+  }
+  else if (kind == TWIN_PENDING_PATCH && patch_cb)
+  {
+    patch_cb(status, result, ctx);
   }
 }
 
-/* Release slot @p idx and hand the patch outcome to its callback. */
-static void invoke_patch_cb(
-    az_iot_gen2_twin_client* t,
-    int idx,
-    az_iot_result status,
-    uint64_t version)
-{
-  az_iot_twin_patch_complete_callback cb = TI(t).pending[idx].cb.patch_cb;
-  void* ctx = TI(t).pending[idx].user_ctx;
-  TI(t).pending[idx].in_use = false;
-  TI(t).pending[idx].kind = TWIN_PENDING_NONE;
-  if (cb)
-  {
-    cb(status, (status == AZ_IOT_OK) ? version : 0, ctx);
-  }
-}
-
-/* Complete every pending request with an error and release its slot.
- *
- * Called when the MQTT session ends. The responses these requests were waiting
- * for would have arrived on that session, so they can never come now; holding
- * the slots would leak one per outage until AZ_IOT_TWIN_MAX_PENDING is gone and
- * the client refuses every further request. */
+/** @brief Session-end handler: nothing outstanding can be answered on a new session. */
 static void twin_fail_pending(void* user_ctx)
 {
   az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
@@ -178,173 +325,461 @@ static void twin_fail_pending(void* user_ctx)
   {
     return;
   }
-
+  TI(t).snapshot.in_flight = false;
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
-    if (!TI(t).pending[i].in_use)
+    if (TI(t).pending[i].in_use)
     {
-      continue;
+      release_pending(t, i, AZ_IOT_ERR_NOT_CONNECTED, NULL, NULL);
     }
-    if (TI(t).pending[i].kind == TWIN_PENDING_GET)
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* desired delivery                                                          */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Deliver @p section as a snapshot if it is newer than what the handler has. */
+static void deliver_snapshot(az_iot_gen2_twin_client* t, const az_iot_gen2_twin_section* section)
+{
+  note_desired_service_version(t, section->version);
+  if (!TI(t).desired_handler || !section->payload
+      || (!TI(t).desired_snapshot_required
+          && section->version <= TI(t).desired_properties_device_version))
+  {
+    return;
+  }
+  TI(t).desired_properties_device_version = section->version;
+  TI(t).desired_snapshot_required = false;
+  TI(t).desired_handler(
+      AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT,
+      section->version,
+      section->payload,
+      section->payload_len,
+      TI(t).desired_handler_ctx);
+}
+
+/* ------------------------------------------------------------------------- */
+/* decoding                                                                  */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Decode Section { 1 version, 2 payload }. */
+static bool decode_section(const uint8_t* buf, size_t len, az_iot_gen2_twin_section* out)
+{
+  size_t pos = 0;
+  while (buf && pos < len)
+  {
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
-      invoke_get_cb(t, i, AZ_IOT_ERR_NOT_CONNECTED, NULL, 0);
+      return false;
+    }
+    bool ok;
+    if (field == TWIN_F_SECTION_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &out->version);
+    }
+    else if (field == TWIN_F_SECTION_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
+    {
+      ok = az_iot_proto3_read_bytes(buf, len, &pos, &out->payload, &out->payload_len);
     }
     else
     {
-      invoke_patch_cb(t, i, AZ_IOT_ERR_NOT_CONNECTED, 0);
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
+    }
+    if (!ok)
+    {
+      return false;
     }
   }
+  return true;
+}
+
+/** @brief Decode TwinGetResponse { 1 desired_version, 2 reported_version, 3/4 payloads }. */
+static bool decode_get_response(const az_iot_mqtt_message* msg, az_iot_gen2_twin_state* twin)
+{
+  memset(twin, 0, sizeof(*twin));
+  const uint8_t* buf = msg->payload;
+  size_t len = msg->payload_len;
+  size_t pos = 0;
+  while (buf && pos < len)
+  {
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
+    {
+      return false;
+    }
+    bool ok;
+    if (field == TWIN_F_GET_RESP_DESIRED_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &twin->desired.version);
+    }
+    else if (field == TWIN_F_GET_RESP_REPORTED_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &twin->reported.version);
+    }
+    else if (field == TWIN_F_GET_RESP_DESIRED_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
+    {
+      ok = az_iot_proto3_read_bytes(
+          buf, len, &pos, &twin->desired.payload, &twin->desired.payload_len);
+    }
+    else if (field == TWIN_F_GET_RESP_REPORTED_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
+    {
+      ok = az_iot_proto3_read_bytes(
+          buf, len, &pos, &twin->reported.payload, &twin->reported.payload_len);
+    }
+    else
+    {
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
+    }
+    if (!ok)
+    {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------------- */
-/* dispatch handlers                                                         */
+/* inbound handlers                                                          */
 /* ------------------------------------------------------------------------- */
 
-/* Resolve the pending slot a response belongs to, or -1.
- *
- * A slot whose kind does not match the topic the response arrived on is NOT
- * claimed and NOT released: correlation data is the only thing tying the two
- * together, so a get-response quoting a pending patch's id is a malformed
- * message, and cancelling that patch would drop its real acknowledgement and
- * leave the caller waiting forever. */
-static int match_pending(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg, int kind)
+/** @brief twin-push: TwinPush { 1 desired Section, 2 reported Section }. */
+static void on_twin_push(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
 {
-  uint32_t rid = 0;
-  if (!rid_from_correlation_data(msg, &rid))
+  az_iot_gen2_twin_state twin;
+  memset(&twin, 0, sizeof(twin));
+
+  const uint8_t* buf = msg->payload;
+  size_t len = msg->payload_len;
+  size_t pos = 0;
+  bool ok = true;
+  bool reported_present = false;
+  while (ok && buf && pos < len)
   {
-    AZ_IOT_LOG_WARN("gen2_twin: dropping a response with missing or malformed correlation data");
-    return -1;
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
+    {
+      ok = false;
+    }
+    else if (
+        wire == AZ_IOT_PROTO3_WIRE_LEN
+        && (field == TWIN_F_PUSH_DESIRED || field == TWIN_F_PUSH_REPORTED))
+    {
+      const uint8_t* sec = NULL;
+      size_t sec_len = 0;
+      reported_present |= (field == TWIN_F_PUSH_REPORTED);
+      ok = az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
+          && decode_section(
+               sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
+    }
+    else
+    {
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
+    }
+  }
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed twin-push");
+    return;
   }
 
-  int idx = find_pending_by_rid(t, rid);
+  if (reported_present)
+  {
+    TI(t).reported_properties_service_version = twin.reported.version;
+  }
+  if (reported_present && TI(t).reported_handler)
+  {
+    TI(t).reported_handler(&twin.reported, TI(t).reported_handler_ctx);
+  }
+  deliver_snapshot(t, &twin.desired);
+  request_snapshot_if_behind(t);
+}
+
+/**
+ * @brief desired-patch: DesiredPatch { 1 version, 2 optional payload }.
+ *
+ * Delivered only when it is the next version. A payload-less patch is a probe
+ * that only reports the service version.
+ */
+static void on_desired_patch(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
+{
+  uint64_t version = 0;
+  const uint8_t* patch = NULL;
+  size_t patch_len = 0;
+  bool has_payload = false;
+
+  const uint8_t* buf = msg->payload;
+  size_t len = msg->payload_len;
+  size_t pos = 0;
+  bool ok = true;
+  while (ok && buf && pos < len)
+  {
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
+    {
+      ok = false;
+    }
+    else if (field == TWIN_F_PATCH_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &version);
+    }
+    else if (field == TWIN_F_PATCH_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
+    {
+      ok = has_payload = az_iot_proto3_read_bytes(buf, len, &pos, &patch, &patch_len);
+    }
+    else
+    {
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
+    }
+  }
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed desired-patch");
+    return;
+  }
+
+  note_desired_service_version(t, version);
+  if (TI(t).desired_handler && has_payload && !TI(t).desired_snapshot_required
+      && version > TI(t).desired_properties_device_version
+      && version - TI(t).desired_properties_device_version == 1u)
+  {
+    TI(t).desired_properties_device_version = version;
+    TI(t).desired_handler(
+        AZ_IOT_GEN2_TWIN_DESIRED_PATCH, version, patch, patch_len, TI(t).desired_handler_ctx);
+  }
+  /* Still behind after an in-order patch if an earlier fetch was lost. */
+  request_snapshot_if_behind(t);
+}
+
+/** @brief Response to the SDK's own snapshot GET. */
+static void on_snapshot_response(az_iot_gen2_twin_client* t, const az_iot_mqtt_message* msg)
+{
+  TI(t).snapshot.in_flight = false;
+
+  az_iot_gen2_twin_state twin;
+  if (!type_is(msg, TWIN_TYPE_GET_RESPONSE) || !decode_get_response(msg, &twin))
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping an unusable desired-snapshot response");
+    return;
+  }
+  TI(t).reported_properties_service_version = twin.reported.version;
+  deliver_snapshot(t, &twin.desired);
+  /* Still behind if the service moved on while the GET was in flight. */
+  request_snapshot_if_behind(t);
+}
+
+/** @brief Response to an application GET. Desired state is not delivered from it. */
+static void on_get_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mqtt_message* msg)
+{
+  az_iot_gen2_twin_state twin;
+  if (!decode_get_response(msg, &twin))
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed get-response");
+    release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
+    return;
+  }
+  TI(t).reported_properties_service_version = twin.reported.version;
+  note_desired_service_version(t, twin.desired.version);
+  release_pending(t, idx, AZ_IOT_OK, &twin, NULL);
+  request_snapshot_if_behind(t);
+}
+
+/** @brief reported-patch-response: ReportedPatchResponse { 1 result, 2 version }. */
+static void on_patch_response(az_iot_gen2_twin_client* t, int idx, const az_iot_mqtt_message* msg)
+{
+  az_iot_gen2_twin_patch_result result;
+  memset(&result, 0, sizeof(result));
+
+  const uint8_t* buf = msg->payload;
+  size_t len = msg->payload_len;
+  size_t pos = 0;
+  bool ok = true;
+  while (ok && buf && pos < len)
+  {
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
+    {
+      ok = false;
+    }
+    else if (field == TWIN_F_PATCH_RESP_RESULT && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      uint64_t v = 0;
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &v);
+      result.status = (az_iot_gen2_twin_patch_status)v;
+    }
+    else if (field == TWIN_F_PATCH_RESP_VERSION && wire == AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      ok = az_iot_proto3_read_varint(buf, len, &pos, &result.version);
+    }
+    else
+    {
+      ok = az_iot_proto3_skip_field(buf, len, &pos, wire);
+    }
+  }
+  if (!ok)
+  {
+    AZ_IOT_LOG_WARN("gen2_twin: dropping a malformed reported-patch-response");
+    release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
+    return;
+  }
+
+  TI(t).reported_properties_service_version = result.version;
+  release_pending(t, idx, AZ_IOT_OK, NULL, &result);
+}
+
+static void adopt_session(az_iot_gen2_twin_client* t);
+
+/** @brief Single handler for `ih/{id}/dev/twin`, routed on `type`. */
+static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
+{
+  az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
+  if (!t || !msg || !msg->topic || !topic_is_inbound(t, msg->topic))
+  {
+    return;
+  }
+  adopt_session(t);
+
+  if (type_is(msg, TWIN_TYPE_TWIN_PUSH) || type_is(msg, TWIN_TYPE_DESIRED_PATCH))
+  {
+    if (!matches_connection(t, msg))
+    {
+      return; /* from a connection since replaced */
+    }
+    if (type_is(msg, TWIN_TYPE_TWIN_PUSH))
+    {
+      on_twin_push(t, msg);
+    }
+    else
+    {
+      on_desired_patch(t, msg);
+    }
+    return;
+  }
+
+  if (TI(t).snapshot.in_flight && correlation_is(msg, TI(t).snapshot.correlation_id))
+  {
+    on_snapshot_response(t, msg);
+    return;
+  }
+
+  int idx = find_pending_by_correlation_id(t, msg);
   if (idx < 0)
   {
-    return -1; /* stale or unknown request id */
+    return; /* stale or unknown */
   }
-  if (TI(t).pending[idx].kind != kind)
+  if (type_is(msg, TWIN_TYPE_GET_RESPONSE) && TI(t).pending[idx].kind == TWIN_PENDING_GET)
   {
-    AZ_IOT_LOG_WARNF(
-        "gen2_twin: ignoring a response on the wrong topic for request id %u; leaving it pending",
-        (unsigned)rid);
-    return -1;
+    on_get_response(t, idx, msg);
   }
-  return idx;
-}
-
-/* Inbound on "ih/{device_id}/dev/twin/get/response". */
-static void on_twin_get_response(void* user_ctx, const az_iot_mqtt_message* msg)
-{
-  az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
-  if (!t || !msg || !msg->topic || !topic_is(t, msg->topic, TWIN_INBOUND_GET_RESPONSE))
+  else if (type_is(msg, TWIN_TYPE_PATCH_RESPONSE) && TI(t).pending[idx].kind == TWIN_PENDING_PATCH)
   {
-    return;
+    on_patch_response(t, idx, msg);
   }
-
-  int idx = match_pending(t, msg, TWIN_PENDING_GET);
-  if (idx >= 0)
+  else
   {
-    invoke_get_cb(t, idx, AZ_IOT_OK, msg->payload, msg->payload_len);
+    /* Ours, but unreadable. The service sends one answer; do not wait for another. */
+    AZ_IOT_LOG_WARN("gen2_twin: releasing a pending request whose response was not usable");
+    release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
   }
 }
 
-/* Inbound on "ih/{device_id}/dev/twin/reported/response". */
-static void on_twin_reported_response(void* user_ctx, const az_iot_mqtt_message* msg)
+/**
+ * @brief Adopt the birth-ack baseline, once per session.
+ *
+ * Keyed on the birth nonce and run by whatever touches the new session first:
+ * a twin-push can arrive before hub CONNECTED is announced, and must be applied
+ * on top of the baseline, not overwritten by it. A desired version below what
+ * the handler holds means the twin was replaced; patches cannot follow it.
+ */
+static void adopt_session(az_iot_gen2_twin_client* t)
 {
-  az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
-  if (!t || !msg || !msg->topic || !topic_is(t, msg->topic, TWIN_INBOUND_REPORTED_RESPONSE))
+  uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
+  uint64_t desired = 0;
+  uint64_t reported = 0;
+  if (az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) != AZ_IOT_OK
+      || (TI(t).birth_nonce_valid
+          && memcmp(TI(t).birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN) == 0)
+      || az_iot_connection_client__presence_twin_versions(TI(t).conn, &desired, &reported)
+          != AZ_IOT_OK)
   {
     return;
   }
+  memcpy(TI(t).birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  TI(t).birth_nonce_valid = true;
 
-  int idx = match_pending(t, msg, TWIN_PENDING_PATCH);
-  if (idx >= 0)
+  TI(t).reported_properties_service_version = reported;
+  if (desired < TI(t).desired_properties_device_version)
   {
-    /* This acknowledgement arrives on its own topic and does not carry a
-     * reported version yet, so there is nothing to report but the status. */
-    invoke_patch_cb(t, idx, AZ_IOT_OK, 0);
+    TI(t).desired_snapshot_required = true;
+  }
+  TI(t).desired_properties_service_version = desired;
+}
+
+/**
+ * @brief Hub CONNECTED: requests can now be published, so catch up.
+ *
+ * `twin_push.push_desired` only replaces the birth-ack fetch. A replaced twin
+ * not yet settled by a pushed snapshot, or a gap a patch or probe showed before
+ * CONNECTED, is still fetched.
+ */
+static void on_hub_connected(az_iot_gen2_twin_client* t)
+{
+  adopt_session(t);
+  if (!az_iot_connection_client__twin_push_desired(TI(t).conn) || TI(t).desired_snapshot_required
+      || TI(t).desired_catch_up_pending)
+  {
+    request_snapshot_if_behind(t);
   }
 }
 
-/* Inbound on "ih/{device_id}/dev/twin/desired". */
-static void on_twin_desired(void* user_ctx, const az_iot_mqtt_message* msg)
+static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   az_iot_gen2_twin_client* t = (az_iot_gen2_twin_client*)user_ctx;
-  if (!t || !msg || !msg->topic || !topic_is(t, msg->topic, TWIN_INBOUND_DESIRED))
+  if (t && event && event->scope == AZ_IOT_CONN_SCOPE_HUB
+      && event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    return;
+    on_hub_connected(t);
   }
-  if (!TI(t).desired_handler)
-  {
-    return;
-  }
-
-  /* The version is not carried on this path yet, so report 0 -- the same value
-   * Classic reports when the service sends no $version. */
-  TI(t).desired_handler(msg->payload, msg->payload_len, 0, TI(t).desired_handler_ctx);
 }
 
 /* ------------------------------------------------------------------------- */
-/* connect-time topic binding                                                */
+/* binding                                                                   */
 /* ------------------------------------------------------------------------- */
 
 static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 {
   az_iot_gen2_twin_client* client = (az_iot_gen2_twin_client*)owner;
 
-  const char* device_id = az_iot_connection_client__device_id(conn);
-  if (!device_id)
+  char topic[AZ_IOT_TWIN_TOPIC_MAX];
+  size_t topic_len = 0;
+  az_iot_result r = build_topic(conn, TWIN_INBOUND_SUFFIX, &topic, &topic_len);
+  if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("gen2_twin: cannot bind topics -- the connection has no assigned device id");
-    return AZ_IOT_ERR_NOT_INITIALIZED;
+    AZ_IOT_LOG_ERROR("gen2_twin: cannot bind topics -- the inbound topic could not be built");
+    return (r == AZ_IOT_ERR_NOT_CONNECTED) ? AZ_IOT_ERR_NOT_INITIALIZED : AZ_IOT_ERR_INTERNAL;
   }
+  TI(client).inbound_topic_len = topic_len;
 
-  static const char* const k_suffixes[]
-      = { TWIN_INBOUND_GET_RESPONSE, TWIN_INBOUND_REPORTED_RESPONSE, TWIN_INBOUND_DESIRED };
-  static const az_iot_inbound_handler_callback k_handlers[]
-      = { on_twin_get_response, on_twin_reported_response, on_twin_desired };
-
-  char prefix[AZ_IOT_TWIN_TOPIC_MAX];
-  const char* prefix_parts[] = { TWIN_TOPIC_ROOT, device_id, TWIN_INBOUND_PREFIX };
-  size_t prefix_len = 0;
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(prefix), &prefix_len, prefix_parts, 3)
-      != AZ_IOT_OK)
+  r = az_iot_connection_client__register_inbound_handler(conn, topic, on_twin_inbound, client);
+  if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("gen2_twin: the inbound topic prefix did not fit AZ_IOT_TWIN_TOPIC_MAX bytes");
-    return AZ_IOT_ERR_INTERNAL;
+    AZ_IOT_LOG_ERRORF(
+        "gen2_twin: could not register delivery for the twin topic (%s)",
+        az_iot_result_to_string(r));
   }
-  TI(client).inbound_prefix_len = prefix_len;
-
-  for (size_t i = 0; i < sizeof(k_suffixes) / sizeof(k_suffixes[0]); ++i)
-  {
-    char topic[AZ_IOT_TWIN_TOPIC_MAX];
-    const char* parts[] = { prefix, k_suffixes[i] };
-    if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, parts, 2) != AZ_IOT_OK)
-    {
-      AZ_IOT_LOG_ERRORF(
-          "gen2_twin: the '%s' topic did not fit AZ_IOT_TWIN_TOPIC_MAX bytes", k_suffixes[i]);
-      return AZ_IOT_ERR_INTERNAL;
-    }
-    az_iot_result r
-        = az_iot_connection_client__register_inbound_handler(conn, topic, k_handlers[i], client);
-    if (r != AZ_IOT_OK)
-    {
-      AZ_IOT_LOG_ERRORF(
-          "gen2_twin: could not register delivery for '%s' (%s)",
-          k_suffixes[i],
-          az_iot_result_to_string(r));
-      return r;
-    }
-  }
-
-  /* No SUBSCRIBEs on this path: the presence handshake already holds
-   * ih/{device_id}/dev/#, which covers all three of these topics. */
-  return AZ_IOT_OK;
+  return r;
 }
 
-/* Withdraw everything _init() and bind_topics() registered. Shared by the
- * partial-init unwind and _deinit() so the two can never drift apart. */
+/** @brief Withdraw everything init registered; shared by the init unwind and deinit. */
 static void withdraw_registrations(az_iot_connection_client* conn, az_iot_gen2_twin_client* client)
 {
+  (void)az_iot_connection_client__remove_state_observer(conn, on_connection_state, client);
   (void)az_iot_connection_client__unregister_session_end_handler(conn, client);
   az_iot_connection_client__unregister_feature_client_bind(conn, client);
   (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
@@ -364,27 +799,26 @@ az_iot_result az_iot_gen2_twin_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  memset(client, 0, sizeof(*client));
   az_iot_result result
       = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   if (result != AZ_IOT_OK)
   {
-    memset(client, 0, sizeof(*client));
     return result;
   }
 
-  memset(client, 0, sizeof(*client));
   TI(client).conn = conn;
-  TI(client).next_rid = 1;
+  TI(client).request_timeout_ms = AZ_IOT_GEN2_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
-  /* Be told when the session ends so pending GET/PATCH requests are completed
-   * and their slots released, rather than waiting for a response that died
-   * with the session. Registered last: everything above can still fail and
-   * unwind, and this must not outlive a failed init. */
   if (result == AZ_IOT_OK)
   {
     result
         = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
+  }
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__add_state_observer(conn, on_connection_state, client);
   }
 
   if (result != AZ_IOT_OK)
@@ -398,6 +832,11 @@ az_iot_result az_iot_gen2_twin_client_init(
     return result;
   }
 
+  /* Observers are not told about a session already up; catch up on it. */
+  if (az_iot_connection_client__is_connected(conn))
+  {
+    on_hub_connected(client);
+  }
   return AZ_IOT_OK;
 }
 
@@ -412,71 +851,61 @@ void az_iot_gen2_twin_client_deinit(az_iot_gen2_twin_client* client)
   memset(client, 0, sizeof(*client));
 }
 
-/* Build "ih/{device_id}/srv/twin/<suffix>" into @p topic. */
-static az_iot_result build_request_topic(
+az_iot_gen2_twin_get_options az_iot_gen2_twin_get_options_default(void)
+{
+  az_iot_gen2_twin_get_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.sections = AZ_IOT_GEN2_TWIN_SECTIONS_BOTH;
+  return opts;
+}
+
+/** @brief Claim a slot, publish @p body under it, and release the slot if refused. */
+static az_iot_result submit_request(
     az_iot_gen2_twin_client* twin,
-    const char* suffix,
-    char (*topic)[AZ_IOT_TWIN_TOPIC_MAX])
+    int kind,
+    const char* type_value,
+    const uint8_t* body,
+    size_t body_len,
+    int idx)
 {
-  const char* device_id = az_iot_connection_client__device_id(TI(twin).conn);
-  if (!device_id)
+  TI(twin).pending[idx].in_use = true;
+  TI(twin).pending[idx].kind = kind;
+  TI(twin).pending[idx].deadline_ms = deadline_from_now(twin);
+  az_iot_result r
+      = publish_twin(twin, type_value, body, body_len, TI(twin).pending[idx].correlation_id);
+  if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARN("gen2_twin: refusing a request -- the device id is not assigned yet");
-    return AZ_IOT_ERR_NOT_CONNECTED;
+    memset(&TI(twin).pending[idx], 0, sizeof(TI(twin).pending[idx]));
   }
-  const char* parts[] = { TWIN_TOPIC_ROOT, device_id, suffix };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*topic), NULL, parts, 3) != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_ERRORF("gen2_twin: the '%s' topic did not fit AZ_IOT_TWIN_TOPIC_MAX bytes", suffix);
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  return AZ_IOT_OK;
-}
-
-/* Write the request id as the ASCII correlation data the service echoes back. */
-static az_iot_result build_correlation_data(
-    uint32_t rid,
-    char (*buf)[TWIN_RID_BUF],
-    size_t* out_len)
-{
-  az_iot_span_writer writer;
-  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(*buf));
-  az_iot_span_writer_append_u32(&writer, rid);
-  if (az_iot_span_writer_end_str(&writer, out_len) != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_ERROR("gen2_twin: the request id did not fit TWIN_RID_BUF bytes");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  return AZ_IOT_OK;
-}
-
-/* QoS 1 acknowledgement for a twin request.
- *
- * A rejected PUBLISH does not strand the caller: the pending slot is completed
- * with AZ_IOT_ERR_NOT_CONNECTED when the session ends, which is also when a
- * rejected QoS 1 publish leaves the request unanswerable. Reported here so the
- * cause is visible rather than surfacing later as an unexplained timeout. */
-static void on_publish_ack(az_iot_result status, void* user_ctx)
-{
-  const char* what = (const char*)user_ctx;
-  if (status != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_WARNF(
-        "gen2_twin: the service did not acknowledge a %s publish (%s); the request stays pending "
-        "until it is answered or the session ends",
-        what ? what : "twin",
-        az_iot_result_to_string(status));
-  }
+  return r;
 }
 
 az_iot_result az_iot_gen2_twin_client_get(
     az_iot_gen2_twin_client* twin,
-    az_iot_twin_get_callback cb,
+    az_iot_gen2_twin_get_callback cb,
     void* user_ctx)
 {
-  if (!twin)
+  az_iot_gen2_twin_get_options opts = az_iot_gen2_twin_get_options_default();
+  return az_iot_gen2_twin_client_get_with_options(twin, &opts, cb, user_ctx);
+}
+
+az_iot_result az_iot_gen2_twin_client_get_with_options(
+    az_iot_gen2_twin_client* twin,
+    const az_iot_gen2_twin_get_options* opts,
+    az_iot_gen2_twin_get_callback cb,
+    void* user_ctx)
+{
+  if (!twin || !opts || (unsigned)opts->sections < (unsigned)AZ_IOT_GEN2_TWIN_SECTIONS_DESIRED
+      || (unsigned)opts->sections > (unsigned)AZ_IOT_GEN2_TWIN_SECTIONS_BOTH)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  uint8_t body[TWIN_GET_BODY_MAX];
+  size_t body_len = 0;
+  if (!encode_get_body(opts, body, sizeof(body), &body_len))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   int idx = alloc_pending(twin);
@@ -485,62 +914,56 @@ az_iot_result az_iot_gen2_twin_client_get(
     AZ_IOT_LOG_WARN("gen2_twin: refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-
-  char topic[AZ_IOT_TWIN_TOPIC_MAX];
-  az_iot_result r = build_request_topic(twin, TWIN_OUTBOUND_GET, &topic);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  uint32_t rid = next_rid(twin);
-  char corr_buf[TWIN_RID_BUF];
-  size_t corr_len = 0;
-  r = build_correlation_data(rid, &corr_buf, &corr_len);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  /* Reserve the slot before publish. */
-  TI(twin).pending[idx].in_use = true;
-  TI(twin).pending[idx].rid = rid;
-  TI(twin).pending[idx].kind = TWIN_PENDING_GET;
   TI(twin).pending[idx].cb.get_cb = cb;
   TI(twin).pending[idx].user_ctx = user_ctx;
-
-  az_iot_mqtt_message out = { 0 };
-  out.topic = topic;
-  out.qos = AZ_IOT_MQTT_QOS_1;
-  out.correlation_data = (const uint8_t*)corr_buf;
-  out.correlation_data_len = corr_len;
-
-  r = az_iot_connection_client__publish(TI(twin).conn, &out, on_publish_ack, (void*)"GET");
-  if (r != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_WARNF(
-        "gen2_twin: the GET publish was refused (%s); releasing its pending slot",
-        az_iot_result_to_string(r));
-    TI(twin).pending[idx].in_use = false;
-    TI(twin).pending[idx].kind = TWIN_PENDING_NONE;
-  }
-  return r;
+  return submit_request(twin, TWIN_PENDING_GET, TWIN_TYPE_GET, body, body_len, idx);
 }
 
 az_iot_result az_iot_gen2_twin_client_patch_reported(
     az_iot_gen2_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
-    az_iot_twin_patch_complete_callback cb,
+    az_iot_gen2_twin_patch_ack_callback cb,
     void* user_ctx)
 {
   if (!twin)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (patch_len > 0 && patch == NULL)
+  return az_iot_gen2_twin_client_patch_reported_if_match(
+      twin, TI(twin).reported_properties_service_version, patch, patch_len, cb, user_ctx);
+}
+
+az_iot_result az_iot_gen2_twin_client_patch_reported_if_match(
+    az_iot_gen2_twin_client* twin,
+    uint64_t if_match,
+    const uint8_t* patch,
+    size_t patch_len,
+    az_iot_gen2_twin_patch_ack_callback cb,
+    void* user_ctx)
+{
+  if (!twin || (patch_len > 0 && patch == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  uint8_t* buf = az_span_ptr(TI(twin).encode_buffer);
+  size_t cap = (size_t)az_span_size(TI(twin).encode_buffer);
+  if (cap == 0)
+  {
+    AZ_IOT_LOG_ERROR("gen2_twin: refusing a patch -- no encode buffer; call "
+                     "az_iot_gen2_twin_client_set_encode_buffer()");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  /* ReportedPatch { 1 if_match, 2 payload }; proto3 omits a zero if_match. */
+  size_t pos = 0;
+  if ((if_match
+       && !az_iot_proto3_write_varint_field(buf, cap, &pos, TWIN_F_REPORTED_IF_MATCH, if_match))
+      || !az_iot_proto3_write_bytes_field(
+          buf, cap, &pos, TWIN_F_REPORTED_PAYLOAD, patch, patch_len))
+  {
+    AZ_IOT_LOG_ERROR("gen2_twin: the framed patch did not fit the encode buffer");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   int idx = alloc_pending(twin);
@@ -550,53 +973,14 @@ az_iot_result az_iot_gen2_twin_client_patch_reported(
         "gen2_twin: refusing a patch -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-
-  char topic[AZ_IOT_TWIN_TOPIC_MAX];
-  az_iot_result r = build_request_topic(twin, TWIN_OUTBOUND_REPORTED, &topic);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  uint32_t rid = next_rid(twin);
-  char corr_buf[TWIN_RID_BUF];
-  size_t corr_len = 0;
-  r = build_correlation_data(rid, &corr_buf, &corr_len);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  TI(twin).pending[idx].in_use = true;
-  TI(twin).pending[idx].rid = rid;
-  TI(twin).pending[idx].kind = TWIN_PENDING_PATCH;
   TI(twin).pending[idx].cb.patch_cb = cb;
   TI(twin).pending[idx].user_ctx = user_ctx;
-
-  az_iot_mqtt_message out = { 0 };
-  out.topic = topic;
-  out.payload = patch;
-  out.payload_len = patch_len;
-  out.qos = AZ_IOT_MQTT_QOS_1;
-  out.correlation_data = (const uint8_t*)corr_buf;
-  out.correlation_data_len = corr_len;
-
-  r = az_iot_connection_client__publish(
-      TI(twin).conn, &out, on_publish_ack, (void*)"reported-properties");
-  if (r != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_WARNF(
-        "gen2_twin: the patch publish was refused (%s); releasing its pending slot",
-        az_iot_result_to_string(r));
-    TI(twin).pending[idx].in_use = false;
-    TI(twin).pending[idx].kind = TWIN_PENDING_NONE;
-  }
-  return r;
+  return submit_request(twin, TWIN_PENDING_PATCH, TWIN_TYPE_REPORTED_PATCH, buf, pos, idx);
 }
 
 az_iot_result az_iot_gen2_twin_client_set_desired_handler(
     az_iot_gen2_twin_client* twin,
-    az_iot_twin_desired_callback cb,
+    az_iot_gen2_twin_desired_callback cb,
     void* user_ctx)
 {
   if (!twin)
@@ -605,5 +989,82 @@ az_iot_result az_iot_gen2_twin_client_set_desired_handler(
   }
   TI(twin).desired_handler = cb;
   TI(twin).desired_handler_ctx = user_ctx;
+  /* A new or resumed handler holds nothing yet. */
+  TI(twin).desired_properties_device_version = 0;
+  TI(twin).desired_snapshot_required = false;
+  request_snapshot_if_behind(twin);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_twin_client_set_reported_handler(
+    az_iot_gen2_twin_client* twin,
+    az_iot_gen2_twin_reported_callback cb,
+    void* user_ctx)
+{
+  if (!twin)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  TI(twin).reported_handler = cb;
+  TI(twin).reported_handler_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_twin_client_set_encode_buffer(
+    az_iot_gen2_twin_client* twin,
+    az_span buffer)
+{
+  if (!twin)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  int32_t size = az_span_size(buffer);
+  if (size < 0 || (size > 0 && !az_span_ptr(buffer)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Exactly the overhead is the valid minimum: it frames an empty patch. */
+  if (size > 0 && size < AZ_IOT_GEN2_TWIN_ENCODE_OVERHEAD)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  TI(twin).encode_buffer = buffer;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_twin_client_set_request_timeout(
+    az_iot_gen2_twin_client* twin,
+    uint32_t timeout_ms)
+{
+  if (!twin)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  TI(twin).request_timeout_ms
+      = timeout_ms ? timeout_ms : AZ_IOT_GEN2_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_gen2_twin_client_do_work(az_iot_gen2_twin_client* twin)
+{
+  if (!twin || !TI(twin).conn)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  uint64_t now = az_iot_time_mono_ms();
+  if (TI(twin).snapshot.in_flight && now >= TI(twin).snapshot.deadline_ms)
+  {
+    /* Re-requested on the next desired event or reconnect, not on a timer. */
+    AZ_IOT_LOG_WARN("gen2_twin: the desired-snapshot GET went unanswered");
+    TI(twin).snapshot.in_flight = false;
+  }
+  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (TI(twin).pending[i].in_use && now >= TI(twin).pending[i].deadline_ms)
+    {
+      release_pending(twin, i, AZ_IOT_ERR_TIMEOUT, NULL, NULL);
+    }
+  }
   return AZ_IOT_OK;
 }

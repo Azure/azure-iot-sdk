@@ -10,7 +10,18 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
 {
     public class ProvisioningCertificateSigningRequest
     {
-        public AsymmetricAlgorithm PrivateKey { get; set; } //TODO feels weird to ask for this, but it is necessary, right?
+        /// <summary>
+        /// The private key corresponding to the public key in <see cref="Base64CertificateSigningRequest"/>, used to
+        /// prove possession of the key by signing the certificate signing request and, after issuance, to authenticate
+        /// the resulting certificate over TLS.
+        /// <para>
+        /// This is the key object itself, not its exported bytes. Providing an <see cref="AsymmetricAlgorithm"/> whose
+        /// signing operation is delegated to a hardware security module (HSM) — for example a PKCS#11 or Key Vault
+        /// backed <see cref="RSA"/> or <see cref="System.Security.Cryptography.ECDsa"/> — keeps the private key inside
+        /// the HSM; the SDK only invokes it to sign and never exports the key material.
+        /// </para>
+        /// </summary>
+        public AsymmetricAlgorithm PrivateKey { get; set; }
 
         public string Base64CertificateSigningRequest { get; set; }
 

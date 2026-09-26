@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Microsoft.Azure.Iot.Device.Mqtt
@@ -26,6 +27,18 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         public bool CleanStart { get; set; }
 
         public X509Certificate2? ClientCertificate { get; set; }
+
+        /// <summary>
+        ///     An optional callback for custom validation of the server (remote) certificate during the TLS handshake.
+        ///     When null, the platform's default validation is used.
+        /// </summary>
+        public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; set; }
+
+        /// <summary>
+        ///     An optional callback for selecting which client certificate to present during the TLS handshake.
+        ///     When null, <see cref="ClientCertificate"/> is presented.
+        /// </summary>
+        public LocalCertificateSelectionCallback? LocalCertificateSelectionCallback { get; set; }
 
         /// <summary>
         ///     Gets the client identifier.
@@ -135,7 +148,5 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
             UserProperties ??= [];
             UserProperties.Add(new MqttUserProperty(key, value));
         }
-
-        // TODO RemoteCertificateValidationCallback still applicable in this model?
     }
 }

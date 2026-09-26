@@ -22,7 +22,7 @@
 .EXAMPLE
     .\New-TestClient.ps1
     . .\.client-env.ps1
-    .\..\..\build\samples\Debug\az_iot_sample_telemetry_gen2.exe
+    .\..\..\build\samples\gen2\Debug\az_iot_sample_telemetry.exe
 #>
 [CmdletBinding()]
 param(
@@ -71,43 +71,43 @@ if ($BuildPreset) {
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
 
 Write-Host "[build] Building telemetry sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_telemetry_gen2
+cmake --build $BuildDir --config Debug --target az_iot_sample_gen2_telemetry
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$TelemetrySampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_telemetry_gen2.exe"
+$TelemetrySampleExe = Join-Path $BuildDir "samples\gen2\Debug\az_iot_sample_telemetry.exe"
 if (-not (Test-Path $TelemetrySampleExe)) {
     # Try non-multi-config generator path
-    $TelemetrySampleExe = Join-Path $BuildDir "samples\az_iot_sample_telemetry_gen2.exe"
+    $TelemetrySampleExe = Join-Path $BuildDir "samples\gen2\az_iot_sample_telemetry.exe"
 }
 
 Write-Host "[build] Building direct methods sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_direct_method_responder_gen2
+cmake --build $BuildDir --config Debug --target az_iot_sample_gen2_direct_method_responder
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$DirectMethodSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_direct_method_responder_gen2.exe"
+$DirectMethodSampleExe = Join-Path $BuildDir "samples\gen2\Debug\az_iot_sample_direct_method_responder.exe"
 if (-not (Test-Path $DirectMethodSampleExe)) {
     # Try non-multi-config generator path
-    $DirectMethodSampleExe = Join-Path $BuildDir "samples\az_iot_sample_direct_method_responder_gen2.exe"
+    $DirectMethodSampleExe = Join-Path $BuildDir "samples\gen2\az_iot_sample_direct_method_responder.exe"
 }
 
 Write-Host "[build] Building twin sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_twin_get_patch
+cmake --build $BuildDir --config Debug --target az_iot_sample_gen2_twin_get_patch
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$TwinSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_twin_get_patch.exe"
+$TwinSampleExe = Join-Path $BuildDir "samples\gen2\Debug\az_iot_sample_twin_get_patch.exe"
 if (-not (Test-Path $TwinSampleExe)) {
     # Try non-multi-config generator path
-    $TwinSampleExe = Join-Path $BuildDir "samples\az_iot_sample_twin_get_patch.exe"
+    $TwinSampleExe = Join-Path $BuildDir "samples\gen2\az_iot_sample_twin_get_patch.exe"
 }
 
 Write-Host "[build] Building C2D receiver sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_c2d_receiver_gen2
+cmake --build $BuildDir --config Debug --target az_iot_sample_gen2_c2d_receiver
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-$C2dSampleExe = Join-Path $BuildDir "samples\Debug\az_iot_sample_c2d_receiver_gen2.exe"
+$C2dSampleExe = Join-Path $BuildDir "samples\gen2\Debug\az_iot_sample_c2d_receiver.exe"
 if (-not (Test-Path $C2dSampleExe)) {
     # Try non-multi-config generator path
-    $C2dSampleExe = Join-Path $BuildDir "samples\az_iot_sample_c2d_receiver_gen2.exe"
+    $C2dSampleExe = Join-Path $BuildDir "samples\gen2\az_iot_sample_c2d_receiver.exe"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

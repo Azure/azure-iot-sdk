@@ -5,8 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hub_renew
  *
- * Runtime operational-certificate renewal against a connected (Classic) hub
- * (D7), end to end:
+ * Runtime operational-certificate renewal against a connected Classic hub
+ * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
+ * Classic-only, so on an AEG hub the sample reports that and exits non-zero.
+ * End to end:
  *   1. Connect, then produce a fresh CSR from the managed provider and call
  *      az_iot_connection_client_send_csr().
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
@@ -35,6 +37,7 @@
 typedef struct
 {
   az_iot_connection_state conn_state;
+  int provisioning_faulted;
   az_iot_certificate_provider_managed* provider;
   int csr_done;
   az_iot_result csr_status;
@@ -42,6 +45,17 @@ typedef struct
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ((user_context*)user_ctx)->provisioning_faulted = 1;
+    }
+    return;
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
@@ -139,8 +153,15 @@ int main(void)
 
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
+  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
+      != AZ_IOT_OK)
+  {
+    goto cleanup;
+  }
+  if (az_iot_connection_client_register_mqtt_factory(
+          &connection_client, az_iot_paho_factory_create_v5())
       != AZ_IOT_OK)
   {
     goto cleanup;
@@ -154,13 +175,21 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&connection_client, 50);
-    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
     }
   }
 
-  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
+      && sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK
+      && profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    /* send_csr() is Classic-only and returns AZ_IOT_ERR_NOT_SUPPORTED here. */
+    fprintf(stderr, "[hub_renew] runtime renewal is not available on this hub generation\n");
+  }
+  else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     /* Produce a CSR from the operational key and request renewal. */
     az_iot_certificate_signing_request csr = { 0 };
@@ -201,7 +230,7 @@ int main(void)
       for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
       {
         (void)az_iot_connection_client_do_work(&connection_client, 50);
-        if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
+        if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
         {
           break;
         }

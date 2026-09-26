@@ -244,8 +244,9 @@ Not part of the public API; listed for implementation context.
 ## Sample — before / after
 
 Only the cert-provider setup and one option line change; the entire
-connect / `do_work` / send flow stays identical (enrollment is transparent). Delta
-against `samples/telemetry_gen1/main.c`:
+connect / `do_work` / send flow stays identical (enrollment is transparent). Sketch of
+the delta against the certificate setup in `samples/unified/telemetry/main.c`
+(which sets the DPS fields through `sample_apply_dps_options()`):
 
 ```c
     /* --- BEFORE: static cert used for both DPS and Hub --- */
@@ -638,22 +639,21 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
 **`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`telemetry_gen1`, `c2d_receiver_gen1`, ...). Each sample reuses `samples/common/sample_utils` and
+`unified/telemetry`, `gen2/c2d_receiver`, ...). Each sample reuses `samples/common/sample_utils` and
 differs only in the credential-setup block, so they stay small and diff-able.
 
 ```
 samples/authentication/
   README.md                    scenario matrix: provider x flow x platform
-  direct-hub/                  SHIPS - static cert/key from files, no DPS
   dps_csr_managed/             SHIPS - D9 provider-owned: `managed` provider, DPS issuance
   hub_renew/                   SHIPS - D7 provider-owned transparent renewal
   custom_certificate_provider/ SHIPS - D9 app-owned: app builds the CSR, data-in/out
-  hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho
+  hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho, either hub generation
   hsm_sign_callback/           SHIPS - D8 provider sign() hook (stack without an engine)
   custom_provider_template/    SHIPS - fork-me stub (mirrors classic custom_hsm_example)
 
-  x509_file/                   planned - baseline covered today by direct-hub + the
-                               feature samples, so it has no folder of its own
+  x509_file/                   planned - baseline covered today by the feature samples,
+                               so it has no folder of its own
   x509_in_image/               planned - static cert compiled-in as const PEM
   dps_csr_app_owned/           planned - narrower cut of custom_certificate_provider
   hub_renew_app_owned/         planned - D7 app-owned explicit disconnect/reconnect
@@ -718,6 +718,6 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
   `sign()` hook now reach the adapter on both connect paths,
   `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` rejects a credential that cannot sign, and the
   handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
-  and `hsm_sign_callback`, the SoftHSM2 provisioning script, and unit + e2e custody
-  suites. Corrected **Status**, the storage-methods gap, **D8**, **Samples** and
-  **E2E tests** to match. By ewertons.
+  (later split into `hsm_pkcs11_gen1` / `hsm_pkcs11_gen2`) and `hsm_sign_callback`, the
+  SoftHSM2 provisioning script, and unit + e2e custody suites. Corrected **Status**, the
+  storage-methods gap, **D8**, **Samples** and **E2E tests** to match. By ewertons.

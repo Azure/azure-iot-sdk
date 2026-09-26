@@ -209,8 +209,8 @@ Note for the Paho adapter: when `proxy` is left unset, Paho still falls back to 
 `http_proxy` / `https_proxy` environment variables on its own (the uppercase spellings are ignored).
 Set `proxy` to be explicit and independent of the environment.
 
-Worked examples: [samples/websockets](../samples/websockets/main.c) and
-[samples/proxy](../samples/proxy/main.c). Each is the `telemetry_gen1` sample with
+Worked examples: [samples/unified/websockets](../samples/unified/websockets/main.c) and
+[samples/unified/proxy](../samples/unified/proxy/main.c). Each is the `unified/telemetry` sample with
 one of these options set, so the diff against it is exactly the feature.
 
 ### 3.2 Session terms per role **[implemented]**
@@ -314,9 +314,9 @@ Rules both clients must implement:
 - A feature client from the wrong generation is refused with `AZ_IOT_ERR_HUB_GENERATION_MISMATCH`.
   Because of this, feature clients must be created **after** the connection is open.
 
-> **Blocked on the api-version.** `connectionProfile` is new in DPS `2026-11-02-preview`; the SDK
-> still requests `2019-03-31` via the vendored `azure-sdk-for-c`, so the field never arrives today.
-> Raising it is a prerequisite for this entire section.
+> The SDK now sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session,
+> including CSR and provision-only update sessions. This allows DPS to return `connectionProfile`;
+> absent/null values still resolve to `classic`.
 >
 > **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
 > every feature client the application holds becomes invalid at that moment and it must be told.
@@ -416,6 +416,7 @@ checked before backoff is scheduled.
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Classic desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_gen1_twin_client_get()` if it needs the current desired state. |
 | ADU status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
@@ -466,14 +467,14 @@ Rules that apply to both clients:
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
-- CSR-based DPS enrollment uses the `2025-07-01-preview` DPS API version and requires a
+- CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and requires a
   caller-provided CSR payload buffer of at least `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes.
 
 ---
 
 ## 7. ADUv2: onboarding and renewal **[planned]**
 
-**ADUv1 is cut.** Its Twin-based public API is being removed; what survives is everything that has
+**ADUv1 is cut.** Its Twin-based public API has been removed; what survives is everything that has
 nothing to do with transport. ADU is re-layered into a transport-independent **`adu_core`** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an
@@ -586,9 +587,10 @@ sequenceDiagram
     ADU->>GW: retry the report until acked, then resume polling
 ```
 
-`installResult` carries the terminal outcome, its failure origin, the hex `extendedResultCodes`
-list and a per-step `stepResults` map — see [eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level
-shape.
+`installResult` carries the outcome, its failure origin and the hex
+`extendedResultCodes` list. In-progress reports omit `stepResults`; terminal
+reports include complete per-step outcomes when steps are available — see
+[eng/aduv2-spec.md](eng/aduv2-spec.md) for the field-level shape.
 
 ### 7.3 Rules both clients must implement
 
