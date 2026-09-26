@@ -326,13 +326,15 @@ Rules both clients must implement:
 
 - `connectionProfile` is a `readOnly` **string** on `DeviceRegistrationResult`, delivered alongside
   `assignedHub`, `deviceId` and `issuedCertificateChain`. There is no numeric `hub_version` on the wire.
-- It is an **extensible union**, so the raw string must be preserved verbatim
-  (`az_iot_hub_profile.connection_profile_raw`) and not collapsed into a closed enum. A value newer
-  than the SDK still has to be loggable.
+- It is an **extensible union**, so the raw string is kept (`az_iot_hub_profile.connection_profile_raw`)
+  rather than collapsed into a closed enum, and a value newer than the SDK stays loggable. The buffer
+  holds 63 bytes plus NUL: a longer value is truncated, `connection_profile_raw_truncated` is set,
+  and the profile resolves to `UNKNOWN`.
 - An unrecognised profile **fails the connection** with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
   The SDK will not guess which MQTT version to speak.
-- The profile is readable only once `CONNECTED`; before that
-  `az_iot_connection_client_get_hub_profile()` returns `AZ_IOT_ERR_NOT_CONNECTED`.
+- `az_iot_connection_client_get_hub_profile()` returns `AZ_IOT_ERR_NOT_CONNECTED` until `HUB:CONNECTED`,
+  with one exception: when the profile is `UNKNOWN` it answers `AZ_IOT_OK` whatever the state, so the
+  raw value of an unsupported assignment stays readable in `FAULTED`.
 - **A feature client may be created before or after `open()`.** `__require_profile()` records the
   generation it needs and refuses a second client of the other generation immediately with
   `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. When the profile is not yet resolved the requirement is
@@ -845,7 +847,9 @@ be refused again, and leave the device cycling forever without saying why.
 ### 9.4 Compile-time bounds
 
 Buffers are fixed-size struct members, not allocations, so exceeding one is a hard failure rather than
-a slow path. Every constant is `#ifndef`-guarded and can be raised at build time. From
+a slow path. Constants are `#ifndef`-guarded and can be raised at build time, except
+`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64` / `CSR_OP_TIMEOUT_MS`
+(fixed in `connection_client.c`). From
 [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) unless noted.
 
 | Constant | Value | What it bounds | Result when exceeded |
