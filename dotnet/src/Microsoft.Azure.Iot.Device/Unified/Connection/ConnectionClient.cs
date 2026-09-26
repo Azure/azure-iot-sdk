@@ -196,7 +196,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 {
                     CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
                     pendingCertificateSigningOperation.SetAccepted(accepted);
-                    //TODO qos? Ack needed?
+                    await args.AcknowledgeAsync(CancellationToken.None);
                     return;
                 }
                 else if (status.Equals("200"))
@@ -213,14 +213,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
                     }
                     pendingCertificateSigningOperation.SetCompleted(response);
-                    //TODO qos? Ack needed?
+                    await args.AcknowledgeAsync(CancellationToken.None);
                     return;
                 }
                 else
                 {
                     CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
                     pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
-                    //TODO qos? Ack needed?
+                    await args.AcknowledgeAsync(CancellationToken.None);
                     return;
                 }
             }
