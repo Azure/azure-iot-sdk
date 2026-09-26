@@ -830,15 +830,15 @@ static void no_step_results_means_no_key(void** state)
   assert_null(strstr((const char*)buf, "stepResults"));
 }
 
-/* The largest report the engine produces fits the channel body: max-length
- * workflow id, a 192-byte applied update id with every byte escaped, and every
- * step failed with INT32_MIN and an 8-hex extended code. The engine sets no
- * resultDetails. */
+/* The largest report the engine produces fits the channel body: a
+ * AZ_IOT_ADU_WORKFLOW_ID_SIZE-byte workflow id and a 192-byte applied update id,
+ * every byte of both escaped, and every step failed with INT32_MIN and an 8-hex
+ * extended code. The engine sets no resultDetails. */
 static void largest_engine_report_fits_the_channel_body(void** state)
 {
   (void)state;
-  char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE];
-  memset(workflow_id, 'w', sizeof(workflow_id) - 1);
+  char workflow_id[AZ_IOT_ADU_WORKFLOW_ID_SIZE + 1]; /* as adu_report.c */
+  memset(workflow_id, 0x01, sizeof(workflow_id) - 1);
   workflow_id[sizeof(workflow_id) - 1] = '\0';
   char id[3][64];
   for (int i = 0; i < 3; ++i)

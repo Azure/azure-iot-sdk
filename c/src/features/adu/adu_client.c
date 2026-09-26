@@ -753,13 +753,17 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&ADU_I(client).crypto, file, adu_read_file_adapter, &a);
 }
 
+/** @brief Minimum spacing, in milliseconds, of Idle retries of a failed checkpoint clear. */
+#define AZ_IOT_ADU_CHECKPOINT_CLEAR_RETRY_MS 1000u
+
 /**
  * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
  *
  * Both shipped loaders re-read the same record on every boot, so without this
  * a finished workflow is reloaded, re-applied and re-reported. Only issued when
  * a record is believed stored, to spare flash endurance; a failed write keeps
- * it believed stored so the next terminal transition retries.
+ * it believed stored and is retried from do_work() while Idle, at most every
+ * AZ_IOT_ADU_CHECKPOINT_CLEAR_RETRY_MS, or at the next terminal transition.
  */
 static void clear_checkpoint(az_iot_adu_client_t* client)
 {
@@ -774,6 +778,8 @@ static void clear_checkpoint(az_iot_adu_client_t* client)
   }
   else
   {
+    ADU_I(client).checkpoint_clear_retry_ms
+        = az_iot_time_mono_ms() + AZ_IOT_ADU_CHECKPOINT_CLEAR_RETRY_MS;
     AZ_IOT_LOG_ERROR("adu: failed to clear the persisted checkpoint; will retry");
   }
 }
@@ -2226,6 +2232,14 @@ az_iot_result az_iot_adu_client_do_work(az_iot_adu_client_t* client)
   if (ADU_I(client).channel.vtable != NULL && ADU_I(client).channel.vtable->do_work != NULL)
   {
     (void)ADU_I(client).channel.vtable->do_work(ADU_I(client).channel.ctx);
+  }
+
+  /* A stored checkpoint while Idle is a failed clear; a reboot now would
+   * resume the finished workflow, so retry it rather than wait for the next. */
+  if (ADU_I(client).state == AZ_IOT_ADU_STATE_IDLE && ADU_I(client).checkpoint_stored
+      && az_iot_time_mono_ms() >= ADU_I(client).checkpoint_clear_retry_ms)
+  {
+    clear_checkpoint(client);
   }
 
   /* A pending device-properties / startup report takes priority. */

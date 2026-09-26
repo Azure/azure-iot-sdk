@@ -2676,13 +2676,53 @@ static void a_failed_checkpoint_retire_is_retried(void** state)
   pump_to_checkpoint(fx);
 
   fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
+  fx->log.persist_failures = 2;
+  pump(fx, 40);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
+  assert_true(fx->log.have_persist);
+
+  /* Idle retries are paced, then fail once more. */
+  int calls = fx->log.persist_calls;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, calls);
+  fx->adu._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, calls + 1);
+  assert_true(fx->log.have_persist);
+
+  /* A superseding workflow also retries it. */
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_false(fx->log.have_persist);
+}
+
+/* A failed clear is retried while Idle, so a reboot before the next workflow
+ * does not resume the finished one. */
+static void a_failed_checkpoint_clear_is_retried_while_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_ADU_RESULT_SUCCESS;
   fx->log.persist_failures = 1;
   pump(fx, 40);
   assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
   assert_true(fx->log.have_persist);
 
-  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  fx->adu._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_adu_client_do_work(&fx->adu), AZ_IOT_OK);
   assert_false(fx->log.have_persist);
+  assert_false(fx->adu._internal.checkpoint_stored);
+
+  /* Nothing is left to resume; no further clears are written. */
+  int calls = fx->log.persist_calls;
+  pump(fx, 5);
+  assert_int_equal(fx->log.persist_calls, calls);
+  assert_int_equal(az_iot_adu_client_resume(&fx->adu), AZ_IOT_OK);
+  assert_int_equal(az_iot_adu_client_get_state(&fx->adu), AZ_IOT_ADU_STATE_IDLE);
 }
 
 /* A new workflow that fails to decode is ignored before it disturbs the active
@@ -4116,6 +4156,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         finished_workflow_is_not_replayed_after_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_checkpoint_retire_is_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         superseding_workflow_retires_the_stored_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
