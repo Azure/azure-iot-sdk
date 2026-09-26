@@ -69,10 +69,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.NotNull(sentPayload);
             Assert.Equal(csrBase64, sentPayload.ClientCertificateSigningRequest);
 
-            // Issuing a certificate from a request is not part of the GA API version, and the service rejects a
-            // registration carrying one unless the connection asked for a version that knows about it.
             Assert.NotNull(dpsConnect);
-            Assert.Contains("api-version=2025-07-01-preview", dpsConnect.Username);
+            Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.Equal(issuedChain, connectionContext.IssuedClientCertificates);
@@ -143,9 +141,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Null(sentPayload.ClientCertificateSigningRequest);
             Assert.Null(connectionContext.IssuedClientCertificates);
 
-            // A registration that asks for no certificate keeps the GA API version.
+            // A registration without a certificate request uses the same API version.
             Assert.NotNull(dpsConnect);
-            Assert.Contains("api-version=2021-10-01", dpsConnect.Username);
+            Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
         }
 
         private static string CreateCertificateSigningRequest(RSA key)
