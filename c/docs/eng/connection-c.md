@@ -717,8 +717,8 @@ deferred effects — they do not happen inline.
 flowchart TB
     IDLE["IDLE"] -->|"open() with id_scope"| DSESS["DPS session up<br/>DPS_HOLD"]
     DSESS --> BCHK["ADUv2 bootstrap check<br/>requestOnboardingUpdates via DPS"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report"]
-    BCHK -->|"verdict, FATAL/PROCEED,<br/>or hold expired"| REG["DPS register<br/>CSR optional"]
+    BCHK -.->|"update available:<br/>continues after registration"| BINST["Verify, download, install,<br/>report"]
+    BCHK -->|"first verdict: OK, FATAL/PROCEED,<br/>or hold expired"| REG["DPS register<br/>CSR optional"]
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
     ASSIGN --> STORE1["Store issued chain"]
@@ -951,9 +951,9 @@ left as gaps rather than guesses.
 | Polling | `operation_id` longer than its buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
 | Assignment | `issuedCertificateChain` absent when a CSR was sent | `AZ_IOT_ERR_NOT_FOUND` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
 | Assignment | No handler to store the issued chain | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Neither the provider vtable hook nor the callback was supplied. Reported non-retriable by `reason_is_retriable()`. |
-| Assignment | `registrationState` key absent | `AZ_IOT_ERR_NOT_FOUND`, treated as OK | connection client | continues, profile stays classic | Deliberate: the stock api-version does not carry the key. |
+| Assignment | `registrationState.connectionProfile` absent or null (or no `registrationState`) | none | `dps_read_connection_profile()` | continues, profile stays classic unless the development override applies | Deliberate: the service contract defines absence as `classic`. |
 | Polling | `assigning` with a `retry-after` | `AZ_IOT_OK` | connection client | `dps_poll_due_ms = now + retry_after_seconds * 1000`; the pump re-publishes the query when it elapses | The service-supplied delay is honoured verbatim, with no reconnect backoff on top and no SDK-side cap on the number of polls. |
-| Assignment | Unrecognised `connectionProfile`, or one that does not fit the 64-byte buffer (63 bytes plus NUL) | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`; `connection_profile_raw_truncated` says when it was cut. Terminal regardless of policy, via `reject_assignment()`. Implemented; only the service rollout is pending — the field does not arrive at the current api-version. |
+| Assignment | Unrecognised `connectionProfile`, or one that does not fit the 64-byte buffer (63 bytes plus NUL) | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`; `connection_profile_raw_truncated` says when it was cut. Terminal regardless of policy, via `reject_assignment()`. Implemented; depends on the service returning the field. |
 | Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | `dps_apply_deferred()` branches on `status != AZ_IOT_OK`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Any DPS phase | DPS message arrives in the wrong phase | ignored | connection client | dropped | Guarded on `dps_phase` being REGISTERING or POLLING. |
 | Hub CONNACK | Identity rejected | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` → `dps_start()` on the next attempt | See [§9.2](#92-connack-mapping). |
@@ -1007,7 +1007,7 @@ registry carries Classic feature filters and application custom topics.
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
 | DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise | `0x87` is reported non-retriable and still reconnects; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
-| Keep-alive | Local keep-alive expiry | `AZ_IOT_OK` on DISCONNECTED | Paho `connectionLost` | reconnect | Keep-alive is 30 s by default. |
+| Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RECONNECTING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |
 | Twin | Service status `400` | `AZ_IOT_ERR_INVALID_ARG` | `status_to_result()` in the twin client | that request completes with the failure | Contained. |
