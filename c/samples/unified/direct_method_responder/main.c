@@ -6,7 +6,7 @@
 /* unified/direct_method_responder - sample.
  *
  * Answer direct methods for ~60 seconds, from inside the handler, on whichever
- * hub DPS assigns: mqttv3 or mqttv5, including after the device is
+ * hub DPS assigns: MQTTv3 or MQTTv5, including after the device is
  * moved to a hub of the other generation. The MQTTv5-only route is
  * mqttv5/direct_method_responder. See unified/telemetry for the shape every
  * unified sample shares: build for an assumed generation before open(),

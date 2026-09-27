@@ -8,7 +8,7 @@
  * unified/telemetry, building the feature clients the conservative way: open
  * the connection with NO feature client attached, and only once CONNECTED ask
  * az_iot_connection_client_get_hub_profile() which generation DPS assigned,
- * then build the matching mqttv3 or mqttv5 client. Nothing is assumed, so the
+ * then build the matching MQTTv3 or MQTTv5 client. Nothing is assumed, so the
  * first connect never has to be redone.
  *
  * What it costs: a client built after CONNECTED subscribes only then, so on

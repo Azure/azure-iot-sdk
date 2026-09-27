@@ -22,7 +22,7 @@ function(az_iot_add_sample group name)
 endfunction()
 
 if(AZ_IOT_WITH_PAHO)
-    # mqttv3 or mqttv5, picked from the DPS assignment.
+    # MQTTv3 or MQTTv5, picked from the DPS assignment.
     add_subdirectory(unified)
     # MQTTv5 hubs only.
     add_subdirectory(mqttv5)

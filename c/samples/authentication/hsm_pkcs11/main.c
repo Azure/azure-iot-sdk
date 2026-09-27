@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hsm_pkcs11 - sample.
  *
- * Connect to whichever hub DPS assigns -- mqttv3 or mqttv5 -- with a
+ * Connect to whichever hub DPS assigns -- MQTTv3 or MQTTv5 -- with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
  * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
