@@ -49,6 +49,7 @@
 static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
 static void delegate_update(az_iot_su_client* client);
+static void raise_update_available(az_iot_su_client* client);
 
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
@@ -1533,11 +1534,26 @@ static void delegate_update(az_iot_su_client* client)
     reset_to_idle(client);
     return;
   }
+  /* A terminal report from an observer is applied once every observer has
+   * had the event, so none of them sees the update cleared under it. */
+  SU_I(client).delegating = true;
   set_su_state(client, AZ_IOT_SU_STATE_DELEGATED);
-  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED)
+  if (!SU_I(client).delegated_end_pending)
   {
-    return;
+    raise_update_available(client);
   }
+  SU_I(client).delegating = false;
+  if (SU_I(client).delegated_end_pending)
+  {
+    SU_I(client).delegated_end_pending = false;
+    reset_to_idle(client);
+    (void)az_iot_su__report_state(client);
+  }
+}
+
+/** @brief Raise AZ_IOT_SU_EVENT_UPDATE_AVAILABLE for the delegated update. */
+static void raise_update_available(az_iot_su_client* client)
+{
   az_iot_su_event event = {
     ._internal_size = sizeof(az_iot_su_event),
     .kind = AZ_IOT_SU_EVENT_UPDATE_AVAILABLE,
@@ -2818,7 +2834,7 @@ az_iot_result az_iot_su_client_report_status(
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED)
+  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED || SU_I(client).delegated_end_pending)
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
@@ -2894,6 +2910,12 @@ az_iot_result az_iot_su_client_report_status(
 
   if (terminal)
   {
+    /* Inside the hand-off: delegate_update() finishes it after the dispatch. */
+    if (SU_I(client).delegating)
+    {
+      SU_I(client).delegated_end_pending = true;
+      return AZ_IOT_OK;
+    }
     reset_to_idle(client);
   }
   /* A refusal re-arms the report for do_work(). */
