@@ -821,6 +821,10 @@ extern "C"
 
       /** Library mode: verified updates are handed to the application. */
       bool library_mode;
+      /** The hand-off events are being dispatched. */
+      bool delegating;
+      /** A terminal report arrived during the hand-off; applied after it. */
+      bool delegated_end_pending;
       /** Failure origin of a FAILED report; NOT_APPLICABLE means AGENT_CORE. */
       az_iot_su_failure_origin pending_failure_origin;
       /** Result details of the last az_iot_su_client_report_status(). */
@@ -1109,8 +1113,9 @@ extern "C"
    * one per manifest step, none IN_PROGRESS. On SUCCEEDED the manifest's update ID is reported as
    * installed; otherwise the cached installed update ID.
    *
-   * Call on the do_work() thread, or serialize with it. Legal from the
-   * UPDATE_AVAILABLE observer.
+   * Call on the do_work() thread, or serialize with it. Legal from an
+   * observer; a terminal report made during the hand-off events takes effect
+   * once every observer has had them, and later calls get NOT_FOUND.
    *
    * @param[in,out] client Library-mode client.
    * @param[in] result Overall result. `result_details` is copied.

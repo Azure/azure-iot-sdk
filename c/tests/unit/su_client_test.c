@@ -4274,17 +4274,40 @@ static void report_from_observer(const az_iot_su_event* event, void* user_ctx)
   }
 }
 
+/* Registered after report_from_observer: still sees a usable update. */
+static void later_observer(const az_iot_su_event* event, void* user_ctx)
+{
+  if (event->kind == AZ_IOT_SU_EVENT_UPDATE_AVAILABLE)
+  {
+    fixture* fx = (fixture*)user_ctx;
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DELEGATED);
+    assert_int_equal(event->manifest->instructions.steps_count, 1);
+    assert_true(
+        az_span_is_content_equal(event->request->workflow.id, AZ_SPAN_FROM_STR("wf-observer")));
+    az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+    assert_int_equal(
+        az_iot_su_client_report_status(&fx->su, &done, &done, 1), AZ_IOT_ERR_NOT_FOUND);
+    fx->state_event_count += 100;
+  }
+}
+
 static void report_status_is_legal_from_the_observer(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, report_from_observer, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, later_observer, fx), AZ_IOT_OK);
   inject_patch(fx, build_patch("wf-observer"));
+  int reports = fx->chan.report_count;
   pump(fx, 8);
 
   assert_int_equal(fx->update_available_count, 1);
+  assert_true(fx->state_event_count >= 100);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->last_previous_state, AZ_IOT_SU_STATE_DELEGATED);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
   assert_string_equal(fx->chan.last_workflow_id, "wf-observer");
+  /* The pending startup report, the verifying one, then one terminal. */
+  assert_int_equal(fx->chan.report_count, reports + 3);
 }
 
 static void a_newer_update_waits_for_the_delegated_one(void** state)
