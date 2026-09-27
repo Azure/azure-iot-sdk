@@ -153,7 +153,7 @@ static int teardown(void** state)
   {
     fx->channel.vtable->close(fx->channel.ctx);
     bool adopted = (fx->client.factory_count > 0);
-    az_iot_connection_client_destroy(&fx->client);
+    az_iot_connection_client_deinit(&fx->client);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -879,7 +879,7 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   options.device_properties_buffer = storage;
   options.device_properties_buffer_size = sizeof(storage);
   az_iot_su_client client;
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->client, &options), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
   char escaped_compat[256];
   char escaped_provider[188];
@@ -900,11 +900,11 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
       az_iot_su_client_update_device_properties(&client, &properties), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_memory_equal(storage, storage_before, sizeof(storage_before));
-  az_iot_su_client_destroy(&client);
+  az_iot_su_client_deinit(&client);
 
   /* The same validation must run during initialization, before opening the channel. */
   assert_int_equal(
-      az_iot_su_client_initialize(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
 }
@@ -1302,7 +1302,7 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
   fx->channel.vtable->close(fx->channel.ctx);
-  az_iot_connection_client_destroy(&fx->client);
+  az_iot_connection_client_deinit(&fx->client);
   free(fx);
 }
 

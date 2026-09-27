@@ -2242,11 +2242,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   {
     /* Terminal on purpose: re-provisioning would return this same profile while
      * the feature clients still require the other one, so an immediate retry
-     * cannot succeed. The application owns the recovery -- destroy the feature
+     * cannot succeed. The application owns the recovery -- deinit the feature
      * clients and rebuild them for the profile this event carries, then close()
      * this connection client (legal from FAULTED, and it returns it to IDLE)
      * and open() it again. The connection client itself does not have to be
-     * destroyed.
+     * deinitialized.
      *
      * The switch above has already moved session_role to the assigned
      * generation. That is harmless only because reject_assignment() forces the
@@ -2254,7 +2254,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * run is assigned. */
     AZ_IOT_LOG_ERRORF(
         "dps: assigned connectionProfile \"%s\", but the attached feature clients require the "
-        "other hub generation; destroy them and rebuild for the assigned profile",
+        "other hub generation; deinit them and rebuild for the assigned profile",
         c->connection_profile_raw);
     reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
     return;
@@ -3447,7 +3447,7 @@ az_iot_result az_iot_connection_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_connection_client_destroy(az_iot_connection_client* client)
+void az_iot_connection_client_deinit(az_iot_connection_client* client)
 {
   if (!client)
   {
@@ -3455,7 +3455,7 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
   }
   /* Abandon pending QoS-1 acknowledgements WITHOUT completing them. On a
    * dropped session the callback is useful -- it tells the caller the publish
-   * needs resending. On destroy() it is not: the application is tearing the
+   * needs resending. On deinit() it is not: the application is tearing the
    * client down, and the context those callbacks close over may already be
    * gone. Calling back into it here would turn cleanup into a use-after-free.
    * Cleared before teardown_active() so it has nothing left to complete. */
@@ -3466,7 +3466,7 @@ void az_iot_connection_client_destroy(az_iot_connection_client* client)
     client->pending_pubacks[i].user_ctx = NULL;
     client->pending_pubacks[i].packet_id = 0;
   }
-  /* Same reasoning for the session-end handlers: on destroy() the feature
+  /* Same reasoning for the session-end handlers: on deinit() the feature
    * clients are being torn down alongside this one, so calling into them is
    * at best pointless and at worst a use-after-free. */
   for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
@@ -3501,7 +3501,7 @@ az_iot_result az_iot_connection_client_register_mqtt_factory(
 
   /* Registering the same factory twice used to append a second entry. It was
    * never reachable -- find_factory() returns the first match for a version --
-   * but destroy() walks the whole registry and calls every entry's destroy
+   * but deinit() walks the whole registry and calls every entry's destroy
    * hook, so the duplicate freed the same factory_ctx a second time. A
    * double free is a disproportionate punishment for a redundant call, and
    * "register the transport" is exactly the kind of setup step an application
@@ -3626,9 +3626,9 @@ static az_iot_result remove_state_observer_from(
    * The two directions are not symmetric. Adding from inside an observer would
    * deliver the transition being dispatched to a subscriber that was not
    * watching when it happened, so it is refused. Removing is the opposite: a
-   * feature client destroyed from inside an observer -- which is a natural
+   * feature client deinitialized from inside an observer -- which is a natural
    * reaction to FAULTED -- MUST be able to withdraw, because the entry holds a
-   * raw pointer to storage its destroy path is about to release. Refusing here
+   * raw pointer to storage its deinit path is about to release. Refusing here
    * left the caller with no way to give the seat back, and the next transition
    * called into freed memory.
    *
@@ -4039,7 +4039,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * nothing to disconnect -- which is exactly why this has to be handled
    * before the active_client check below, or close() would report
    * NOT_INITIALIZED and leave the client in a state no API could leave. The
-   * only escape would then be destroy() plus a full re-init, which also forces
+   * only escape would then be deinit() plus a full re-init, which also forces
    * the application to rebuild every attached feature client.
    *
    * Same shape as the RECONNECTING branch above: cancel the bookkeeping and

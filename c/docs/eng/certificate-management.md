@@ -209,7 +209,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
     az_iot_certificate_provider_managed* provider,
     const az_iot_certificate_provider_managed_options* opts);
 
-void az_iot_certificate_provider_managed_destroy(
+void az_iot_certificate_provider_managed_deinit(
     az_iot_certificate_provider_managed* provider);
 ```
 

@@ -232,7 +232,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!fx->factory_registered)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -868,7 +868,7 @@ static void get_before_the_device_id_is_assigned_is_refused(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_get(&twin, on_get, &rec), AZ_IOT_ERR_NOT_CONNECTED);
 
   az_iot_mqttv5_twin_client_deinit(&twin);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void get_with_a_full_pending_table_is_rejected(void** state)
@@ -2390,16 +2390,16 @@ static void init_against_a_classic_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv5_twin_client_init(&twin, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
   az_iot_mqttv5_twin_client_deinit(NULL);
 }
 
-static void destroy_zeroes_the_client(void** state)
+static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -2416,7 +2416,7 @@ static void destroy_zeroes_the_client(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_is_idempotent(void** state)
+static void deinit_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -2428,7 +2428,7 @@ static void destroy_is_idempotent(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_unregisters_the_inbound_handler(void** state)
+static void deinit_unregisters_the_inbound_handler(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -2453,11 +2453,11 @@ static void destroy_unregisters_the_inbound_handler(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_frees_the_connect_time_bind_slot(void** state)
+static void deinit_frees_the_connect_time_bind_slot(void** state)
 {
   (void)state;
 
-  /* destroy() must withdraw the bind registration. Releasing the profile does
+  /* deinit() must withdraw the bind registration. Releasing the profile does
    * NOT do it. A leak retires one of the connection's AZ_IOT_MAX_FEATURE_CLIENT_BINDS
    * slots per cycle and -- far worse -- leaves the connection holding a callback
    * into a destroyed client to invoke on the next connect. Distinct addresses,
@@ -2473,10 +2473,10 @@ static void destroy_frees_the_connect_time_bind_slot(void** state)
     az_iot_mqttv5_twin_client_deinit(&twins[i]);
   }
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
-static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** state)
+static void a_deinitialized_twin_client_is_not_called_on_a_later_session_end(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -2484,7 +2484,7 @@ static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** 
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
 
-  /* destroy() must unhook the session-end handler too. If it did not, the
+  /* deinit() must unhook the session-end handler too. If it did not, the
    * connection would call into a zeroed client -- and, worse, into whatever the
    * application had already freed behind the user context. */
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
@@ -2625,13 +2625,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(init_against_a_classic_connection_is_rejected, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_tolerates_null, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_zeroes_the_client, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_unregisters_the_inbound_handler, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_frees_the_connect_time_bind_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_tolerates_null, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_unregisters_the_inbound_handler, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_frees_the_connect_time_bind_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_destroyed_twin_client_is_not_called_on_a_later_session_end, setup, teardown),
+        a_deinitialized_twin_client_is_not_called_on_a_later_session_end, setup, teardown),
   };
   return cmocka_run_group_tests_name("mqttv5_twin_client", tests, NULL, NULL);
 }

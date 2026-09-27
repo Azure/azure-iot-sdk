@@ -337,7 +337,7 @@ extern "C"
    * also goes on status reports that have no applied update to report, so
    * replacing it can change a pending status report.
    *
-   * Caller-owned. az_iot_su_client_initialize() and
+   * Caller-owned. az_iot_su_client_init() and
    * az_iot_su_client_update_device_properties() deep-copy them; the caller may
    * then change or free them.
    *
@@ -811,7 +811,7 @@ extern "C"
   /* --- Lifecycle ----------------------------------------------------------- */
 
   /**
-   * Configuration for az_iot_su_client_initialize(). Obtain a zero-initialized
+   * Configuration for az_iot_su_client_init(). Obtain a zero-initialized
    * instance from az_iot_su_client_config_options_default() and set the required
    * fields before calling initialize.
    */
@@ -839,7 +839,7 @@ extern "C"
    *
    * Set hooks, crypto, root_keys, root_key_count, device_properties,
    * device_properties_buffer and device_properties_buffer_size before
-   * az_iot_su_client_initialize().
+   * az_iot_su_client_init().
    *
    * @return Zero-initialized options.
    */
@@ -861,7 +861,7 @@ extern "C"
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
    */
-  AZ_NODISCARD az_iot_result az_iot_su_client_initialize(
+  AZ_NODISCARD az_iot_result az_iot_su_client_init(
       az_iot_su_client* client,
       az_iot_connection_client* connection,
       const az_iot_su_client_config_options* options);
@@ -869,11 +869,11 @@ extern "C"
   /**
    * Return Microsoft's compiled-in software updates root public keys (const, static storage).
    * Convenience for the common case; equivalent to passing your own array to
-   * az_iot_su_client_initialize().
+   * az_iot_su_client_init().
    */
   const az_iot_su_root_key* az_iot_su_microsoft_root_keys(size_t* out_count);
 
-  void az_iot_su_client_destroy(az_iot_su_client* client);
+  void az_iot_su_client_deinit(az_iot_su_client* client);
 
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
@@ -910,8 +910,8 @@ extern "C"
    * Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback shared
    * by two owners is two subscriptions and is delivered twice.
    *
-   * An observer MUST NOT add an observer, and MUST NOT destroy the client --
-   * both mutate the array being walked, and destroying it frees the array
+   * An observer MUST NOT add an observer, and MUST NOT deinit the client --
+   * both mutate the array being walked, and deinit frees the array
    * itself. Adding answers AZ_IOT_ERR_BUSY during a dispatch. REMOVING is
    * permitted and must be: an owner torn down in reaction to an event has to
    * give its seat back before its storage goes away. Calling

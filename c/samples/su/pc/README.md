@@ -323,7 +323,7 @@ Software updates production roots, compiled into the SDK (`src/features/su/su_ro
 under a different key (including a preview or test issuer) fails verification;
 this sample does not download roots dynamically. To trust another issuer,
 validate its public key out of band, build a corresponding `az_iot_su_root_key`
-array, and pass it to `az_iot_su_client_initialize()` instead. Do not bypass
+array, and pass it to `az_iot_su_client_init()` instead. Do not bypass
 signature verification.
 
 ### Simulation knobs

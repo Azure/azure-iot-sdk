@@ -1597,7 +1597,7 @@ az_iot_result az_iot_su_client__initialize_with_channel(
   return su_client_init_core(client, channel, options);
 }
 
-az_iot_result az_iot_su_client_initialize(
+az_iot_result az_iot_su_client_init(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
     const az_iot_su_client_config_options* options)
@@ -1633,7 +1633,7 @@ az_iot_result az_iot_su_client_initialize(
   return r;
 }
 
-void az_iot_su_client_destroy(az_iot_su_client* client)
+void az_iot_su_client_deinit(az_iot_su_client* client)
 {
   if (client == NULL)
   {

@@ -24,7 +24,7 @@ extern "C"
    * Return an az_iot_su_crypto_hooks wired to the OpenSSL (3.0+) backend.
    * The returned struct is by value; it references static function pointers and
    * carries no allocated state (user_ctx is NULL). Safe to pass directly to
-   * az_iot_su_client_initialize().
+   * az_iot_su_client_init().
    */
   az_iot_su_crypto_hooks az_iot_su_crypto_openssl_hooks(void);
 

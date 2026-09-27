@@ -72,7 +72,7 @@ stateDiagram-v2
     RECONNECTING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
     FAULTED --> IDLE: close()
-    IDLE --> [*]: destroy()
+    IDLE --> [*]: deinit()
 ```
 
 `FAULTED` is settled, not a dead end. The SDK never leaves it on its own -- `do_work()` does not

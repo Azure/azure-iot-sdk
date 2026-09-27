@@ -27,7 +27,7 @@ extern "C"
 
   /* Override opts.host with a heap-owned copy of `host`. Used by the DPS handoff
    * helper to redirect a freshly-created (and still-IDLE) connection client at
-   * the assigned hub. The client owns the duplicate; it is freed in destroy().
+   * the assigned hub. The client owns the duplicate; it is freed in deinit().
    * Rejects the call when state != IDLE so live sessions can never have their
    * target rewritten under them. */
   az_iot_result az_iot_connection_client__set_host(
@@ -134,7 +134,7 @@ extern "C"
    * feature-client pool: dispatched FIRST, and sized so an application that
    * fills its own pool cannot leave a feature client unable to attach.
    *
-   * A feature client MUST withdraw in its destroy path. The connection client
+   * A feature client MUST withdraw in its deinit path. The connection client
    * outlives nothing here -- the entry holds a raw pointer to the feature
    * client -- so an entry left behind is a call into freed memory on the next
    * transition.
@@ -209,7 +209,7 @@ extern "C"
    * the connection client's own registration ref -- so a holder keeps it alive
    * across registration, and the last release ends it.
    *
-   * Acquire at initialize, release at destroy. Distinct from the
+   * Acquire at initialize, release at deinit. Distinct from the
    * pre-registration hold, which delays a registration that is about to happen
    * rather than asking for the session itself; a caller usually wants both.
    *
@@ -363,7 +363,7 @@ extern "C"
       *az_iot_feature_client_bind_callback)(void* owner, az_iot_connection_client* client);
 
   /* Attach a bind callback for `owner`, replacing any previous one. Feature
-   * clients call this from _init() and withdraw it in _destroy() --
+   * clients call this from _init() and withdraw it in _deinit() --
    * __release_profile only drops the generation refcount and leaves the bind
    * in place, so a client that skips the withdrawal leaves the connection
    * holding a callback into freed storage. */
@@ -373,7 +373,7 @@ extern "C"
       az_iot_feature_client_bind_callback on_bind);
 
   /* Detach `owner`'s bind callback. Does not withdraw anything the callback
-   * registered; feature clients withdraw those in their own _destroy(). */
+   * registered; feature clients withdraw those in their own _deinit(). */
   void az_iot_connection_client__unregister_feature_client_bind(
       az_iot_connection_client* client,
       const void* owner);
@@ -393,7 +393,7 @@ extern "C"
       az_iot_connection_profile profile);
 
   /* Drop one requirement taken by __require_profile. Feature clients call this
-   * from _destroy(); the pin clears when the last one goes. */
+   * from _deinit(); the pin clears when the last one goes. */
   void az_iot_connection_client__release_profile(az_iot_connection_client* client);
 
   /* Map session role to required MQTT version (SDK-internal knowledge). */

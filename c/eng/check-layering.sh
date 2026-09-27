@@ -71,6 +71,29 @@ report_pattern \
     "${root_dir}/inc/azure/iot/mqttv3" \
     "${root_dir}/inc/azure/iot/mqttv5"
 
+# Teardown naming. A caller-allocated struct is torn down by _deinit(); only
+# something _create() allocated and returned is _destroy()ed. The allow-list is
+# exactly the MQTT factories and the e2e service helper. The az_iot_mqtt_iface
+# vtable hook is a struct member, not an az_iot_* function, so it never matches.
+destroy_hits="$(grep -rnoE '\baz_iot_[a-z0-9_]*_destroy\b' \
+    --include='*.c' --include='*.h' \
+    "${root_dir}/inc" "${root_dir}/src" "${root_dir}/adapters" \
+    "${root_dir}/tests" "${root_dir}/samples" 2>/dev/null \
+    | grep -vE 'az_iot_(mock_mqtt|paho|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|az_iot_e2e_service_destroy' \
+    || true)"
+if [ -n "${destroy_hits}" ]; then
+    if [ "${violations}" -eq 0 ]; then
+        echo "Generation layering violations found:"
+        echo
+    fi
+    violations=$((violations + 1))
+    echo "  caller-allocated teardown must be _deinit(), not _destroy()"
+    while IFS= read -r hit; do
+        [ -n "${hit}" ] && echo "    ${hit#${root_dir}/}"
+    done <<< "${destroy_hits}"
+    echo
+fi
+
 if [ "${violations}" -gt 0 ]; then
     echo "${violations} generation layering rule(s) violated."
     exit 1

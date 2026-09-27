@@ -87,7 +87,7 @@
  *
  * To accept updates signed by your OWN root instead, build your own
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
- * to az_iot_su_client_initialize() in place of the Microsoft keys.
+ * to az_iot_su_client_init() in place of the Microsoft keys.
  */
 
 /* ------------------------------------------------------------------------- */
@@ -364,10 +364,10 @@ typedef struct
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_su_client_destroy(&s->su_client);
+  az_iot_su_client_deinit(&s->su_client);
 
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
   free(s->sim.state_file);
@@ -638,9 +638,9 @@ int main(void)
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = st.dp_buffer;
   su_opts.device_properties_buffer_size = sizeof(st.dp_buffer);
-  if (az_iot_su_client_initialize(&st.su_client, &st.connection_client, &su_opts) != AZ_IOT_OK)
+  if (az_iot_su_client_init(&st.su_client, &st.connection_client, &su_opts) != AZ_IOT_OK)
   {
-    fprintf(stderr, "az_iot_su_client_initialize failed\n");
+    fprintf(stderr, "az_iot_su_client_init failed\n");
     sample_state_destroy(&st);
     return 1;
   }

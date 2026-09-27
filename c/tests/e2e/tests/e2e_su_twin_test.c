@@ -499,13 +499,13 @@ static void su_agent_init(su_agent* a)
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = a->dp_buf;
   su_opts.device_properties_buffer_size = sizeof(a->dp_buf);
-  assert_int_equal(az_iot_su_client_initialize(&a->su, &a->twin, &su_opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&a->su, &a->twin, &su_opts), AZ_IOT_OK);
 }
 
 static void su_agent_destroy(su_agent* a)
 {
-  az_iot_su_client_destroy(&a->su);
-  az_iot_twin_client_destroy(&a->twin);
+  az_iot_su_client_deinit(&a->su);
+  az_iot_twin_client_deinit(&a->twin);
 }
 
 /* Advance the device MQTT stack and drive the software updates state machine for one slice. */

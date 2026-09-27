@@ -43,8 +43,8 @@
  *
  * WHAT IS DELIBERATELY NOT TESTED HERE
  *
- * destroy() racing against a producer. The adapter's contract is that the
- * application stops the client before destroying it -- destroy() tears the
+ * deinit() racing against a producer. The adapter's contract is that the
+ * application stops the client before destroying it -- deinit() tears the
  * mutex down -- so a test that drove them concurrently would be asserting a
  * guarantee the adapter never made, and would fail for a reason that is not a
  * defect. Producer/consumer concurrency is the part that IS promised.
@@ -409,7 +409,7 @@ static void mixed_producers_do_not_race_with_process_loop(void** state)
 /* Events still queued when the client is destroyed must be freed, not leaked.
  *
  * Single-threaded on purpose -- see the note at the top of this file about
- * destroy() -- but it belongs with these cases because q_drain_all() is the
+ * deinit() -- but it belongs with these cases because q_drain_all() is the
  * queue path nothing else reaches, and memcheck over this binary is what
  * proves the property copies inside those events are freed too. */
 static void events_left_queued_at_destroy_are_freed(void** state)

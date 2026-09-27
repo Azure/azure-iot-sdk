@@ -218,7 +218,7 @@ static void test_telemetry(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_mqttv3_telemetry_client_destroy(&telemetry_client);
+  az_iot_mqttv3_telemetry_client_deinit(&telemetry_client);
   /* Release the AMQP/TLS connection before the next scenario (the Windows
    * reference transport allows only one TLS connection at a time). */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
@@ -300,7 +300,7 @@ static void test_c2d(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
 
   assert_true(cctx.received);
   assert_true(cctx.matched);
@@ -352,7 +352,7 @@ static void test_direct_method(void** state)
     }
   }
 
-  az_iot_mqttv3_direct_method_client_destroy(&dm);
+  az_iot_mqttv3_direct_method_client_deinit(&dm);
 
   if (rc != 1)
   {
