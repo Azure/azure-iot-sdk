@@ -5,7 +5,7 @@
     Wi-Fi credentials so it is ready to build and flash.
 
 .DESCRIPTION
-    Automates "Step 2" of samples/su/esp32/README.md. Run this AFTER
+    Automates "Step 2" of samples/software_update/esp32/README.md. Run this AFTER
     Initialize-SuSampleEnvironment.ps1, which generates the device certificate
     and exports the AZ_IOT_* environment variables this script consumes.
 
@@ -70,8 +70,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Locate the ESP32 project (../../su/esp32 relative to this script).
-$projectDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..\su\esp32")).Path
+# Locate the ESP32 project (../../software_update/esp32 relative to this script).
+$projectDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..\software_update\esp32")).Path
 $certsDir   = Join-Path $projectDir "main\certs"
 $sdkconfig  = Join-Path $projectDir "sdkconfig"
 

@@ -218,7 +218,7 @@ The seams that already exist:
   (`.gitmodules`, gitlink `6d6e634a`), pinned to exactly the commit tag `1.5.0`
   resolves to — i.e. the same source FetchContent builds. It is uninitialised on
   a fresh clone, which makes it look dead. **It is not.** The ESP-IDF component
-  at `c/samples/su/esp32/components/azure-sdk-for-c` reads its sources straight
+  at `c/samples/software_update/esp32/components/azure-sdk-for-c` reads its sources straight
   out of it, and that sample's README tells the user to
   `git submodule update --init c/deps/azure-sdk-for-c`. It does contradict the
   "no git submodules" rule stated in [devnotes.md](../devnotes.md) and the
@@ -241,7 +241,7 @@ twice.
 
 **The submodule stays, and will need the same patches.** An earlier draft of
 this section called `c/deps/azure-sdk-for-c` a dead gitlink and planned to
-delete it. That was wrong: the ESP-IDF component under `c/samples/su/esp32`
+delete it. That was wrong: the ESP-IDF component under `c/samples/software_update/esp32`
 builds its sources from it, and that sample provisions through DPS — so it needs
 the api-version patch every bit as much as the CMake build does.
 

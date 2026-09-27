@@ -20,7 +20,7 @@
     DPS, the device certificate and its X.509 enrollment, the storage account,
     and the AZ_IOT_* environment variables.
 
-    See samples/su/pc/README.md for what the samples need from a Device
+    See samples/software_update/pc/simulated_onboarding/README.md for what the samples need from a Device
     Update environment.
 
     The resource group is the identity of an environment:
@@ -68,7 +68,7 @@ offered an update by this environment.
 Still produced and usable: resource group, DPS, device certificate + X.509
 enrollment, storage, and the AZ_IOT_* environment variables.
 
-See samples/su/pc/README.md for what the samples need from a Device Update
+See samples/software_update/pc/simulated_onboarding/README.md for what the samples need from a Device Update
 environment.
 '@
 

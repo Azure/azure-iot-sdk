@@ -3,26 +3,29 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* su/pc - Azure software updates on-device workflow sample.
+/* software_update/pc/simulated_onboarding - Software Update onboarding sample.
  *
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
  * See the companion README.md and docs/eng/su-client-design.md.
  *
+ * ONBOARDING ROUTE ONLY: a day-0 device, with no device record yet, asks with
+ * az_iot_su_client_request_onboarding_update(). A device that has already
+ * registered uses the regular route instead; see ../simulated_regular.
+ *
  * NO IOT HUB IS REQUIRED. Every device-update operation runs on the
  * provisioning session, before the device registers, so the sample declares
  * dps.provision_only: keep that session up, never register, never connect to a
- * hub. Set AZ_IOT_SU_REGISTER_WITH_HUB=1 for a device that should also
- * register and use its assigned hub; the update workflow is identical either
- * way.
+ * hub.
  *
  * Real:      connection, update request/response, manifest receipt, JWS
  *            verification (OpenSSL), per-file SHA-256 hash check, status
  *            reporting.
  * Simulated: download_fn (synthesizes deterministic payload bytes),
  *            install/apply/backup/restore (log only, optional forced failure
- *            or reboot), persist/load (a temp file so resume() works).
+ *            or reboot), persist/load (a temp file so resume() works). See
+ *            ../common/su_sim.c.
  *
  * Device identity (environment variables, all optional).
  *
@@ -41,7 +44,6 @@
  *   AZ_IOT_SU_INSTALLED_VERSION=<s>   default "1.0.0"
  *
  * Other knobs (environment variables, all optional):
- *   AZ_IOT_SU_REGISTER_WITH_HUB=1  register and connect to the assigned hub
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -53,7 +55,6 @@
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
  *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_state.blob)
  */
-#include <errno.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -61,19 +62,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <time.h>
-#include <unistd.h>
-#endif
-
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "az_iot_su_crypto_openssl.h"
 
 #include "sample_utils.h"
+#include "su_sim.h"
 
 /* ------------------------------------------------------------------------- */
 /* root keys                                                                 */
@@ -89,239 +84,6 @@
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
  * to az_iot_su_client_initialize() in place of the Microsoft keys.
  */
-
-/* ------------------------------------------------------------------------- */
-/* simulation context + hooks                                                */
-/* ------------------------------------------------------------------------- */
-
-typedef struct
-{
-  int fail_step; /* 1-based; 0 = never fail */
-  int hash_mismatch; /* corrupt synthesized payload */
-  int reboot; /* install returns REBOOT_REQUIRED once */
-  long delay_ms; /* per-download delay */
-  char* state_file; /* owned */
-
-  int reboot_signalled; /* set by install_fn when it returns REBOOT_REQUIRED */
-} sim_ctx;
-
-/* Environment readers built on sample_env_dup(), the helper every sample
- * shares -- which also settles the portability question, since MSVC rejects
- * plain getenv() under /WX. These add only the parsing the knobs below need. */
-
-/* True when @p name is set to anything other than "0". */
-static int sample_env_flag(const char* name)
-{
-  char* v = sample_env_dup(name, NULL);
-  int on = (v != NULL && strcmp(v, "0") != 0);
-  free(v);
-  return on;
-}
-
-/* @p name as a decimal number, or @p fallback when unset or not one. */
-static long sample_env_long(const char* name, long fallback)
-{
-  char* v = sample_env_dup(name, NULL);
-  long out = fallback;
-  if (v != NULL)
-  {
-    char* end = NULL;
-    errno = 0;
-    long parsed = strtol(v, &end, 10);
-    if (errno == 0 && end != v && *end == '\0')
-    {
-      out = parsed;
-    }
-    free(v);
-  }
-  return out;
-}
-
-static int32_t sim_download(
-    const az_iot_su_client_update_manifest_file* file,
-    az_span url,
-    uint32_t file_index,
-    uint32_t file_count,
-    void* user_ctx)
-{
-  (void)url;
-  sim_ctx* s = (sim_ctx*)user_ctx;
-  printf(
-      "  [download] file %u/%u (%lld bytes) [simulated]\n",
-      file_index + 1,
-      file_count,
-      (long long)file->size_in_bytes);
-  sample_sleep_ms(s->delay_ms);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-/* Serve deterministic payload bytes so the SHA-256 the core computes is
- * reproducible. To make the REAL hash check pass against a deployment, the
- * imported payload must be byte-identical (see README: zero-filled file). */
-static int32_t sim_read_file(
-    const az_iot_su_client_update_manifest_file* file,
-    uint32_t file_index,
-    size_t offset,
-    uint8_t* buffer,
-    size_t buffer_size,
-    size_t* out_read,
-    void* user_ctx)
-{
-  (void)file_index;
-  sim_ctx* s = (sim_ctx*)user_ctx;
-  size_t size = (file->size_in_bytes > 0) ? (size_t)file->size_in_bytes : 0;
-  if (offset >= size)
-  {
-    *out_read = 0; /* EOF */
-    return AZ_IOT_SU_RESULT_SUCCESS;
-  }
-  size_t remain = size - offset;
-  size_t n = remain < buffer_size ? remain : buffer_size;
-  memset(buffer, 0x00, n);
-  if (s->hash_mismatch && offset == 0 && n > 0)
-  {
-    buffer[0] = 0xFF; /* corrupt the first byte -> hash verification fails */
-  }
-  *out_read = n;
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
-{
-  (void)manifest;
-  (void)user_ctx;
-  /* Always report "not installed" so the deployment proceeds. */
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_backup(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
-{
-  (void)manifest;
-  (void)user_ctx;
-  printf("  [backup]  step %u [simulated]\n", step);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_install(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
-{
-  (void)manifest;
-  sim_ctx* s = (sim_ctx*)user_ctx;
-  if (s->fail_step > 0 && (uint32_t)(s->fail_step - 1) == step)
-  {
-    printf("  [install] step %u -> FORCED FAILURE (SU_SIM_FAIL_STEP)\n", step);
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  if (s->reboot && !s->reboot_signalled)
-  {
-    s->reboot_signalled = 1;
-    printf("  [install] step %u -> REBOOT_REQUIRED (SU_SIM_REBOOT)\n", step);
-    return AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
-  }
-  printf("  [install] step %u [simulated]\n", step);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_apply(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
-{
-  (void)manifest;
-  (void)user_ctx;
-  printf("  [apply]   step %u [simulated]\n", step);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_restore(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
-{
-  (void)manifest;
-  (void)user_ctx;
-  printf("  [restore] step %u (rollback) [simulated]\n", step);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
-{
-  sim_ctx* s = (sim_ctx*)user_ctx;
-  if (len == 0)
-  {
-    /* Invalidation: remove the file so a later run finds no checkpoint. */
-    if (remove(s->state_file) != 0 && errno != ENOENT)
-    {
-      return AZ_IOT_SU_RESULT_FAILURE;
-    }
-    printf("  [persist] cleared %s\n", s->state_file);
-    return AZ_IOT_SU_RESULT_SUCCESS;
-  }
-  FILE* f = fopen(s->state_file, "wb");
-  if (f == NULL)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  size_t w = fwrite(blob, 1, len, f);
-  fclose(f);
-  if (w != len)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  printf("  [persist] %zu bytes -> %s\n", len, s->state_file);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
-{
-  sim_ctx* s = (sim_ctx*)user_ctx;
-  FILE* f = fopen(s->state_file, "rb");
-  if (f == NULL)
-  {
-    return 1; /* nothing persisted */
-  }
-  size_t r = fread(blob, 1, cap, f);
-  int eof = feof(f);
-  fclose(f);
-  if (!eof)
-  {
-    return 1; /* blob did not fit in cap -> treat as no state */
-  }
-  *out_len = r;
-  return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* helpers                                                                   */
-/* ------------------------------------------------------------------------- */
-
-/* Indexed by az_iot_su_state / az_iot_su_operation. */
-static const char* const k_su_state_names[] = {
-  "Idle",           "ManifestReceived", "VerifyingManifest", "DownloadStarted", "DownloadComplete",
-  "BackupStarted",  "BackupComplete",   "InstallStarted",    "InstallComplete", "ApplyStarted",
-  "RestoreStarted", "Failed",
-};
-static const char* const k_su_operation_names[] = {
-  "onboarding update check",
-  "update check",
-  "status report",
-};
-
-#define SAMPLE_NAME_OF(table, i) \
-  (((size_t)(i) < sizeof(table) / sizeof((table)[0])) ? (table)[(size_t)(i)] : "?")
-
-/* True when the event the SDK stamped is long enough to carry @p field.
- *
- * Events grow by APPENDING, so the test is against the last field this code
- * actually reads -- not sizeof(the whole struct), which would reject a usable
- * event from any library older than the newest field. */
-#define SAMPLE_EVENT_HAS(ev, type, field) \
-  ((ev)->_internal_size >= offsetof(type, field) + sizeof((ev)->field))
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
@@ -348,7 +110,7 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   az_iot_su_client su_client;
-  sim_ctx sim;
+  su_sim sim;
   sample_run run;
   /* Sized by the SDK's own default so raising it really does grow this cache;
    * the values it holds come from the environment. */
@@ -370,7 +132,7 @@ static void sample_state_destroy(sample_state* s)
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
 
-  free(s->sim.state_file);
+  su_sim_deinit(&s->sim);
   free(s->manufacturer);
   free(s->model);
   free(s->installed_provider);
@@ -388,7 +150,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   /* `reason` is the last field read here, and `scope` indexes an array -- so an
    * event too short to carry them, or naming a scope this build does not know,
    * is ignored rather than read. */
-  if (!SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
+  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
       || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
@@ -418,7 +180,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
   sample_run* run = (sample_run*)user_ctx;
 
   /* `service_error` is the last field read here. */
-  if (!SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
+  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
   {
     return;
   }
@@ -428,8 +190,8 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED:
       printf(
           "Update workflow: %s -> %s\n",
-          SAMPLE_NAME_OF(k_su_state_names, event->previous_state),
-          SAMPLE_NAME_OF(k_su_state_names, event->state));
+          su_sample_state_name(event->previous_state),
+          su_sample_state_name(event->state));
       run->workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
       if (!run->workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
@@ -441,7 +203,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       fprintf(
           stderr,
           "%s abandoned: %s. Service said: code=%d message=\"%s\" trackingId=\"%s\"\n",
-          SAMPLE_NAME_OF(k_su_operation_names, event->operation),
+          su_sample_operation_name(event->operation),
           az_iot_result_to_string(event->reason),
           (int)event->service_error.code,
           event->service_error.message,
@@ -458,33 +220,13 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
   }
 }
 
-/* trace|debug|info|warn|error|off, in az_iot_log_level order. The default stays
- * INFO: the SDK's "su:" and "dps:" protocol lines are DEBUG and would bury the
- * sample's own output. */
-static az_iot_log_level sample_log_level_from_env(void)
-{
-  static const char* const k_names[] = { "trace", "debug", "info", "warn", "error", "off" };
-  az_iot_log_level out = AZ_IOT_LOG_LEVEL_INFO;
-  char* v = sample_env_dup("AZ_IOT_SU_LOG_LEVEL", NULL);
-  for (size_t i = 0; v != NULL && i < sizeof(k_names) / sizeof(k_names[0]); ++i)
-  {
-    if (strcmp(v, k_names[i]) == 0)
-    {
-      out = (az_iot_log_level)i;
-      break;
-    }
-  }
-  free(v);
-  return out;
-}
-
 /* ------------------------------------------------------------------------- */
 /* main                                                                      */
 /* ------------------------------------------------------------------------- */
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(sample_log_level_from_env());
+  az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
   signal(SIGINT, on_sigint);
@@ -492,12 +234,7 @@ int main(void)
   sample_state st = { 0 };
 
   /* Simulation knobs from the environment. */
-  st.sim.fail_step = (int)sample_env_long("SU_SIM_FAIL_STEP", 0);
-  st.sim.hash_mismatch = sample_env_flag("SU_SIM_HASH_MISMATCH");
-  st.sim.reboot = sample_env_flag("SU_SIM_REBOOT");
-  st.sim.delay_ms = sample_env_long("SU_SIM_DELAY_MS", 0);
-  st.sim.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
-  if (st.sim.state_file == NULL)
+  if (su_sim_init(&st.sim) != 0)
   {
     return 1;
   }
@@ -525,12 +262,12 @@ int main(void)
   sample_apply_dps_options(&copts, &st.config);
   copts.certificate_provider = &st.certs.base;
   /* Every device-update operation runs on the provisioning session, before the
-   * device registers, so by default this device declares it has no hub: the
-   * session is kept up and pumped, registration never runs, and the hub scope
-   * stays IDLE. Declared rather than inferred -- a hubless enrollment and a
-   * misconfigured one both fail registration the same way, so inferring it
-   * would hide real misconfiguration. */
-  copts.dps.provision_only = !sample_env_flag("AZ_IOT_SU_REGISTER_WITH_HUB");
+   * device registers, so this device declares it has no hub: the session is
+   * kept up and pumped, registration never runs, and the hub scope stays IDLE.
+   * Declared rather than inferred -- a hubless enrollment and a misconfigured
+   * one both fail registration the same way, so inferring it would hide real
+   * misconfiguration. */
+  copts.dps.provision_only = true;
   /* Reconnect with backoff + jitter so a long-running device rides out
    * transient drops. initial_delay_ms > 0 is what arms it. */
   copts.reconnection_policy.initial_delay_ms = 2000; /* first retry after 2s */
@@ -561,17 +298,7 @@ int main(void)
   }
 
   /* Software updates client. */
-  az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = sim_download;
-  hooks.read_file_fn = sim_read_file;
-  hooks.install_fn = sim_install;
-  hooks.apply_fn = sim_apply;
-  hooks.backup_fn = sim_backup;
-  hooks.restore_fn = sim_restore;
-  hooks.is_installed_fn = sim_is_installed;
-  hooks.persist_state_fn = sim_persist;
-  hooks.load_state_fn = sim_load;
-  hooks.user_ctx = &st.sim;
+  az_iot_su_platform_hooks hooks = su_sim_hooks(&st.sim);
 
   az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
 
@@ -663,8 +390,8 @@ int main(void)
 
   /* Ask for a day-0 onboarding update. Nothing is fetched unless the
    * application asks: only it knows whether it has a device record yet, and
-   * the onboarding route is the one that needs none. A device that had already
-   * provisioned would call az_iot_su_client_request_update() instead.
+   * the onboarding route is the one that needs none. A registered device calls
+   * az_iot_su_client_request_update() instead; see ../simulated_regular.
    *
    * The timeout bounds how long the CLIENT keeps reissuing this check before
    * giving up and raising AZ_IOT_SU_EVENT_OPERATION_ABANDONED with
@@ -702,11 +429,6 @@ int main(void)
     return 1;
   }
 
-  /* Which lifecycle means "ready": the provisioning session on a hubless
-   * device, the hub when one was asked for. */
-  const az_iot_connection_scope ready_scope
-      = copts.dps.provision_only ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
-
   /* One loop, from the moment open() returns. Nothing waits for a hub: the
    * update check runs on the provisioning session, so gating it on the hub
    * scope would leave it unissued on a device that has no hub. Both clients
@@ -718,18 +440,14 @@ int main(void)
     (void)az_iot_connection_client_do_work(&st.connection_client, 50);
     (void)az_iot_su_client_do_work(&st.su_client);
 
-    /* Says only which lifecycle came up, never whether the update check has
-     * been answered. In hub mode this fires strictly AFTER that answer: a
-     * successful verdict releases the provisioning hold, and only then does
-     * registration and the hub connect run. The SDK raises no event for a
+    /* Says only that the provisioning session came up, never whether the
+     * update check has been answered. The SDK raises no event for a
      * successful "no update available", so the sample cannot tell pending
      * from answered and does not claim to. */
-    if (!st.run.announced && st.run.conn[ready_scope] == AZ_IOT_CONN_STATE_CONNECTED)
+    if (!st.run.announced && st.run.conn[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_CONNECTED)
     {
       st.run.announced = 1;
-      printf(
-          "%s up. Running (Ctrl-C to exit)...\n",
-          (ready_scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning session" : "Hub connection");
+      printf("Provisioning session up. Running (Ctrl-C to exit)...\n");
     }
 
     /* A workflow ran to completion and returned to Idle. The process stays
