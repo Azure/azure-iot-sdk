@@ -2624,7 +2624,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
-    cmocka_unit_test_setup_teardown(init_against_an_mqtt_v3_connection_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_against_an_mqtt_v3_connection_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_tolerates_null, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),

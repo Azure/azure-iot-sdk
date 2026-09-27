@@ -94,22 +94,27 @@ if [ -n "${destroy_hits}" ]; then
     echo
 fi
 
-# Generation vocabulary. gen1/gen2/aeg/classic are matched anywhere, including
-# inside an identifier, since none of them has a legitimate use here. `next` is
-# an ordinary English word, so only the forms that pair it with a generation
-# word are banned.
+# Generation vocabulary, over every tracked text file under these trees -- not
+# just C sources, because the PowerShell test-env scripts, CMake, docs, JSON and
+# .gitignore carry the same names. gen1/gen2/aeg/classic are matched anywhere,
+# including inside an identifier, since none of them has a legitimate use here.
+# `next` is an ordinary English word, so only the forms that pair it with a
+# generation word are banned.
 #
-# The DPS `connectionProfile` wire value is the literal string "classic". The
-# exemption is per-occurrence, not per-line: the sed blanks that literal out and
-# the second grep re-tests what is left, so a line carrying both the wire value
-# and a banned name is still reported.
-banned_hits="$(grep -rniE \
-    --include='*.c' --include='*.h' \
-    'gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next' \
-    "${root_dir}/inc" "${root_dir}/src" "${root_dir}/tests" "${root_dir}/samples" \
-    2>/dev/null \
-    | sed 's/\\\{0,1\}"classic\\\{0,1\}"/"@wire@"/g' \
-    | grep -iE 'gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next' \
+# Two exemptions, both blanked per-occurrence rather than per-line, so a line
+# carrying an exempt string AND a banned name is still reported:
+#   - the DPS `connectionProfile` wire value, the literal string classic, quoted
+#     or backticked;
+#   - az-iot-hub-next, the name of a separate external repository.
+banned_re='gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next'
+banned_hits="$(git -C "${root_dir}/.." ls-files \
+        'c/inc/*' 'c/src/*' 'c/adapters/*' 'c/tests/*' 'c/samples/*' 2>/dev/null \
+    | grep -vE '\.(pem|der|crt|key|png|jpg|bin)$' \
+    | (cd "${root_dir}/.." && xargs -r grep -niIE "${banned_re}" 2>/dev/null) \
+    | sed -e 's/\\\{0,1\}"classic\\\{0,1\}"/"@wire@"/g' \
+          -e 's/`classic`/`@wire@`/g' \
+          -e 's/az-iot-hub-next/az-iot-@extrepo@/g' \
+    | grep -iE "${banned_re}" \
     || true)"
 if [ -n "${banned_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then

@@ -92,7 +92,7 @@ Canonical pending-work tracker for MQTTv5 hub integration.
 ## Phase 5: Feature Clients Dual-Mode
 
 ### Telemetry
-- [x] Add `telemetry_send_next()` path in `telemetry_client.c`
+- [x] Add `telemetry_send_mqtt_v5()` path in `telemetry_client.c`
 - [x] Test telemetry against mock hub (E2E verified)
 
 ### Direct Method
