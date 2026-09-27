@@ -48,6 +48,8 @@
 /* Defined below; used from the workflow state machine above it. */
 static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
+static bool fetch_in_flight_overdue(const az_iot_su_client* client);
+static bool expire_fetch_in_flight(az_iot_su_client* client);
 
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
@@ -1204,6 +1206,13 @@ static void on_channel_update(
   {
     return;
   }
+  /* Past the check's deadline: the caller was promised an answer by then, so a
+   * late one is ignored; its verdict abandons the check. */
+  if (fetch_in_flight_overdue(client))
+  {
+    AZ_IOT_LOG_ERROR("su: ignoring an update that arrived after its check's deadline");
+    return;
+  }
   process_update_metadata(client, update_payload, update_payload_len);
 }
 
@@ -1328,9 +1337,20 @@ static void on_channel_result(
   {
     return;
   }
-  /* The accepted fetch has its verdict; nothing is awaited any more. */
   if (operation != AZ_IOT_SU_OP_REPORT_STATUS)
   {
+    /* A verdict after the deadline is ignored and the check abandoned, as the
+     * tick would have done had it run first. With a newer request queued, that
+     * request's expiry (same deadline) reports it instead. */
+    if (fetch_in_flight_overdue(client))
+    {
+      if (!expire_fetch_in_flight(client))
+      {
+        SU_I(client).fetch_in_flight = SU_FETCH_NONE;
+      }
+      return;
+    }
+    /* The accepted fetch has its verdict; nothing is awaited any more. */
     SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   }
   if (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
@@ -1456,6 +1476,14 @@ static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeou
   SU_I(client).pending_fetch_timeout_ms = timeout_ms;
   SU_I(client).pending_fetch_deadline_ms
       = (timeout_ms == 0u) ? 0u : az_iot_time_mono_ms() + (uint64_t)timeout_ms;
+}
+
+/** @brief True when the awaited fetch's deadline has passed. */
+static bool fetch_in_flight_overdue(const az_iot_su_client* client)
+{
+  return SU_I(client).fetch_in_flight != SU_FETCH_NONE
+      && SU_I(client).pending_fetch_deadline_ms != 0
+      && az_iot_time_mono_ms() >= SU_I(client).pending_fetch_deadline_ms;
 }
 
 /** @brief The operation a SU_FETCH_* value stands for. */

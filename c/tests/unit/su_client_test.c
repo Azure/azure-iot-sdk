@@ -3740,6 +3740,66 @@ static void an_accepted_request_without_an_answer_is_abandoned(void** state)
   assert_int_equal(fx->chan.request_update_count, 1);
 }
 
+/* An answer that arrives after the deadline -- before the tick noticed -- is
+ * ignored: the update is not started, and the check is abandoned once. */
+static void an_answer_after_the_deadline_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+
+  /* The channel delivers the update, then its verdict. */
+  const char* patch = signed_patch();
+  fx->chan.cb((const uint8_t*)patch, strlen(patch), fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  pump(fx, 5);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->abandoned_count, 1);
+}
+
+/* A retryable verdict after the deadline does not re-arm the check. */
+static void a_retryable_verdict_after_the_deadline_abandons(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  int sent = fx->chan.request_update_count;
+  pump(fx, 5);
+  assert_int_equal(fx->chan.request_update_count, sent);
+}
+
 /* An answer ends the wait: nothing is abandoned after it. */
 static void an_answer_ends_the_in_flight_wait(void** state)
 {
@@ -4329,6 +4389,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
     cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_answer_after_the_deadline_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retryable_verdict_after_the_deadline_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
     cmocka_unit_test_setup_teardown(

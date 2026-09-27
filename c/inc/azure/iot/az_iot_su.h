@@ -382,10 +382,10 @@ extern "C"
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
- * One minute. The cost of an unserved check is the retries it keeps issuing,
- * so the default bounds that rather than the wait: a check that has not been
- * accepted in a minute is told to the application, which can ask again when it
- * chooses instead of the client retrying silently on every do_work().
+ * One minute. A check not answered within it -- still being retried, or sent
+ * and awaiting its response -- is abandoned and told to the application, which
+ * can ask again when it chooses instead of the client waiting or retrying
+ * silently.
  *
  * Only a default. The bound is a per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
