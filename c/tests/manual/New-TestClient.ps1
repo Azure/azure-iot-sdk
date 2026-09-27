@@ -100,16 +100,6 @@ if (-not (Test-Path $TwinSampleExe)) {
     $TwinSampleExe = Join-Path $BuildDir "samples\mqttv5\az_iot_sample_twin_get_patch.exe"
 }
 
-Write-Host "[build] Building C2D receiver sample..."
-cmake --build $BuildDir --config Debug --target az_iot_sample_mqttv5_c2d_receiver
-if ($LASTEXITCODE -ne 0) { throw "Build failed." }
-
-$C2dSampleExe = Join-Path $BuildDir "samples\mqttv5\Debug\az_iot_sample_c2d_receiver.exe"
-if (-not (Test-Path $C2dSampleExe)) {
-    # Try non-multi-config generator path
-    $C2dSampleExe = Join-Path $BuildDir "samples\mqttv5\az_iot_sample_c2d_receiver.exe"
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Generate .env file
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,9 +153,5 @@ Write-Host ""
 Write-Host "  To run the twin sample:" -ForegroundColor White
 Write-Host "    . '$EnvFile'"
 Write-Host "    & '$TwinSampleExe'"
-Write-Host ""
-Write-Host "  To run the C2D receiver sample:" -ForegroundColor White
-Write-Host "    . '$EnvFile'"
-Write-Host "    & '$C2dSampleExe'"
 
 Write-Host ""

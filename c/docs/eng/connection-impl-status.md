@@ -30,7 +30,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | [§5 Reconnection](../connection.md#5-reconnection) | implemented | partial — MQTT connect failures retry under the policy, but a failed provisioning flow is returned to the caller of `ProvisionAndConnectAsync` rather than retried |
 | [§6 Certificate management](../connection.md#6-certificate-management-onboarding-and-renewal) | implemented | partial — the CSR now rides the registration, but renewal over the hub is classic-only |
 | [§7 Device update](../connection.md#7-device-update-onboarding-and-renewal) | partial — implemented over the provisioning gateway; the hub channel is not written | none — no update support exists in the .NET client today, and §7 is the contract it will have to meet when it is added |
-| [§10 Connection topology](../connection.md#10-connection-topology) | partial — no MQTTv5 file-upload client | partial — no file-upload or cloud-to-device client on either generation |
+| [§10 Connection topology](../connection.md#10-connection-topology) | partial — no MQTTv5 file-upload or cloud-to-device client | partial — no file-upload or cloud-to-device client on either generation |
 
 ---
 
@@ -54,7 +54,7 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | Certificate renewal over the hub ([§6](../connection.md#6-certificate-management-onboarding-and-renewal)) | implemented (classic) | partial (classic) — no busy rejection for a duplicate in-flight request; explicit unsupported error on MQTTv5 |
 | Telemetry, direct methods, twin | MQTTv3 and MQTTv5 | MQTTv3 and MQTTv5 |
 | File upload ([§10.2](../connection.md#102-what-a-classic-sunset-would-cost)) | MQTTv3 only — no MQTTv5 client | none |
-| Cloud-to-device | MQTTv3 and MQTTv5 | none |
+| Cloud-to-device | MQTTv3 only — no MQTTv5 client | none |
 | Device update ([§7](../connection.md#7-device-update-onboarding-and-renewal)) | implemented over the provisioning gateway; hub channel not written | none |
 
 ---

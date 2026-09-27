@@ -116,7 +116,7 @@ az_iot_result az_iot_mqttv5_telemetry_client_send(
      * content-type user property; a third copy under its own name would say
      * the same thing in a spelling the service does not read. Every other
      * system property has no v5 equivalent, so it travels verbatim -- which is
-     * what az_iot_message.h promises and what mqttv5 c2d hands back unchanged. */
+     * what az_iot_message.h promises. */
     if (strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0)
     {
       continue;

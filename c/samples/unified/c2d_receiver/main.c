@@ -5,21 +5,17 @@
 /* SPDX-License-Identifier: MIT */
 /* unified/c2d_receiver - sample.
  *
- * Receive cloud-to-device messages for ~60 seconds on whichever hub DPS
- * assigns: Classic (mqttv3) or AEG (mqttv5), including after the device is moved to
- * a hub of the other generation. The AEG-only route is mqttv5/c2d_receiver. See
- * unified/telemetry for the shape every unified sample shares: build for an
- * assumed generation before open(), rebuild when DPS assigns the other one.
+ * Receive cloud-to-device messages for ~60 seconds. C2D is an MQTTv3 IoT Hub
+ * feature: the client subscribes to devices/<id>/messages/devicebound/#, and
+ * the properties ride in the topic, so the client percent-decodes them before
+ * the handler sees anything.
  *
- * Both clients deliver through the same handler type, so on_c2d below serves
- * either generation. What differs is underneath:
- *
- *   - Classic: the client subscribes to devices/<id>/messages/devicebound/#,
- *     and the properties ride in the topic, so the client percent-decodes them
- *     before the handler sees anything.
- *   - AEG: the client subscribes to nothing -- the presence handshake that
- *     precedes CONNECTED already holds ih/<id>/dev/# -- and the properties
- *     arrive as MQTT v5 user properties, already decoded.
+ * There is no MQTT v5 counterpart: C2D is not carried on the MQTTv5 hub. The mqttv3
+ * client pins MQTTv3 at init(), before open(), so DPS assigning an MQTTv5 hub --
+ * on the first connect or after a move -- stops the connection with
+ * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. The sample reports that and exits
+ * non-zero; it does not rebuild. A move to another MQTTv3 hub needs nothing
+ * from the application.
  *
  * DPS is handled internally by the connection client when dps.id_scope is set.
  */
@@ -40,45 +36,27 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  /* Only the one matching `profile` is initialized. */
-  az_iot_mqttv3_c2d_client mqttv3;
-  az_iot_mqttv5_c2d_client mqttv5;
-  az_iot_connection_profile profile;
+  az_iot_mqttv3_c2d_client c2d;
   int c2d_initialized;
 } sample_state;
 
 typedef struct
 {
-  sample_state* state;
   az_iot_connection_state conn_state;
   int connected_count;
   int faulted; /* terminal: nothing this sample can do about it */
-  int rebuild; /* DPS assigned `assigned_profile`; rebuild for it */
+  int unsupported_hub; /* DPS assigned `assigned_profile`, which has no C2D */
   az_iot_connection_profile assigned_profile;
   int messages_received;
 } user_context;
 
-static void clients_destroy(sample_state* s, user_context* ctx)
-{
-  (void)ctx;
-  if (!s->c2d_initialized)
-  {
-    return;
-  }
-  if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_mqttv5_c2d_client_destroy(&s->mqttv5);
-  }
-  else
-  {
-    az_iot_mqttv3_c2d_client_destroy(&s->mqttv3);
-  }
-  s->c2d_initialized = 0;
-}
-
 static void sample_state_destroy(sample_state* s)
 {
-  clients_destroy(s, NULL);
+  if (s->c2d_initialized)
+  {
+    az_iot_mqttv3_c2d_client_destroy(&s->c2d);
+    s->c2d_initialized = 0;
+  }
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -88,11 +66,9 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  /* Only record it: feature clients must not be destroyed from inside the
-   * callback, which runs nested in do_work(). */
   if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
   {
-    ctx->rebuild = 1;
+    ctx->unsupported_hub = 1;
     return;
   }
 
@@ -122,15 +98,14 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
   if (msg->content_type)
   {
-    /* The native MQTT v5 content type on AEG; the "$.ct" property out of the
-     * topic on Classic. Read the same way on either. */
+    /* The "$.ct" property out of the topic. */
     printf(" [%s]", msg->content_type);
   }
 
-  /* Plain text on either generation. Past AZ_IOT_C2D_MAX_PROPERTIES the rest
-   * are dropped with a warning. On Classic only, a decoded bag that overruns
-   * AZ_IOT_C2D_PROPERTY_BUFFER, or a malformed escape, surfaces NO properties
-   * rather than a truncated one. The message itself is always delivered. */
+  /* Plain text. Past AZ_IOT_C2D_MAX_PROPERTIES the rest are dropped with a
+   * warning. A decoded bag that overruns AZ_IOT_C2D_PROPERTY_BUFFER, or a
+   * malformed escape, surfaces NO properties rather than a truncated one. The
+   * message itself is always delivered. */
   for (size_t i = 0; i < msg->properties_count; ++i)
   {
     printf(
@@ -142,40 +117,6 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
     printf(" => %.*s", (int)msg->payload_len, (const char*)msg->payload);
   }
   printf("\n");
-}
-
-/* Pins the connection to `profile`: an assignment to the other generation is
- * then refused with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. */
-static az_iot_result clients_build(
-    sample_state* s,
-    az_iot_connection_profile profile,
-    user_context* ctx)
-{
-  az_iot_result result;
-  switch (profile)
-  {
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_c2d_client_init(&s->mqttv5, &s->connection_client);
-      if (result == AZ_IOT_OK)
-      {
-        s->profile = profile;
-        s->c2d_initialized = 1;
-        result = az_iot_mqttv5_c2d_client_set_handler(&s->mqttv5, on_c2d, ctx);
-      }
-      return result;
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      result = az_iot_mqttv3_c2d_client_init(&s->mqttv3, &s->connection_client);
-      if (result == AZ_IOT_OK)
-      {
-        s->profile = profile;
-        s->c2d_initialized = 1;
-        result = az_iot_mqttv3_c2d_client_set_handler(&s->mqttv3, on_c2d, ctx);
-      }
-      return result;
-    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
-    default:
-      return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
 }
 
 static void pump(sample_state* s, uint32_t timeout_ms)
@@ -194,7 +135,15 @@ int main(void)
     return 1;
   }
 
-  user_context user_ctx = { .state = &state };
+  /* The mock bypass is MQTT v5 only. */
+  if (sample_initial_profile(&state.config) != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  {
+    printf("Cloud-to-device messages are not available on this hub generation.\n");
+    sample_state_destroy(&state);
+    return 1;
+  }
+
+  user_context user_ctx = { 0 };
 
   /* Certificate provider */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -221,7 +170,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* v3.1.1 serves both DPS and an MQTTv3 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -229,16 +178,16 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
-      != AZ_IOT_OK)
+
+  /* Pins MQTTv3: an MQTTv5 assignment is refused before that hub is reached. */
+  if (az_iot_mqttv3_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
+  state.c2d_initialized = 1;
 
-  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
-  if (clients_build(&state, sample_initial_profile(&state.config), &user_ctx) != AZ_IOT_OK
+  if (az_iot_mqttv3_c2d_client_set_handler(&state.c2d, on_c2d, &user_ctx) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -246,30 +195,20 @@ int main(void)
   }
 
   uint64_t end_ms = sample_now_ms() + SAMPLE_RUN_MS;
-  while (!user_ctx.faulted && sample_now_ms() < end_ms)
+  while (!user_ctx.faulted && !user_ctx.unsupported_hub && sample_now_ms() < end_ms)
   {
     pump(&state, 100);
+  }
 
-    if (user_ctx.rebuild)
-    {
-      user_ctx.rebuild = 0;
-      printf(
-          "DPS assigned %s; rebuilding the feature client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
-      clients_destroy(&state, &user_ctx);
-      az_iot_connection_client_close(&state.connection_client);
-      if (clients_build(&state, user_ctx.assigned_profile, &user_ctx) != AZ_IOT_OK
-          || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
-      {
-        user_ctx.faulted = 1; /* recovery failed */
-        break;
-      }
-      continue;
-    }
+  if (user_ctx.unsupported_hub)
+  {
+    printf(
+        "DPS assigned %s. Cloud-to-device messages are not available on this hub generation.\n",
+        sample_connection_profile_name(user_ctx.assigned_profile));
   }
 
   printf("Received %d message(s).\n", user_ctx.messages_received);
-  int rc = (user_ctx.connected_count > 0 && !user_ctx.faulted) ? 0 : 1;
+  int rc = (user_ctx.connected_count > 0 && !user_ctx.faulted && !user_ctx.unsupported_hub) ? 0 : 1;
 
   az_iot_connection_client_close(&state.connection_client);
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)

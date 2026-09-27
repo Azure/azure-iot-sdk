@@ -82,7 +82,8 @@ is to report the generation accurately and to refuse the wrong API loudly.
 | `az_iot_connection_client` + DPS + reconnect + adapter registry | **single, shared** |
 | MQTT abstraction, adapters, certificate provider, logging, results, dispatch | **single, shared** |
 | Message types (`az_iot_telemetry_message`, `az_iot_c2d_message`, …) and callback typedefs | **single, shared** — see [§5](#5-what-stays-shared) |
-| Telemetry, C2D, twin, direct methods **clients** | **split** `mqttv3` / `mqttv5` |
+| Telemetry, twin, direct methods **clients** | **split** `mqttv3` / `mqttv5` |
+| C2D **client** | **`mqttv3` only** — not supported by MQTTv5 IoT Hub yet, see [§4](#c2d-is-mqttv3-only) |
 | File upload **client** | **`mqttv3` only** — cut from AEG, see [§4](#file-upload-is-mqttv3-only) |
 | Software updates | **not split** — one engine (`su_core`) behind a channel vtable; the twin channel is cut, see [§8](#8-device-update) |
 
@@ -329,13 +330,14 @@ on the other's API, even as a stub that returns an error.
 
 | Construct | Belongs to |
 |---|---|
-| MQTT v5 user properties on telemetry / C2D | MQTTv5 |
+| MQTT v5 user properties on telemetry | MQTTv5 |
 | Correlation-data request/response matching | MQTTv5 |
 | Twin push on connect | MQTTv5 |
 | Direct-method probe / ready handshake | MQTTv5 |
 | Topic property-bag encoding | MQTTv3 |
 | `$rid` correlation | MQTTv3 |
 | File upload over HTTPS + the application HTTP transport hook | MQTTv3 |
+| C2D (`devices/{device_id}/messages/devicebound/#`) | MQTTv3 |
 
 This is the concrete reason the split is worth doing: before it, the shared
 `az_iot_file_upload_client.h` opened by promising "one seamless API, transport
@@ -385,6 +387,22 @@ The plan of record was to split file upload like the other four, with
 Uploading the blob bytes to Azure Storage remains the application's job -- that
 never was an SDK responsibility.
 
+### C2D is mqttv3-only
+
+C2D was split like telemetry, with an `az_iot_mqttv5_c2d_client` receiving
+`ih/{device_id}/dev/c2d`. The MQTTv5 IoT Hub does not support C2D yet, so that client,
+its sample (`samples/mqttv5/c2d_receiver`) and its unit suite were **removed**:
+publishing an API the service cannot serve is the surface-nobody-implements
+problem this split exists to remove. The .NET SDK removed the same surface.
+
+- **`az_iot_mqttv3_c2d_client`** is unchanged, and pins MQTTv3 at `init()`. An
+  MQTT v5 assignment fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- `az_iot_c2d_message`, `az_iot_c2d_property` and `az_iot_c2d_handler_callback`
+  stay in the shared `az_iot_message.h` ([§5](#5-what-stays-shared)), so an MQTTv5
+  client can be added back beside MQTTv3 without moving them.
+- `samples/unified/c2d_receiver` is MQTTv3 IoT Hub only, like
+  `samples/unified/file_upload`: it reports an MQTTv5 assignment and exits non-zero.
+
 ---
 
 ## 5. What stays shared
@@ -413,7 +431,7 @@ generation's `_options` argument, not in a forked message type.
 flowchart TB
     APP["Customer application"]
     G1["az_iot_mqttv3 -- IoT Hub Classic feature clients<br/>telemetry . c2d . twin . methods<br/>file_upload (HTTPS + app transport hook)"]
-    G2["az_iot_mqttv5 -- IoT/AEG Hub feature clients<br/>telemetry . c2d . twin . methods"]
+    G2["az_iot_mqttv5 -- MQTTv5 IoT Hub feature clients<br/>telemetry . twin . methods"]
     CONN["az_iot_connection_client -- SINGLE<br/>DPS registration . reconnect . adapter registry<br/>resolves + reports az_iot_hub_profile"]
     CORE["az_iot_core<br/>result . log . version . mqtt_iface . dispatch<br/>reconnect . span_writer . certificate_provider<br/>shared message types + shared callback typedefs"]
     ADAPT["Adapters -- paho v3.1.1 + v5 . rust v5 . cert_openssl . su/crypto_openssl"]
@@ -937,7 +955,8 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > subscriptions where one sufficed, re-issued all six on every reconnect, and
 > spent registry slots it never needed. All five are gone; the dispatch handlers
 > that route the messages stay, because it was never the filters that did the
-> routing.
+> routing. (The `dev/c2d` handler went later, with the MQTTv5 C2D client: MQTTv5 IoT
+> Hub does not support C2D yet, see [§4](#c2d-is-mqttv3-only).)
 >
 > **The wildcard genuinely covers everything, including features not yet
 > designed.** The AEG topic RFC (`gateway/rfcs/aeg/topics.md`) defines the
@@ -1025,9 +1044,10 @@ rebuilds them for the profile the event carries and reopens -- the recovery of
 connect and on a move in either direction. `samples/unified/connect_first` shows
 the conservative alternative: build once `CONNECTED`, from the profile read then.
 Where AEG has the feature, a `samples/mqttv5/` sample pins MQTTv5 at `init()`.
-`samples/unified/file_upload` is the Classic-only exception: it builds after
-`CONNECTED` and reports an MQTT v5 hub, with no rebuild. There is no Classic-only
-group. See [samples/README.md](../../samples/README.md).
+`samples/unified/c2d_receiver` and `samples/unified/file_upload` are the
+MQTTv3 IoT Hub only exceptions: they report an MQTT v5 hub, with no rebuild
+(`file_upload` builds after `CONNECTED`, `c2d_receiver` before `open()`). There
+is no MQTTv3-only group. See [samples/README.md](../../samples/README.md).
 
 **Test expansion.** This roughly doubles the feature-client test surface: each
 generation's client needs its own unit suite against the in-memory mock, and each
@@ -1047,6 +1067,8 @@ exist today:
 - MQTTv3 file upload with no HTTP transport supplied fails at init
 - file upload against an MQTT v5 connection fails at init with
   `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no MQTTv5 file upload client)
+- MQTTv3 C2D against an MQTT v5 connection fails the same way (there is no MQTTv5
+  C2D client)
 
 e2e needs provisioned resources for **both** generations. `iot-sdks-e2e-fx` cannot
 provision an AEG hub today — that arrives once MQTTv5 is deployable through the
@@ -1220,3 +1242,7 @@ baseline.
   rebuild on a profile mismatch, including after a move) and `samples/mqttv5/`;
   the Classic-only samples and `connection_profile_fallback` are folded into the
   unified ones (section 11).
+- 09/26/2026: **C2D removed from MQTTv5**, which does not support it yet:
+  `az_iot_mqttv5_c2d_client`, `samples/mqttv5/c2d_receiver` and the MQTTv5 C2D unit
+  suite are gone, and `samples/unified/c2d_receiver` is MQTTv3 IoT Hub only. MQTTv3
+  C2D is unchanged. See [§4](#c2d-is-mqttv3-only).

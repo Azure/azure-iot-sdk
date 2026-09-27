@@ -32,7 +32,7 @@ flowchart TB
     APP["User application"]
 
     subgraph PUB["Public API"]
-        APIA["az_iot_connection_client<br/>az_iot_mqttv3_* / az_iot_mqttv5_*<br/>(telemetry, c2d, direct_method, twin)<br/>az_iot_mqttv3_file_upload_client"]
+        APIA["az_iot_connection_client<br/>az_iot_mqttv3_* / az_iot_mqttv5_*<br/>(telemetry, direct_method, twin)<br/>az_iot_mqttv3_c2d_client<br/>az_iot_mqttv3_file_upload_client"]
     end
 
     subgraph CORE["Core infrastructure"]

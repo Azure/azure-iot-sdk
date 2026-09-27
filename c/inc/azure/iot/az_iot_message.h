@@ -23,16 +23,16 @@ extern "C"
 /* Well-known IoT Hub system property keys.
  *
  * They apply in both directions: set one on an az_iot_telemetry_message going
- * out, read one off an az_iot_c2d_message coming in. The same spelling works
- * either way because the SDK owns the encoding -- these are the plain,
- * human-readable names, never the pre-encoded form.
+ * out, read one off an az_iot_c2d_message coming in (MQTTv3 IoT Hub only). The
+ * same spelling works either way because the SDK owns the encoding -- these
+ * are the plain, human-readable names, never the pre-encoded form.
  *
- * On the Classic (MQTT v3.1.1) path the SDK percent-encodes both halves into
+ * On the MQTTv3 path the SDK percent-encodes both halves into
  * the topic's property bag, so "$.ct" travels as "%24.ct" and a value of
  * "application/json" as "application%2Fjson", and decodes them again on the way
  * in. azure-sdk-for-c spells the same names pre-encoded
  * (AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE is "%24.ct"); the bytes on the wire
- * are identical. On the Hub-Next (MQTT v5) path they travel as User Properties
+ * are identical. On the MQTTv5 path they travel as User Properties
  * and need no encoding at all.
  *
  * See
@@ -72,8 +72,7 @@ extern "C"
 #define AZ_IOT_C2D_MAX_PROPERTIES 8
 #endif
 /* Bytes available to hold the decoded property names and values of one
- * message. Only mqttv3 decodes -- mqttv5 user properties arrive already decoded --
- * and decoding never grows the text, so this only has to cover the
+ * message. Decoding never grows the text, so this only has to cover the
  * property-bag portion of an mqttv3 topic. */
 #ifndef AZ_IOT_C2D_PROPERTY_BUFFER
 #define AZ_IOT_C2D_PROPERTY_BUFFER 256
@@ -97,6 +96,8 @@ extern "C"
   /**
    * @brief A received cloud-to-device message.
    *
+   * MQTTv3 IoT Hub only: C2D is not carried on the MQTT v5 hub.
+   *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
    */
@@ -104,8 +105,8 @@ extern "C"
   {
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
-    /** Convenience view of the `$.ct` property (mqttv3) or the MQTT v5
-     * content-type (mqttv5). NULL when the message carries none. */
+    /** Convenience view of the `$.ct` property. NULL when the message carries
+     * none. */
     const char* content_type;
     const az_iot_c2d_property* properties;
     size_t properties_count;

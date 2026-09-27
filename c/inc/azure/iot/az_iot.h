@@ -15,7 +15,6 @@
 #include "mqttv3/az_iot_telemetry_client.h"
 #include "mqttv5/az_iot_telemetry_client.h"
 #include "mqttv3/az_iot_c2d_client.h"
-#include "mqttv5/az_iot_c2d_client.h"
 #include "mqttv3/az_iot_direct_method_client.h"
 #include "mqttv5/az_iot_direct_method_client.h"
 #include "mqttv3/az_iot_twin_client.h"
