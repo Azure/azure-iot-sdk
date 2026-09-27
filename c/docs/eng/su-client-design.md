@@ -1074,7 +1074,7 @@ material** — it only wires the primitives:
 
 | Adapter | Location | Crypto Library | Target |
 |---------|----------|---------------|--------|
-| mbedTLS | `adapters/su/crypto_mbedtls/` | mbedTLS 3.x | ESP32, constrained Linux |
+| mbedTLS | `adapters/su/crypto_mbedtls/` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto) | ESP32, constrained Linux |
 | OpenSSL | `adapters/su/crypto_openssl/` | OpenSSL 3.0+ | Linux, general-purpose |
 
 ```c

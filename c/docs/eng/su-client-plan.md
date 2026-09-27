@@ -149,10 +149,10 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 45 | Software updates transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
+| 56 | Testing and conformance | ✅ | — | — | — | — | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
-| 56 | Testing and conformance | 🟡 | P0 | S | — | 1 | 9/28 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
@@ -613,8 +613,14 @@ crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in P
   the cases that assert **twin wire shapes** (desired-property deployment, reported agent state,
   the 200/406 acknowledgement, `retryTimestamp` redelivery) go with the cut and are replaced by
   software-updates-shaped equivalents. Migrating this suite is part of Tier 0, not follow-up work.
-- **Crypto vector tests (🟡)** — known-good/bad RS256 + SHA-256 vectors; prove hooks
-  are primitive-only. Unaffected by the cut.
+- **Crypto vector tests (✅)** — one contract suite (`tests/support/su_crypto_contract.c`)
+  runs the committed vectors (`su_crypto_vectors.h`, from `gen_su_crypto_vectors.py`) against
+  each adapter: FIPS 180-4 SHA-256 one-shot and streamed, RS256 good/bad (wrong key or
+  exponent, malformed signatures, PSS, other hashes, malformed PKCS#1 v1.5), and a real
+  root → SJWK → manifest chain plus a file hash through the public parser, recording that
+  hooks receive only primitive inputs. mbedTLS runs on 3.6 LTS, 4.1 LTS and 4.2 in CI. The
+  OpenSSL adapter now rejects even or < 3 public exponents; with e = 1 any encoded message
+  verified.
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_su_conformance` over all
   protocol states + single/multi-step manifests, written against the **Software updates** contract.

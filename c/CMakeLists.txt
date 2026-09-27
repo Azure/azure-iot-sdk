@@ -111,6 +111,10 @@ if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
     add_subdirectory(adapters/su/crypto_openssl)
 endif()
 
+if(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS)
+    add_subdirectory(adapters/su/crypto_mbedtls)
+endif()
+
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)
     add_subdirectory(adapters/cert_openssl)
 endif()
