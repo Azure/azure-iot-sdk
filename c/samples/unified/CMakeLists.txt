@@ -14,11 +14,11 @@ foreach(sample
         # is exactly the feature: MQTT over WebSockets, and an HTTP CONNECT proxy.
         websockets
         proxy)
-    az_iot_add_sample(unified ${sample} az_iot_gen1 az_iot_gen2)
+    az_iot_add_sample(unified ${sample} az_iot_mqttv3 az_iot_mqttv5)
 endforeach()
 
 # File upload exists on Classic only; on an AEG hub the sample says so.
-az_iot_add_sample(unified file_upload az_iot_gen1)
+az_iot_add_sample(unified file_upload az_iot_mqttv3)
 # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
 # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
 # to Azure Storage, and the completion notification. Optional: without curl

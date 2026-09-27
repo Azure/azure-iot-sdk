@@ -6,9 +6,9 @@
 /* unified/telemetry - sample.
  *
  * Send telemetry for ~60 seconds to whichever hub DPS assigns the device: a
- * Classic IoT Hub (gen1, MQTT v3.1.1) or an AEG hub (gen2, MQTT v5), including
+ * Classic IoT Hub (mqttv3, MQTT v3.1.1) or an AEG hub (mqttv5, MQTT v5), including
  * when the device is moved to a hub of the other generation while it runs. The
- * AEG-only route is gen2/telemetry.
+ * AEG-only route is mqttv5/telemetry.
  *
  * Every unified sample has this shape, and this is the one to read first:
  *
@@ -49,8 +49,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is initialized. */
-  az_iot_gen1_telemetry_client gen1;
-  az_iot_gen2_telemetry_client gen2;
+  az_iot_mqttv3_telemetry_client mqttv3;
+  az_iot_mqttv5_telemetry_client mqttv5;
   az_iot_connection_profile profile;
   int telemetry_initialized;
 } sample_state;
@@ -74,11 +74,11 @@ static void telemetry_destroy(sample_state* state)
   }
   if (state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_gen2_telemetry_client_destroy(&state->gen2);
+    az_iot_mqttv5_telemetry_client_destroy(&state->mqttv5);
   }
   else
   {
-    az_iot_gen1_telemetry_client_destroy(&state->gen1);
+    az_iot_mqttv3_telemetry_client_destroy(&state->mqttv3);
   }
   state->telemetry_initialized = 0;
 }
@@ -91,10 +91,10 @@ static az_iot_result telemetry_build(sample_state* state, az_iot_connection_prof
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_gen2_telemetry_client_init(&state->gen2, &state->connection_client);
+      result = az_iot_mqttv5_telemetry_client_init(&state->mqttv5, &state->connection_client);
       break;
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      result = az_iot_gen1_telemetry_client_init(&state->gen1, &state->connection_client);
+      result = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
       break;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
@@ -174,8 +174,8 @@ static az_iot_result send_one(sample_state* state, user_context* ctx)
   msg.properties_count = sizeof(props) / sizeof(props[0]);
 
   az_iot_result result = state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_gen2_telemetry_client_send(&state->gen2, &msg, on_send_done, ctx)
-      : az_iot_gen1_telemetry_client_send(&state->gen1, &msg, on_send_done, ctx);
+      ? az_iot_mqttv5_telemetry_client_send(&state->mqttv5, &msg, on_send_done, ctx)
+      : az_iot_mqttv3_telemetry_client_send(&state->mqttv3, &msg, on_send_done, ctx);
   ctx->send_pending = (result == AZ_IOT_OK);
   return result;
 }

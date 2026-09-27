@@ -180,8 +180,9 @@ static void test_telemetry(void** state)
   }
   assert_true(watching);
 
-  az_iot_gen1_telemetry_client telemetry_client;
-  assert_int_equal(az_iot_gen1_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
+  az_iot_mqttv3_telemetry_client telemetry_client;
+  assert_int_equal(
+      az_iot_mqttv3_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
 
   az_iot_telemetry_property props[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -194,7 +195,7 @@ static void test_telemetry(void** state)
 
   send_ctx sc = { 0 };
   assert_int_equal(
-      az_iot_gen1_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
+      az_iot_mqttv3_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
 
   bool seen = false;
   time_t start = time(NULL);
@@ -217,7 +218,7 @@ static void test_telemetry(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_gen1_telemetry_client_destroy(&telemetry_client);
+  az_iot_mqttv3_telemetry_client_destroy(&telemetry_client);
   /* Release the AMQP/TLS connection before the next scenario (the Windows
    * reference transport allows only one TLS connection at a time). */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
@@ -260,9 +261,9 @@ static void test_c2d(void** state)
   c2d_ctx cctx = { 0 };
   make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
 
-  az_iot_gen1_c2d_client c2d;
-  assert_int_equal(az_iot_gen1_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
+  az_iot_mqttv3_c2d_client c2d;
+  assert_int_equal(az_iot_mqttv3_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
 
   /* Give the subscription a few work slices to settle before the cloud sends. */
   for (int i = 0; i < 20; ++i)
@@ -299,7 +300,7 @@ static void test_c2d(void** state)
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_gen1_c2d_client_destroy(&c2d);
+  az_iot_mqttv3_c2d_client_destroy(&c2d);
 
   assert_true(cctx.received);
   assert_true(cctx.matched);
@@ -316,8 +317,8 @@ static void on_method(
 {
   (void)method_name;
   /* Echo the request payload back with a 200. */
-  az_iot_result rc = az_iot_gen1_direct_method_respond(
-      (az_iot_gen1_direct_method_client*)user_ctx, request, 200, payload, payload_len);
+  az_iot_result rc = az_iot_mqttv3_direct_method_respond(
+      (az_iot_mqttv3_direct_method_client*)user_ctx, request, 200, payload, payload_len);
   (void)rc;
 }
 
@@ -325,9 +326,9 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_gen1_direct_method_client dm;
-  assert_int_equal(az_iot_gen1_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_gen1_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
+  az_iot_mqttv3_direct_method_client dm;
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -351,7 +352,7 @@ static void test_direct_method(void** state)
     }
   }
 
-  az_iot_gen1_direct_method_client_destroy(&dm);
+  az_iot_mqttv3_direct_method_client_destroy(&dm);
 
   if (rc != 1)
   {
@@ -428,14 +429,14 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_gen1_twin_client twin;
-  assert_int_equal(az_iot_gen1_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
+  az_iot_mqttv3_twin_client twin;
+  assert_int_equal(az_iot_mqttv3_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
 
   /* --- desired: cloud patches, device observes ------------------------- */
   desired_ctx dctx = { 0 };
   make_marker(dctx.expected, sizeof(dctx.expected), "desired");
   assert_int_equal(
-      az_iot_gen1_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
+      az_iot_mqttv3_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -481,7 +482,7 @@ static void test_twin(void** state)
 
   patch_ack_ctx pack = { 0 };
   assert_int_equal(
-      az_iot_gen1_twin_client_patch_reported(
+      az_iot_mqttv3_twin_client_patch_reported(
           &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
       AZ_IOT_OK);
 
@@ -528,7 +529,7 @@ static void test_twin(void** state)
   }
   assert_true(reported_seen);
 
-  az_iot_gen1_twin_client_deinit(&twin);
+  az_iot_mqttv3_twin_client_deinit(&twin);
 }
 
 int main(void)

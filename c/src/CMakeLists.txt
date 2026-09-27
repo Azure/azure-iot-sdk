@@ -57,33 +57,33 @@ target_link_libraries(az_iot_core
 az_iot_apply_warnings(az_iot_core)
 az_iot_apply_coverage(az_iot_core)
 
-add_library(az_iot_gen1
-    gen1/telemetry_client.c
-    gen1/c2d_client.c
-    gen1/direct_method_client.c
-    gen1/twin_client.c
-    gen1/file_upload_client.c
+add_library(az_iot_mqttv3
+    mqttv3/telemetry_client.c
+    mqttv3/c2d_client.c
+    mqttv3/direct_method_client.c
+    mqttv3/twin_client.c
+    mqttv3/file_upload_client.c
 )
-add_library(azure::iot::gen1 ALIAS az_iot_gen1)
-target_include_directories(az_iot_gen1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
-target_link_libraries(az_iot_gen1 PUBLIC az_iot_core)
-az_iot_apply_warnings(az_iot_gen1)
-az_iot_apply_coverage(az_iot_gen1)
+add_library(azure::iot::mqttv3 ALIAS az_iot_mqttv3)
+target_include_directories(az_iot_mqttv3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
+target_link_libraries(az_iot_mqttv3 PUBLIC az_iot_core)
+az_iot_apply_warnings(az_iot_mqttv3)
+az_iot_apply_coverage(az_iot_mqttv3)
 
-add_library(az_iot_gen2
-    gen2/telemetry_client.c
-    gen2/c2d_client.c
-    gen2/direct_method_client.c
-    gen2/direct_method_codec.c
-    gen2/twin_client.c
+add_library(az_iot_mqttv5
+    mqttv5/telemetry_client.c
+    mqttv5/c2d_client.c
+    mqttv5/direct_method_client.c
+    mqttv5/direct_method_codec.c
+    mqttv5/twin_client.c
 )
-add_library(azure::iot::gen2 ALIAS az_iot_gen2)
-# gen2's own internal headers live under gen2/internal/; core's are reached
-# through the core entry, exactly as gen1 does.
-target_include_directories(az_iot_gen2 PRIVATE
+add_library(azure::iot::mqttv5 ALIAS az_iot_mqttv5)
+# mqttv5's own internal headers live under mqttv5/internal/; core's are reached
+# through the core entry, exactly as mqttv3 does.
+target_include_directories(az_iot_mqttv5 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/gen2
+    ${CMAKE_CURRENT_SOURCE_DIR}/mqttv5
 )
-target_link_libraries(az_iot_gen2 PUBLIC az_iot_core)
-az_iot_apply_warnings(az_iot_gen2)
-az_iot_apply_coverage(az_iot_gen2)
+target_link_libraries(az_iot_mqttv5 PUBLIC az_iot_core)
+az_iot_apply_warnings(az_iot_mqttv5)
+az_iot_apply_coverage(az_iot_mqttv5)

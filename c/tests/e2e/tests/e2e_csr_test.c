@@ -124,7 +124,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   csr_ctx ctx = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client conn = { 0 };
-  az_iot_gen1_telemetry_client telemetry = { 0 };
+  az_iot_mqttv3_telemetry_client telemetry = { 0 };
 
   az_iot_certificate_provider_managed_options mopts = {
     .bootstrap_cert_pem_path = cert,
@@ -154,7 +154,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   assert_int_equal(
       AZ_IOT_OK,
       az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()));
-  assert_int_equal(AZ_IOT_OK, az_iot_gen1_telemetry_client_init(&telemetry, &conn));
+  assert_int_equal(AZ_IOT_OK, az_iot_mqttv3_telemetry_client_init(&telemetry, &conn));
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_open(&conn));
 
@@ -182,7 +182,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   message.payload = payload;
   message.payload_len = sizeof(payload) - 1;
   assert_int_equal(
-      AZ_IOT_OK, az_iot_gen1_telemetry_client_send(&telemetry, &message, on_send_done, &ctx));
+      AZ_IOT_OK, az_iot_mqttv3_telemetry_client_send(&telemetry, &message, on_send_done, &ctx));
   start = time(NULL);
   while (!ctx.send_done && ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
          && (time(NULL) - start) < 30)
@@ -198,7 +198,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
 
-  az_iot_gen1_telemetry_client_destroy(&telemetry);
+  az_iot_mqttv3_telemetry_client_destroy(&telemetry);
   az_iot_connection_client_destroy(&conn);
   az_iot_certificate_provider_managed_destroy(&provider);
 

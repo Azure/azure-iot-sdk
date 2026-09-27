@@ -219,7 +219,7 @@ typedef struct
 {
   e2e_device dev;
   az_iot_e2e_service* svc;
-  az_iot_gen1_file_upload_client fu;
+  az_iot_mqttv3_file_upload_client fu;
   hub_http_ctx http_ctx;
   bool fu_ok;
 } fixture;
@@ -362,7 +362,7 @@ static void request_sas(fixture* fx, const char* blob_name, upload_ctx* u)
 {
   memset(u, 0, sizeof(*u));
   assert_int_equal(
-      AZ_IOT_OK, az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, blob_name, on_sas, u));
+      AZ_IOT_OK, az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, blob_name, on_sas, u));
   assert_true(u->sas_done);
   assert_int_equal(u->sas_status, AZ_IOT_OK);
   assert_true(u->correlation_id[0] != '\0');
@@ -411,7 +411,7 @@ static int group_setup(void** state)
   g_fx.http_ctx.cert = g_fx.dev.cert;
   g_fx.http_ctx.key = g_fx.dev.key;
   az_iot_file_upload_http_transport http = { e2e_http_send, &g_fx.http_ctx };
-  if (az_iot_gen1_file_upload_client_init(&g_fx.fu, &g_fx.dev.conn, &http) != AZ_IOT_OK)
+  if (az_iot_mqttv3_file_upload_client_init(&g_fx.fu, &g_fx.dev.conn, &http) != AZ_IOT_OK)
   {
     fprintf(stderr, "file upload e2e: file upload client init failed\n");
     return -1;
@@ -425,7 +425,7 @@ static int group_teardown(void** state)
   (void)state;
   if (g_fx.fu_ok)
   {
-    az_iot_gen1_file_upload_client_deinit(&g_fx.fu);
+    az_iot_mqttv3_file_upload_client_deinit(&g_fx.fu);
   }
   if (g_fx.svc != NULL)
   {
@@ -456,7 +456,7 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
 
   assert_int_equal(
       AZ_IOT_OK,
-      az_iot_gen1_file_upload_client_notify_complete(
+      az_iot_mqttv3_file_upload_client_notify_complete(
           &fx->fu, failed.correlation_id, false, on_notify, &failed));
   assert_true(failed.notify_done);
   assert_int_equal(failed.notify_status, AZ_IOT_OK);
@@ -535,7 +535,7 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     /* 4. Report success. */
     assert_int_equal(
         AZ_IOT_OK,
-        az_iot_gen1_file_upload_client_notify_complete(
+        az_iot_mqttv3_file_upload_client_notify_complete(
             &fx->fu, u.correlation_id, true, on_notify, &u));
     assert_true(u.notify_done);
     assert_int_equal(u.notify_status, AZ_IOT_OK);
@@ -575,7 +575,7 @@ static void test_notify_with_unknown_correlation_id_is_rejected(void** state)
   memset(&u, 0, sizeof(u));
   assert_int_equal(
       AZ_IOT_OK,
-      az_iot_gen1_file_upload_client_notify_complete(
+      az_iot_mqttv3_file_upload_client_notify_complete(
           &fx->fu, "e2e-correlation-id-that-does-not-exist", true, on_notify, &u));
   assert_true(u.notify_done);
   assert_int_equal(u.notify_status, AZ_IOT_ERR_INVALID_ARG);
@@ -591,16 +591,17 @@ static void test_client_rejects_invalid_arguments(void** state)
   upload_ctx u;
   memset(&u, 0, sizeof(u));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "", on_sas, &u));
+      AZ_IOT_ERR_INVALID_ARG,
+      az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, "", on_sas, &u));
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG,
-      az_iot_gen1_file_upload_client_get_sas_uri(&fx->fu, "blob.txt", NULL, &u));
+      az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, "blob.txt", NULL, &u));
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG,
-      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "", true, on_notify, &u));
+      az_iot_mqttv3_file_upload_client_notify_complete(&fx->fu, "", true, on_notify, &u));
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG,
-      az_iot_gen1_file_upload_client_notify_complete(&fx->fu, "corr", true, NULL, &u));
+      az_iot_mqttv3_file_upload_client_notify_complete(&fx->fu, "corr", true, NULL, &u));
   assert_false(u.sas_done);
   assert_false(u.notify_done);
 }
@@ -626,13 +627,13 @@ static void test_sequential_uploads_reuse_the_client(void** state)
   /* Release both so the hub does not keep them pending against the account. */
   assert_int_equal(
       AZ_IOT_OK,
-      az_iot_gen1_file_upload_client_notify_complete(
+      az_iot_mqttv3_file_upload_client_notify_complete(
           &fx->fu, first.correlation_id, false, on_notify, &first));
   assert_true(first.notify_done);
   assert_int_equal(first.notify_status, AZ_IOT_OK);
   assert_int_equal(
       AZ_IOT_OK,
-      az_iot_gen1_file_upload_client_notify_complete(
+      az_iot_mqttv3_file_upload_client_notify_complete(
           &fx->fu, second.correlation_id, false, on_notify, &second));
   assert_true(second.notify_done);
   assert_int_equal(second.notify_status, AZ_IOT_OK);

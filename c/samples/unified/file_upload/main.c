@@ -6,9 +6,9 @@
 /* unified/file_upload - sample.
  *
  * File upload is an IoT Hub Classic feature:
- *   1. az_iot_gen1_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
+ *   1. az_iot_mqttv3_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
  *   2. the app PUTs the file to that SAS URI on Azure Storage (HTTPS)
- *   3. az_iot_gen1_file_upload_client_notify_complete()
+ *   3. az_iot_mqttv3_file_upload_client_notify_complete()
  *
  * The control plane is HTTPS to the hub, performed through the application HTTP
  * hook this sample registers -- the SDK ships no HTTP client, so the hook is
@@ -53,12 +53,12 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_gen1_file_upload_client file_upload_client;
+  az_iot_mqttv3_file_upload_client file_upload_client;
 } sample_state;
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_gen1_file_upload_client_deinit(&s->file_upload_client);
+  az_iot_mqttv3_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_destroy(&s->connection_client);
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
@@ -307,14 +307,14 @@ static void on_notify(az_iot_result status, void* user_ctx)
 /* Drive the three-step upload. Returns 0 on a fully successful upload. */
 static int run_file_upload(sample_state* state)
 {
-  az_iot_gen1_file_upload_client* fu = &state->file_upload_client;
+  az_iot_mqttv3_file_upload_client* fu = &state->file_upload_client;
   upload_ctx u;
   memset(&u, 0, sizeof(u));
 
   /* Step 1: request a SAS URI. on_sas fires synchronously here -- the HTTP hook
    * is synchronous. */
   printf("Requesting SAS URI for '%s'...\n", k_blob_name);
-  az_iot_result gr = az_iot_gen1_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
+  az_iot_result gr = az_iot_mqttv3_file_upload_client_get_sas_uri(fu, k_blob_name, on_sas, &u);
   if (gr != AZ_IOT_OK)
   {
     printf("Failed to start the SAS URI request: %s\n", az_iot_result_to_string(gr));
@@ -356,8 +356,8 @@ static int run_file_upload(sample_state* state)
 
   /* Step 3: notify IoT Hub of the outcome (always, success or failure). */
   printf("Notifying IoT Hub of completion...\n");
-  az_iot_result nr
-      = az_iot_gen1_file_upload_client_notify_complete(fu, u.correlation_id, put_ok, on_notify, &u);
+  az_iot_result nr = az_iot_mqttv3_file_upload_client_notify_complete(
+      fu, u.correlation_id, put_ok, on_notify, &u);
   if (nr != AZ_IOT_OK)
   {
     printf("Failed to send the completion notification: %s\n", az_iot_result_to_string(nr));
@@ -465,7 +465,7 @@ int main(void)
   }
   else if (profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
   {
-    /* No gen2 file upload client exists; the gen1 one would refuse this
+    /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
      * connection at init(). */
     printf("File upload is not available on this hub generation.\n");
   }
@@ -480,7 +480,7 @@ int main(void)
     hub_http_ctx http_ctx = { state.config.cert, state.config.key };
     az_iot_file_upload_http_transport http = { curl_http_send, &http_ctx };
 
-    if (az_iot_gen1_file_upload_client_init(
+    if (az_iot_mqttv3_file_upload_client_init(
             &state.file_upload_client, &state.connection_client, &http)
         != AZ_IOT_OK)
     {

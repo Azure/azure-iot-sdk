@@ -36,40 +36,40 @@ report_pattern() {
 }
 
 report_pattern \
-    "gen1 source must not reference gen2" \
-    "gen2_" \
-    "${root_dir}/src/gen1"
+    "mqttv3 source must not reference mqttv5" \
+    "mqttv5_" \
+    "${root_dir}/src/mqttv3"
 report_pattern \
-    "gen2 source must not reference gen1" \
-    "gen1_" \
-    "${root_dir}/src/gen2"
+    "mqttv5 source must not reference mqttv3" \
+    "mqttv3_" \
+    "${root_dir}/src/mqttv5"
 report_pattern \
-    "gen1 public headers must not include gen2 headers" \
-    "#[[:space:]]*include[^[:cntrl:]]*gen2/" \
-    "${root_dir}/inc/azure/iot/gen1"
+    "mqttv3 public headers must not include mqttv5 headers" \
+    "#[[:space:]]*include[^[:cntrl:]]*mqttv5/" \
+    "${root_dir}/inc/azure/iot/mqttv3"
 report_pattern \
-    "gen2 public headers must not include gen1 headers" \
-    "#[[:space:]]*include[^[:cntrl:]]*gen1/" \
-    "${root_dir}/inc/azure/iot/gen2"
+    "mqttv5 public headers must not include mqttv3 headers" \
+    "#[[:space:]]*include[^[:cntrl:]]*mqttv3/" \
+    "${root_dir}/inc/azure/iot/mqttv5"
 report_pattern \
     "core must publish profiles as data, not reference generation clients" \
-    "gen[12]_" \
+    "mqttv[35]_" \
     "${root_dir}/src/core"
 report_pattern \
-    "gen1 public headers expose a gen2-only construct" \
+    "mqttv3 public headers expose an mqttv5-only construct" \
     "az_iot_mqtt_user_property|correlation_data|twin_push|method_probe|ready_handshake" \
-    "${root_dir}/inc/azure/iot/gen1"
+    "${root_dir}/inc/azure/iot/mqttv3"
 report_pattern \
-    "gen2 public headers expose a gen1-only construct" \
+    "mqttv5 public headers expose an mqttv3-only construct" \
     "az_iot_file_upload_http_transport|sas_uri|property_bag" \
-    "${root_dir}/inc/azure/iot/gen2"
+    "${root_dir}/inc/azure/iot/mqttv5"
 report_pattern \
     "generation symbol names must not contain classic/next/aeg/flavor" \
-    "az_iot_gen[12]_[[:alnum:]_]*(classic|next|aeg|flavor)|AZ_IOT_GEN[12]_[[:alnum:]_]*(CLASSIC|NEXT|AEG|FLAVOR)" \
-    "${root_dir}/src/gen1" \
-    "${root_dir}/src/gen2" \
-    "${root_dir}/inc/azure/iot/gen1" \
-    "${root_dir}/inc/azure/iot/gen2"
+    "az_iot_mqttv[35]_[[:alnum:]_]*(classic|next|aeg|flavor)|AZ_IOT_MQTTV[35]_[[:alnum:]_]*(CLASSIC|NEXT|AEG|FLAVOR)" \
+    "${root_dir}/src/mqttv3" \
+    "${root_dir}/src/mqttv5" \
+    "${root_dir}/inc/azure/iot/mqttv3" \
+    "${root_dir}/inc/azure/iot/mqttv5"
 
 if [ "${violations}" -gt 0 ]; then
     echo "${violations} generation layering rule(s) violated."

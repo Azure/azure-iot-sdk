@@ -6,9 +6,9 @@
 /* unified/twin_get_patch - sample.
  *
  * Issue a twin GET and a reported-properties PATCH on every connect, for ~60
- * seconds, on whichever hub DPS assigns: Classic (gen1) or AEG (gen2),
+ * seconds, on whichever hub DPS assigns: Classic (mqttv3) or AEG (mqttv5),
  * including after the device is moved to a hub of the other generation. The
- * AEG-only route is gen2/twin_get_patch. See unified/telemetry for the shape
+ * AEG-only route is mqttv5/twin_get_patch. See unified/telemetry for the shape
  * every unified sample shares: build for an assumed generation before open(),
  * rebuild when DPS assigns the other one.
  *
@@ -43,8 +43,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is ever initialized. */
-  az_iot_gen1_twin_client gen1;
-  az_iot_gen2_twin_client gen2;
+  az_iot_mqttv3_twin_client mqttv3;
+  az_iot_mqttv5_twin_client mqttv5;
   az_iot_connection_profile profile;
   int twin_initialized;
 } sample_state;
@@ -63,7 +63,7 @@ typedef struct
   az_iot_result patch_status;
   /* AEG only: the service's verdict, separate from patch_status. Classic has
    * none, so its patch sets it to OK once the exchange completes. */
-  az_iot_gen2_twin_patch_status patch_verdict;
+  az_iot_mqttv5_twin_patch_status patch_verdict;
   uint64_t patch_version;
 } user_context;
 
@@ -75,11 +75,11 @@ static void clients_destroy(sample_state* s)
   }
   if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_gen2_twin_client_deinit(&s->gen2);
+    az_iot_mqttv5_twin_client_deinit(&s->mqttv5);
   }
   else
   {
-    az_iot_gen1_twin_client_deinit(&s->gen1);
+    az_iot_mqttv3_twin_client_deinit(&s->mqttv3);
   }
   s->twin_initialized = 0;
 }
@@ -126,9 +126,9 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* ---- Classic (gen1) callbacks ---------------------------------------------- */
+/* ---- Classic (mqttv3) callbacks ---------------------------------------------- */
 
-static void on_desired_gen1(
+static void on_desired_mqttv3(
     const uint8_t* patch,
     size_t patch_len,
     uint64_t version,
@@ -143,7 +143,7 @@ static void on_desired_gen1(
       (const char*)patch);
 }
 
-static void on_get_gen1(az_iot_result status, const uint8_t* body, size_t len, void* user_ctx)
+static void on_get_mqttv3(az_iot_result status, const uint8_t* body, size_t len, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->get_status = status;
@@ -154,20 +154,20 @@ static void on_get_gen1(az_iot_result status, const uint8_t* body, size_t len, v
   }
 }
 
-static void on_patch_gen1(az_iot_result status, uint64_t version, void* user_ctx)
+static void on_patch_mqttv3(az_iot_result status, uint64_t version, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->patch_status = status;
-  ctx->patch_verdict = AZ_IOT_GEN2_TWIN_PATCH_OK;
+  ctx->patch_verdict = AZ_IOT_MQTTV5_TWIN_PATCH_OK;
   ctx->patch_version = version;
   ctx->patch_done = 1;
 }
 
-/* ---- AEG (gen2) callbacks -------------------------------------------------- */
+/* ---- AEG (mqttv5) callbacks -------------------------------------------------- */
 
 /* A SNAPSHOT replaces local desired state; a PATCH merges onto it. */
-static void on_desired_gen2(
-    az_iot_gen2_twin_desired_kind kind,
+static void on_desired_mqttv5(
+    az_iot_mqttv5_twin_desired_kind kind,
     uint64_t version,
     const uint8_t* payload,
     size_t payload_len,
@@ -177,13 +177,16 @@ static void on_desired_gen2(
   ctx->desired_count++;
   printf(
       "twin desired %s (version %llu): %.*s\n",
-      kind == AZ_IOT_GEN2_TWIN_DESIRED_SNAPSHOT ? "snapshot" : "patch",
+      kind == AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT ? "snapshot" : "patch",
       (unsigned long long)version,
       (int)payload_len,
       (const char*)payload);
 }
 
-static void on_get_gen2(az_iot_result status, const az_iot_gen2_twin_state* twin, void* user_ctx)
+static void on_get_mqttv5(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->get_status = status;
@@ -203,17 +206,17 @@ static void on_get_gen2(az_iot_result status, const az_iot_gen2_twin_state* twin
   }
 }
 
-static void on_patch_gen2(
+static void on_patch_mqttv5(
     az_iot_result status,
-    const az_iot_gen2_twin_patch_result* result,
+    const az_iot_mqttv5_twin_patch_result* result,
     void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
   ctx->patch_status = status;
-  ctx->patch_verdict = result ? result->status : AZ_IOT_GEN2_TWIN_PATCH_UNSPECIFIED;
+  ctx->patch_verdict = result ? result->status : AZ_IOT_MQTTV5_TWIN_PATCH_UNSPECIFIED;
   ctx->patch_version = result ? result->version : 0;
   ctx->patch_done = 1;
-  if (status == AZ_IOT_OK && result && result->status != AZ_IOT_GEN2_TWIN_PATCH_OK)
+  if (status == AZ_IOT_OK && result && result->status != AZ_IOT_MQTTV5_TWIN_PATCH_OK)
   {
     printf(
         "twin patch refused (status %d, current version %llu)\n",
@@ -233,29 +236,29 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_gen2_twin_client_init(&s->gen2, &s->connection_client);
+      result = az_iot_mqttv5_twin_client_init(&s->mqttv5, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
         return result;
       }
       s->profile = profile;
       s->twin_initialized = 1;
-      result = az_iot_gen2_twin_client_set_encode_buffer(
-          &s->gen2, AZ_SPAN_FROM_BUFFER(s_twin_encode_buffer));
+      result = az_iot_mqttv5_twin_client_set_encode_buffer(
+          &s->mqttv5, AZ_SPAN_FROM_BUFFER(s_twin_encode_buffer));
       if (result == AZ_IOT_OK)
       {
-        result = az_iot_gen2_twin_client_set_desired_handler(&s->gen2, on_desired_gen2, ctx);
+        result = az_iot_mqttv5_twin_client_set_desired_handler(&s->mqttv5, on_desired_mqttv5, ctx);
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      result = az_iot_gen1_twin_client_init(&s->gen1, &s->connection_client);
+      result = az_iot_mqttv3_twin_client_init(&s->mqttv3, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
         return result;
       }
       s->profile = profile;
       s->twin_initialized = 1;
-      return az_iot_gen1_twin_client_set_desired_handler(&s->gen1, on_desired_gen1, ctx);
+      return az_iot_mqttv3_twin_client_set_desired_handler(&s->mqttv3, on_desired_mqttv3, ctx);
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
       return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
@@ -268,7 +271,7 @@ static void pump(sample_state* s, uint32_t timeout_ms)
   (void)az_iot_connection_client_do_work(&s->connection_client, timeout_ms);
   if (s->twin_initialized && s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    (void)az_iot_gen2_twin_client_do_work(&s->gen2);
+    (void)az_iot_mqttv5_twin_client_do_work(&s->mqttv5);
   }
 }
 
@@ -284,15 +287,15 @@ static void start_round(sample_state* s, user_context* ctx)
   ctx->patch_done = 0;
   if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    get_rc = az_iot_gen2_twin_client_get(&s->gen2, on_get_gen2, ctx);
-    patch_rc = az_iot_gen2_twin_client_patch_reported(
-        &s->gen2, patch, sizeof(patch) - 1, on_patch_gen2, ctx);
+    get_rc = az_iot_mqttv5_twin_client_get(&s->mqttv5, on_get_mqttv5, ctx);
+    patch_rc = az_iot_mqttv5_twin_client_patch_reported(
+        &s->mqttv5, patch, sizeof(patch) - 1, on_patch_mqttv5, ctx);
   }
   else
   {
-    get_rc = az_iot_gen1_twin_client_get(&s->gen1, on_get_gen1, ctx);
-    patch_rc = az_iot_gen1_twin_client_patch_reported(
-        &s->gen1, patch, sizeof(patch) - 1, on_patch_gen1, ctx);
+    get_rc = az_iot_mqttv3_twin_client_get(&s->mqttv3, on_get_mqttv3, ctx);
+    patch_rc = az_iot_mqttv3_twin_client_patch_reported(
+        &s->mqttv3, patch, sizeof(patch) - 1, on_patch_mqttv3, ctx);
   }
   if (get_rc != AZ_IOT_OK)
   {
@@ -414,7 +417,7 @@ int main(void)
       /* A refused write is a failure: the exchange completing is not the same
        * as the twin being updated. */
       if (user_ctx.get_status == AZ_IOT_OK && user_ctx.patch_status == AZ_IOT_OK
-          && user_ctx.patch_verdict == AZ_IOT_GEN2_TWIN_PATCH_OK)
+          && user_ctx.patch_verdict == AZ_IOT_MQTTV5_TWIN_PATCH_OK)
       {
         rounds_ok++;
       }
