@@ -182,6 +182,22 @@ extern "C"
       size_t out_size,
       size_t* out_len);
 
+  /**
+   * @brief Sizes the body az_iot_su__build_report_request() would write, without
+   *        a body buffer. Same result as that builder given a @p capacity -byte
+   *        buffer, validation included.
+   *
+   * @param[in] report The report.
+   * @param[in] capacity Emulated buffer size; zero is invalid.
+   * @param[out] out_len Required size; zero on error. May be NULL.
+   * @return AZ_IOT_OK if it fits, AZ_IOT_ERR_NOT_ENOUGH_SPACE if not, or the
+   *   builder's validation error.
+   */
+  az_iot_result az_iot_su__report_request_size(
+      const az_iot_su_report* report,
+      size_t capacity,
+      size_t* out_len);
+
   /* --- Responses ----------------------------------------------------------- */
 
   /* Parsed fetch response. The spans point INTO the caller's payload buffer, so

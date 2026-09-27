@@ -27,9 +27,20 @@ extern "C"
 #define SU_FETCH_ONBOARDING 1u
 #define SU_FETCH_REGULAR 2u
 
-  /* Map an internal fine-grained state to the protocol-defined agent state
-   * (0=Idle, 6=DeploymentInProgress, 255=Failed). */
-  az_iot_su_client_agent_state az_iot_su__agent_state(az_iot_su_state state);
+  /**
+   * @brief The outcome the engine state reports: FAILED in Failed, the latched
+   *        terminal outcome in Idle, IN_PROGRESS otherwise.
+   */
+  az_iot_su_outcome az_iot_su__current_outcome(const az_iot_su_client* client);
+
+  /**
+   * @brief Check that the report the engine state describes for @p outcome is
+   *        valid and fits the channel's body.
+   *
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG without an active workflow or for
+   *   an invalid report; AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit.
+   */
+  az_iot_result az_iot_su__check_report(const az_iot_su_client* client, az_iot_su_outcome outcome);
 
   /* Assemble the current engine state into a structured az_iot_su_report and
    * hand it to the bound channel. Reporting is keyed on the active workflow id

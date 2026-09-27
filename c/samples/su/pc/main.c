@@ -304,7 +304,7 @@ static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
 static const char* const k_su_state_names[] = {
   "Idle",           "ManifestReceived", "VerifyingManifest", "DownloadStarted", "DownloadComplete",
   "BackupStarted",  "BackupComplete",   "InstallStarted",    "InstallComplete", "ApplyStarted",
-  "RestoreStarted", "Failed",
+  "RestoreStarted", "Failed",           "Delegated",
 };
 static const char* const k_su_operation_names[] = {
   "onboarding update check",
@@ -454,6 +454,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       {
         run->check_abandoned = 1;
       }
+      break;
+
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      /* Library mode only; this sample runs the managed client. */
       break;
   }
 }

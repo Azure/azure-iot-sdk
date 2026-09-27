@@ -48,6 +48,7 @@
 /* Defined below; used from the workflow state machine above it. */
 static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
+static void delegate_update(az_iot_su_client* client);
 
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
@@ -103,6 +104,7 @@ static void result_init_steps(az_iot_su_client* client, int32_t step_count)
   az_iot_su_client_install_result* r = &SU_I(client).install_result;
   memset(r, 0, sizeof(*r));
   memset(SU_I(client).step_results, 0, sizeof(SU_I(client).step_results));
+  SU_I(client).pending_failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
   if (step_count < 0)
   {
     step_count = 0;
@@ -1150,6 +1152,14 @@ static void process_update_metadata(
     return;
   }
 
+  /* The application holds pointers into the delegated update and reports
+   * against it, so it is not replaced until the application ends it. */
+  if (SU_I(client).state == AZ_IOT_SU_STATE_DELEGATED)
+  {
+    AZ_IOT_LOG_ERROR("su: update ignored; the delegated update has not ended");
+    return;
+  }
+
   if (check_request_strings(client, &probe) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("su: update payload has an undecodable string; ignored");
@@ -1500,6 +1510,44 @@ static void drive_pending_fetch(az_iot_su_client* client)
    * round and the bound would never be reached. */
 }
 
+/**
+ * @brief Library mode: hand the verified update to the application.
+ *
+ * Moves to DELEGATED, then raises AZ_IOT_SU_EVENT_UPDATE_AVAILABLE, unless an
+ * observer of the state change already ended the workflow. An update whose
+ * workflow id could not be recorded is dropped instead.
+ *
+ * @param client The client, holding a verified request and manifest.
+ */
+static void delegate_update(az_iot_su_client* client)
+{
+  /* Without a recorded workflow id nothing could be reported for it. */
+  if (!SU_I(client).active_workflow_valid)
+  {
+    AZ_IOT_LOG_ERROR("su: workflowId exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE; update not delegated");
+    SU_I(client).pending_outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    reset_to_idle(client);
+    return;
+  }
+  set_su_state(client, AZ_IOT_SU_STATE_DELEGATED);
+  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED)
+  {
+    return;
+  }
+  az_iot_su_event event = {
+    ._internal_size = sizeof(az_iot_su_event),
+    .kind = AZ_IOT_SU_EVENT_UPDATE_AVAILABLE,
+    .state = AZ_IOT_SU_STATE_DELEGATED,
+    .previous_state = AZ_IOT_SU_STATE_DELEGATED,
+    .operation = AZ_IOT_SU_OP_GET_UPDATE,
+    .reason = AZ_IOT_OK,
+    .service_error = k_no_service_error,
+    .request = &SU_I(client).current_request,
+    .manifest = &SU_I(client).current_manifest,
+  };
+  dispatch_event(client, &event);
+}
+
 /* ------------------------------------------------------------------------- */
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
@@ -1519,8 +1567,8 @@ static az_iot_result su_client_init_core(
     const az_iot_su_client_config_options* options)
 {
   if (client == NULL || channel == NULL || channel->vtable == NULL || options == NULL
-      || options->hooks == NULL || options->crypto == NULL || options->device_properties == NULL
-      || options->device_properties_buffer == NULL)
+      || (options->hooks == NULL && !options->library_mode) || options->crypto == NULL
+      || options->device_properties == NULL || options->device_properties_buffer == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1537,7 +1585,12 @@ static az_iot_result su_client_init_core(
 
   SU_I(client).channel.vtable = channel->vtable;
   SU_I(client).channel.ctx = channel->ctx;
-  SU_I(client).hooks = *options->hooks;
+  /* Library mode calls no platform hook, so none is kept. */
+  if (!options->library_mode)
+  {
+    SU_I(client).hooks = *options->hooks;
+  }
+  SU_I(client).library_mode = options->library_mode;
   SU_I(client).crypto = *options->crypto;
   SU_I(client).device_properties_buffer = options->device_properties_buffer;
   SU_I(client).device_properties_buffer_size = options->device_properties_buffer_size;
@@ -2262,9 +2315,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
 
   /* Cancellation at a phase boundary returns immediately to Idle. FAILED is
    * excluded: its terminal outcome is already reported, and a late cancel would
-   * report a second, conflicting one for the same workflow. */
+   * report a second, conflicting one for the same workflow. DELEGATED is
+   * excluded: the application owns that workflow and reports its outcome. */
   if (SU_I(client).cancel_requested && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
-      && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
+      && SU_I(client).state != AZ_IOT_SU_STATE_FAILED
+      && SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED)
   {
     result_step_canceled(client);
     SU_I(client).pending_outcome = AZ_IOT_SU_OUTCOME_CANCELED;
@@ -2304,6 +2359,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, 0);
         set_su_state(client, AZ_IOT_SU_STATE_FAILED);
         (void)az_iot_su__report_state(client);
+        break;
+      }
+      if (SU_I(client).library_mode)
+      {
+        delegate_update(client);
         break;
       }
       /* Already installed: under Device Update for IoT Hub this was a protocol-level reject (406).
@@ -2508,6 +2568,10 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       SU_I(client).pending_outcome = AZ_IOT_SU_OUTCOME_FAILED;
       reset_to_idle(client);
       break;
+
+    case AZ_IOT_SU_STATE_DELEGATED:
+      /* The application drives it; see az_iot_su_client_report_status(). */
+      break;
   }
 
   return AZ_IOT_OK;
@@ -2664,7 +2728,166 @@ az_iot_result az_iot_su_client_update_device_properties(
 }
 
 /* ------------------------------------------------------------------------- */
-/* agent core-library API (library mode / bring-your-own state machine)      */
+/* library mode: application-driven workflow                                 */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Engine result state that az_iot_su_client_report_status() replaces. */
+typedef struct su_result_snapshot
+{
+  az_iot_su_client_install_result install_result; /**< Overall result. */
+  az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS]; /**< Steps. */
+  int32_t step_results_count; /**< Entries in step_results. */
+  az_iot_su_outcome pending_outcome; /**< Latched terminal outcome. */
+  az_iot_su_failure_origin pending_failure_origin; /**< Origin of a failure. */
+  /** Strings behind applied_update_id. */
+  char applied_update_id_buf[sizeof(((az_iot_su_client*)0)->_internal.applied_update_id_buf)];
+  az_iot_su_report_update_id applied_update_id; /**< Applied update id. */
+  bool applied_update_id_valid; /**< applied_update_id is set. */
+} su_result_snapshot;
+
+/** @brief Save or restore (@p restore) the engine result state. */
+static void su_result_snapshot_move(
+    az_iot_su_client* client,
+    su_result_snapshot* snap,
+    bool restore)
+{
+#define SU_SNAP_MOVE(field)                                           \
+  do                                                                  \
+  {                                                                   \
+    if (restore)                                                      \
+    {                                                                 \
+      memcpy(&SU_I(client).field, &snap->field, sizeof(snap->field)); \
+    }                                                                 \
+    else                                                              \
+    {                                                                 \
+      memcpy(&snap->field, &SU_I(client).field, sizeof(snap->field)); \
+    }                                                                 \
+  } while (0)
+  SU_SNAP_MOVE(install_result);
+  SU_SNAP_MOVE(step_results);
+  SU_SNAP_MOVE(step_results_count);
+  SU_SNAP_MOVE(pending_outcome);
+  SU_SNAP_MOVE(pending_failure_origin);
+  SU_SNAP_MOVE(applied_update_id_buf);
+  SU_SNAP_MOVE(applied_update_id);
+  SU_SNAP_MOVE(applied_update_id_valid);
+#undef SU_SNAP_MOVE
+}
+
+/** @brief Copy @p details into the client's buffer at @p used and point @p details at it. */
+static void own_result_details(az_iot_su_client* client, az_span* details, size_t* used)
+{
+  int32_t n = az_span_size(*details);
+  if (n <= 0)
+  {
+    *details = AZ_SPAN_EMPTY;
+    return;
+  }
+  uint8_t* dst = SU_I(client).result_details + *used;
+  memmove(dst, az_span_ptr(*details), (size_t)n);
+  *details = az_span_create(dst, n);
+  *used += (size_t)n;
+}
+
+az_iot_result az_iot_su_client_report_status(
+    az_iot_su_client* client,
+    const az_iot_su_step_result* result,
+    const az_iot_su_step_result* step_results,
+    int32_t step_results_count)
+{
+  if (client == NULL || result == NULL || step_results_count < 0
+      || (step_results_count > 0 && step_results == NULL))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (SU_I(client).detached)
+  {
+    return AZ_IOT_ERR_DETACHED;
+  }
+  if (!SU_I(client).library_mode)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  az_iot_su_outcome outcome = result->outcome;
+  if ((int32_t)outcome < (int32_t)AZ_IOT_SU_OUTCOME_IN_PROGRESS
+      || (int32_t)outcome > (int32_t)AZ_IOT_SU_OUTCOME_SKIPPED
+      || (int32_t)result->failure_origin < (int32_t)AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE
+      || (int32_t)result->failure_origin > (int32_t)AZ_IOT_SU_FAILURE_ORIGIN_OTHER
+      || ((outcome == AZ_IOT_SU_OUTCOME_FAILED)
+          == (result->failure_origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  bool terminal = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  int32_t steps = terminal ? step_results_count : 0;
+  if (steps > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  size_t details_len = (size_t)az_span_size(result->result_details);
+  for (int32_t i = 0; i < steps; ++i)
+  {
+    details_len += (size_t)az_span_size(step_results[i].result_details);
+  }
+  if (details_len > sizeof(SU_I(client).result_details))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  /* Apply with the caller's spans, check the report, then either roll back or
+   * take ownership of the details. */
+  su_result_snapshot saved;
+  su_result_snapshot_move(client, &saved, false);
+
+  az_iot_su_client_install_result* r = &SU_I(client).install_result;
+  r->result_code = result->result_code;
+  r->extended_result_code = result->extended_result_code;
+  r->result_details = result->result_details;
+  SU_I(client).pending_failure_origin = result->failure_origin;
+  if (terminal)
+  {
+    if (steps > 0)
+    {
+      memcpy(SU_I(client).step_results, step_results, (size_t)steps * sizeof(*step_results));
+    }
+    SU_I(client).step_results_count = steps;
+    if (outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED)
+    {
+      result_overall_success(client);
+      r->extended_result_code = result->extended_result_code;
+    }
+    SU_I(client).pending_outcome = outcome;
+  }
+
+  az_iot_result checked = az_iot_su__check_report(client, outcome);
+  if (checked != AZ_IOT_OK)
+  {
+    su_result_snapshot_move(client, &saved, true);
+    return checked;
+  }
+
+  size_t used = 0;
+  own_result_details(client, &r->result_details, &used);
+  for (int32_t i = 0; i < steps; ++i)
+  {
+    own_result_details(client, &SU_I(client).step_results[i].result_details, &used);
+  }
+
+  if (terminal)
+  {
+    reset_to_idle(client);
+  }
+  /* A refusal re-arms the report for do_work(). */
+  (void)az_iot_su__report_state(client);
+  return AZ_IOT_OK;
+}
+
+/* ------------------------------------------------------------------------- */
+/* transport-free primitives                                                 */
 /* ------------------------------------------------------------------------- */
 
 az_iot_result az_iot_su_parse_update_request(
