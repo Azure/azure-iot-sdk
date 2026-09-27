@@ -436,6 +436,15 @@ void app_main(void)
       g_retry_after_ms = 0;
     }
 
+    /* FAULTED is settled until close(): no further check could be sent, so
+     * restart rather than poll forever. A workflow in flight finishes first. */
+    if (cur == AZ_IOT_SU_STATE_IDLE
+        && (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted))
+    {
+      ESP_LOGE(TAG, "connection faulted; rebooting");
+      esp_restart();
+    }
+
     if (cur == AZ_IOT_SU_STATE_IDLE && xTaskGetTickCount() - last_check >= wait_ticks)
     {
       last_check = xTaskGetTickCount();

@@ -21,8 +21,10 @@
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
 
-/** @brief Capacity of each part of an update id captured by su_apply(). */
-#define SU_SIM_ID_PART_SIZE 128
+/** @brief Capacity of each part of an update id captured by su_apply(): the
+ * SDK's whole installed-id storage (192 bytes, see az_iot_su_device_properties),
+ * so any part it accepts fits. */
+#define SU_SIM_ID_PART_SIZE 192
 
 /**
  * @brief True when an event stamped by the SDK is long enough to carry @p field.
