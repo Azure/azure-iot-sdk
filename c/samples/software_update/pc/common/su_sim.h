@@ -43,6 +43,7 @@ typedef struct su_sim
   char* state_file; /**< SU_SIM_STATE_FILE: resume blob path. Owned. */
 
   int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED. */
+  int persist_failed; /**< Nonzero when the last checkpoint write failed. */
 
   /** What is installed now. is_installed_fn answers ALREADY_INSTALLED for a
    * manifest with this id. NULL: every update proceeds. */

@@ -254,17 +254,20 @@ static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
     printf("  [persist] cleared %s\n", s->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
+  s->persist_failed = 1;
   FILE* f = fopen(s->state_file, "wb");
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   size_t w = fwrite(blob, 1, len, f);
-  fclose(f);
-  if (w != len)
+  /* fclose() can report a delayed write failure. */
+  int closed = fclose(f);
+  if (w != len || closed != 0)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
+  s->persist_failed = 0;
   printf("  [persist] %zu bytes -> %s\n", len, s->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }

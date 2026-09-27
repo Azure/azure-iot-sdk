@@ -473,6 +473,15 @@ int main(void)
 
     /* A (simulated) reboot was requested: state is persisted; exit so the
      * operator can "reboot" and re-run to resume. */
+    if (st.sim.reboot_signalled && st.sim.persist_failed)
+    {
+      fprintf(
+          stderr,
+          "Reboot required, but the workflow state could not be persisted to %s.\n",
+          st.sim.state_file);
+      rc = 1;
+      break;
+    }
     if (st.sim.reboot_signalled)
     {
       printf(
