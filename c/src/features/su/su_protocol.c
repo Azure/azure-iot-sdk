@@ -727,6 +727,11 @@ static az_iot_result write_report_request(az_json_writer* jw, const az_iot_su_re
       }
       if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
       {
+        /* Past the writer's input limit its precondition fires instead of failing. */
+        if (az_span_size(step->result_details) > AZ_IOT_SU_MAX_JSON_STRING_SIZE)
+        {
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
         r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("resultDetails"));
         if (az_result_succeeded(r))
         {

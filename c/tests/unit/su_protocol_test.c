@@ -579,6 +579,44 @@ static void outcome_and_failure_origin_must_agree(void** state)
   assert_int_equal(az_iot_su__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_OK);
 }
 
+/* Step details past the JSON writer's input limit fail rather than tripping
+ * its precondition, and the sizer agrees with the builder. */
+static void oversized_step_details_are_refused(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  uint8_t tiny[1] = { 'x' };
+  az_iot_su_step_result step = { 0 };
+  step.outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
+  step.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  step.result_details = az_span_create(tiny, (int32_t)AZ_IOT_SU_MAX_JSON_STRING_SIZE + 1);
+  az_iot_su_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  size_t len = 1;
+  assert_int_equal(
+      az_iot_su__build_report_request(&report, buf, sizeof(buf), &len),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(len, 0);
+  assert_int_equal(
+      az_iot_su__report_request_size(&report, sizeof(buf), NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  step.result_details = az_span_create(tiny, 1);
+  size_t built = 0;
+  size_t sized = 0;
+  assert_int_equal(az_iot_su__build_report_request(&report, buf, sizeof(buf), &built), AZ_IOT_OK);
+  assert_int_equal(az_iot_su__report_request_size(&report, sizeof(buf), &sized), AZ_IOT_OK);
+  assert_int_equal(built, sized);
+  assert_int_equal(
+      az_iot_su__report_request_size(&report, built - 1, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
 static void report_without_a_workflow_id_is_rejected(void** state)
 {
   (void)state;
@@ -1438,6 +1476,7 @@ int main(void)
     cmocka_unit_test(report_drops_installed_update_id_when_absent),
     cmocka_unit_test(outcome_and_failure_origin_must_agree),
     cmocka_unit_test(report_without_a_workflow_id_is_rejected),
+    cmocka_unit_test(oversized_step_details_are_refused),
     cmocka_unit_test(an_offered_update_is_captured_verbatim),
     cmocka_unit_test(no_update_is_success_whether_absent_or_null),
     cmocka_unit_test(the_root_key_url_is_read_from_service_configuration),
