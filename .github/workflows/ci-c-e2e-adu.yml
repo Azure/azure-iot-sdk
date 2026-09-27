@@ -47,7 +47,8 @@ jobs:
   e2e-su:
     name: software updates e2e (linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Above the sum of the step budgets, so the always() cleanup gets to run.
+    timeout-minutes: 240
     env:
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_SU_DPS_HOST }}
       AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_SU_ID_SCOPE }}
@@ -71,6 +72,7 @@ jobs:
 
       # Built instrumented so the run feeds the combined coverage report.
       - name: Build
+        timeout-minutes: 30
         working-directory: c
         run: |
           cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_BUILD_E2E_SU=ON
@@ -100,12 +102,14 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Stage offers
+        timeout-minutes: 70
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
           New-SuE2EOffers -RunId "${{ github.run_id }}${{ github.run_attempt }}" -StatePath $env:SU_OFFERS_STATE
 
       - name: Run software updates e2e
+        timeout-minutes: 65
         run: |
           mkdir -p results
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_su \
@@ -113,6 +117,7 @@ jobs:
             --output-junit "$GITHUB_WORKSPACE/results/e2e-su.xml"
 
       - name: Check job results
+        timeout-minutes: 15
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
@@ -120,6 +125,7 @@ jobs:
 
       - name: Remove offers
         if: always()
+        timeout-minutes: 20
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1

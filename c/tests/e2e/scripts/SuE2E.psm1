@@ -115,7 +115,9 @@ function Import-SuE2EUpdate {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$WorkDir,
         # Receives each uploaded blob name as soon as it exists, for cleanup.
-        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs,
+        # Called after each upload, so the caller can persist $Blobs at once.
+        [scriptblock]$OnChange = {}
     )
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
@@ -156,6 +158,7 @@ function Import-SuE2EUpdate {
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Upload of $blob failed" }
         $Blobs.Add($blob)
+        & $OnChange
         $expiry = (Get-Date).ToUniversalTime().AddHours(6).ToString('yyyy-MM-ddTHH:mmZ')
         $url = az storage blob generate-sas --auth-mode login --as-user --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --permissions r --expiry $expiry --full-uri -o tsv
@@ -180,7 +183,7 @@ function Import-SuE2EUpdate {
     if (-not $operation) { throw 'Import returned no Operation-Location' }
     if ($operation -notmatch '^https?://') { $operation = "$base$operation" }
 
-    $deadline = (Get-Date).AddMinutes(20)
+    $deadline = (Get-Date).AddMinutes(10)
     while ($true) {
         $op = (Invoke-SuE2ERest -Method Get -Uri $operation -Token $token).Body
         if ($op.status -eq 'Succeeded') { break }
@@ -209,7 +212,7 @@ function New-SuE2EOnboardingJob {
     }
     Invoke-SuE2ERest -Method Put -Uri $uri -Token $token -Body $body | Out-Null
 
-    $deadline = (Get-Date).AddMinutes(10)
+    $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
         $job = (Invoke-SuE2ERest -Method Get -Uri $uri -Token $token).Body
         $state = $job.properties.provisioningState
@@ -265,23 +268,29 @@ function New-SuE2EOffers {
     $state = [ordered]@{ Manufacturer = $manufacturer; Offers = [ordered]@{} }
     $exports = [ordered]@{ AZ_IOT_E2E_SU_OFFER_MANUFACTURER = $manufacturer }
 
-    try {
-        foreach ($scenario in $script:Scenarios.Keys) {
-            # Short names: the whole offer must fit the client's 4 KiB request buffer.
-            $short = $script:Scenarios[$scenario].Short
-            $model = "e2e-$tag-$short"
-            $offer = [ordered]@{ Model = $model; Blobs = [System.Collections.Generic.List[string]]::new(); Update = $null; Job = $null }
-            $state.Offers[$scenario] = $offer
-            $offer.Update = Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $model `
-                -Version '1.0.0' -Manufacturer $manufacturer -Model $model -WorkDir $WorkDir -Blobs $offer.Blobs
-            $offer.Job = "su-e2e-$tag-$short"
-            New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $offer.Update
-            $exports[$script:Scenarios[$scenario].Variable] = $model
+    # Saved before every remote call, so a run killed mid-step still leaves
+    # Remove-SuE2EOffers everything it may have created.
+    $save = { $state | ConvertTo-Json -Depth 5 | Set-Content -Path $StatePath }
+
+    foreach ($scenario in $script:Scenarios.Keys) {
+        # Short names: the whole offer must fit the client's 4 KiB request buffer.
+        $short = $script:Scenarios[$scenario].Short
+        $model = "e2e-$tag-$short"
+        $offer = [ordered]@{
+            Model  = $model
+            Blobs  = [System.Collections.Generic.List[string]]::new()
+            Update = "updates/providers/sdke2e/names/$model/versions/1.0.0"
+            Job    = $null
         }
-    }
-    finally {
-        # Written even on failure, so Remove-SuE2EOffers cleans up what was made.
-        $state | ConvertTo-Json -Depth 5 | Set-Content -Path $StatePath
+        $state.Offers[$scenario] = $offer
+        & $save
+        $update = Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $model `
+            -Version '1.0.0' -Manufacturer $manufacturer -Model $model -WorkDir $WorkDir `
+            -Blobs $offer.Blobs -OnChange $save
+        $offer.Job = "su-e2e-$tag-$short"
+        & $save
+        New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $update
+        $exports[$script:Scenarios[$scenario].Variable] = $model
     }
 
     foreach ($k in $exports.Keys) {
@@ -353,6 +362,9 @@ function Remove-SuE2EOffers {
                 }
             }
             catch {
+                # Recorded before it was created, so it may never have existed.
+                $code = $_.Exception.PSObject.Properties['Response'] ? $_.Exception.Response.StatusCode : $null
+                if ($code -eq [System.Net.HttpStatusCode]::NotFound) { continue }
                 Write-Warning "Cleanup of $kind $name failed: $_"
                 if (-not $firstError) { $firstError = $_ }
             }
