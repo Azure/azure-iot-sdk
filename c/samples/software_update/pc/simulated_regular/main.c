@@ -51,9 +51,12 @@
  *
  * Other knobs (environment variables, all optional):
  *   AZ_IOT_SU_POLL_INTERVAL_S=<s>  seconds between update checks (default
- *                                   60); 0 checks once, at startup. Each
- *                                   check is abandoned after half the
- *                                   interval (at most 60 s).
+ *                                   60); 0 checks once, at startup. A
+ *                                   check not sent within half the
+ *                                   interval (at most 60 s) is abandoned;
+ *                                   one sent but never answered blocks
+ *                                   later checks until the provisioning
+ *                                   session ends.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -348,8 +351,9 @@ int main(void)
     poll_interval_s = 60;
   }
   /* Each check is bounded to half the poll interval: a new request resets the
-   * deadline, so a longer bound would let a stalled check outlive every poll
-   * and never be abandoned. */
+   * deadline, so a longer bound would let a check that cannot be sent outlive
+   * every poll and never be abandoned. The bound ends when the check is sent;
+   * the SDK does not time out a sent check whose response never arrives. */
   uint32_t request_timeout_ms = AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
   if (poll_interval_s > 0 && (uint64_t)poll_interval_s * 500u < request_timeout_ms)
   {
