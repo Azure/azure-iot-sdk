@@ -49,7 +49,7 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 
 ### MQTT v5 property handling (critical for HUB_NEXT)
 
-The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to Hub-Next. Your v5 adapter **must**:
+The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to an MQTTv5 IoT Hub. Your v5 adapter **must**:
 
 **On outbound PUBLISH** — propagate these `az_iot_mqtt_message` fields as MQTT v5 properties:
 - `correlation_data` / `correlation_data_len` → Correlation Data property

@@ -14,7 +14,7 @@
 | [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
 
 There is no MQTTv3-only group: the unified samples cover MQTTv3 hubs. The
-MQTTv3 IoT Hub only features, C2D and file upload, are in `unified/` and report AEG hubs.
+MQTTv3 IoT Hub only features, C2D and file upload, are in `unified/` and report MQTTv5 hubs.
 
 ## How a unified sample works
 
@@ -100,7 +100,7 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [unified/twin_get_patch](unified/twin_get_patch/) | Twin GET and reported PATCH on every connect, desired updates. AEG returns sections separately and reports a patch verdict. |
 | [unified/direct_method_responder](unified/direct_method_responder/) | Inline direct-method answers. Classic routes every name to one handler; AEG declares methods and probes first. |
 | [unified/direct_method_slow_responder](unified/direct_method_slow_responder/) | Answering after the handler returned, against the device's timeout (Classic) or the caller's (AEG). |
-| [unified/c2d_receiver](unified/c2d_receiver/) | Cloud-to-device messages. MQTTv3 IoT Hub only; on AEG it says so and exits non-zero. |
+| [unified/c2d_receiver](unified/c2d_receiver/) | Cloud-to-device messages. MQTTv3 IoT Hub only; on MQTTv5 it says so and exits non-zero. |
 | [unified/file_upload](unified/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. Classic only; on AEG it says so and exits non-zero. One-shot. |
 | [unified/websockets](unified/websockets/) | unified/telemetry over MQTT-over-WebSockets (443). |
 | [unified/proxy](unified/proxy/) | unified/telemetry through an HTTP CONNECT proxy. |

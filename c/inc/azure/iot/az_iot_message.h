@@ -27,12 +27,12 @@ extern "C"
  * same spelling works either way because the SDK owns the encoding -- these
  * are the plain, human-readable names, never the pre-encoded form.
  *
- * On the Classic (MQTT v3.1.1) path the SDK percent-encodes both halves into
+ * On the MQTTv3 path the SDK percent-encodes both halves into
  * the topic's property bag, so "$.ct" travels as "%24.ct" and a value of
  * "application/json" as "application%2Fjson", and decodes them again on the way
  * in. azure-sdk-for-c spells the same names pre-encoded
  * (AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE is "%24.ct"); the bytes on the wire
- * are identical. On the Hub-Next (MQTT v5) path they travel as User Properties
+ * are identical. On the MQTTv5 path they travel as User Properties
  * and need no encoding at all.
  *
  * See

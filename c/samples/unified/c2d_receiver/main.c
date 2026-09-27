@@ -10,8 +10,8 @@
  * the properties ride in the topic, so the client percent-decodes them before
  * the handler sees anything.
  *
- * There is no MQTT v5 counterpart: C2D is not carried on the AEG hub. The mqttv3
- * client pins MQTTv3 at init(), before open(), so DPS assigning an AEG hub --
+ * There is no MQTT v5 counterpart: C2D is not carried on the MQTTv5 hub. The mqttv3
+ * client pins MQTTv3 at init(), before open(), so DPS assigning an MQTTv5 hub --
  * on the first connect or after a move -- stops the connection with
  * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. The sample reports that and exits
  * non-zero; it does not rebuild. A move to another MQTTv3 hub needs nothing
@@ -179,7 +179,7 @@ int main(void)
     return 1;
   }
 
-  /* Pins MQTTv3: an AEG assignment is refused before that hub is reached. */
+  /* Pins MQTTv3: an MQTTv5 assignment is refused before that hub is reached. */
   if (az_iot_mqttv3_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

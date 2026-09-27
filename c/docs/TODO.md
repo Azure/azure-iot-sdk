@@ -130,7 +130,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)
 - [x] Classic: `devices/{reg_id}/messages/devicebound/#` subscription with prefix-based dispatch
-- [ ] Next (AEG): not supported by the service yet; the MQTTv5 client, its sample and tests were removed
+- [ ] MQTTv5: not supported by the service yet; the MQTTv5 client, its sample and tests were removed
 - [x] `c2d_receiver` sample using the feature client API (MQTTv3 IoT Hub only)
 - [ ] E2E verified against Classic IoT Hub
 - [ ] Design C2D strict-settlement state machine (accept/reject/abandon)
