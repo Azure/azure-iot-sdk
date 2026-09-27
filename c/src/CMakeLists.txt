@@ -54,6 +54,11 @@ target_link_libraries(az_iot_core
         az::iot::provisioning
 )
 
+# Public: application code must see the same profile as the library.
+if(AZ_IOT_ABI_PROFILE STREQUAL "SHARED")
+    target_compile_definitions(az_iot_core PUBLIC AZ_IOT_ABI_SHARED=1)
+endif()
+
 az_iot_apply_warnings(az_iot_core)
 az_iot_apply_coverage(az_iot_core)
 

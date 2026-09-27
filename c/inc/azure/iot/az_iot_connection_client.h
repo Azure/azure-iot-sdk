@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "az_iot_abi.h"
 #include "az_iot_result.h"
 #include "az_iot_log.h"
 #include "az_iot_mqtt_iface.h"
@@ -614,8 +615,8 @@ extern "C"
 
   /* SDK-produced, callback-lifetime view of a connection-state transition.
    * The SDK stamps _internal_size; callers never initialize this struct. Future
-   * SDKs may append fields, so callbacks must check _internal_size before
-   * reading a field added after the version they were compiled against.
+   * SDKs may append fields, so callbacks must check AZ_IOT_STRUCT_HAS_FIELD()
+   * before reading a field added after the version they were compiled against.
    *
    * `scope` says WHICH connection the event is about, and `state` is
    * meaningless without it: a device that provisions through DPS runs two

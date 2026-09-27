@@ -1,47 +1,84 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Struct Versioning: ABI Compatibility Across Library Versions
+# Struct versioning
 
-## The Problem
+How public structs evolve without breaking applications built against an older
+header. Helpers: [`az_iot_abi.h`](../inc/azure/iot/az_iot_abi.h).
 
-`az_iot_telemetry_message` is **stack-allocated by the user** (e.g. `az_iot_telemetry_message msg = {0};`). Its layout is baked into the user's compiled `.o` at compile time.
+## Problem
 
-### What breaks when v2 appends `some_new_prop`:
+Every public struct is allocated by the application, so its `sizeof` and layout
+are fixed when the application is compiled. If a library built from a newer
+header copies, clears or reads that struct with its own `sizeof`, it reads or
+writes past the application's object. Appending fields does not prevent this;
+it only keeps positional initializers compiling.
 
-1. **`sizeof` mismatch** — The user app was compiled against v1 headers, so `sizeof(az_iot_telemetry_message)` is smaller than what the v2 library expects. The library reads past the end of the user's struct instance → **undefined behavior** (reads garbage or adjacent stack data for `some_new_prop`).
+## ABI profiles
 
-2. **`{0}` doesn't zero the new field from the library's perspective** — Even if sizes happened to align (padding luck), the user never wrote to `some_new_prop`, so the library sees uninitialized memory it interprets as a valid value.
+Selected by CMake `AZ_IOT_ABI_PROFILE`; the build exports it to consumers of
+`az_iot_core` as `AZ_IOT_ABI_SHARED`. Builds that bypass CMake (e.g. the ESP-IDF
+component) get `EMBEDDED`.
 
-3. **`memcpy`/assignment of the struct** inside the library copies the wrong number of bytes if the lib uses its own `sizeof`.
+| | `EMBEDDED` | `SHARED` |
+|---|---|---|
+| Typical target | MCU firmware, static link, whole-image OTA | Gateways/Linux, shared library updated independently |
+| Default when | `BUILD_SHARED_LIBS=OFF` | `BUILD_SHARED_LIBS=ON` (`EMBEDDED` is then rejected) |
+| Client storage reserve | 0 | [Reserves](#reserves) |
+| Size macros (`AZ_IOT_MAX_*`, buffer sizes) | Application may override | Fixed by the library build |
+| Caller-filled and SDK-stamped structs | Size-stamped | Size-stamped |
 
-4. **Arrays of the struct** have completely wrong stride; element N is at the wrong offset.
+Both profiles keep the same source API.
 
----
+## Rules by struct kind
 
-## Bullet-proof mitigations
+| Kind | Examples | Rule |
+|---|---|---|
+| A. Caller fills, SDK reads | options, reconnection policy, telemetry message | `uint32_t _internal_size` first, set by a `*_INIT` macro or inline `*_default()`. The SDK reads only `min(_internal_size, sizeof)` bytes and defaults the rest. `0` (a raw `{0}`), or a stamp smaller than the first release's struct, is rejected. A stamp larger than the library's struct is rejected. |
+| B. SDK fills, caller reads | state/SU events, hub profile | The SDK stamps `_internal_size`. Callers check `AZ_IOT_STRUCT_HAS_FIELD(p, T, field)` against the last field they read, never `sizeof(T)`. |
+| C. Caller-allocated client state | connection, SU, feature clients, PEM provider | Opaque storage of `sizeof(impl) + <X>_RESERVE`. `init` receives `sizeof(*client)` and a fingerprint. It fails if the storage is smaller than the library needs or the fingerprint differs; larger storage is accepted. |
+| D. Adapter interfaces | `az_iot_mqtt_iface`, connect/TLS/proxy options, certificate provider vtable, SU hooks | The writer stamps `_internal_size`. A function-table slot beyond the stamp means "not supported". A new field must mean "not requested" when zero. |
+| E. Array elements and nested value types | properties, dispatch entries, nested option sub-structs | Frozen. New members go at the end of the enclosing struct, or the parent carries the element size. |
 
-| Technique | How it works |
-|-----------|-------------|
-| **Opaque allocation + init function** | Don't let the user declare the struct on the stack. Provide `az_iot_telemetry_message_create()`/`_init()` that returns a lib-allocated (or lib-sized) struct. User only holds a pointer. The library owns `sizeof`. |
-| **Versioned options pattern** | Add a `uint32_t _reserved` or `uint32_t version` as the first field. The init function stamps the struct size or version tag. The library checks this before reading any field added after v1. New fields default to safe values when version < current. |
-| **Builder API (no user-visible struct)** | Replace the struct with a builder handle:<br>`az_iot_telemetry_message_builder* b;`<br>`msg_builder_set_payload(b, ...);`<br>`msg_builder_set_content_type(b, ...);`<br>New fields are simply new setters — old apps never call them, defaults apply. |
-| **Embed struct size at call site** | Macro wraps the send call to pass `sizeof(msg)` as a hidden parameter. Library reads only up to that many bytes and defaults the rest:<br>`#define az_iot_mqttv3_telemetry_client_send(tc, msg, cb, ctx) \`<br>`  _az_iot_mqttv3_telemetry_client_send_v(tc, msg, sizeof(*(msg)), cb, ctx)` |
-| **Static assert on ABI version** | Ship a compile-time constant `AZ_IOT_ABI_VERSION` in the header. The library exports a symbol with the same name. A static-assert or link-time check (`_ABI_V2` symbol) ensures header ↔ .a agreement. Catches mismatch at build time rather than runtime. |
-| **Never extend; deprecate and replace** | Freeze `az_iot_telemetry_message` forever. If v2 needs more fields, introduce `az_iot_telemetry_message2` and a new `_send2()` entry point. Old apps keep working against the old struct/API. |
+Adding a field: append it, make zero mean "previous behaviour", and read it only
+behind `AZ_IOT_STRUCT_HAS_FIELD`. Never reorder, resize or remove a member.
 
----
+## Fingerprint
 
-## Recommended combination for this codebase
+`AZ_IOT_ABI_FINGERPRINT` combines `AZ_IOT_ABI_VERSION`, the profile and the
+pointer size. Kind C clients extend it with the size macros that shape their
+storage, so a library built with different macro values is rejected at `init`
+instead of being misread. `az_iot_abi_fingerprint()` returns the library's value.
 
-Since the struct is currently passed as `const*` into `_send()`, the cheapest safe evolution path is:
+## Reserves
 
-1. Add a **`uint32_t _internal_size;`** field at the top of the struct now (v1).
-2. Provide an **initializer macro** (replaces raw `= {0}`):
-   ```c
-   #define az_iot_TELEMETRY_MESSAGE_INIT \
-       { ._internal_size = sizeof(az_iot_telemetry_message) }
-   ```
-3. Inside `_send()`, compare `msg->_internal_size` against the library's own `sizeof`. If smaller → the user compiled against an older header → ignore/default any fields beyond that size.
+`SHARED` only (bytes, per instance):
 
-This is the pattern used by Win32 (`cbSize`), Vulkan (`sType`/`pNext`), and the Azure SDK for C (`_internal` fields). It requires no heap allocation, no builder ceremony, and catches the mismatch at runtime with a clean error rather than UB.
+| Client | Reserve |
+|---|---|
+| connection | 768 |
+| software updates | 1792 |
+| mqttv5 direct method | 512 |
+| mqttv3 direct method | 192 |
+| mqttv5 twin | 256 |
+| mqttv3 twin | 128 |
+| mqttv3 file upload | 128 |
+| mqttv3/mqttv5 telemetry, mqttv3 C2D, PEM provider | 64 each |
+
+Within one `SOVERSION`, a client's internal state may grow by at most its
+reserve over the first release of that `SOVERSION`. Exhausting it requires an
+`AZ_IOT_ABI_VERSION` and `SOVERSION` bump.
+
+Sizing: the observed growth of each client from 2026-06 to 2026-09 at the
+routine-change rate, with larger redesigns deliberately excluded (they bump the
+ABI). These values are provisional. Re-baseline them from the final struct
+sizes right before the first GA release (mqttv3, DPS and software updates) and
+the first mqttv5 public preview.
+
+## Status
+
+- Done: profiles, fingerprint, reserve values, `AZ_IOT_STRUCT_HAS_FIELD`.
+- Stamped today: hub profile, connection error detail, connection state event,
+  SU event.
+- Pending: remaining kind B structs; kind A, C and D conversion; shared-library
+  export, `SOVERSION` and ABI checks in CI.

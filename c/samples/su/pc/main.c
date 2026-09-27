@@ -315,14 +315,6 @@ static const char* const k_su_operation_names[] = {
 #define SAMPLE_NAME_OF(table, i) \
   (((size_t)(i) < sizeof(table) / sizeof((table)[0])) ? (table)[(size_t)(i)] : "?")
 
-/* True when the event the SDK stamped is long enough to carry @p field.
- *
- * Events grow by APPENDING, so the test is against the last field this code
- * actually reads -- not sizeof(the whole struct), which would reject a usable
- * event from any library older than the newest field. */
-#define SAMPLE_EVENT_HAS(ev, type, field) \
-  ((ev)->_internal_size >= offsetof(type, field) + sizeof((ev)->field))
-
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
 {
@@ -388,7 +380,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   /* `reason` is the last field read here, and `scope` indexes an array -- so an
    * event too short to carry them, or naming a scope this build does not know,
    * is ignored rather than read. */
-  if (!SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
+  if (!AZ_IOT_STRUCT_HAS_FIELD(event, az_iot_connection_state_event, reason)
       || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
@@ -418,7 +410,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
   sample_run* run = (sample_run*)user_ctx;
 
   /* `service_error` is the last field read here. */
-  if (!SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
+  if (!AZ_IOT_STRUCT_HAS_FIELD(event, az_iot_su_event, service_error))
   {
     return;
   }

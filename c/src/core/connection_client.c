@@ -4714,18 +4714,15 @@ az_iot_result az_iot_connection_client_get_hub_profile(
 
   /* Written field by field, bounded by the caller's stamp, so a caller compiled
    * against an older (smaller) header is never written past. */
-  if (out_profile->_internal_size
-      >= offsetof(az_iot_hub_profile, connection_profile) + sizeof(out_profile->connection_profile))
+  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile))
   {
     out_profile->connection_profile = client->connection_profile;
   }
-  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw)
-          + sizeof(out_profile->connection_profile_raw))
+  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile_raw))
   {
     out_profile->connection_profile_raw = client->connection_profile_raw;
   }
-  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw_truncated)
-          + sizeof(out_profile->connection_profile_raw_truncated))
+  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile_raw_truncated))
   {
     out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
   }
