@@ -52,11 +52,8 @@
  * Other knobs (environment variables, all optional):
  *   AZ_IOT_SU_POLL_INTERVAL_S=<s>  seconds between update checks (default
  *                                   60); 0 checks once, at startup. A
- *                                   check not sent within half the
- *                                   interval (at most 60 s) is abandoned;
- *                                   one sent but never answered blocks
- *                                   later checks until the provisioning
- *                                   session ends.
+ *                                   check not answered within half the
+ *                                   interval (at most 60 s) is abandoned.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -141,32 +138,6 @@ static void sample_state_destroy(sample_state* s)
   free(s->su_device_properties.model);
 }
 
-/* Copies @p src into @p dst; 0 when it does not fit. */
-static int copy_str(char* dst, size_t dst_size, const char* src)
-{
-  size_t n = strlen(src);
-  if (n >= dst_size)
-  {
-    return 0;
-  }
-  memcpy(dst, src, n + 1);
-  return 1;
-}
-
-/* Reads @p name, or @p fallback when unset, into @p dst; 0 when out of memory
- * or too long. */
-static int env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
-{
-  char* v = sample_env_dup(name, fallback);
-  int ok = (v != NULL) && copy_str(dst, dst_size, v);
-  if (v != NULL && !ok)
-  {
-    fprintf(stderr, "%s is too long (max %zu characters).\n", name, dst_size - 1);
-  }
-  free(v);
-  return ok;
-}
-
 static void fill_device_properties(const sample_state* s, az_iot_su_device_properties* dp)
 {
   memset(dp, 0, sizeof(*dp));
@@ -178,7 +149,9 @@ static void fill_device_properties(const sample_state* s, az_iot_su_device_prope
 }
 
 /* Both lifecycles report here. `state` is meaningless without `scope`. */
-static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void on_connection_state_event_received(
+    const az_iot_connection_state_event* event,
+    void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
 
@@ -271,7 +244,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 
 /**
  * @brief Create the certificate provider and the connection client, observed
- * by on_conn_state() and with both MQTT factories registered.
+ * by on_connection_state_event_received() and with both MQTT factories registered.
  *
  * No dps.provision_only: the device registers and connects to its hub, which
  * gives it the device record the regular route needs. The reconnection policy
@@ -301,7 +274,8 @@ static int initialize_connection_client(sample_state* state)
   {
     return 1;
   }
-  if (az_iot_connection_client_add_state_observer(&state->connection_client, on_conn_state, state)
+  if (az_iot_connection_client_add_state_observer(
+          &state->connection_client, on_connection_state_event_received, state)
       != AZ_IOT_OK)
   {
     return 1;
@@ -351,9 +325,8 @@ int main(void)
     poll_interval_s = 60;
   }
   /* Each check is bounded to half the poll interval: a new request resets the
-   * deadline, so a longer bound would let a check that cannot be sent outlive
-   * every poll and never be abandoned. The bound ends when the check is sent;
-   * the SDK does not time out a sent check whose response never arrives. */
+   * deadline, so a longer bound would let an unanswered check outlive every
+   * poll and never be abandoned. */
   uint32_t request_timeout_ms = AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
   if (poll_interval_s > 0 && (uint64_t)poll_interval_s * 500u < request_timeout_ms)
   {
@@ -378,17 +351,17 @@ int main(void)
   state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
   state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
   if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
-      || !env_to_buffer(
+      || !sample_env_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           state.su_device_properties.installed_provider,
           sizeof(state.su_device_properties.installed_provider))
-      || !env_to_buffer(
+      || !sample_env_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME",
           "SU-Sim",
           state.su_device_properties.installed_name,
           sizeof(state.su_device_properties.installed_name))
-      || !env_to_buffer(
+      || !sample_env_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           state.su_device_properties.installed_version,
@@ -525,15 +498,15 @@ int main(void)
         next.installed_update_id.version = state.simulation_control.applied_version;
         /* applied_* and installed_* have the same capacity, so the copies fit. */
         if (az_iot_su_client_update_device_properties(&state.su_client, &next) == AZ_IOT_OK
-            && copy_str(
+            && sample_copy_str(
                 state.su_device_properties.installed_provider,
                 sizeof(state.su_device_properties.installed_provider),
                 state.simulation_control.applied_provider)
-            && copy_str(
+            && sample_copy_str(
                 state.su_device_properties.installed_name,
                 sizeof(state.su_device_properties.installed_name),
                 state.simulation_control.applied_name)
-            && copy_str(
+            && sample_copy_str(
                 state.su_device_properties.installed_version,
                 sizeof(state.su_device_properties.installed_version),
                 state.simulation_control.applied_version))

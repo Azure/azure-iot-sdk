@@ -2,6 +2,7 @@
 #define SAMPLE_UTILS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
@@ -46,6 +47,30 @@ void sample_config_release(sample_config* config);
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
 char* sample_env_dup(const char* name, const char* fallback);
+
+/**
+ * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
+ * strcpy_s(), which glibc does not provide.
+ *
+ * @param[out] dst      Destination; unchanged when @p src does not fit.
+ * @param[in] dst_size  Capacity of @p dst in bytes.
+ * @param[in] src       NUL-terminated source.
+ * @return true if copied; false if @p src does not fit.
+ */
+bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+
+/**
+ * @brief Read environment variable @p name, or @p fallback when unset/empty,
+ * into @p dst. Prints a line to stderr when the value does not fit.
+ *
+ * @param[in] name      Variable name.
+ * @param[in] fallback  Value when unset/empty; may be NULL.
+ * @param[out] dst      Destination buffer.
+ * @param[in] dst_size  Capacity of @p dst in bytes.
+ * @return true if copied; false when unset with no fallback, out of memory or
+ * too long.
+ */
+bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample

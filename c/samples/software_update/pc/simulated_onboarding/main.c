@@ -144,7 +144,9 @@ static void sample_state_destroy(sample_state* s)
 /* Both lifecycles report here. `state` is meaningless without `scope`: a
  * provisioning session that is up says nothing about a hub, and on a
  * provision_only device the hub scope stays IDLE for good. */
-static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void on_connection_state_event_received(
+    const az_iot_connection_state_event* event,
+    void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
 
@@ -232,7 +234,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 
 /**
  * @brief Create the certificate provider and the provision_only connection
- * client, observed by on_conn_state() and with both MQTT factories registered.
+ * client, observed by on_connection_state_event_received() and with both MQTT factories registered.
  *
  * The reconnection policy is the default from
  * az_iot_connection_client_options_default().
@@ -268,7 +270,8 @@ static int initialize_connection_client(sample_state* state)
   {
     return 1;
   }
-  if (az_iot_connection_client_add_state_observer(&state->connection_client, on_conn_state, state)
+  if (az_iot_connection_client_add_state_observer(
+          &state->connection_client, on_connection_state_event_received, state)
       != AZ_IOT_OK)
   {
     return 1;

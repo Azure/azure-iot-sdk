@@ -330,9 +330,8 @@ void app_main(void)
    * do_work() for the life of the client. AZ_IOT_SU_REQUEST_NO_TIMEOUT asks
    * for exactly that, and is the wrong default on a battery-powered device.
    * It is bounded to half the poll interval: a new request resets the
-   * deadline, so a longer bound would let a check that cannot be sent outlive
-   * every poll. The bound ends when the check is sent; the SDK does not time
-   * out a sent check whose response never arrives. */
+   * deadline, so a longer bound would let an unanswered check outlive every
+   * poll. */
   const uint32_t request_timeout_ms
       = ((uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u < AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
       ? (uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u
