@@ -51,6 +51,21 @@ static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeou
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
 
+/* fetch_in_flight occupies padding after pending_fetch, so adding it left the
+ * caller-allocated client's size and offsets unchanged. Fails the build if that
+ * padding is ever gone. */
+typedef struct
+{
+  char c;
+  uint64_t v;
+} su_u64_alignment_probe;
+typedef char az_iot_su_fetch_in_flight_uses_padding
+    [((offsetof(az_iot_su_client, _internal.pending_fetch) + 1u)
+          % offsetof(su_u64_alignment_probe, v)
+      != 0u)
+         ? 1
+         : -1];
+
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
          ? 1
@@ -1619,9 +1634,11 @@ static az_iot_result su_client_init_core(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* open/close/request_update/report are required; do_work is optional. */
+  /* open/close/request_update/report/cancel_update are required; do_work and
+   * set_device_properties are optional. */
   if (channel->vtable->open == NULL || channel->vtable->close == NULL
-      || channel->vtable->request_update == NULL || channel->vtable->report == NULL)
+      || channel->vtable->request_update == NULL || channel->vtable->report == NULL
+      || channel->vtable->cancel_update == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

@@ -1873,6 +1873,40 @@ static void device_properties_too_small_is_rejected(void** state)
   az_iot_connection_client_deinit(&conn);
 }
 
+/* cancel_update is required: without it a late verdict could be taken for a
+ * newer request's, since verdicts carry no request identity. */
+static void a_channel_without_cancel_update_is_rejected(void** state)
+{
+  (void)state;
+  fake_channel fc;
+  memset(&fc, 0, sizeof(fc));
+  az_iot_su_channel_vtable vtable = k_fake_channel_vtable;
+  vtable.cancel_update = NULL;
+  az_iot_su_channel channel = { .vtable = &vtable, .ctx = &fc };
+
+  hook_log log = { 0 };
+  az_iot_su_platform_hooks hooks = { 0 };
+  az_iot_su_crypto_hooks crypto = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+  crypto.verify_rs256_fn = mock_verify_rs256;
+  crypto.user_ctx = &log;
+  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  uint8_t buf[256];
+  az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
+  su_opts.hooks = &hooks;
+  su_opts.crypto = &crypto;
+  su_opts.device_properties = &dp;
+  su_opts.device_properties_buffer = buf;
+  su_opts.device_properties_buffer_size = sizeof(buf);
+
+  az_iot_su_client su;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_false(fc.opened);
+}
+
 static void device_properties_buffer_size_matches_need(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2148,6 +2182,7 @@ static void property_updates_work_without_a_channel_setter(void** state)
     .request_update = fake_channel_request_update,
     .report = fake_channel_report,
     .do_work = fake_channel_do_work,
+    .cancel_update = fake_channel_cancel_update,
   };
   fx->su._internal.channel.vtable = &vtable;
   az_iot_su_custom_property custom = { "board", "" };
@@ -4389,6 +4424,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
     cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
+    cmocka_unit_test(a_channel_without_cancel_update_is_rejected),
     cmocka_unit_test_setup_teardown(an_answer_after_the_deadline_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_retryable_verdict_after_the_deadline_abandons, setup, teardown),
