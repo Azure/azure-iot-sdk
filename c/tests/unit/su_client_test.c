@@ -4006,6 +4006,8 @@ static void library_mode_needs_no_platform_hooks(void** state)
   uint8_t buf[256];
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.crypto = &crypto;
+  opts.root_keys = k_root_keys;
+  opts.root_key_count = 1;
   opts.device_properties = &dp;
   opts.device_properties_buffer = buf;
   opts.device_properties_buffer_size = sizeof(buf);
@@ -4018,7 +4020,16 @@ static void library_mode_needs_no_platform_hooks(void** state)
   assert_int_equal(az_iot_su_client__initialize_with_channel(su, &channel, &opts), AZ_IOT_OK);
   az_iot_su_client_destroy(su);
 
-  /* Crypto is still required: nothing is handed over unverified. */
+  /* Crypto and a trust store are still required: nothing is handed over
+   * unverified. */
+  opts.root_key_count = 0;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(su, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
+  opts.root_key_count = 1;
+  opts.root_keys = NULL;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(su, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
+  opts.root_keys = k_root_keys;
   opts.crypto = NULL;
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(su, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
@@ -4124,7 +4135,7 @@ static void report_status_sends_progress_then_success(void** state)
 static void report_status_carries_the_application_failure(void** state)
 {
   fixture* fx = (fixture*)*state;
-  delegate(fx, build_patch("wf-fail"));
+  delegate(fx, two_step_patch());
 
   az_iot_su_step_result failed = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
   failed.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_EXTENSION;
@@ -4148,10 +4159,10 @@ static void report_status_carries_the_application_failure(void** state)
   /* A zero code is not a success code. */
   delegate(fx, build_patch("wf-skip"));
   az_iot_su_step_result skipped = lib_result(AZ_IOT_SU_OUTCOME_SKIPPED);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &skipped, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &skipped, &skipped, 1), AZ_IOT_OK);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
   assert_int_equal(fx->chan.last_report.result_code, -1);
-  assert_int_equal(fx->chan.last_report.step_results_count, 0);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
 }
 
 static void report_status_rejects_what_it_cannot_send(void** state)
@@ -4162,34 +4173,36 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(az_iot_su_client_report_status(NULL, &ok, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 0), AZ_IOT_ERR_NOT_FOUND);
 
-  delegate(fx, build_patch("wf-bad-args"));
+  delegate(fx, two_step_patch());
   char progress_text[] = "kept";
   az_iot_su_step_result progress = lib_result(AZ_IOT_SU_OUTCOME_IN_PROGRESS);
   progress.result_details = az_span_create((uint8_t*)progress_text, 4);
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
   int reports = fx->chan.report_count;
 
-  az_iot_su_step_result bad = ok;
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, NULL, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 1), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, &ok, -1), AZ_IOT_ERR_INVALID_ARG);
-  bad.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_DEVICE;
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  bad = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
-  bad.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  bad = ok;
-  bad.outcome = (az_iot_su_outcome)(AZ_IOT_SU_OUTCOME_SKIPPED + 1);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-
-  /* Steps are validated like the result, and bounded. */
   az_iot_su_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 1];
   for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); ++i)
   {
     steps[i] = ok;
   }
-  steps[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
+  az_iot_su_step_result bad = ok;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, NULL, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 2), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, -1), AZ_IOT_ERR_INVALID_ARG);
+  bad.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_DEVICE;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  bad = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
+  bad.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  bad = ok;
+  bad.outcome = (az_iot_su_outcome)(AZ_IOT_SU_OUTCOME_SKIPPED + 1);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+
+  /* One result per manifest step, validated like the overall one. */
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 1), AZ_IOT_ERR_INVALID_ARG);
+  steps[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[0] = ok;
   assert_int_equal(
       az_iot_su_client_report_status(
@@ -4202,7 +4215,7 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   bad = ok;
   bad.result_details = az_span_create(long_details, (int32_t)sizeof(long_details));
   assert_int_equal(
-      az_iot_su_client_report_status(&fx->su, &bad, NULL, 0), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   memset(long_details, '\x01', sizeof(long_details));
   bad.result_details = az_span_create(long_details, AZ_IOT_SU_RESULT_DETAILS_SIZE / 2);
   steps[0].result_details = az_span_create(long_details, AZ_IOT_SU_RESULT_DETAILS_SIZE / 4);
@@ -4232,8 +4245,12 @@ static void a_refused_status_report_is_resent(void** state)
 
   fx->chan.report_result = AZ_IOT_ERR_BUSY;
   az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, &done, 1), AZ_IOT_OK);
   assert_true(fx->su._internal.device_properties_report_pending);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+
+  /* A new workflow would take over the id the resend is built from. */
+  inject_patch(fx, build_patch("wf-next"));
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
 
   fx->chan.report_result = AZ_IOT_OK;
@@ -4243,6 +4260,8 @@ static void a_refused_status_report_is_resent(void** state)
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_string_equal(fx->chan.last_workflow_id, "wf-retry");
   assert_false(fx->su._internal.device_properties_report_pending);
+
+  delegate(fx, build_patch("wf-next"));
 }
 
 static void report_from_observer(const az_iot_su_event* event, void* user_ctx)
@@ -4251,7 +4270,7 @@ static void report_from_observer(const az_iot_su_event* event, void* user_ctx)
   {
     fixture* fx = (fixture*)user_ctx;
     az_iot_su_step_result skipped = lib_result(AZ_IOT_SU_OUTCOME_SKIPPED);
-    assert_int_equal(az_iot_su_client_report_status(&fx->su, &skipped, NULL, 0), AZ_IOT_OK);
+    assert_int_equal(az_iot_su_client_report_status(&fx->su, &skipped, &skipped, 1), AZ_IOT_OK);
   }
 }
 
@@ -4281,7 +4300,7 @@ static void a_newer_update_waits_for_the_delegated_one(void** state)
   assert_true(az_span_is_content_equal(request->workflow.id, AZ_SPAN_FROM_STR("wf-old")));
 
   az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, &done, 1), AZ_IOT_OK);
   assert_string_equal(fx->chan.last_workflow_id, "wf-old");
   assert_string_equal(fx->chan.last_installed_version, "1.1");
 

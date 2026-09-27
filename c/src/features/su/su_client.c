@@ -1153,8 +1153,12 @@ static void process_update_metadata(
   }
 
   /* The application holds pointers into the delegated update and reports
-   * against it, so it is not replaced until the application ends it. */
-  if (SU_I(client).state == AZ_IOT_SU_STATE_DELEGATED)
+   * against it, so it is not replaced until the application ends it. Nor is
+   * it while that terminal report awaits a resend: the resend is rebuilt from
+   * the active workflow, which a new one would replace. */
+  if (SU_I(client).state == AZ_IOT_SU_STATE_DELEGATED
+      || (SU_I(client).library_mode && SU_I(client).state == AZ_IOT_SU_STATE_IDLE
+          && SU_I(client).device_properties_report_pending && SU_I(client).active_workflow_valid))
   {
     AZ_IOT_LOG_ERROR("su: update ignored; the delegated update has not ended");
     return;
@@ -1581,6 +1585,12 @@ static az_iot_result su_client_init_core(
   if (options->root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* Library mode hands over what it verified, so it needs something to verify
+   * against. */
+  if (options->library_mode && (options->root_keys == NULL || options->root_key_count == 0))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   SU_I(client).channel.vtable = channel->vtable;
@@ -2827,6 +2837,11 @@ az_iot_result az_iot_su_client_report_status(
   if (steps > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* A terminal report carries one entry per manifest step. */
+  if (terminal && steps != (int32_t)SU_I(client).current_manifest.instructions.steps_count)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   size_t details_len = (size_t)az_span_size(result->result_details);
   for (int32_t i = 0; i < steps; ++i)

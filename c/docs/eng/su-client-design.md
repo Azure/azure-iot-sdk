@@ -969,9 +969,10 @@ sequenceDiagram
 - Verification failure is not handed over: the client reports FAILED itself.
 - `request` / `manifest` are client-owned and valid until the workflow ends (a
   terminal `az_iot_su_client_report_status()`, or destroy). While one is
-  delegated, a different update is ignored, so a report cannot land on the wrong
-  workflow; an update whose `workflowId` exceeds `AZ_IOT_SU_WORKFLOW_ID_SIZE` is
-  not delegated.
+  delegated, or its terminal report awaits a resend, a different update is
+  ignored, so a report cannot land on the wrong workflow; an update whose
+  `workflowId` exceeds `AZ_IOT_SU_WORKFLOW_ID_SIZE` is not delegated.
+- A terminal report carries exactly one step result per manifest step.
 - `az_iot_su_client_report_status()` copies the result (details bounded by
   `AZ_IOT_SU_RESULT_DETAILS_SIZE`), checks the report body fits the channel,
   and is retried like the managed client's reports. `workflowId` duplicate
