@@ -35,7 +35,8 @@ Both profiles keep the same source API.
 | Kind | Examples | Rule |
 |---|---|---|
 | A. Caller fills, SDK reads | options, reconnection policy, telemetry message | `uint32_t _internal_size` first, set by a `*_INIT` macro or inline `*_default()`. The SDK reads only `min(_internal_size, sizeof)` bytes and defaults the rest. `0` (a raw `{0}`), or a stamp smaller than the first release's struct, is rejected. A stamp larger than the library's struct is rejected. |
-| B. SDK fills, caller reads | state/SU events, hub profile | The SDK stamps `_internal_size`. Callers check `AZ_IOT_STRUCT_HAS_FIELD(p, T, field)` against the last field they read, never `sizeof(T)`. |
+| B. SDK-owned events | state/SU events, connection error detail | The SDK allocates and stamps `_internal_size`. Callers check `AZ_IOT_STRUCT_HAS_FIELD(p, T, field)` against the last field they read, never `sizeof(T)`. |
+| B2. Caller-owned outputs | hub profile | The caller allocates and stamps with a `*_INIT` macro. The SDK writes only fields within the stamp. `0` or a stamp larger than the library's struct is rejected. |
 | C. Caller-allocated client state | connection, SU, feature clients, PEM provider | Opaque storage of `sizeof(impl) + <X>_RESERVE`. `init` receives `sizeof(*client)` and a fingerprint. It fails if the storage is smaller than the library needs or the fingerprint differs; larger storage is accepted. |
 | D. Adapter interfaces | `az_iot_mqtt_iface`, connect/TLS/proxy options, certificate provider vtable, SU hooks | The writer stamps `_internal_size`. A function-table slot beyond the stamp means "not supported". A new field must mean "not requested" when zero. |
 | E. Array elements and nested value types | properties, dispatch entries, nested option sub-structs | Frozen. New members go at the end of the enclosing struct, or the parent carries the element size. |
@@ -78,7 +79,7 @@ the first mqttv5 public preview.
 ## Status
 
 - Done: profiles, fingerprint, reserve values, `AZ_IOT_STRUCT_HAS_FIELD`.
-- Stamped today: hub profile, connection error detail, connection state event,
-  SU event.
+- Stamped today: connection state event, connection error detail, SU event
+  (kind B); hub profile (kind B2).
 - Pending: remaining kind B structs; kind A, C and D conversion; shared-library
   export, `SOVERSION` and ABI checks in CI.
