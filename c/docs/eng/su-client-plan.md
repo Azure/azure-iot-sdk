@@ -148,6 +148,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 44 | Software updates transport | ✅ | — | — | — | — | done | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 45 | Software updates transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
+| 54 | Library / agent-core mode | ✅ | — | — | — | — | done | **Library mode** — `library_mode` client option: the SDK fetches and verifies, hands the parsed manifest to the application (`AZ_IOT_SU_EVENT_UPDATE_AVAILABLE`), and sends the application's result (`az_iot_su_client_report_status()`); no platform hooks. Plus transport-free parse/verify/hash/report-body primitives. [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
@@ -155,7 +156,6 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 56 | Testing and conformance | 🟡 | P0 | S | — | 1 | 9/28 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
-| 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
 | 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su` runs four DPS-channel scenarios (engine not exercised); the five twin-driven scenarios are retired and not built. An offered-update scenario is still needed. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
 | 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
@@ -597,10 +597,15 @@ Beyond the turnkey client, the SDK should be usable as the **vetted core** other
 full agent on. Provide a way to **validate + parse a manifest**, then let the consumer pick:
 
 - **Turnkey (✅):** the SDK drives the whole workflow (today's client).
-- **Library mode (🔜):** hand back a **filled, already-verified** manifest struct; the
-  consumer drives download/install/apply/report on their own state machine, threading and
-  extension model. Reuses the same trust code so nobody re-implements JWS/RS256/SHA-256.
-  Detail: [su-client-design.md](su-client-design.md) Part C.
+- **Library mode (✅):** with `library_mode` set, the client still owns the transport
+  (fetch, ETags, retries, report delivery) but stops after verification: it hands the
+  application a **filled, already-verified** manifest (`AZ_IOT_SU_EVENT_UPDATE_AVAILABLE`)
+  and sends the application's progress and outcome (`az_iot_su_client_report_status()`).
+  The consumer drives download/install/apply on its own state machine, threading and
+  extension model, and owns reboot resume. Same trust code, so nobody re-implements
+  JWS/RS256/SHA-256. Transport-free primitives (`az_iot_su_parse_update_request()`,
+  `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()`) cover a consumer that carries
+  the protocol itself. Detail: [su-client-design.md §5.3](su-client-design.md#53-library-mode-and-transport-free-primitives).
 
 ## K. Testing and conformance
 

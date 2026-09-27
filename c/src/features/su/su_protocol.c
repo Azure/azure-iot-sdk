@@ -491,7 +491,8 @@ void az_iot_su__format_extended_result_code(char* out, size_t out_size, int32_t 
   out[n] = '\0';
 }
 
-/** @brief Byte counter behind az_iot_su__fetch_request_size().
+/** @brief Byte counter behind az_iot_su__fetch_request_size() and
+ * az_iot_su__report_request_size().
  *
  * Each chunk is min(remaining capacity, 64) bytes, so the writer sees the same
  * remaining space at every token as with one contiguous buffer. The writer asks
@@ -501,22 +502,20 @@ typedef struct
   uint8_t chunk[64]; /**< Reused for every chunk. */
   size_t counted; /**< Bytes written to earlier chunks. */
   size_t capacity; /**< Size of the emulated contiguous buffer. */
-} fetch_request_counter;
+} body_counter;
 
-static az_span fetch_request_chunk(fetch_request_counter* counter)
+static az_span body_counter_chunk(body_counter* counter)
 {
   size_t remaining = counter->capacity - counter->counted;
   size_t size = remaining < sizeof(counter->chunk) ? remaining : sizeof(counter->chunk);
   return az_span_create(counter->chunk, (int32_t)size);
 }
 
-static az_result count_fetch_request_chunk(
-    az_span_allocator_context* context,
-    az_span* out_next_destination)
+static az_result count_body_chunk(az_span_allocator_context* context, az_span* out_next_destination)
 {
-  fetch_request_counter* counter = (fetch_request_counter*)context->user_context;
+  body_counter* counter = (body_counter*)context->user_context;
   counter->counted += (size_t)context->bytes_used;
-  az_span next = fetch_request_chunk(counter);
+  az_span next = body_counter_chunk(counter);
   if (az_span_size(next) < context->minimum_required_size)
   {
     return AZ_ERROR_NOT_ENOUGH_SPACE;
@@ -546,10 +545,10 @@ az_iot_result az_iot_su__fetch_request_size(
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
-  fetch_request_counter counter = { .counted = 0, .capacity = capacity };
+  body_counter counter = { .counted = 0, .capacity = capacity };
   az_json_writer jw;
   if (az_result_failed(az_json_writer_chunked_init(
-          &jw, fetch_request_chunk(&counter), count_fetch_request_chunk, &counter, NULL)))
+          &jw, body_counter_chunk(&counter), count_body_chunk, &counter, NULL)))
   {
     return AZ_IOT_ERR_INTERNAL;
   }
@@ -569,14 +568,11 @@ az_iot_result az_iot_su__fetch_request_size(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_su__build_report_request(
-    const az_iot_su_report* report,
-    uint8_t* out,
-    size_t out_size,
-    size_t* out_len)
+/** @brief Validates @p report and writes its status body into an initialized writer.
+ * @return AZ_IOT_OK, AZ_IOT_ERR_INVALID_ARG, or AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+static az_iot_result write_report_request(az_json_writer* jw, const az_iot_su_report* report)
 {
-  if (report == NULL || report->workflow_id == NULL || report->workflow_id[0] == '\0' || out == NULL
-      || out_size == 0)
+  if (report->workflow_id == NULL || report->workflow_id[0] == '\0')
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -625,56 +621,50 @@ az_iot_result az_iot_su__build_report_request(
     }
   }
 
-  az_json_writer jw;
-  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
-  az_result r = az_json_writer_append_begin_object(&jw);
+  az_result r = az_json_writer_append_begin_object(jw);
   if (az_result_succeeded(r))
   {
-    r = write_string_property(&jw, "workflowId", report->workflow_id);
+    r = write_string_property(jw, "workflowId", report->workflow_id);
   }
 
   /* Dropped rather than serialized as null when the device has nothing
    * installed. */
   if (az_result_succeeded(r) && report->installed_update_id != NULL)
   {
-    r = write_update_id(&jw, "installedUpdateId", report->installed_update_id);
+    r = write_update_id(jw, "installedUpdateId", report->installed_update_id);
   }
 
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("installResult"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("installResult"));
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_begin_object(&jw);
+    r = az_json_writer_append_begin_object(jw);
   }
   if (az_result_succeeded(r))
   {
-    r = write_string_property(&jw, "outcome", outcome);
+    r = write_string_property(jw, "outcome", outcome);
   }
   if (az_result_succeeded(r))
   {
-    r = write_string_property(&jw, "failureOrigin", origin);
+    r = write_string_property(jw, "failureOrigin", origin);
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("resultCode"));
   }
   if (az_result_succeeded(r))
   {
-    r = append_int32(&jw, report->result_code);
+    r = append_int32(jw, report->result_code);
   }
   if (az_result_succeeded(r))
   {
-    r = write_string_property(&jw, "extendedResultCodes", report->extended_result_codes);
+    r = write_string_property(jw, "extendedResultCodes", report->extended_result_codes);
   }
   if (az_result_succeeded(r) && report->result_details != NULL)
   {
-    r = write_string_property(&jw, "resultDetails", report->result_details);
+    r = write_string_property(jw, "resultDetails", report->result_details);
   }
 
   /* Per-step results are a MAP keyed step_0, step_1, ... -- not an array. The
@@ -684,10 +674,10 @@ az_iot_result az_iot_su__build_report_request(
   if (az_result_succeeded(r) && report->outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS
       && report->step_results != NULL && report->step_results_count > 0)
   {
-    r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("stepResults"));
+    r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("stepResults"));
     if (az_result_succeeded(r))
     {
-      r = az_json_writer_append_begin_object(&jw);
+      r = az_json_writer_append_begin_object(jw);
     }
     for (int32_t i = 0; az_result_succeeded(r) && i < report->step_results_count; ++i)
     {
@@ -703,73 +693,144 @@ az_iot_result az_iot_su__build_report_request(
         return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
       }
 
-      r = az_json_writer_append_property_name(&jw, az_span_create_from_str(key));
+      r = az_json_writer_append_property_name(jw, az_span_create_from_str(key));
       if (az_result_succeeded(r))
       {
-        r = az_json_writer_append_begin_object(&jw);
+        r = az_json_writer_append_begin_object(jw);
       }
       if (az_result_succeeded(r))
       {
-        r = write_string_property(&jw, "outcome", outcome_name(step->outcome));
+        r = write_string_property(jw, "outcome", outcome_name(step->outcome));
       }
       if (az_result_succeeded(r))
       {
-        r = write_string_property(&jw, "failureOrigin", failure_origin_name(step->failure_origin));
+        r = write_string_property(jw, "failureOrigin", failure_origin_name(step->failure_origin));
       }
       if (az_result_succeeded(r))
       {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultCode"));
+        r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("resultCode"));
       }
       if (az_result_succeeded(r))
       {
-        r = append_int32(&jw, step->result_code);
+        r = append_int32(jw, step->result_code);
       }
       if (az_result_succeeded(r))
       {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
+        r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("extendedResultCodes"));
       }
       if (az_result_succeeded(r))
       {
         char step_ext[16];
         az_iot_su__format_extended_result_code(
             step_ext, sizeof(step_ext), step->extended_result_code);
-        r = az_json_writer_append_string(&jw, az_span_create_from_str(step_ext));
+        r = az_json_writer_append_string(jw, az_span_create_from_str(step_ext));
       }
       if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
       {
-        r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
+        r = az_json_writer_append_property_name(jw, AZ_SPAN_FROM_STR("resultDetails"));
         if (az_result_succeeded(r))
         {
-          r = az_json_writer_append_string(&jw, step->result_details);
+          r = az_json_writer_append_string(jw, step->result_details);
         }
       }
       if (az_result_succeeded(r))
       {
-        r = az_json_writer_append_end_object(&jw);
+        r = az_json_writer_append_end_object(jw);
       }
     }
     if (az_result_succeeded(r))
     {
-      r = az_json_writer_append_end_object(&jw); /* stepResults */
+      r = az_json_writer_append_end_object(jw); /* stepResults */
     }
   }
 
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_end_object(&jw); /* installResult */
+    r = az_json_writer_append_end_object(jw); /* installResult */
   }
   if (az_result_succeeded(r))
   {
-    r = az_json_writer_append_end_object(&jw);
+    r = az_json_writer_append_end_object(jw);
   }
   if (az_result_failed(r))
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_su__build_report_request(
+    const az_iot_su_report* report,
+    uint8_t* out,
+    size_t out_size,
+    size_t* out_len)
+{
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
+  if (report == NULL || out == NULL || out_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_init(&jw, az_span_create(out, (int32_t)out_size), NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result r = write_report_request(&jw, report);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
 
   if (out_len != NULL)
   {
     *out_len = (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
+  }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_su__report_request_size(
+    const az_iot_su_report* report,
+    size_t capacity,
+    size_t* out_len)
+{
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
+  if (report == NULL || capacity == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (capacity > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  body_counter counter = { .counted = 0, .capacity = capacity };
+  az_json_writer jw;
+  if (az_result_failed(az_json_writer_chunked_init(
+          &jw, body_counter_chunk(&counter), count_body_chunk, &counter, NULL)))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result r = write_report_request(&jw, report);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  if (out_len != NULL)
+  {
+    *out_len
+        = counter.counted + (size_t)az_span_size(az_json_writer_get_bytes_used_in_destination(&jw));
   }
   return AZ_IOT_OK;
 }
