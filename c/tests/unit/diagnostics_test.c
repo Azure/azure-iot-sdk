@@ -263,13 +263,13 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
   (void)state;
   az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
 
-  /* These are documented in az_iot_connection_client.h ("1s initial delay, 30s
+  /* These are documented in az_iot_connection_client.h ("1s initial delay, 60s
    * max backoff, infinite attempts, 20% jitter"), which makes them part of the
    * public contract rather than a private tuning decision: an application may
    * rely on them without setting a policy of its own. Asserted exactly, so a
    * change has to be a deliberate one that updates the documentation too. */
   assert_int_equal(p.initial_delay_ms, 1000u);
-  assert_int_equal(p.max_delay_ms, 30000u);
+  assert_int_equal(p.max_delay_ms, 60000u);
   assert_int_equal(p.max_attempts, 0u); /* 0 = infinite */
   assert_int_equal(p.jitter_pct, 20u);
 
