@@ -86,24 +86,7 @@ const char* su_sample_operation_name(az_iot_su_operation operation)
   return SU_SAMPLE_NAME_OF(k_su_operation_names, operation);
 }
 
-int su_sim_init(su_sim* sim)
-{
-  memset(sim, 0, sizeof(*sim));
-  sim->fail_step = (int)su_sample_env_long("SU_SIM_FAIL_STEP", 0);
-  sim->hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
-  sim->reboot = su_sample_env_flag("SU_SIM_REBOOT");
-  sim->delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
-  sim->state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
-  return (sim->state_file == NULL) ? 1 : 0;
-}
-
-void su_sim_deinit(su_sim* sim)
-{
-  free(sim->state_file);
-  sim->state_file = NULL;
-}
-
-static int32_t sim_download(
+int32_t su_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
@@ -111,7 +94,7 @@ static int32_t sim_download(
     void* user_ctx)
 {
   (void)url;
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   printf(
       "  [download] file %u/%u (%lld bytes) [simulated]\n",
       file_index + 1,
@@ -124,7 +107,7 @@ static int32_t sim_download(
 /* Serve deterministic payload bytes so the SHA-256 the core computes is
  * reproducible. To make the REAL hash check pass against a deployment, the
  * imported payload must be byte-identical (see README: zero-filled file). */
-static int32_t sim_read_file(
+int32_t su_read_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
     size_t offset,
@@ -134,7 +117,7 @@ static int32_t sim_read_file(
     void* user_ctx)
 {
   (void)file_index;
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   size_t size = (file->size_in_bytes > 0) ? (size_t)file->size_in_bytes : 0;
   if (offset >= size)
   {
@@ -157,9 +140,9 @@ static int span_equals_str(az_span span, const char* str)
   return str != NULL && az_span_is_content_equal(span, az_span_create_from_str((char*)str));
 }
 
-static int32_t sim_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
+int32_t su_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
 {
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   const az_iot_su_report_update_id* id = s->installed;
   if (id != NULL && span_equals_str(manifest->update_id.provider, id->provider)
       && span_equals_str(manifest->update_id.name, id->name)
@@ -171,10 +154,7 @@ static int32_t sim_is_installed(const az_iot_su_client_update_manifest* manifest
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t sim_backup(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
+int32_t su_backup(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
   (void)manifest;
   (void)user_ctx;
@@ -182,13 +162,10 @@ static int32_t sim_backup(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t sim_install(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
+int32_t su_install(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
   (void)manifest;
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   if (s->fail_step > 0 && (uint32_t)(s->fail_step - 1) == step)
   {
     printf("  [install] step %u -> FORCED FAILURE (SU_SIM_FAIL_STEP)\n", step);
@@ -216,12 +193,9 @@ static int copy_span(char* dst, size_t dst_size, az_span src)
   return 1;
 }
 
-static int32_t sim_apply(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
+int32_t su_apply(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   s->applied_valid
       = copy_span(s->applied_provider, sizeof(s->applied_provider), manifest->update_id.provider)
       && copy_span(s->applied_name, sizeof(s->applied_name), manifest->update_id.name)
@@ -230,10 +204,7 @@ static int32_t sim_apply(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t sim_restore(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t step,
-    void* user_ctx)
+int32_t su_restore(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
   (void)manifest;
   (void)user_ctx;
@@ -241,9 +212,9 @@ static int32_t sim_restore(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
+int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
 {
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   if (len == 0)
   {
     /* Invalidation: remove the file so a later run finds no checkpoint. */
@@ -272,9 +243,9 @@ static int32_t sim_persist(const uint8_t* blob, size_t len, void* user_ctx)
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
+int32_t su_load_state(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
 {
-  su_sim* s = (su_sim*)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
   FILE* f = fopen(s->state_file, "rb");
   if (f == NULL)
   {
@@ -291,20 +262,4 @@ static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
   }
   *out_len = r;
   return 0;
-}
-
-az_iot_su_platform_hooks su_sim_hooks(su_sim* sim)
-{
-  az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = sim_download;
-  hooks.read_file_fn = sim_read_file;
-  hooks.install_fn = sim_install;
-  hooks.apply_fn = sim_apply;
-  hooks.backup_fn = sim_backup;
-  hooks.restore_fn = sim_restore;
-  hooks.is_installed_fn = sim_is_installed;
-  hooks.persist_state_fn = sim_persist;
-  hooks.load_state_fn = sim_load;
-  hooks.user_ctx = sim;
-  return hooks;
 }

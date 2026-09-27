@@ -92,36 +92,37 @@ static void on_sigint(int signo)
   g_stop = 1;
 }
 
-/* What the observers tell the pump loop. */
-typedef struct
-{
-  az_iot_connection_state conn[AZ_IOT_CONN_SCOPE_COUNT];
-  int faulted; /* a lifecycle settled at FAULTED: unrecoverable here */
-  int workflow_active; /* a deployment is in flight */
-  int workflow_completed; /* one finished and returned to Idle */
-  int workflow_succeeded; /* ...and it was applied successfully */
-  uint32_t retry_after_ms; /* the service asked to wait before asking again */
-  int registered; /* the hub connected at least once, so a device record exists */
-  int announced; /* the "ready" line has been printed */
-} sample_run;
-
 typedef struct
 {
   sample_config config;
+
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   az_iot_su_client su_client;
-  su_sim sim;
-  sample_run run;
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 
-  char* manufacturer;
-  char* model;
-  /* What is installed now: sent on every check and read by is_installed_fn. */
-  char installed_provider[SU_SIM_ID_PART_SIZE];
-  char installed_name[SU_SIM_ID_PART_SIZE];
-  char installed_version[SU_SIM_ID_PART_SIZE];
-  az_iot_su_report_update_id installed;
+  struct su_device_properties
+  {
+    char* manufacturer;
+    char* model;
+    /* What is installed now: sent on every check and read by su_is_installed(). */
+    char installed_provider[SU_SIM_ID_PART_SIZE];
+    char installed_name[SU_SIM_ID_PART_SIZE];
+    char installed_version[SU_SIM_ID_PART_SIZE];
+    az_iot_su_report_update_id installed_update_id;
+  } su_device_properties;
+
+  su_simulation_control simulation_control;
+
+  /* Set by the observers. */
+  az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
+  int connection_is_faulted; /* a lifecycle settled at FAULTED: unrecoverable here */
+  int device_registered; /* the hub connected at least once, so a device record exists */
+  int su_workflow_active; /* a deployment is in flight */
+  int su_workflow_completed; /* one finished and returned to Idle */
+  int su_workflow_succeeded; /* ...and it was applied successfully */
+  uint32_t su_retry_after_ms; /* the service asked to wait before asking again */
+
+  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 } sample_state;
 
 static void sample_state_destroy(sample_state* s)
@@ -132,9 +133,9 @@ static void sample_state_destroy(sample_state* s)
   az_iot_certificate_provider_pem_destroy(&s->certs);
   sample_config_release(&s->config);
 
-  su_sim_deinit(&s->sim);
-  free(s->manufacturer);
-  free(s->model);
+  free(s->simulation_control.state_file);
+  free(s->su_device_properties.manufacturer);
+  free(s->su_device_properties.model);
 }
 
 /* Copies @p src into @p dst; 0 when it does not fit. */
@@ -166,17 +167,17 @@ static int env_to_buffer(const char* name, const char* fallback, char* dst, size
 static void fill_device_properties(const sample_state* s, az_iot_su_device_properties* dp)
 {
   memset(dp, 0, sizeof(*dp));
-  dp->manufacturer = s->manufacturer;
-  dp->model = s->model;
-  dp->installed_update_id.provider = s->installed_provider;
-  dp->installed_update_id.name = s->installed_name;
-  dp->installed_update_id.version = s->installed_version;
+  dp->manufacturer = s->su_device_properties.manufacturer;
+  dp->model = s->su_device_properties.model;
+  dp->installed_update_id.provider = s->su_device_properties.installed_provider;
+  dp->installed_update_id.name = s->su_device_properties.installed_name;
+  dp->installed_update_id.version = s->su_device_properties.installed_version;
 }
 
 /* Both lifecycles report here. `state` is meaningless without `scope`. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  sample_run* run = (sample_run*)user_ctx;
+  sample_state* state = (sample_state*)user_ctx;
 
   /* `reason` is the last field read here, and `scope` indexes an array. */
   if (!SU_SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
@@ -187,30 +188,32 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
   az_iot_connection_scope scope = event->scope;
 
-  if (run->conn[scope] != event->state)
+  if (state->connection_state[scope] != event->state)
   {
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(run->conn[scope]),
+        sample_connection_state_name(state->connection_state[scope]),
         sample_connection_state_name(event->state),
         az_iot_result_to_string(event->reason));
-    run->conn[scope] = event->state;
+    state->connection_state[scope] = event->state;
+
+    if (scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      state->device_registered = 1;
+      printf("Hub connection up. Running (Ctrl-C to exit)...\n");
+    }
   }
 
-  if (scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED)
-  {
-    run->registered = 1;
-  }
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
-    run->faulted = 1;
+    state->connection_is_faulted = 1;
   }
 }
 
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
-  sample_run* run = (sample_run*)user_ctx;
+  sample_state* state = (sample_state*)user_ctx;
 
   /* `service_error` is the last field read here. */
   if (!SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
@@ -225,14 +228,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Update workflow: %s -> %s\n",
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
-      run->workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
-      if (!run->workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
+      state->su_workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
+      if (!state->su_workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
-        run->workflow_completed = 1;
+        state->su_workflow_completed = 1;
         /* The engine returns to Idle from ApplyStarted only when the last step
          * applied; failures pass through Failed, a skip leaves from
          * VerifyingManifest. */
-        run->workflow_succeeded = (event->previous_state == AZ_IOT_SU_STATE_APPLY_STARTED);
+        state->su_workflow_succeeded = (event->previous_state == AZ_IOT_SU_STATE_APPLY_STARTED);
       }
       break;
 
@@ -250,14 +253,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
        * point. */
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
-        if (!run->registered && event->reason != AZ_IOT_ERR_TIMEOUT)
+        if (!state->device_registered && event->reason != AZ_IOT_ERR_TIMEOUT)
         {
           fprintf(
               stderr,
               "A device that has never registered has no device record yet; it "
               "registers now, and a later check can succeed.\n");
         }
-        run->retry_after_ms = event->service_error.retry_after_ms;
+        state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       break;
   }
@@ -271,41 +274,41 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
  * gives it the device record the regular route needs. The reconnection policy
  * is the default from az_iot_connection_client_options_default().
  *
- * @param[in,out] st Sample state; its config must be loaded.
+ * @param[in,out] state Sample state; its config must be loaded.
  * @return 0 on success, nonzero on failure. sample_state_destroy() releases
  * what was created either way.
  */
-static int initialize_connection_client(sample_state* st)
+static int initialize_connection_client(sample_state* state)
 {
   /* Certificate provider. */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-  pem.trusted_ca_pem_path = st->config.ca;
-  pem.client_cert_pem_path = st->config.cert;
-  pem.client_key_pem_path = st->config.key;
-  if (az_iot_certificate_provider_pem_init(&st->certs, &pem) != AZ_IOT_OK)
+  pem.trusted_ca_pem_path = state->config.ca;
+  pem.client_cert_pem_path = state->config.cert;
+  pem.client_key_pem_path = state->config.key;
+  if (az_iot_certificate_provider_pem_init(&state->certs, &pem) != AZ_IOT_OK)
   {
     return 1;
   }
 
   /* Connection client. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &st->config);
-  copts.certificate_provider = &st->certs.base;
-  if (az_iot_connection_client_init(&st->connection_client, &copts) != AZ_IOT_OK)
+  sample_apply_dps_options(&copts, &state->config);
+  copts.certificate_provider = &state->certs.base;
+  if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
   }
-  if (az_iot_connection_client_add_state_observer(&st->connection_client, on_conn_state, &st->run)
+  if (az_iot_connection_client_add_state_observer(&state->connection_client, on_conn_state, state)
       != AZ_IOT_OK)
   {
     return 1;
   }
 
   if (az_iot_connection_client_register_mqtt_factory(
-          &st->connection_client, az_iot_paho_factory_create_v3_1_1())
+          &state->connection_client, az_iot_paho_factory_create_v3_1_1())
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(
-             &st->connection_client, az_iot_paho_factory_create_v5())
+             &state->connection_client, az_iot_paho_factory_create_v5())
           != AZ_IOT_OK)
   {
     return 1;
@@ -325,9 +328,15 @@ int main(void)
 
   signal(SIGINT, on_sigint);
 
-  sample_state st = { 0 };
+  sample_state state = { 0 };
 
-  if (su_sim_init(&st.sim) != 0)
+  /* Simulation knobs from the environment. */
+  state.simulation_control.fail_step = (int)su_sample_env_long("SU_SIM_FAIL_STEP", 0);
+  state.simulation_control.hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
+  state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
+  state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
+  state.simulation_control.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
+  if (state.simulation_control.state_file == NULL)
   {
     return 1;
   }
@@ -346,64 +355,80 @@ int main(void)
     request_timeout_ms = (uint32_t)poll_interval_s * 500u;
   }
 
-  if (sample_config_load(&st.config) != 0)
+  if (sample_config_load(&state.config) != 0)
   {
-    su_sim_deinit(&st.sim);
+    free(state.simulation_control.state_file);
     return 1;
   }
 
   int rc = 1;
 
-  if (initialize_connection_client(&st) != 0)
+  if (initialize_connection_client(&state) != 0)
   {
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
   /* Device identity. */
-  st.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  st.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
-  if (st.manufacturer == NULL || st.model == NULL
+  state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
+  if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
       || !env_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
-          st.installed_provider,
-          sizeof(st.installed_provider))
+          state.su_device_properties.installed_provider,
+          sizeof(state.su_device_properties.installed_provider))
       || !env_to_buffer(
-          "AZ_IOT_SU_INSTALLED_NAME", "SU-Sim", st.installed_name, sizeof(st.installed_name))
+          "AZ_IOT_SU_INSTALLED_NAME",
+          "SU-Sim",
+          state.su_device_properties.installed_name,
+          sizeof(state.su_device_properties.installed_name))
       || !env_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
-          st.installed_version,
-          sizeof(st.installed_version)))
+          state.su_device_properties.installed_version,
+          sizeof(state.su_device_properties.installed_version)))
   {
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
-  st.installed.provider = st.installed_provider;
-  st.installed.name = st.installed_name;
-  st.installed.version = st.installed_version;
-  st.sim.installed = &st.installed;
+  state.su_device_properties.installed_update_id.provider
+      = state.su_device_properties.installed_provider;
+  state.su_device_properties.installed_update_id.name = state.su_device_properties.installed_name;
+  state.su_device_properties.installed_update_id.version
+      = state.su_device_properties.installed_version;
+  state.simulation_control.installed = &state.su_device_properties.installed_update_id;
 
   az_iot_su_device_properties dp;
-  fill_device_properties(&st, &dp);
+  fill_device_properties(&state, &dp);
 
   size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0 || dp_needed > sizeof(st.dp_buffer))
+  if (dp_needed == 0 || dp_needed > sizeof(state.dp_buffer))
   {
     fprintf(
         stderr,
         "Device properties are invalid or too long for the %zu-byte cache. Need "
         "1-%d compatibility properties and a nonempty installed provider, name and "
         "version.\n",
-        sizeof(st.dp_buffer),
+        sizeof(state.dp_buffer),
         AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES);
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
-  /* Software updates client. */
-  az_iot_su_platform_hooks hooks = su_sim_hooks(&st.sim);
+  /* Software updates client. The platform hooks do the device-side work of a
+   * deployment; here each one is simulated (see ../common/su_sim.c). */
+  az_iot_su_platform_hooks hooks = { 0 };
+  hooks.download_fn = su_download;
+  hooks.read_file_fn = su_read_file;
+  hooks.is_installed_fn = su_is_installed;
+  hooks.backup_fn = su_backup;
+  hooks.install_fn = su_install;
+  hooks.apply_fn = su_apply;
+  hooks.restore_fn = su_restore;
+  hooks.persist_state_fn = su_persist_state;
+  hooks.load_state_fn = su_load_state;
+  hooks.user_ctx = &state.simulation_control;
   az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -414,24 +439,25 @@ int main(void)
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = st.dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(st.dp_buffer);
-  if (az_iot_su_client_initialize(&st.su_client, &st.connection_client, &su_opts) != AZ_IOT_OK)
+  su_opts.device_properties_buffer = state.dp_buffer;
+  su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
+  if (az_iot_su_client_initialize(&state.su_client, &state.connection_client, &su_opts)
+      != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_initialize failed\n");
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
   /* Registered before resume(), which replays a persisted workflow state
    * through this same observer. */
-  if (az_iot_su_client_add_observer(&st.su_client, on_su_event, &st.run) != AZ_IOT_OK)
+  if (az_iot_su_client_add_observer(&state.su_client, on_su_event, &state) != AZ_IOT_OK)
   {
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
-  if (az_iot_su_client_resume(&st.su_client) != AZ_IOT_OK)
+  if (az_iot_su_client_resume(&state.su_client) != AZ_IOT_OK)
   {
     fprintf(stderr, "Could not resume the persisted workflow; starting from Idle.\n");
   }
@@ -440,28 +466,28 @@ int main(void)
    * check on the first provisioning session reaches a verdict, so asking now
    * lets the device register without waiting out that hold. Later checks run
    * on a provisioning session the SDK reopens on demand. */
-  if (az_iot_su_client_request_update(&st.su_client, request_timeout_ms) != AZ_IOT_OK)
+  if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
   {
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
   printf(
       "Matched against a deployed update: manufacturer=%s model=%s\n"
       "Installed: %s/%s/%s\n",
-      st.manufacturer,
-      st.model,
-      st.installed_provider,
-      st.installed_name,
-      st.installed_version);
+      state.su_device_properties.manufacturer,
+      state.su_device_properties.model,
+      state.su_device_properties.installed_provider,
+      state.su_device_properties.installed_name,
+      state.su_device_properties.installed_version);
   if (poll_interval_s > 0)
   {
     printf("Checking for updates every %ld s.\n", poll_interval_s);
   }
 
-  if (az_iot_connection_client_open(&st.connection_client) != AZ_IOT_OK)
+  if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
-    sample_state_destroy(&st);
+    sample_state_destroy(&state);
     return 1;
   }
 
@@ -470,74 +496,76 @@ int main(void)
   rc = 0; /* interrupted or asked to reboot is a normal exit */
   while (!g_stop)
   {
-    (void)az_iot_connection_client_do_work(&st.connection_client, 50);
-    (void)az_iot_su_client_do_work(&st.su_client);
+    (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    (void)az_iot_su_client_do_work(&state.su_client);
 
-    if (!st.run.announced && st.run.conn[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
+    if (state.su_workflow_completed)
     {
-      st.run.announced = 1;
-      printf("Hub connection up. Running (Ctrl-C to exit)...\n");
-    }
-
-    if (st.run.workflow_completed)
-    {
-      st.run.workflow_completed = 0;
-      remove(st.sim.state_file); /* clear the resume blob */
+      state.su_workflow_completed = 0;
+      remove(state.simulation_control.state_file); /* clear the resume blob */
 
       /* Report the applied update as installed. Without this the next check
        * still sends the previous id, and is offered the same update again. */
-      if (st.run.workflow_succeeded && st.sim.applied_valid)
+      if (state.su_workflow_succeeded && state.simulation_control.applied_valid)
       {
         az_iot_su_device_properties next;
-        fill_device_properties(&st, &next);
-        next.installed_update_id.provider = st.sim.applied_provider;
-        next.installed_update_id.name = st.sim.applied_name;
-        next.installed_update_id.version = st.sim.applied_version;
+        fill_device_properties(&state, &next);
+        next.installed_update_id.provider = state.simulation_control.applied_provider;
+        next.installed_update_id.name = state.simulation_control.applied_name;
+        next.installed_update_id.version = state.simulation_control.applied_version;
         /* applied_* and installed_* have the same capacity, so the copies fit. */
-        if (az_iot_su_client_update_device_properties(&st.su_client, &next) == AZ_IOT_OK
+        if (az_iot_su_client_update_device_properties(&state.su_client, &next) == AZ_IOT_OK
             && copy_str(
-                st.installed_provider, sizeof(st.installed_provider), st.sim.applied_provider)
-            && copy_str(st.installed_name, sizeof(st.installed_name), st.sim.applied_name)
-            && copy_str(st.installed_version, sizeof(st.installed_version), st.sim.applied_version))
+                state.su_device_properties.installed_provider,
+                sizeof(state.su_device_properties.installed_provider),
+                state.simulation_control.applied_provider)
+            && copy_str(
+                state.su_device_properties.installed_name,
+                sizeof(state.su_device_properties.installed_name),
+                state.simulation_control.applied_name)
+            && copy_str(
+                state.su_device_properties.installed_version,
+                sizeof(state.su_device_properties.installed_version),
+                state.simulation_control.applied_version))
         {
           printf(
               "Update applied. Installed: %s/%s/%s\n",
-              st.installed_provider,
-              st.installed_name,
-              st.installed_version);
+              state.su_device_properties.installed_provider,
+              state.su_device_properties.installed_name,
+              state.su_device_properties.installed_version);
         }
         else
         {
           fprintf(stderr, "Could not record the applied update as installed.\n");
         }
       }
-      st.run.workflow_succeeded = 0;
+      state.su_workflow_succeeded = 0;
       printf("Deployment workflow complete.\n");
     }
 
     /* A (simulated) reboot was requested: state is persisted; exit so the
      * operator can "reboot" and re-run to resume. */
-    if (st.sim.reboot_signalled && st.sim.persist_failed)
+    if (state.simulation_control.reboot_signalled && state.simulation_control.persist_failed)
     {
       fprintf(
           stderr,
           "Reboot required, but the workflow state could not be persisted to %s.\n",
-          st.sim.state_file);
+          state.simulation_control.state_file);
       rc = 1;
       break;
     }
-    if (st.sim.reboot_signalled)
+    if (state.simulation_control.reboot_signalled)
     {
       printf(
           "Reboot required. Workflow state persisted to %s.\n"
           "Re-run the sample (without SU_SIM_REBOOT) to resume.\n",
-          st.sim.state_file);
+          state.simulation_control.state_file);
       break;
     }
 
     /* FAULTED is settled: the SDK does not retry out of it. A workflow in
      * flight is never interrupted for it. */
-    if (st.run.faulted && !st.run.workflow_active)
+    if (state.connection_is_faulted && !state.su_workflow_active)
     {
       fprintf(stderr, "The connection faulted and will not recover on its own.\n");
       rc = 1;
@@ -545,37 +573,37 @@ int main(void)
     }
 
     /* The service's requested delay, when longer, pushes the next check. */
-    if (st.run.retry_after_ms > 0)
+    if (state.su_retry_after_ms > 0)
     {
-      uint64_t earliest = sample_now_ms() + st.run.retry_after_ms;
+      uint64_t earliest = sample_now_ms() + state.su_retry_after_ms;
       if (earliest > next_check_ms)
       {
         next_check_ms = earliest;
       }
-      st.run.retry_after_ms = 0;
+      state.su_retry_after_ms = 0;
     }
 
     /* Poll, while no deployment is in flight. The SDK raises no event for a
      * successful "no update available", so nothing here waits on one. */
-    if (poll_interval_s > 0 && !st.run.workflow_active && sample_now_ms() >= next_check_ms)
+    if (poll_interval_s > 0 && !state.su_workflow_active && sample_now_ms() >= next_check_ms)
     {
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
-      if (az_iot_su_client_request_update(&st.su_client, request_timeout_ms) != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not request an update check.\n");
       }
     }
   }
 
-  az_iot_connection_client_close(&st.connection_client);
+  az_iot_connection_client_close(&state.connection_client);
   for (int i = 0; i < 100
-       && (st.run.conn[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
-           || st.run.conn[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE);
+       && (state.connection_state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
+           || state.connection_state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE);
        ++i)
   {
-    (void)az_iot_connection_client_do_work(&st.connection_client, 50);
+    (void)az_iot_connection_client_do_work(&state.connection_client, 50);
   }
 
-  sample_state_destroy(&st);
+  sample_state_destroy(&state);
   return rc;
 }
