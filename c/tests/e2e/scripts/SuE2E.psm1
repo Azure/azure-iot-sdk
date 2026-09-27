@@ -280,15 +280,22 @@ function Get-SuE2EDeviceResult {
     # runs/, newest by startTime; unmeasured.
     $runs = @((Invoke-SuE2ERest -Method Get -Uri "$job/runs?api-version=$script:ApiVersion" -Token $token).Body.value)
     if (-not $runs) { return $null }
-    $run = $runs | Sort-Object { $_.properties.startTime } -Descending | Select-Object -First 1
+    # StrictMode: entries may omit optional properties, so each is probed before use.
+    $run = $runs | Sort-Object { $p = $_.properties; if ($p.PSObject.Properties['startTime']) { $p.startTime } else { '' } } -Descending |
+        Select-Object -First 1
     $uri = "$job/runs/$($run.name)/listResults?api-version=$script:ApiVersion"
-    while ($uri) {
-        $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Token $token -Body @{}).Body
-        $hit = @($page.value) | Where-Object { $_.resourceExternalId -eq $RegistrationId } | Select-Object -First 1
+    $body = @{}
+    while ($true) {
+        $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Token $token -Body $body).Body
+        $hit = @($page.value) | Where-Object {
+            $_.PSObject.Properties['resourceExternalId'] -and $_.resourceExternalId -eq $RegistrationId
+        } | Select-Object -First 1
         if ($hit) { return $hit }
-        $uri = if ($page.PSObject.Properties['nextLink']) { $page.nextLink } else { $null }
+        # Paged by a skipToken sent back in the next request body.
+        $next = if ($page.PSObject.Properties['skipToken']) { $page.skipToken } else { $null }
+        if (-not $next) { return $null }
+        $body = @{ skipToken = $next }
     }
-    return $null
 }
 
 <#
@@ -347,16 +354,23 @@ function New-SuE2EOffers {
 function Test-SuE2EOffers {
     param(
         [Parameter(Mandatory)][string]$StatePath,
-        [Parameter(Mandatory)][string]$RegistrationId
+        [Parameter(Mandatory)][string]$RegistrationId,
+        # Results are projected asynchronously, so absent or InProgress is waited out.
+        [int]$Minutes = 10
     )
     $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
+    $deadline = (Get-Date).AddMinutes($Minutes)
     $failures = @()
     foreach ($scenario in $script:Scenarios.Keys) {
         $offer = $state.Offers[$scenario]
         $expected = $script:Scenarios[$scenario].Expected
-        $result = if ($offer -and $offer.Job) { Get-SuE2EDeviceResult -Config $config -JobName $offer.Job -RegistrationId $RegistrationId }
-        $actual = if ($result) { $result.status } else { '<none>' }
+        while ($true) {
+            $result = if ($offer -and $offer.Job) { Get-SuE2EDeviceResult -Config $config -JobName $offer.Job -RegistrationId $RegistrationId }
+            $actual = if ($result -and $result.PSObject.Properties['status']) { $result.status } else { '<none>' }
+            if ($actual -notin '<none>', 'InProgress' -or (Get-Date) -gt $deadline) { break }
+            Start-Sleep -Seconds 15
+        }
         Write-Host "$scenario`: job result $actual (expected $expected)"
         if ($actual -ne $expected) { $failures += $scenario }
     }
