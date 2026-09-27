@@ -108,7 +108,7 @@ static int teardown(void** state)
   if (fx)
   {
     bool adopted = (fx->client->factory_count > 0);
-    az_iot_connection_client_destroy(&fx->client_storage);
+    az_iot_connection_client_deinit(&fx->client_storage);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -551,7 +551,7 @@ static void removing_one_owner_leaves_the_other_owners_filters(void** state)
   assert_string_equal(resub->topic, "$iothub/methods/POST/#");
 }
 
-/* The defect this closes: destroy() used to leave the filter registered, so it
+/* The defect this closes: deinit() used to leave the filter registered, so it
  * came back on the next reconnect and kept consuming a registry slot forever. */
 static void a_withdrawn_filter_is_not_restored_on_reconnect(void** state)
 {
@@ -613,7 +613,7 @@ static void removing_while_disconnected_still_clears_the_registry(void** state)
 }
 
 /* Withdrawing an owner that never registered anything is not an error -- a
- * feature client whose init failed part-way still runs its destroy(). */
+ * feature client whose init failed part-way still runs its deinit(). */
 static void removing_an_unknown_owner_removes_nothing(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1209,7 +1209,7 @@ static void all_pending_pubacks_are_completed_on_disconnect(void** state)
  * adapter to tear down (it was destroyed when the retry was scheduled) but a
  * deadline is still armed. Nothing must be left pointing at freed memory, and
  * no retry may fire afterwards. */
-static void destroy_while_reconnect_is_scheduled(void** state)
+static void deinit_while_reconnect_is_scheduled(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
@@ -1221,7 +1221,7 @@ static void destroy_while_reconnect_is_scheduled(void** state)
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 
   size_t transitions = fx->log.count;
-  az_iot_connection_client_destroy(fx->client);
+  az_iot_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
   /* Neutralize the fixture teardown: already destroyed, factory adopted. */
@@ -1229,10 +1229,10 @@ static void destroy_while_reconnect_is_scheduled(void** state)
   fx->factory = NULL;
 }
 
-/* destroy() is the one teardown that must stay silent: the application is
+/* deinit() is the one teardown that must stay silent: the application is
  * tearing the client down, so the context a publish callback closes over may
  * already be gone and calling into it would be a use-after-free. */
-static void destroy_does_not_complete_pending_pubacks(void** state)
+static void deinit_does_not_complete_pending_pubacks(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
@@ -1240,7 +1240,7 @@ static void destroy_does_not_complete_pending_pubacks(void** state)
   puback_probe probe = { 0 };
   (void)publish_qos1(fx, m, &probe);
 
-  az_iot_connection_client_destroy(fx->client);
+  az_iot_connection_client_deinit(fx->client);
   assert_int_equal(probe.calls, 0);
 
   /* Neutralize the fixture teardown: already destroyed, factory adopted. */
@@ -1328,9 +1328,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         all_pending_pubacks_are_completed_on_disconnect, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
-        destroy_does_not_complete_pending_pubacks, setup_two_attempts, teardown),
+        deinit_does_not_complete_pending_pubacks, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
-        destroy_while_reconnect_is_scheduled, setup_two_attempts, teardown),
+        deinit_while_reconnect_is_scheduled, setup_two_attempts, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

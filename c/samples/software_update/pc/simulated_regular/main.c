@@ -83,7 +83,7 @@
 /* Microsoft's software updates production root keys, compiled into the SDK,
  * anchor manifest trust. To accept updates signed by your OWN root, build an
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it to
- * az_iot_su_client_initialize() instead. */
+ * az_iot_su_client_init() instead. */
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
@@ -127,10 +127,10 @@ typedef struct
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_su_client_destroy(&s->su_client);
+  az_iot_su_client_deinit(&s->su_client);
 
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
   free(s->simulation_control.state_file);
@@ -442,10 +442,9 @@ int main(void)
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = state.dp_buffer;
   su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
-  if (az_iot_su_client_initialize(&state.su_client, &state.connection_client, &su_opts)
-      != AZ_IOT_OK)
+  if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
-    fprintf(stderr, "az_iot_su_client_initialize failed\n");
+    fprintf(stderr, "az_iot_su_client_init failed\n");
     sample_state_destroy(&state);
     return 1;
   }

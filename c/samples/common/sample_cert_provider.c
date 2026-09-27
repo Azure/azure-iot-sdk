@@ -169,7 +169,7 @@ static az_iot_result provider_store(
 
 static void provider_deinit_vtable(az_iot_certificate_provider* self)
 {
-  sample_cert_provider_destroy((sample_cert_provider*)self);
+  sample_cert_provider_deinit((sample_cert_provider*)self);
 }
 
 static const az_iot_certificate_provider_vtable s_vtable = {
@@ -182,7 +182,7 @@ static const az_iot_certificate_provider_vtable s_vtable = {
   .store_issued_certificate = provider_store,
 };
 
-void sample_cert_provider_destroy(sample_cert_provider* provider)
+void sample_cert_provider_deinit(sample_cert_provider* provider)
 {
   if (!provider)
   {
@@ -221,7 +221,7 @@ az_iot_result sample_cert_provider_init(
   if (!provider->bootstrap_cert_path || !provider->bootstrap_key_path
       || !provider->operational_key_path || !provider->operational_cert_path)
   {
-    sample_cert_provider_destroy(provider);
+    sample_cert_provider_deinit(provider);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   if (opts->trusted_ca_path && opts->trusted_ca_path[0])
@@ -229,7 +229,7 @@ az_iot_result sample_cert_provider_init(
     provider->trusted_ca_path = dup_str(opts->trusted_ca_path);
     if (!provider->trusted_ca_path)
     {
-      sample_cert_provider_destroy(provider);
+      sample_cert_provider_deinit(provider);
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }

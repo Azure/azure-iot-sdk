@@ -10,7 +10,7 @@
  *        carries its update requests and status reports.
  *
  * NOT part of the public API. Applications do not implement this and do not see
- * it: they hand az_iot_su_client_initialize() a connection client, and the SDK
+ * it: they hand az_iot_su_client_init() a connection client, and the SDK
  * builds the shipping channel itself. Putting the wire protocol behind an
  * application-supplied vtable would mean every application re-implemented the
  * device-update operations, their authentication and their error handling --
@@ -109,7 +109,7 @@ extern "C"
      *
      * For a push channel this is where a subscription is established. For a
      * pull channel it need only record the callback. Called once, from
-     * az_iot_su_client_initialize().
+     * az_iot_su_client_init().
      */
     az_iot_result (*open)(
         void* ctx,
@@ -119,7 +119,7 @@ extern "C"
 
     /**
      * @brief Unbind. Best-effort; the engine ignores the result during
-     *        teardown. Called once, from az_iot_su_client_destroy().
+     *        teardown. Called once, from az_iot_su_client_deinit().
      */
     void (*close)(void* ctx);
 

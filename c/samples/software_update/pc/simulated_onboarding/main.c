@@ -82,7 +82,7 @@
  *
  * To accept updates signed by your OWN root instead, build your own
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
- * to az_iot_su_client_initialize() in place of the Microsoft keys.
+ * to az_iot_su_client_init() in place of the Microsoft keys.
  */
 
 static volatile sig_atomic_t g_stop = 0;
@@ -100,7 +100,7 @@ typedef struct
   az_iot_connection_client connection_client;
   az_iot_su_client su_client;
 
-  /* Device identity, kept past initialize() only so it can be printed. */
+  /* Device identity, kept past init() only so it can be printed. */
   struct su_device_properties
   {
     char* manufacturer;
@@ -127,10 +127,10 @@ typedef struct
 
 static void sample_state_destroy(sample_state* s)
 {
-  az_iot_su_client_destroy(&s->su_client);
+  az_iot_su_client_deinit(&s->su_client);
 
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
   free(s->simulation_control.state_file);
@@ -373,7 +373,7 @@ int main(void)
   dp.installed_update_id.name = state.su_device_properties.installed_name;
   dp.installed_update_id.version = state.su_device_properties.installed_version;
 
-  /* Named, rather than a bare error out of initialize(): the cache is fixed
+  /* Named, rather than a bare error out of init(): the cache is fixed
    * and these values now come from the environment. */
   size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
   if (dp_needed == 0)
@@ -408,10 +408,9 @@ int main(void)
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = state.dp_buffer;
   su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
-  if (az_iot_su_client_initialize(&state.su_client, &state.connection_client, &su_opts)
-      != AZ_IOT_OK)
+  if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
-    fprintf(stderr, "az_iot_su_client_initialize failed\n");
+    fprintf(stderr, "az_iot_su_client_init failed\n");
     sample_state_destroy(&state);
     return 1;
   }

@@ -7,7 +7,7 @@
 /* The shipping device-update channel.
  *
  * This is the transport the SDK builds for the application when it calls
- * az_iot_su_client_initialize() with its connection client. The application
+ * az_iot_su_client_init() with its connection client. The application
  * supplies nothing: URL construction, request bodies, response parsing, the
  * ETag round-trip and error classification all belong here, so that no
  * application has to re-implement the protocol.
@@ -692,7 +692,7 @@ static void channel_close(void* ctx)
   }
   az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
   /* Before anything else: the entry points at this channel. Removal is legal
-   * from inside a dispatch, which is where an application destroying the software updates
+   * from inside a dispatch, which is where an application deinitializing the software updates
    * client from its own state observer calls this. */
   if (c->observes_state)
   {

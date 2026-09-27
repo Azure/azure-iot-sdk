@@ -209,7 +209,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
     az_iot_certificate_provider_managed* provider,
     const az_iot_certificate_provider_managed_options* opts);
 
-void az_iot_certificate_provider_managed_destroy(
+void az_iot_certificate_provider_managed_deinit(
     az_iot_certificate_provider_managed* provider);
 ```
 
@@ -282,7 +282,7 @@ the delta against the certificate setup in `samples/unified/telemetry/main.c`
     copts.dps.request_operational_certificate = true;   /* <-- the only behavioral opt-in */
 ```
 
-`sample_state_destroy()` swaps `..._pem_destroy` → `..._managed_destroy`; `sample_config_t`
+`sample_state_destroy()` swaps `..._pem_deinit` → `..._managed_deinit`; `sample_config_t`
 gains `op_key` / `op_cert` paths. Everything else (factory registration, `open()`,
 `do_work()` loop, telemetry send) is unchanged.
 

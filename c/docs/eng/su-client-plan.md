@@ -63,7 +63,7 @@ ADR → Device Update. The device never talks to Device Update directly and hold
 
 **Removed** (public API break, no deprecation window):
 
-- `az_iot_su_client_initialize()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
+- `az_iot_su_client_init()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
 - Desired-property deployment parsing/dispatch, twin accept/reject acknowledgement (200/406),
   reported-property agent state (`0/6/255`) and device-properties reporting, the initial twin GET,
   and twin re-subscription on reconnect for software updates.
@@ -167,7 +167,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 40 | Software updates transport | 🟡 | P1 | M | — | 13 | 10/9 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 41 | Software updates transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_su_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 57 | Testing and conformance | 🔜 | P1 | M | — | 15 | 10/9 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
-| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/software_update/esp32` passes the connection client to `az_iot_su_client_initialize()`, asks on the onboarding route until it has connected to its hub (recorded in NVS) and on the regular route after, and polls every `SU_POLL_INTERVAL_S`. Builds with ESP-IDF v6.0; not run on a device since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
+| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/software_update/esp32` passes the connection client to `az_iot_su_client_init()`, asks on the onboarding route until it has connected to its hub (recorded in NVS) and on the regular route after, and polls every `SU_POLL_INTERVAL_S`. Builds with ESP-IDF v6.0; not run on a device since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
 | 18 | Download and integrity | 🔜 | P2 | L | — | 16 | ~10/9 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
 | 24 | Security and trust | ⚙️ | P2 | M | — | 17 | ~10/9 | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
 | 46 | Day0 recovery | 🔜 | P2 | L | — | 18 | blocked | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
@@ -469,7 +469,7 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
   `simulated_regular` registers, asks on the regular route at startup and then at a fixed
   interval, and reports the applied update as installed.
 - **The ESP32 sample is ported but unverified (🟡).** `samples/software_update/esp32` passes the
-  connection client to `az_iot_su_client_initialize()`, picks the onboarding or regular route
+  connection client to `az_iot_su_client_init()`, picks the onboarding or regular route
   from an NVS flag, and polls on the regular route once connected. It is not part of the CMake
   build (it needs the ESP-IDF toolchain); it builds with ESP-IDF v6.0 but has not been run on a
   device since the port. Its platform hooks live in `adapters/su/esp32/`.
