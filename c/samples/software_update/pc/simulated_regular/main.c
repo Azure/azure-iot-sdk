@@ -51,7 +51,9 @@
  *
  * Other knobs (environment variables, all optional):
  *   AZ_IOT_SU_POLL_INTERVAL_S=<s>  seconds between update checks (default
- *                                   60); 0 checks once, at startup.
+ *                                   60); 0 checks once, at startup. Each
+ *                                   check is abandoned after half the
+ *                                   interval (at most 60 s).
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -248,7 +250,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
        * point. */
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
-        if (!run->registered)
+        if (!run->registered && event->reason != AZ_IOT_ERR_TIMEOUT)
         {
           fprintf(
               stderr,
@@ -259,6 +261,57 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       }
       break;
   }
+}
+
+/**
+ * @brief Create the certificate provider and the connection client, observed
+ * by on_conn_state() and with both MQTT factories registered.
+ *
+ * No dps.provision_only: the device registers and connects to its hub, which
+ * gives it the device record the regular route needs. The reconnection policy
+ * is the default from az_iot_connection_client_options_default().
+ *
+ * @param[in,out] st Sample state; its config must be loaded.
+ * @return 0 on success, nonzero on failure. sample_state_destroy() releases
+ * what was created either way.
+ */
+static int initialize_connection_client(sample_state* st)
+{
+  /* Certificate provider. */
+  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+  pem.trusted_ca_pem_path = st->config.ca;
+  pem.client_cert_pem_path = st->config.cert;
+  pem.client_key_pem_path = st->config.key;
+  if (az_iot_certificate_provider_pem_init(&st->certs, &pem) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  /* Connection client. */
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  sample_apply_dps_options(&copts, &st->config);
+  copts.certificate_provider = &st->certs.base;
+  if (az_iot_connection_client_init(&st->connection_client, &copts) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+  if (az_iot_connection_client_add_state_observer(&st->connection_client, on_conn_state, &st->run)
+      != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  if (az_iot_connection_client_register_mqtt_factory(
+          &st->connection_client, az_iot_paho_factory_create_v3_1_1())
+          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(
+             &st->connection_client, az_iot_paho_factory_create_v5())
+          != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -284,6 +337,14 @@ int main(void)
   {
     poll_interval_s = 60;
   }
+  /* Each check is bounded to half the poll interval: a new request resets the
+   * deadline, so a longer bound would let a stalled check outlive every poll
+   * and never be abandoned. */
+  uint32_t request_timeout_ms = AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
+  if (poll_interval_s > 0 && (uint64_t)poll_interval_s * 500u < request_timeout_ms)
+  {
+    request_timeout_ms = (uint32_t)poll_interval_s * 500u;
+  }
 
   if (sample_config_load(&st.config) != 0)
   {
@@ -293,47 +354,7 @@ int main(void)
 
   int rc = 1;
 
-  /* Certificate provider. */
-  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-  pem.trusted_ca_pem_path = st.config.ca;
-  pem.client_cert_pem_path = st.config.cert;
-  pem.client_key_pem_path = st.config.key;
-  if (az_iot_certificate_provider_pem_init(&st.certs, &pem) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
-  /* Connection client. No dps.provision_only: the device registers and
-   * connects to its hub, which gives it the device record the regular route
-   * needs. */
-  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &st.config);
-  copts.certificate_provider = &st.certs.base;
-  /* Reconnect with backoff + jitter so a long-running device rides out
-   * transient drops. initial_delay_ms > 0 is what arms it. */
-  copts.reconnection_policy.initial_delay_ms = 2000; /* first retry after 2s */
-  copts.reconnection_policy.max_delay_ms = 60000; /* cap backoff at 60s */
-  copts.reconnection_policy.max_attempts = 0; /* 0 = retry forever */
-  copts.reconnection_policy.jitter_pct = 20; /* +/-20% jitter */
-  if (az_iot_connection_client_init(&st.connection_client, &copts) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-  if (az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, &st.run)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
-  if (az_iot_connection_client_register_mqtt_factory(
-          &st.connection_client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &st.connection_client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+  if (initialize_connection_client(&st) != 0)
   {
     sample_state_destroy(&st);
     return 1;
@@ -419,8 +440,7 @@ int main(void)
    * check on the first provisioning session reaches a verdict, so asking now
    * lets the device register without waiting out that hold. Later checks run
    * on a provisioning session the SDK reopens on demand. */
-  if (az_iot_su_client_request_update(&st.su_client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
-      != AZ_IOT_OK)
+  if (az_iot_su_client_request_update(&st.su_client, request_timeout_ms) != AZ_IOT_OK)
   {
     sample_state_destroy(&st);
     return 1;
@@ -531,8 +551,7 @@ int main(void)
     if (poll_interval_s > 0 && !st.run.workflow_active && sample_now_ms() >= next_check_ms)
     {
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
-      if (az_iot_su_client_request_update(&st.su_client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
-          != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&st.su_client, request_timeout_ms) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not request an update check.\n");
       }

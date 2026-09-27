@@ -32,6 +32,7 @@ menu "Software Updates ESP32 Sample Configuration"
         help
             Seconds between update checks on the regular route, once the
             device has connected to its hub. Checks are skipped while a
-            deployment is in flight.
+            deployment is in flight. A check not answered within half
+            the interval (at most 60 s) is abandoned.
 
 endmenu

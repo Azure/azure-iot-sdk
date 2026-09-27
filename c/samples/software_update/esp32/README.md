@@ -118,7 +118,9 @@ before, which it records in NVS (namespace `su_app`, key `registered`):
   which also sends the installed update id.
 
 Once connected it checks on the regular route every `SU_POLL_INTERVAL_S`
-(menuconfig, default 60 s) while no deployment is in flight. Erasing NVS
+(menuconfig, default 60 s) while no deployment is in flight. A check not
+answered within half the interval (at most 60 s) is abandoned and asked again at
+the next poll. Erasing NVS
 (`idf.py erase-flash`) returns it to the onboarding route.
 
 ## 3. Build a new image and deploy it as an update

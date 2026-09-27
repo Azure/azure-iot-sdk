@@ -220,6 +220,63 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
   }
 }
 
+/**
+ * @brief Create the certificate provider and the provision_only connection
+ * client, observed by on_conn_state() and with both MQTT factories registered.
+ *
+ * The reconnection policy is the default from
+ * az_iot_connection_client_options_default().
+ *
+ * @param[in,out] st Sample state; its config must be loaded.
+ * @return 0 on success, nonzero on failure. sample_state_destroy() releases
+ * what was created either way.
+ */
+static int initialize_connection_client(sample_state* st)
+{
+  /* Certificate provider. */
+  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+  pem.trusted_ca_pem_path = st->config.ca;
+  pem.client_cert_pem_path = st->config.cert;
+  pem.client_key_pem_path = st->config.key;
+  if (az_iot_certificate_provider_pem_init(&st->certs, &pem) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  /* Connection client. */
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  sample_apply_dps_options(&copts, &st->config);
+  copts.certificate_provider = &st->certs.base;
+  /* Every device-update operation runs on the provisioning session, before the
+   * device registers, so this device declares it has no hub: the session is
+   * kept up and pumped, registration never runs, and the hub scope stays IDLE.
+   * Declared rather than inferred -- a hubless enrollment and a misconfigured
+   * one both fail registration the same way, so inferring it would hide real
+   * misconfiguration. */
+  copts.dps.provision_only = true;
+  if (az_iot_connection_client_init(&st->connection_client, &copts) != AZ_IOT_OK)
+  {
+    return 1;
+  }
+  if (az_iot_connection_client_add_state_observer(&st->connection_client, on_conn_state, &st->run)
+      != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  if (az_iot_connection_client_register_mqtt_factory(
+          &st->connection_client, az_iot_paho_factory_create_v3_1_1())
+          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(
+             &st->connection_client, az_iot_paho_factory_create_v5())
+          != AZ_IOT_OK)
+  {
+    return 1;
+  }
+
+  return 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* main                                                                      */
 /* ------------------------------------------------------------------------- */
@@ -246,52 +303,7 @@ int main(void)
 
   int rc = 1;
 
-  /* Certificate provider. */
-  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-  pem.trusted_ca_pem_path = st.config.ca;
-  pem.client_cert_pem_path = st.config.cert;
-  pem.client_key_pem_path = st.config.key;
-  if (az_iot_certificate_provider_pem_init(&st.certs, &pem) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
-  /* Connection client. */
-  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &st.config);
-  copts.certificate_provider = &st.certs.base;
-  /* Every device-update operation runs on the provisioning session, before the
-   * device registers, so this device declares it has no hub: the session is
-   * kept up and pumped, registration never runs, and the hub scope stays IDLE.
-   * Declared rather than inferred -- a hubless enrollment and a misconfigured
-   * one both fail registration the same way, so inferring it would hide real
-   * misconfiguration. */
-  copts.dps.provision_only = true;
-  /* Reconnect with backoff + jitter so a long-running device rides out
-   * transient drops. initial_delay_ms > 0 is what arms it. */
-  copts.reconnection_policy.initial_delay_ms = 2000; /* first retry after 2s */
-  copts.reconnection_policy.max_delay_ms = 60000; /* cap backoff at 60s */
-  copts.reconnection_policy.max_attempts = 0; /* 0 = retry forever */
-  copts.reconnection_policy.jitter_pct = 20; /* +/-20% jitter */
-  if (az_iot_connection_client_init(&st.connection_client, &copts) != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-  if (az_iot_connection_client_add_state_observer(&st.connection_client, on_conn_state, &st.run)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&st);
-    return 1;
-  }
-
-  if (az_iot_connection_client_register_mqtt_factory(
-          &st.connection_client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &st.connection_client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+  if (initialize_connection_client(&st) != 0)
   {
     sample_state_destroy(&st);
     return 1;

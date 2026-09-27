@@ -236,10 +236,6 @@ void app_main(void)
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
-  copts.reconnection_policy.initial_delay_ms = 2000;
-  copts.reconnection_policy.max_delay_ms = 60000;
-  copts.reconnection_policy.max_attempts = 0; /* retry forever */
-  copts.reconnection_policy.jitter_pct = 20;
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -317,12 +313,18 @@ void app_main(void)
    * giving up and raising AZ_IOT_SU_EVENT_OPERATION_ABANDONED with
    * AZ_IOT_ERR_TIMEOUT -- otherwise an unservable check is retried on every
    * do_work() for the life of the client. AZ_IOT_SU_REQUEST_NO_TIMEOUT asks
-   * for exactly that, and is the wrong default on a battery-powered device. */
+   * for exactly that, and is the wrong default on a battery-powered device.
+   * It is bounded to half the poll interval: a new request resets the
+   * deadline, so a longer bound would let a stalled check outlive every poll. */
+  const uint32_t request_timeout_ms
+      = ((uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u < AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
+      ? (uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u
+      : AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
   const bool registered = app_is_registered();
   ESP_LOGI(TAG, "checking for updates on the %s route", registered ? "regular" : "onboarding");
   az_iot_result req = registered
-      ? az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
-      : az_iot_su_client_request_onboarding_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+      ? az_iot_su_client_request_update(&su, request_timeout_ms)
+      : az_iot_su_client_request_onboarding_update(&su, request_timeout_ms);
   if (req != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "could not request an update check");
@@ -414,7 +416,7 @@ void app_main(void)
     {
       last_check = xTaskGetTickCount();
       wait_ticks = poll_ticks;
-      if (az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS) != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
       {
         ESP_LOGW(TAG, "could not request an update check");
       }
