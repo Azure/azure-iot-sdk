@@ -208,7 +208,7 @@ void app_main(void)
   su_opts.device_properties_buffer_size = sizeof(dp_buffer);
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
-    ESP_LOGE(TAG, "su_client_initialize failed");
+    ESP_LOGE(TAG, "az_iot_su_client_init failed");
     esp_restart();
   }
 
