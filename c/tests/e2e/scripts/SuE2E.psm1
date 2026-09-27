@@ -95,6 +95,46 @@ function Invoke-SuE2ERest {
     return [pscustomobject]@{ Status = $status; Headers = $headers; Body = $response }
 }
 
+<#
+.SYNOPSIS
+    Waits for the long-running operation a response started, if it started
+    one; throws unless it ends in success.
+#>
+function Wait-SuE2EOperation {
+    param(
+        [Parameter(Mandatory)][object]$Response,
+        [Parameter(Mandatory)][string]$Token,
+        [Parameter(Mandatory)][string]$BaseUri,
+        [int]$Minutes = 5
+    )
+    if ($Response.Status -ne 202) { return }
+    $h = $Response.Headers
+    $status = $null
+    foreach ($name in 'Azure-AsyncOperation', 'Operation-Location') {
+        if ($h -and $h.ContainsKey($name)) { $status = @($h[$name])[0]; break }
+    }
+    $location = if ($h -and $h.ContainsKey('Location')) { @($h['Location'])[0] } else { $null }
+    $uri = if ($status) { $status } else { $location }
+    if (-not $uri) { return }
+    if ($uri -notmatch '^https?://') { $uri = "$BaseUri$uri" }
+
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    while ($true) {
+        $r = Invoke-SuE2ERest -Method Get -Uri $uri -Token $Token
+        if ($status) {
+            # Status monitor: the body carries the state.
+            $state = $r.Body.status
+            if ($state -eq 'Succeeded') { return }
+            if ($state -in 'Failed', 'Canceled') { throw "Operation $state`: $($r.Body | ConvertTo-Json -Depth 10 -Compress)" }
+        }
+        elseif ($r.Status -ne 202) {
+            return # Location: anything but 202 is the final answer.
+        }
+        if ((Get-Date) -gt $deadline) { throw "Operation did not finish in $Minutes min: $uri" }
+        Start-Sleep -Seconds 5
+    }
+}
+
 function Get-SuE2EJobsUri([hashtable]$Config) {
     return "$($Config.ARM_ENDPOINT)/subscriptions/$($Config.SUBSCRIPTION_ID)/resourceGroups/" +
     "$($Config.RESOURCE_GROUP)/providers/Microsoft.DeviceRegistry/namespaces/$($Config.ADR_NAMESPACE)/jobs"
@@ -347,12 +387,15 @@ function Remove-SuE2EOffers {
             try {
                 switch ($kind) {
                     'Job' {
-                        Invoke-SuE2ERest -Method Delete -Token $armToken `
-                            -Uri "$(Get-SuE2EJobsUri $config)/$($name)?api-version=$script:ApiVersion" | Out-Null
+                        # Awaited: the update it references is deleted next.
+                        $r = Invoke-SuE2ERest -Method Delete -Token $armToken `
+                            -Uri "$(Get-SuE2EJobsUri $config)/$($name)?api-version=$script:ApiVersion"
+                        Wait-SuE2EOperation -Response $r -Token $armToken -BaseUri $config.ARM_ENDPOINT
                     }
                     'Update' {
-                        Invoke-SuE2ERest -Method Delete -Token $aduToken `
-                            -Uri "https://$($config.ADU_ENDPOINT)/$($name)?api-version=$script:ApiVersion" | Out-Null
+                        $r = Invoke-SuE2ERest -Method Delete -Token $aduToken `
+                            -Uri "https://$($config.ADU_ENDPOINT)/$($name)?api-version=$script:ApiVersion"
+                        Wait-SuE2EOperation -Response $r -Token $aduToken -BaseUri "https://$($config.ADU_ENDPOINT)"
                     }
                     'Blob' {
                         az storage blob delete --auth-mode login --account-name $config.STORAGE_ACCOUNT `
