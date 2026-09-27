@@ -5,7 +5,7 @@
 
 > **SUPERSEDED (08/10/2026) by [client-separation.md](client-separation.md).**
 > This document evaluated splitting the whole SDK by **build target**
-> (`AZ_IOT_FLAVOR=classic|next|universal`). That is not what was adopted, on two
+> (`AZ_IOT_FLAVOR=mqttv3|mqttv5|universal`). That is not what was adopted, on two
 > counts. A configure-time flag compiles one flavor out, so a single binary
 > cannot connect and then adapt to whichever hub DPS assigned it. And the split
 > turned out not to need to reach that far: the **connection client stays
@@ -23,22 +23,22 @@
 There is a growing desire to split `azure-iot-sdk` into **two separate client
 SDKs**, one per IoT Hub flavor:
 
-- **Classic SDK** — talks to **Azure IoT Hub (Classic)** over **MQTT v3.1.1**,
+- **MQTTv3 SDK** — talks to **Azure MQTTv3 hub** over **MQTT v3.1.1**,
   reusing `az::iot::hub` topic helpers from `azure-sdk-for-c`.
-- **Next SDK** — talks to the new **Azure IoT/AEG Hub** over **MQTT v5**, using
-  the Next protocol profile owned in this repo.
+- **MQTTv5 SDK** — talks to the new **Azure MQTTv5 hub** over **MQTT v5**, using
+  the MQTTv5 protocol profile owned in this repo.
 
 Provisioning would still go through **DPS** (MQTT v3.1.1) in both products.
 
 This document captures the considerations of that move and, for each, the
 mitigations that keep the split from regressing customer experience. The single
 biggest risk is that the split **breaks the "service-side-only" hub migration
-story**: today DPS can reassign a device from a Classic hub to a Next hub (via
+story**: today DPS can reassign a device from an MQTTv3 hub to an MQTTv5 hub (via
 `hub_version` in the registration result) and a single binary handles it. Two
 separate SDKs turn that into a **synchronized device + service change**.
 
 > **Context.** The current design is a *single* SDK with a runtime
-> `protocol_profile` (`Classic | Next`) switch, an MQTT **adapter registry**
+> `protocol_profile` (`MQTTv3 | MQTTv5`) switch, an MQTT **adapter registry**
 > keyed by MQTT version, and a DPS exchange that returns the target
 > `hub_version`. See [design.md](../design.md) and
 > [dps-integration.md](../dps-integration.md) for the baseline architecture.
@@ -49,7 +49,7 @@ separate SDKs turn that into a **synchronized device + service change**.
 
 | # | Consideration | Severity | Primary mitigation |
 |---|---|:---:|---|
-| 1 | Seamless hub migration (Classic ↔ Next) becomes a device + service change | 🔴 High | Ship a thin **migration shim** / "universal provisioning" package; keep DPS bootstrap shared; OTA the new binary *before* DPS reassignment |
+| 1 | Seamless hub migration (MQTTv3 ↔ MQTTv5) becomes a device + service change | 🔴 High | Ship a thin **migration shim** / "universal provisioning" package; keep DPS bootstrap shared; OTA the new binary *before* DPS reassignment |
 | 2 | DPS provisioning logic must exist in **both** SDKs | 🟠 Medium | Factor DPS into a **shared `provisioning` library** consumed by both SDKs |
 | 3 | Large shared core duplicated across two repos/packages | 🟠 Medium | Keep a shared **`core` library** (connection, dispatch, reconnect, cert, platform); split only the protocol-profile + feature topic layer |
 | 4 | DPS must know which SDK the device runs before it can route | 🔴 High | Make `hub_version` advisory only for the *split* build; have DPS **fail closed** if the device can't honor the assigned flavor |
@@ -66,9 +66,9 @@ separate SDKs turn that into a **synchronized device + service change**.
 
 **Consideration.** Today a single binary registers both a v3.1.1 and a v5 MQTT
 factory and selects the right one from the DPS `hub_version` result. The service
-can move a device from a Classic hub to a Next hub purely by re-pointing the DPS
-enrollment — **no device firmware change**. After a split, a Classic-only binary
-physically cannot speak MQTT v5 to a Next hub (and vice versa). Migration now
+can move a device from an MQTTv3 hub to an MQTTv5 hub purely by re-pointing the DPS
+enrollment — **no device firmware change**. After a split, an MQTTv3-only binary
+physically cannot speak MQTT v5 to an MQTTv5 hub (and vice versa). Migration now
 requires **both** a DPS/service change **and** an OTA firmware update that swaps
 the SDK — and those two changes must be coordinated, or the device bricks its
 connectivity.
@@ -103,8 +103,8 @@ enable (see [dps-integration.md](../dps-integration.md)).
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: split binary + service-only migration"]
-        I1["Device runs Classic-only SDK<br/>(v3.1.1 only)"]
-        I2["Service re-points DPS<br/>enrollment to Next hub"]
+        I1["Device runs MQTTv3-only SDK<br/>(v3.1.1 only)"]
+        I2["Service re-points DPS<br/>enrollment to MQTTv5 hub"]
         I3{"Device can<br/>speak MQTT v5?"}
         I4["Connectivity lost<br/>device stranded on network"]
         I1 --> I2 --> I3
@@ -115,8 +115,8 @@ flowchart TB
         F1["Push firmware w/ target flavor<br/>(or universal package)"]
         F2["Device reports supported<br/>hub_versions in twin/property"]
         F3{"Service gate:<br/>device ready?"}
-        F4["Flip DPS enrollment to Next"]
-        F5["Device connects to Next hub"]
+        F4["Flip DPS enrollment to MQTTv5"]
+        F5["Device connects to MQTTv5 hub"]
         F6["Stay on current hub,<br/>retry after OTA lands"]
         F1 --> F2 --> F3
         F3 -- "Yes" --> F4 --> F5
@@ -128,22 +128,22 @@ flowchart TB
 
 ```mermaid
 sequenceDiagram
-    participant Dev as Device (Classic-only)
+    participant Dev as Device (MQTTv3-only)
     participant DPS
-    participant Next as IoT/AEG Hub (v5)
+    participant MQTTv5 as MQTTv5 hub (v5)
 
-    Note over Dev,Next: Issue - service-only reassignment
+    Note over Dev,MQTTv5: Issue - service-only reassignment
     Dev->>DPS: REGISTER (v3.1.1)
-    DPS-->>Dev: RESULT hub_version=2 (Next)
-    Dev->>Next: CONNECT (MQTT v5)
+    DPS-->>Dev: RESULT hub_version=2 (MQTTv5)
+    Dev->>MQTTv5: CONNECT (MQTT v5)
     Note over Dev: binary has no v5 adapter
     Dev--xNext: cannot speak v5 - fail
 
-    Note over Dev,Next: Solution - OTA first, gated reassignment
-    Dev->>Dev: OTA to universal/Next build
+    Note over Dev,MQTTv5: Solution - OTA first, gated reassignment
+    Dev->>Dev: OTA to universal/mqttv5 build
     Dev->>DPS: REGISTER + supportedHubVersions=[1,2]
     DPS-->>Dev: RESULT hub_version=2 (gated on capability)
-    Dev->>Next: CONNECT (MQTT v5) - success
+    Dev->>MQTTv5: CONNECT (MQTT v5) - success
 ```
 
 ---
@@ -160,7 +160,7 @@ topic build/parse, and registration-result handling into both products.
   `az::iot::provisioning`) that both Hub SDKs depend on.
 - The provisioning library returns the `hub_version` and assignment details; the
   Hub SDK decides whether it *can* honor them (see consideration 1 / 4).
-- This also keeps the v3.1.1 MQTT adapter requirement in one place — the Next SDK
+- This also keeps the v3.1.1 MQTT adapter requirement in one place — the MQTTv5 SDK
   still needs a v3.1.1 adapter *for DPS only*, even though its Hub session is v5.
 
 **Flow — issue vs. solution.**
@@ -168,15 +168,15 @@ topic build/parse, and registration-result handling into both products.
 ```mermaid
 flowchart LR
     subgraph ISSUE["Issue: duplicated DPS"]
-        IC["Classic SDK<br/>DPS exchange (copy A)"]
-        IN["Next SDK<br/>DPS exchange (copy B)"]
+        IC["MQTTv3 SDK<br/>DPS exchange (copy A)"]
+        IN["MQTTv5 SDK<br/>DPS exchange (copy B)"]
         IC -. "drift / double bugfix" .- IN
     end
 
     subgraph FIX["Solution: shared provisioning lib"]
         P["provisioning lib<br/>(wraps az::iot::provisioning, v3.1.1)"]
-        FC["Classic SDK"]
-        FN["Next SDK"]
+        FC["MQTTv3 SDK"]
+        FN["MQTTv5 SDK"]
         FC --> P
         FN --> P
     end
@@ -189,7 +189,7 @@ sequenceDiagram
     participant App
     participant Prov as provisioning lib (shared, v3.1.1)
     participant DPS
-    participant Hub as Hub SDK (Classic or Next)
+    participant Hub as Hub SDK (MQTTv3 or MQTTv5)
 
     Note over App,Hub: Solution - one DPS path feeds either flavor
     App->>Prov: register()
@@ -197,7 +197,7 @@ sequenceDiagram
     DPS-->>Prov: RESULT (fqdn, deviceId, hub_version)
     Prov-->>App: assignment + hub_version
     App->>Hub: connect(assignment)
-    Note over Hub: Classic to v3.1.1 . Next to v5
+    Note over Hub: MQTTv3 to v3.1.1 . MQTTv5 to v5
 ```
 
 ---
@@ -208,7 +208,7 @@ sequenceDiagram
 `src/core` layout — `connection_client`, `dispatch`, `reconnect`,
 `certificate_provider_pem`, `mqtt_iface`, `log`, `result`, `version` — only
 `protocol_profile.c` and the feature-client *topic templates* actually differ
-between Classic and Next. Splitting the whole tree duplicates ~80% of the code.
+between MQTTv3 and MQTTv5. Splitting the whole tree duplicates ~80% of the code.
 
 **Mitigations.**
 
@@ -220,7 +220,7 @@ between Classic and Next. Splitting the whole tree duplicates ~80% of the code.
   - Feature-client topic templates / payload schemas.
   - The MQTT-version requirement (v3.1.1 vs v5 adapter selection).
 - Express the split as **two build targets over one source tree** (CMake
-  options, e.g. `AZ_IOT_FLAVOR=classic|next`) rather than two repos. This is the
+  options, e.g. `AZ_IOT_FLAVOR=mqttv3|mqttv5`) rather than two repos. This is the
   cheapest way to get per-flavor binaries while keeping one place to fix bugs.
 
 **Flow — issue vs. solution.**
@@ -228,14 +228,14 @@ between Classic and Next. Splitting the whole tree duplicates ~80% of the code.
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: ~80% duplicated"]
-        D1["Classic repo<br/>core + profile + features"]
-        D2["Next repo<br/>core + profile + features"]
+        D1["MQTTv3 repo<br/>core + profile + features"]
+        D2["MQTTv5 repo<br/>core + profile + features"]
         D1 -. "duplicated maintenance" .- D2
     end
 
     subgraph FIX["Solution: shared core, thin split"]
         CORE["core lib<br/>connection . dispatch . reconnect .<br/>cert . mqtt_iface . platform"]
-        PC["profile_classic<br/>+ feature topics (v3.1.1)"]
+        PC["profile_mqtt_v3<br/>+ feature topics (v3.1.1)"]
         PN["profile_next<br/>+ feature topics (v5)"]
         CORE --> PC
         CORE --> PN
@@ -333,7 +333,7 @@ they know which hub flavor they'll be assigned. Wrong choice = rework.
 
 **Mitigations.**
 
-- Unambiguous package names (e.g. `azure-iot-classic`, `azure-iot-next`) plus a
+- Unambiguous package names (e.g. `azure-iot-mqttv3`, `azure-iot-mqttv5`) plus a
   **decision matrix** in the README (footprint vs. migration flexibility vs.
   feature set).
 - A **meta/umbrella package** (`azure-iot`) that, by default, pulls the universal
@@ -355,7 +355,7 @@ flowchart TB
     subgraph FIX["Solution: meta-package + matrix"]
         M1["azure-iot meta-package"]
         M2{"Need size opt<br/>& know flavor?"}
-        M3["Link single flavor<br/>(classic | next)"]
+        M3["Link single flavor<br/>(mqttv3 | mqttv5)"]
         M4["Default: universal build"]
         M1 --> M2
         M2 -- "Yes" --> M3
@@ -374,10 +374,10 @@ sequenceDiagram
     Note over Cust,Reg: Solution - default pulls safe (universal)
     Cust->>Pkg: depend on "azure-iot"
     Pkg->>Reg: resolve default to universal
-    Reg-->>Cust: classic + next profiles
+    Reg-->>Cust: mqttv3 + mqttv5 profiles
     Note over Cust: override for size
-    Cust->>Pkg: AZ_IOT_FLAVOR=classic
-    Pkg->>Reg: resolve to classic only
+    Cust->>Pkg: AZ_IOT_FLAVOR=mqttv3
+    Pkg->>Reg: resolve to mqttv3 only
     Reg-->>Cust: v3.1.1 profile only
 ```
 
@@ -410,15 +410,15 @@ shared engine, which is exactly what the conformance suite has to catch.
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: drift"]
-        T1["Classic twin/methods/software updates impl"]
-        T2["Next twin/methods/software updates impl"]
+        T1["MQTTv3 twin/methods/software updates impl"]
+        T2["MQTTv5 twin/methods/software updates impl"]
         T1 -. "behaviour diverges" .- T2
     end
 
     subgraph FIX["Solution: shared iface + conformance"]
         IF["Shared feature-client interfaces<br/>az_iot_twin_client, ..."]
-        IC["Classic profile impl"]
-        IN["Next profile impl"]
+        IC["MQTTv3 profile impl"]
+        IN["MQTTv5 profile impl"]
         CONF["conformance suite<br/>runs vs BOTH flavors in CI"]
         IF --> IC
         IF --> IN
@@ -433,8 +433,8 @@ flowchart TB
 sequenceDiagram
     participant CI
     participant Suite as conformance suite
-    participant CL as Classic build
-    participant NX as Next build
+    participant CL as MQTTv3 build
+    participant NX as MQTTv5 build
 
     Note over CI,NX: Solution - same assertions, both flavors
     CI->>Suite: run
@@ -465,15 +465,15 @@ stacks, OSes) and the risk of one flavor's pipeline rotting.
 ```mermaid
 flowchart LR
     subgraph ISSUE["Issue: forked pipelines"]
-        P1["Classic CI<br/>(adapters x TLS x OS)"]
-        P2["Next CI<br/>(adapters x TLS x OS)"]
+        P1["MQTTv3 CI<br/>(adapters x TLS x OS)"]
+        P2["MQTTv5 CI<br/>(adapters x TLS x OS)"]
         P2 -. "rots / drifts" .- P1
     end
 
     subgraph FIX["Solution: one matrix + flavor axis"]
         Y["Shared CI template"]
-        F1["flavor=classic"]
-        F2["flavor=next"]
+        F1["flavor=mqttv3"]
+        F2["flavor=mqttv5"]
         Y --> F1
         Y --> F2
     end
@@ -485,13 +485,13 @@ flowchart LR
 sequenceDiagram
     participant PR
     participant CI as Shared pipeline
-    participant B1 as Build classic
-    participant B2 as Build next
+    participant B1 as Build mqttv3
+    participant B2 as Build mqttv5
     participant CT as Conformance
 
     PR->>CI: open / update
-    CI->>B1: build (flavor=classic)
-    CI->>B2: build (flavor=next)
+    CI->>B1: build (flavor=mqttv3)
+    CI->>B2: build (flavor=mqttv5)
     B1-->>CI: ok
     B2-->>CI: ok
     CI->>CT: run vs both
@@ -519,15 +519,15 @@ shared-core expectations and confusing support windows.
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: divergent core pins"]
-        V1["Classic vX to core 1.2"]
-        V2["Next vY to core 1.5"]
+        V1["MQTTv3 vX to core 1.2"]
+        V2["MQTTv5 vY to core 1.5"]
         V1 -. "incompatible shared core" .- V2
     end
 
     subgraph FIX["Solution: lockstep core"]
         CORE["core/provisioning<br/>semver (pinned identical)"]
-        FCl["Classic minor features"]
-        FNx["Next minor features"]
+        FCl["MQTTv3 minor features"]
+        FNx["MQTTv5 minor features"]
         CORE --> FCl
         CORE --> FNx
     end
@@ -539,15 +539,15 @@ flowchart TB
 sequenceDiagram
     participant Rel as Release process
     participant Core as core/provisioning
-    participant CL as Classic SDK
-    participant NX as Next SDK
+    participant CL as MQTTv3 SDK
+    participant NX as MQTTv5 SDK
 
     Note over Rel,NX: Solution - core bumps in lockstep
     Rel->>Core: tag core 1.6.0
     Core-->>CL: pin core 1.6.0
     Core-->>NX: pin core 1.6.0
-    CL->>CL: classic-only minor (1.6.x)
-    NX->>NX: next-only minor (1.6.x)
+    CL->>CL: mqttv3-only minor (1.6.x)
+    NX->>NX: mqttv5-only minor (1.6.x)
     Note over CL,NX: compatibility table published
 ```
 
@@ -563,23 +563,23 @@ per product, doubling maintenance and confusing users.
 - One documentation site with **per-flavor tabs/sections** rather than two sites.
 - A **shared sample skeleton** (connection + provisioning) with flavor-specific
   deltas highlighted, mirroring the current `samples/common` layout.
-- Single issue tracker with a `flavor:classic` / `flavor:next` label taxonomy.
+- Single issue tracker with a `flavor:mqttv3` / `flavor:mqttv5` label taxonomy.
 
 **Flow — issue vs. solution.**
 
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: forked content"]
-        D1["Classic docs + samples"]
-        D2["Next docs + samples"]
+        D1["MQTTv3 docs + samples"]
+        D2["MQTTv5 docs + samples"]
         D1 -. "double maintenance" .- D2
     end
 
     subgraph FIX["Solution: unified"]
         SITE["One docs site<br/>per-flavor tabs"]
         SKEL["Shared sample skeleton<br/>(connect + provisioning)"]
-        dC["classic deltas"]
-        dN["next deltas"]
+        dC["mqttv3 deltas"]
+        dN["mqttv5 deltas"]
         SITE --> SKEL
         SKEL --> dC
         SKEL --> dN
@@ -595,7 +595,7 @@ sequenceDiagram
     participant Skel as Shared sample
 
     Dev->>Site: open quickstart
-    Site-->>Dev: pick flavor tab (classic|next)
+    Site-->>Dev: pick flavor tab (mqttv3|mqttv5)
     Dev->>Skel: clone skeleton (connect+provision)
     Skel-->>Dev: apply flavor delta only
     Note over Dev: same core steps, minimal divergence
@@ -606,8 +606,8 @@ sequenceDiagram
 ## 10. Footprint — the upside to preserve
 
 **Consideration / Gain.** The legitimate motivation for splitting is **binary
-size and attack surface**: a Classic-only device drops the v5 adapter and the
-Next protocol profile; a Next-only device drops the v3.1.1 Hub topic tables (it
+size and attack surface**: an MQTTv3-only device drops the v5 adapter and the
+MQTTv5 protocol profile; an MQTTv5-only device drops the v3.1.1 Hub topic tables (it
 still needs v3.1.1 *for DPS*). For deeply constrained MCUs this is real flash/RAM
 savings.
 
@@ -633,8 +633,8 @@ flowchart TB
     end
 
     subgraph FIX["Solution: build-time select + DCE"]
-        S1["AZ_IOT_FLAVOR=classic"]
-        S2["--gc-sections strips<br/>v5 adapter + Next profile"]
+        S1["AZ_IOT_FLAVOR=mqttv3"]
+        S2["--gc-sections strips<br/>v5 adapter + MQTTv5 profile"]
         S3["Small binary,<br/>single source tree"]
         S1 --> S2 --> S3
     end
@@ -649,10 +649,10 @@ sequenceDiagram
     participant Link as Linker
 
     Note over Build,Link: Solution - strip unused flavor at link time
-    Build->>CMake: AZ_IOT_FLAVOR=classic
-    CMake->>Link: compile core + classic profile
-    Link->>Link: --gc-sections drop v5 adapter & Next profile
-    Link-->>Build: minimal classic image
+    Build->>CMake: AZ_IOT_FLAVOR=mqttv3
+    CMake->>Link: compile core + mqttv3 profile
+    Link->>Link: --gc-sections drop v5 adapter & MQTTv5 profile
+    Link-->>Build: minimal mqttv3 image
 ```
 
 ---
@@ -663,7 +663,7 @@ Prefer a **"split by build target, not by source"** strategy:
 
 1. One repo, one shared `core` + `provisioning`, two thin protocol-profile/feature
    layers selected by `AZ_IOT_FLAVOR`.
-2. Ship three artifacts: `classic`, `next`, and a `universal` (both profiles) for
+2. Ship three artifacts: `mqttv3`, `mqttv5`, and a `universal` (both profiles) for
    customers who need in-field hub migration.
 3. Make `hub_version` capability-checked, with the device advertising supported
    versions so DPS can gate reassignment.

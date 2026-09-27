@@ -3,12 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic file upload unit tests. The client performs HTTPS through an
+/* MQTTv3 hub file upload unit tests. The client performs HTTPS through an
  * application transport hook, so these tests drive it offline via a mock hook +
- * an unopened direct-host (Classic) connection client -- no live hub, no MQTT.
+ * an unopened direct-host (MQTTv3) connection client -- no live hub, no MQTT.
  *
  * There is no mqttv5 counterpart to exercise: file upload is not carried on the
- * MQTT v5 hub, and this client pins Classic. What used to be the Next-dispatch
+ * MQTT v5 hub, and this client pins MQTTv3. What used to be the MQTTv5-dispatch
  * section is now a single test that the pin refuses an MQTT v5 connection. */
 #include <stdarg.h>
 #include <stdbool.h>
@@ -24,7 +24,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_file_upload_client.h"
-/* Only to prove a released Classic pin admits the other generation. */
+/* Only to prove a released MQTTv3 pin admits the other generation. */
 #include "azure/iot/mqttv5/az_iot_telemetry_client.h"
 
 #define TEST_HUB "myhub.azure-devices.net"
@@ -187,7 +187,7 @@ static void on_notify(az_iot_result status, void* ctx)
 }
 
 /* ------------------------------------------------------------------------- */
-/* fixture: unopened direct-host (Classic) connection + file upload client    */
+/* fixture: unopened direct-host (MQTTv3) connection + file upload client    */
 /* ------------------------------------------------------------------------- */
 
 typedef struct
@@ -202,7 +202,7 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB; /* direct host => Classic flavor; no open needed */
+  opts.host = TEST_HUB; /* direct host => MQTTv3 flavor; no open needed */
   opts.port = 8883;
   opts.client_id = TEST_DEVICE;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
@@ -240,11 +240,11 @@ static void init_rejects_null(void** state)
   assert_int_equal(az_iot_mqttv3_file_upload_client_init(NULL, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void classic_init_requires_http_hook(void** state)
+static void mqtt_v3_init_requires_http_hook(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_file_upload_client fu2;
-  /* A Classic connection with no HTTP transport is rejected. */
+  /* An MQTTv3 connection with no HTTP transport is rejected. */
   assert_int_equal(
       az_iot_mqttv3_file_upload_client_init(&fu2, &fx->conn, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
@@ -285,7 +285,7 @@ static void get_sas_uri_delivers_the_sas_uri_and_correlation_id(void** state)
       az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, "sample-data/test.txt", on_sas, &r),
       AZ_IOT_OK);
 
-  /* Delivered synchronously via the callback (Classic). */
+  /* Delivered synchronously via the callback (MQTTv3). */
   assert_true(r.sas_done);
   assert_int_equal(r.sas_status, AZ_IOT_OK);
   assert_string_equal(r.correlation_id, "corr-123");
@@ -425,7 +425,7 @@ static void get_sas_uri_rejects_null_client(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* A transport struct whose send function is NULL is as good as no transport. */
-static void classic_init_rejects_transport_with_null_send(void** state)
+static void mqtt_v3_init_rejects_transport_with_null_send(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_file_upload_client fu2;
@@ -868,9 +868,9 @@ static void requests_resume_when_the_endpoint_returns(void** state)
       "https://otherhub.azure-devices.net/devices/dev2/files?api-version=2021-04-12");
 }
 
-/* The Classic path is stateless per call, so starting the next request from
+/* The MQTTv3 path is stateless per call, so starting the next request from
  * inside the completion callback is legal. Locking this in matters because the
- * Next/MQTT path will hold per-request state and must preserve the behaviour. */
+ * MQTTv5 path will hold per-request state and must preserve the behaviour. */
 typedef struct
 {
   az_iot_mqttv3_file_upload_client* fu;
@@ -920,7 +920,7 @@ static void get_sas_uri_is_reentrant_from_callback(void** state)
 /* generation pinning                                                        */
 /* ------------------------------------------------------------------------- */
 
-/* File upload is not carried on the MQTT v5 hub, so this client pins Classic.
+/* File upload is not carried on the MQTT v5 hub, so this client pins MQTTv3.
  * A direct connection declares its generation up front, which is what lets the
  * pin be answered at init() rather than deferred to connect. */
 static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
@@ -960,13 +960,13 @@ static void init_without_an_http_hook_is_rejected(void** state)
       az_iot_mqttv3_file_upload_client_init(&fu2, &fx->conn, &empty), AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* A failure AFTER the Classic pin is taken must release it.
+/* A failure AFTER the MQTTv3 pin is taken must release it.
  *
  * The endpoint check is the only failure that happens post-pin: the NULL and
  * missing-hook checks both run before __require_profile(), so they can never
  * exercise this. A DPS connection with no assigned hub fails there.
  *
- * Proved by admitting an mqttv5 client afterwards: a leaked Classic reference
+ * Proved by admitting an mqttv5 client afterwards: a leaked MQTTv3 reference
  * would make that return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH, and the
  * connection would be stuck refusing a generation on behalf of a client that
  * does not exist. */
@@ -998,7 +998,7 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
 /* The pre-pin refusals take no reference to release, so they cannot strand one.
  *
  * Uses its own DPS connection, not the fixture's: the fixture holds a live
- * Classic client, and its legitimate pin would refuse the mqttv5 client below for
+ * MQTTv3 client, and its legitimate pin would refuse the mqttv5 client below for
  * an honest reason, hiding a leak. An unresolved connection with no live client
  * is the only state where "was a pin taken?" is observable. */
 static void init_without_an_http_hook_takes_no_profile_pin(void** state)
@@ -1018,8 +1018,8 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
         az_iot_mqttv3_file_upload_client_init(&fu2, &conn, NULL), AZ_IOT_ERR_INVALID_ARG);
   }
 
-  /* Asserted through the OTHER generation: a leaked Classic reference is
-   * invisible to another Classic client, which is admitted either way. */
+  /* Asserted through the OTHER generation: a leaked MQTTv3 reference is
+   * invisible to another MQTTv3 client, which is admitted either way. */
   az_iot_mqttv5_telemetry_client t;
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
   az_iot_mqttv5_telemetry_client_deinit(&t);
@@ -1715,7 +1715,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(init_rejects_null),
-    cmocka_unit_test_setup_teardown(classic_init_requires_http_hook, setup, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_init_requires_http_hook, setup, teardown),
     cmocka_unit_test_setup_teardown(get_sas_uri_builds_the_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         get_sas_uri_delivers_the_sas_uri_and_correlation_id, setup, teardown),
@@ -1729,7 +1729,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(get_sas_uri_rejects_null_client, setup, teardown),
 
     /* init argument validation + failure cleanup */
-    cmocka_unit_test_setup_teardown(classic_init_rejects_transport_with_null_send, setup, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_init_rejects_transport_with_null_send, setup, teardown),
     cmocka_unit_test(init_rejects_unresolved_hub_address),
     cmocka_unit_test(init_rejects_missing_device_id),
     cmocka_unit_test(oversized_hub_address_is_rejected_at_the_operation),

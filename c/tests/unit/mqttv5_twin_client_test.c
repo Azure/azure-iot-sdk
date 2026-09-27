@@ -289,7 +289,7 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
 /* Drive an MQTT v5 session to CONNECTED, admitting the birth with a birth-ack
  * carrying @p desired and @p reported as the authoritative twin versions.
  *
- * Unlike Classic, CONNACK alone does not announce CONNECTED: the presence
+ * Unlike MQTTv3, CONNACK alone does not announce CONNECTED: the presence
  * wildcard and the birth handshake complete first. */
 /* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
 static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
@@ -2373,7 +2373,7 @@ static void init_rejects_a_null_connection(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_init(&local, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void init_against_a_classic_connection_is_rejected(void** state)
+static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
 {
   (void)state;
 
@@ -2382,7 +2382,7 @@ static void init_against_a_classic_connection_is_rejected(void** state)
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.client_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -2624,7 +2624,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
-    cmocka_unit_test_setup_teardown(init_against_a_classic_connection_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_against_an_mqtt_v3_connection_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_tolerates_null, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),

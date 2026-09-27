@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Wire-format tests for the hand-rolled proto3 codec behind the AEG direct
+/* Wire-format tests for the hand-rolled proto3 codec behind the MQTTv5 direct
  * method phases (common/Protos/directmethods.proto).
  *
  * The expected bytes below are written out from the .proto by hand -- field

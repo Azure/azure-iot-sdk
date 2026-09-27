@@ -8,8 +8,8 @@
 # is available (required for Azure IoT connections on port 8883).
 #
 # Registers two factories:
-#   - v3.1.1, supported roles: { DPS, HUB_CLASSIC }
-#   - v5,     supported roles: { HUB_NEXT }
+#   - v3.1.1, supported roles: { DPS, HUB_MQTT_V3 }
+#   - v5,     supported roles: { HUB_MQTT_V5 }
 # Each factory creates a fresh Paho client object per session (no sharing).
 
 include(FetchContent)

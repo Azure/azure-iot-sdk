@@ -216,8 +216,8 @@ static inline size_t az_iot_test_index_of(
   return SIZE_MAX;
 }
 
-/* Options for a direct Classic hub connect with reconnection disabled. */
-static inline az_iot_connection_client_options az_iot_test_classic_options(void)
+/* Options for a direct MQTTv3 hub connect with reconnection disabled. */
+static inline az_iot_connection_client_options az_iot_test_mqtt_v3_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";

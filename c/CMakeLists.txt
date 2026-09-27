@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(azure-iot-sdk
     VERSION 0.0.1
-    DESCRIPTION "C99 client SDK for Azure IoT Hub (Classic + Next)"
+    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)"
     LANGUAGES C
 )
 
@@ -33,7 +33,7 @@ include(az_iot_coverage)
 
 # azure-sdk-for-c is a mandatory dependency.
 #   az::core                 — spans, JSON, log, contexts, result codes.
-#   az::iot::hub             — IoTHub-Classic MQTT topic build/parse.
+#   az::iot::hub             — MQTTv3 hub MQTT topic build/parse.
 #   az::iot::provisioning    — Azure DPS MQTT topic build/parse.
 # All three are MQTT-stack-agnostic; we feed their topic strings into our
 # adapter. Upstream is no longer published as a vcpkg port; the project's own

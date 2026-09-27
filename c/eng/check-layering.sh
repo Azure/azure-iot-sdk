@@ -94,6 +94,25 @@ if [ -n "${destroy_hits}" ]; then
     echo
 fi
 
+# The DPS `connectionProfile` wire value is the literal string "classic", so a
+# quoted occurrence is exempt; everything else must use mqttv3/mqttv5.
+banned_hits="$(grep -rniE \
+    --include='*.c' --include='*.h' \
+    '(^|[^[:alnum:]_])(gen1|gen2|aeg|classic)([^[:alnum:]_]|$)|hub[-_ ]next' \
+    "${root_dir}/inc" "${root_dir}/src" "${root_dir}/tests" "${root_dir}/samples" \
+    2>/dev/null | grep -vE '\\?"classic' || true)"
+if [ -n "${banned_hits}" ]; then
+    if [ "${violations}" -eq 0 ]; then
+        echo "Generation layering violations found:"
+        echo
+    fi
+    violations=$((violations + 1))
+    echo "  generation naming must use mqttv3/mqttv5, not gen1/gen2/classic/next/aeg"
+    while IFS= read -r hit; do
+        [ -n "${hit}" ] && echo "    ${hit#${root_dir}/}"
+    done <<< "${banned_hits}"
+    echo
+fi
 if [ "${violations}" -gt 0 ]; then
     echo "${violations} generation layering rule(s) violated."
     exit 1

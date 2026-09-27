@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# AEG (MQTT v5) hubs only; each pins mqttv5 before open().
+# MQTTv5 hubs only; each pins mqttv5 before open().
 foreach(sample
         telemetry
         twin_get_patch

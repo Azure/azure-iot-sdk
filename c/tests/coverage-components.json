@@ -21,7 +21,7 @@
         "line": 75,
         "branch": 55,
         "function": 100,
-        "comment": "IoT Hub Classic generation clients. The telemetry suite covers topic encoding, lifecycle, profile mismatch and publish completion."
+        "comment": "MQTTv3 hub generation clients. The telemetry suite covers topic encoding, lifecycle, profile mismatch and publish completion."
     },
     {
         "name": "mqttv5",

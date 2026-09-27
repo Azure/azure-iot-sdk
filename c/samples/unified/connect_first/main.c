@@ -84,7 +84,7 @@ static az_iot_result telemetry_build(sample_state* state, az_iot_connection_prof
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
       result = az_iot_mqttv5_telemetry_client_init(&state->mqttv5, &state->connection_client);
       break;
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       result = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
       break;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
@@ -203,7 +203,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)

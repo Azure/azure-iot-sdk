@@ -112,7 +112,7 @@ endif()
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload
 #
-# Classic file-upload device flow against a real hub that has an Azure Storage
+# MQTTv3 file-upload device flow against a real hub that has an Azure Storage
 # account associated for file upload. It plays both halves like the other
 # suites: the device requests a SAS URI, PUTs the blob, reads it back and reports
 # completion, while the service side watches the hub's file-upload NOTIFICATION
@@ -120,7 +120,7 @@ endif()
 # covers the failure report (accepted, but never notified), a completion carrying
 # an unknown correlation id, and local argument rejection.
 #
-# The Classic HTTP hook and the Storage PUT/GET go through the e2e service lib's
+# The MQTTv3 HTTP hook and the Storage PUT/GET go through the e2e service lib's
 # HTTPS helper (the harness az_amqp TLS transport), so there is no external HTTP
 # dependency. It requires the standard e2e device env, the service connection
 # strings, and a file-upload-capable hub. The `e2e` name matches the fast job's

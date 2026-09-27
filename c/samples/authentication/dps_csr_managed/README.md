@@ -28,7 +28,7 @@ handling; the sample only configures it. See [`main.c`](main.c).
 
 On `2026-11-02-preview` DPS MQTT sessions, the sample registers with its
 bootstrap identity, persists the issued operational chain, connects to the
-assigned **Classic** IoT Hub with that chain, and sends one telemetry message
+assigned **MQTTv3** IoT Hub with that chain, and sends one telemetry message
 on the same connection. Exit code 0 requires the telemetry send callback to
 report success; connection alone is not sufficient. A send rejection or a
 missing callback within the bounded send window returns a nonzero exit code.
@@ -43,7 +43,7 @@ confirm delivery to downstream telemetry consumers.
 ## Prerequisites
 
 - **Azure:** a DPS instance with certificate management (Azure Device Registry
-  namespace + credential policy) and a linked **Classic** IoT Hub. Follow the
+  namespace + credential policy) and a linked **MQTTv3** IoT Hub. Follow the
   [setup guide](https://learn.microsoft.com/azure/iot-hub/iot-hub-device-registry-setup)
   up to, but not including, "Create an enrollment in DPS" – this sample needs an
   X.509 enrollment group (step 2 below).
@@ -176,7 +176,7 @@ The chain length depends on the credential policy.
 | `provisioning failed: AZ_IOT_ERR_AUTH` | DPS refused the bootstrap certificate: it does not chain to the group's CA. |
 | Repeated `DPS code 401...` lines, then `timed out` (last dps error `AZ_IOT_ERR_DPS`) | DPS rejected the registration, e.g. the certificate CN differs from `AZ_IOT_DPS_REGISTRATION_ID` or no enrollment matches. DPS verdicts are retried, so the sample runs into the timeout. |
 | `hub connection failed: AZ_IOT_ERR_AUTH` | IoT Hub refused the operational certificate: the policy CA is not synced to the hub (`az iot adr ns credential sync`). |
-| `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an MQTT v5 hub. This sample connects to Classic hubs only (MQTT 3.1.1). |
+| `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an MQTT v5 hub. This sample connects to MQTTv3 hubs only (MQTT 3.1.1). |
 | `open failed` immediately, after an SDK error `registration_payload must be a single well-formed JSON object` | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |
 | `timed out` (last dps error `AZ_IOT_ERR_MQTT` or `AZ_IOT_ERR_TLS`) | DPS unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`) or server TLS failing (`AZ_IOT_TRUSTED_CA`). |
 | `telemetry send failed` or `timed out waiting for telemetry send completion` | Hub rejected the publish, the connection dropped, or no send callback arrived within 30 s. |

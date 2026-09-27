@@ -26,13 +26,13 @@ extern "C"
   } az_iot_mqttv3_c2d_client;
 
   /**
-   * @brief Initialize the IoT Hub Classic C2D client.
+   * @brief Initialize the MQTTv3 hub C2D client.
    *
    * Subscribes `devices/{device_id}/messages/devicebound/#` and decodes the
    * topic property bag on each delivery.
    *
    * The connection need not be open: this records that it must resolve to the
-   * Classic profile, and the topics are built when it connects and the assigned
+   * MQTTv3 profile, and the topics are built when it connects and the assigned
    * device id is known. A connection already known to be MQTT_V5 -- a direct
    * connection, or a DPS one past assignment -- is rejected here with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when

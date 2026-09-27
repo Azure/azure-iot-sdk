@@ -3,7 +3,7 @@
 
 # azure-iot-sdk
 
-C99 client SDK for Azure IoT Hub Classic and IoT Hub Next (AEG).
+C99 client SDK for the Azure MQTTv3 hub and the MQTTv5 hub.
 
 > Status: **early bootstrap**. See [docs/design.md](docs/design.md) for the architecture and [docs/devnotes.md](docs/devnotes.md) for original design discussion notes.
 
@@ -12,15 +12,15 @@ C99 client SDK for Azure IoT Hub Classic and IoT Hub Next (AEG).
 - **C99-strict**, no submodules. Dependencies via vcpkg manifest (primary) or CPM.cmake (fallback).
 - **Single public API**: low-level, single-threaded `do_work()` pump; all callbacks fire on the caller's thread.
 - **Pluggable MQTT** with version + role tagging:
-  - DPS + IoTHub-Classic require **MQTT v3.1.1**.
-  - IoTHub-Next requires **MQTT v5**.
+  - DPS + MQTTv3 hub require **MQTT v3.1.1**.
+  - MQTTv5 hub requires **MQTT v5**.
   - Adapters register factories via `az_iot_connection_client_register_mqtt_factory()`. The core picks the right `(version, role)` per session and instantiates a fresh adapter for each.
 - **Default adapter**: Paho-C (v3.1.1 + v5).
 - **Built on [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c)** (pinned via `FetchContent`):
   - `az::core` for spans, JSON, logging, contexts, result codes.
-  - `az::iot::hub` for IoTHub-Classic MQTT topic build/parse.
+  - `az::iot::hub` for MQTTv3 hub MQTT topic build/parse.
   - `az::iot::provisioning` for Azure DPS MQTT topic build/parse.
-  - IoTHub-Next protocol logic lives in this repo (no upstream library yet).
+  - MQTTv5 hub protocol logic lives in this repo (no upstream library yet).
 
 ## Build (Phase 0)
 
@@ -176,7 +176,7 @@ int main(void)
   az_iot_mqttv3_telemetry_client mqttv3_tel = { 0 };
   az_iot_mqttv5_telemetry_client mqttv5_tel = { 0 };
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK
-      /* Register both MQTT versions: v3.1.1 for DPS + Classic, v5 for Next. */
+      /* Register both MQTT versions: v3.1.1 for DPS + MQTTv3, v5 for MQTTv5. */
       || az_iot_connection_client_register_mqtt_factory(
              &conn, az_iot_paho_factory_create_v3_1_1())
           != AZ_IOT_OK
@@ -246,8 +246,8 @@ A fuller version is [samples/unified/connect_first/main.c](samples/unified/conne
 ## Samples
 
 Samples are grouped like the .NET SDK's: [samples/unified](samples/unified/) serve
-whichever hub generation DPS assigns, [samples/mqttv5](samples/mqttv5/) serve AEG hubs
-only. There is no Classic-only group; the Classic-only samples
+whichever hub generation DPS assigns, [samples/mqttv5](samples/mqttv5/) serve MQTTv5 hubs
+only. There is no MQTTv3-only group; the MQTTv3-only samples
 (`unified/file_upload`, `authentication/dps_csr_managed`,
 `authentication/hub_renew`) exit non-zero on an MQTT v5 hub. Layout,
 configuration and the full list are in [samples/README.md](samples/README.md).

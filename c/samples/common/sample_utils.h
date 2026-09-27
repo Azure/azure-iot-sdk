@@ -15,7 +15,7 @@ typedef struct sample_config
   char* key;
   char* ca;
   char* device_id; /* AZ_IOT_DEVICE_ID (optional, for mock bypass) */
-  char* mock_endpoint; /* AZ_IOT_HUB_NEXT_MOCK_ENDPOINT (optional) */
+  char* mock_endpoint; /* AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT (optional) */
   /* AZ_IOT_DPS_GLOBAL_ENDPOINT (optional). NULL selects the SDK default,
    * global.azure-devices-provisioning.net. Set it to run a sample against a
    * regional, private-link or sovereign-cloud provisioning endpoint, which
@@ -120,8 +120,8 @@ bool sample_event_is_profile_mismatch(
 /**
  * @brief Generation to build feature clients for before open().
  *
- * MQTT v5 when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (that bypass skips DPS and
- * always connects over MQTT v5); otherwise Classic, which DPS assigns when it
+ * MQTT v5 when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (that bypass skips DPS and
+ * always connects over MQTT v5); otherwise MQTTv3, which DPS assigns when it
  * names no connectionProfile.
  *
  * @param[in] config Loaded sample configuration.

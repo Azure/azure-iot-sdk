@@ -3,12 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic C2D receiver.
+/* MQTTv3 hub C2D receiver.
  *
  *   Subscribe  "devices/{device_id}/messages/devicebound/#"
  *   Inbound    "devices/{device_id}/messages/devicebound/{property-bag}"
  *
- * Per the Classic MQTT topic spec the bag is percent-encoded, so every key and
+ * Per the MQTTv3 topic spec the bag is percent-encoded, so every key and
  * value is decoded back into the plain text the sender used -- a property then
  * survives a round trip through az_iot_telemetry_property unchanged.
  */
@@ -208,7 +208,7 @@ az_iot_result az_iot_mqttv3_c2d_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));

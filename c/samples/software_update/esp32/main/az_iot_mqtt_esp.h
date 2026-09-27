@@ -7,8 +7,8 @@
  *
  * Implements the azure-iot-sdk az_iot_mqtt_iface vtable on top of ESP-IDF's
  * native esp-mqtt client (the `mqtt` component). Register one or both factories
- * with the connection client; the SDK selects v3.1.1 for DPS/Classic and v5 for
- * Hub-Next at connection time.
+ * with the connection client; the SDK selects v3.1.1 for DPS/MQTTv3 and v5 for
+ * MQTTv5 at connection time.
  */
 #ifndef AZ_IOT_MQTT_ESP_H
 #define AZ_IOT_MQTT_ESP_H

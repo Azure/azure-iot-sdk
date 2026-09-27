@@ -505,7 +505,7 @@ static void inbound_message_routes_through_dispatch(void** state)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
 
-  /* The twin response prefix is the Classic wire contract, stated literally so
+  /* The twin response prefix is the MQTTv3 wire contract, stated literally so
    * this test pins the routing rather than mirroring a table. */
   inbound_record twin_rec = { 0 };
   assert_int_equal(
@@ -534,13 +534,13 @@ static void inbound_message_routes_through_dispatch(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* AEG/Hub-Next presence (birth) handshake                                    */
+/* MQTTv5 presence (birth) handshake                                          */
 /* ------------------------------------------------------------------------- */
 
-/* Fixture variant: a direct HUB_NEXT (AEG, MQTT v5) connection. session_role
- * becomes HUB_NEXT from opts.connection_profile, so open() drives the birth handshake
+/* Fixture variant: a direct HUB_MQTT_V5 (MQTTv5, MQTT v5) connection. session_role
+ * becomes HUB_MQTT_V5 from opts.connection_profile, so open() drives the birth handshake
  * after CONNACK instead of announcing CONNECTED immediately. */
-static int setup_next_ex(void** state, bool push_desired, bool push_reported)
+static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -565,11 +565,11 @@ static int setup_next_ex(void** state, bool push_desired, bool push_reported)
   return 0;
 }
 
-static int setup_next(void** state) { return setup_next_ex(state, false, false); }
+static int setup_mqtt_v5(void** state) { return setup_mqtt_v5_ex(state, false, false); }
 
-/* Fixture variant: HUB_NEXT with both twin push bits configured by the
+/* Fixture variant: HUB_MQTT_V5 with both twin push bits configured by the
  * application, to verify the birth advertises what was asked for. */
-static int setup_next_twin_push(void** state) { return setup_next_ex(state, true, true); }
+static int setup_mqtt_v5_twin_push(void** state) { return setup_mqtt_v5_ex(state, true, true); }
 
 /* Most recent recorded call of `kind`, or NULL if none. */
 static const az_iot_mock_call* last_call_of_kind(
@@ -637,7 +637,7 @@ static const az_iot_mock_call* drive_to_birth_published(
 
 /* Full happy path: birth is published with the right shape, and CONNECTED is
  * announced only when a matching birth-ack echoes the nonce back. */
-static void hub_next_births_then_connects_on_birth_ack(void** state)
+static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -674,11 +674,11 @@ static void hub_next_births_then_connects_on_birth_ack(void** state)
   assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_OK);
 }
 
-/* AEG requires a non-empty CONNECT username (WebhookAuthUserNameMissing
+/* MQTTv5 requires a non-empty CONNECT username (WebhookAuthUserNameMissing
  * otherwise). It must carry the connection nonce as correlationId plus the
  * clientVersion, and the same nonce must be reused as the birth Correlation
  * Data so the service can correlate the CONNECT with the birth. */
-static void hub_next_connect_username_carries_correlation_nonce(void** state)
+static void hub_mqtt_v5_connect_username_carries_correlation_nonce(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -712,7 +712,7 @@ static void hub_next_connect_username_carries_correlation_nonce(void** state)
 
 /* A birth-ack whose correlation data doesn't match our nonce is discarded; the
  * client stays in CONNECTING waiting for the real one. */
-static void hub_next_ignores_mismatched_birth_ack(void** state)
+static void hub_mqtt_v5_ignores_mismatched_birth_ack(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -738,12 +738,12 @@ static void hub_next_ignores_mismatched_birth_ack(void** state)
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
-/* On the Hub-Next path it is the birth-ack, not the CONNACK, that completes
+/* On the MQTTv5 path it is the birth-ack, not the CONNACK, that completes
  * the connection. Suppressing only the late CONNACK would therefore leave this
  * route able to announce CONNECTED for an attempt the application has already
  * abandoned: the broker's birth-ack was on the wire before close() reached it
  * and lands in a later process_loop batch. */
-static void hub_next_birth_ack_after_close_is_ignored(void** state)
+static void hub_mqtt_v5_birth_ack_after_close_is_ignored(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -781,7 +781,7 @@ static void hub_next_birth_ack_after_close_is_ignored(void** state)
 
 /* CONNACK with Session Present = 1 is reflected in the birth payload (proto3
  * field 1). The push bits stay absent at their default. */
-static void hub_next_birth_reports_session_present(void** state)
+static void hub_mqtt_v5_birth_reports_session_present(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -795,7 +795,7 @@ static void hub_next_birth_reports_session_present(void** state)
 /* The birth advertises which twin traffic the application asked for, so the
  * service only dispatches what this client can consume. With both bits set the
  * payload carries proto3 fields 12 and 13. */
-static void hub_next_birth_advertises_configured_twin_push(void** state)
+static void hub_mqtt_v5_birth_advertises_configured_twin_push(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -809,7 +809,7 @@ static void hub_next_birth_advertises_configured_twin_push(void** state)
 /* The connection nonce must be a well-formed RFC 4122 version 4 UUID: the
  * service treats it as a UUID, and the .NET client produces one via
  * Guid.NewGuid(). */
-static void hub_next_connect_nonce_is_uuid_v4(void** state)
+static void hub_mqtt_v5_connect_nonce_is_uuid_v4(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -822,7 +822,7 @@ static void hub_next_connect_nonce_is_uuid_v4(void** state)
 
 /* A dev/presence SUBACK that fails (e.g. the broker refused the subscription)
  * must fault the handshake instead of publishing the birth. */
-static void hub_next_suback_failure_faults(void** state)
+static void hub_mqtt_v5_suback_failure_faults(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
@@ -857,7 +857,7 @@ static void hub_next_suback_failure_faults(void** state)
 
 /* A message on dev/presence that echoes our nonce but is NOT a birth-ack (wrong
  * type) is ignored; the handshake keeps waiting (stays CONNECTING). */
-static void hub_next_ignores_wrong_type_ack(void** state)
+static void hub_mqtt_v5_ignores_wrong_type_ack(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -883,9 +883,9 @@ static void hub_next_ignores_wrong_type_ack(void** state)
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
-/* Classic (v3.1.1) connections must NOT run the birth handshake: CONNACK goes
+/* MQTTv3 (v3.1.1) connections must NOT run the birth handshake: CONNACK goes
  * straight to CONNECTED and no presence publish happens. */
-static void classic_connect_skips_birth_handshake(void** state)
+static void mqtt_v3_connect_skips_birth_handshake(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
@@ -911,7 +911,7 @@ static const uint8_t k_will_body[] = { 'g', 'o', 'n', 'e' };
 
 /* Fixture variants that configure a Last Will, so the tests can assert the
  * core forwards it on the hub connect (and never on the DPS one). */
-static int setup_classic_with_will(void** state)
+static int setup_mqtt_v3_with_will(void** state)
 {
   int rc = setup(state);
   fixture* fx = (fixture*)*state;
@@ -924,9 +924,9 @@ static int setup_classic_with_will(void** state)
   return rc;
 }
 
-static int setup_next_with_will(void** state)
+static int setup_mqtt_v5_with_will(void** state)
 {
-  int rc = setup_next(state);
+  int rc = setup_mqtt_v5(state);
   fixture* fx = (fixture*)*state;
   fx->client->opts.lwt.topic = "app/ut-device/gone";
   fx->client->opts.lwt.payload = k_will_body;
@@ -950,11 +950,11 @@ static const az_iot_mock_call* connect_options_of_first_attempt(fixture* fx)
   return connect;
 }
 
-/* Classic keeps a PERSISTENT session: the hub holds this device's
+/* MQTTv3 keeps a PERSISTENT session: the hub holds this device's
  * subscriptions and its queued cloud-to-device messages only while the session
  * is not clean, so connecting clean would drop whatever arrived during an
  * outage. */
-static void classic_connect_asks_to_resume_the_session(void** state)
+static void mqtt_v3_connect_asks_to_resume_the_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
@@ -966,12 +966,12 @@ static void classic_connect_asks_to_resume_the_session(void** state)
   assert_string_equal(connect->connect.lwt_topic, "");
 }
 
-/* Hub-Next resumes its session and asks for an expiry long enough that there is
+/* MQTTv5 resumes its session and asks for an expiry long enough that there is
  * something left to resume. Both halves matter: a session that expires the
  * instant the connection closes is gone before any reconnect could resume it.
  * This is a transport-efficiency choice -- the presence handshake is what
  * establishes readiness on this generation either way. */
-static void hub_next_connect_resumes_the_session_with_an_expiry(void** state)
+static void hub_mqtt_v5_connect_resumes_the_session_with_an_expiry(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
@@ -987,7 +987,7 @@ static void hub_next_connect_resumes_the_session_with_an_expiry(void** state)
  * clean one must actually reach the wire. The expiry still rides along: it
  * governs what happens to THIS session once it ends, which is independent of
  * whether the previous one was discarded at CONNECT. */
-static void hub_next_honors_a_caller_requested_clean_session(void** state)
+static void hub_mqtt_v5_honors_a_caller_requested_clean_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
@@ -998,7 +998,7 @@ static void hub_next_honors_a_caller_requested_clean_session(void** state)
 }
 
 /* A caller-supplied expiry wins over the default. */
-static void hub_next_honors_a_caller_requested_session_expiry(void** state)
+static void hub_mqtt_v5_honors_a_caller_requested_session_expiry(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->client->opts.session_expiry_seconds = 900;
@@ -1008,9 +1008,9 @@ static void hub_next_honors_a_caller_requested_session_expiry(void** state)
   assert_false(connect->connect.clean_start);
 }
 
-/* Classic honours the same override, but Session Expiry is an MQTT 5 property
+/* MQTTv3 honours the same override, but Session Expiry is an MQTT 5 property
  * and must never be sent to a v3.1.1 broker even when one was configured. */
-static void classic_honors_continuity_but_sends_no_expiry_property(void** state)
+static void mqtt_v3_honors_continuity_but_sends_no_expiry_property(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
@@ -1021,10 +1021,10 @@ static void classic_honors_continuity_but_sends_no_expiry_property(void** state)
   assert_int_equal(connect->connect.session_expiry_seconds, 0);
 }
 
-/* A Will configured by the application rides the Classic CONNECT, but the
+/* A Will configured by the application rides the MQTTv3 CONNECT, but the
  * v5-only parts of it do not: v3.1.1 has no Will Delay Interval and no
  * DISCONNECT reason codes. */
-static void a_will_rides_the_classic_connect_without_v5_fields(void** state)
+static void a_will_rides_the_mqtt_v3_connect_without_v5_fields(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
@@ -1040,10 +1040,10 @@ static void a_will_rides_the_classic_connect_without_v5_fields(void** state)
   assert_false(connect->connect.clean_start);
 }
 
-/* On Hub-Next the Will carries its delay, the session is held open long enough
+/* On MQTTv5 the Will carries its delay, the session is held open long enough
  * for that delay to mean anything, and the close announces the departure
  * instead of discarding the Will. */
-static void a_will_rides_the_hub_next_connect_with_delay_and_reason(void** state)
+static void a_will_rides_the_hub_mqtt_v5_connect_with_delay_and_reason(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
@@ -1078,7 +1078,7 @@ static void a_will_delay_past_the_session_expiry_extends_it(void** state)
 
 /* The session options are a property of the ROLE, not of what the broker
  * answered: a resumed session must not change what the next CONNECT asks for. */
-static void hub_next_session_options_do_not_depend_on_session_present(void** state)
+static void hub_mqtt_v5_session_options_do_not_depend_on_session_present(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -1092,7 +1092,7 @@ static void hub_next_session_options_do_not_depend_on_session_present(void** sta
 
 /* With no reconnection policy, a birth-ack that never arrives faults the client
  * once the handshake deadline passes. */
-static void hub_next_birth_ack_timeout_faults(void** state)
+static void hub_mqtt_v5_birth_ack_timeout_faults(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
@@ -1150,7 +1150,7 @@ static void drive_to_connected_with_birth_ack(
 /* The birth-ack carries the authoritative twin versions as of birth admission.
  * The twin client needs them as the if_match anchor for its next reported
  * patch, so they must be decoded and retained, not discarded with the ack. */
-static void hub_next_birth_ack_records_twin_versions(void** state)
+static void hub_mqtt_v5_birth_ack_records_twin_versions(void** state)
 {
   fixture* fx = (fixture*)*state;
   /* proto3 BirthAck: desired_version(10)=7, reported_version(11)=300. */
@@ -1166,7 +1166,7 @@ static void hub_next_birth_ack_records_twin_versions(void** state)
 
 /* proto3 omits default-valued fields, so an empty birth-ack body is legal and
  * means both versions are 0. */
-static void hub_next_birth_ack_without_versions_yields_zero(void** state)
+static void hub_mqtt_v5_birth_ack_without_versions_yields_zero(void** state)
 {
   fixture* fx = (fixture*)*state;
   drive_to_connected_with_birth_ack(fx, NULL, 0);
@@ -1181,7 +1181,7 @@ static void hub_next_birth_ack_without_versions_yields_zero(void** state)
 /* Fields the SDK does not know (a later schema revision adding per-feature
  * recovery state) must be skipped rather than aborting the decode, so the
  * versions that follow them are still read. */
-static void hub_next_birth_ack_skips_unknown_fields(void** state)
+static void hub_mqtt_v5_birth_ack_skips_unknown_fields(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = {
@@ -1206,7 +1206,7 @@ static void hub_next_birth_ack_skips_unknown_fields(void** state)
  * boundary wrong would not fail loudly: the decode would abort mid-message and
  * silently drop every field after the version, leaving the device to patch
  * against a stale if_match. */
-static void hub_next_birth_ack_decodes_ten_byte_versions(void** state)
+static void hub_mqtt_v5_birth_ack_decodes_ten_byte_versions(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = {
@@ -1246,7 +1246,7 @@ static void hub_next_birth_ack_decodes_ten_byte_versions(void** state)
 
 /* Eleven bytes cannot encode a uint64, so the value is corrupt and everything
  * after it is unparseable. Stop rather than accept a truncated interpretation. */
-static void hub_next_birth_ack_rejects_over_long_varint(void** state)
+static void hub_mqtt_v5_birth_ack_rejects_over_long_varint(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = {
@@ -1267,7 +1267,7 @@ static void hub_next_birth_ack_rejects_over_long_varint(void** state)
  * uint64_t cannot hold. The surplus bits shift out, so accepting it would turn
  * a corrupt version into a plausible wrapped one and the device would anchor
  * its next reported patch on it. Stop the decode instead. */
-static void hub_next_birth_ack_rejects_tenth_byte_overflow(void** state)
+static void hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = {
@@ -1299,7 +1299,7 @@ static void hub_next_birth_ack_rejects_tenth_byte_overflow(void** state)
 
 /* A truncated body (varint with the continuation bit set at the end) must stop
  * the decode without reading past the buffer. */
-static void hub_next_birth_ack_truncated_payload_is_safe(void** state)
+static void hub_mqtt_v5_birth_ack_truncated_payload_is_safe(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC }; /* f11 varint cut short */
@@ -1718,10 +1718,10 @@ static void send_csr_cancel_frees_slot(void** state)
       AZ_IOT_OK);
 }
 
-/* Hub-Next requires MQTT v5. With only a v3.1.1 factory registered there is no
+/* MQTTv5 requires MQTT v5. With only a v3.1.1 factory registered there is no
  * adapter that can speak the protocol, and open() must say so rather than
- * silently downgrading to a Classic session. */
-static void hub_next_without_v5_factory_is_not_supported(void** state)
+ * silently downgrading to an MQTTv3 session. */
+static void hub_mqtt_v5_without_v5_factory_is_not_supported(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
@@ -1742,7 +1742,7 @@ static void hub_next_without_v5_factory_is_not_supported(void** state)
 /* If the birth PUBLISH itself cannot be handed to the adapter the handshake
  * can never complete, so the attempt must end rather than sit in CONNECTING
  * waiting for an ack that was never solicited. */
-static void hub_next_birth_publish_failure_faults(void** state)
+static void hub_mqtt_v5_birth_publish_failure_faults(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
@@ -1767,7 +1767,7 @@ static void hub_next_birth_publish_failure_faults(void** state)
 /* Presence traffic that arrives before the subscription is confirmed cannot be
  * an ack for a birth we have not published yet. Accepting it would announce
  * CONNECTED without ever completing the handshake. */
-static void hub_next_birth_ack_before_suback_is_ignored(void** state)
+static void hub_mqtt_v5_birth_ack_before_suback_is_ignored(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(
@@ -1788,7 +1788,7 @@ static void hub_next_birth_ack_before_suback_is_ignored(void** state)
   assert_false(az_iot_connection_client__is_connected(fx->client));
 }
 
-/* Fixture variant: HUB_NEXT with a reconnection policy, so a stalled handshake
+/* Fixture variant: HUB_MQTT_V5 with a reconnection policy, so a stalled handshake
  * retries instead of faulting. */
 static int setup_next_with_reconnect(void** state)
 {
@@ -1821,7 +1821,7 @@ static int setup_next_with_reconnect(void** state)
  * birth-ack left over from the abandoned attempt would satisfy the new
  * handshake and the client would announce CONNECTED on a session the service
  * never acknowledged. */
-static void hub_next_birth_timeout_retries_with_a_new_nonce(void** state)
+static void hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = NULL;
@@ -2183,55 +2183,62 @@ int main(void)
         user_close_after_connected_does_not_reconnect, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_births_then_connects_on_birth_ack, setup_next, teardown),
+        hub_mqtt_v5_births_then_connects_on_birth_ack, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_connect_username_carries_correlation_nonce, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_birth_reports_session_present, setup_next, teardown),
+        hub_mqtt_v5_connect_username_carries_correlation_nonce, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_advertises_configured_twin_push, setup_next_twin_push, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_connect_nonce_is_uuid_v4, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_birth_ack_records_twin_versions, setup_next, teardown),
+        hub_mqtt_v5_birth_reports_session_present, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_without_versions_yields_zero, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_birth_ack_skips_unknown_fields, setup_next, teardown),
+        hub_mqtt_v5_birth_advertises_configured_twin_push, setup_mqtt_v5_twin_push, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_connect_nonce_is_uuid_v4, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_decodes_ten_byte_versions, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_records_twin_versions, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_rejects_over_long_varint, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_without_versions_yields_zero, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_rejects_tenth_byte_overflow, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_skips_unknown_fields, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_truncated_payload_is_safe, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_ignores_mismatched_birth_ack, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_decodes_ten_byte_versions, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_after_close_is_ignored, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_ignores_wrong_type_ack, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_suback_failure_faults, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(hub_next_birth_ack_timeout_faults, setup_next, teardown),
-    cmocka_unit_test_setup_teardown(classic_connect_skips_birth_handshake, setup, teardown),
-    cmocka_unit_test_setup_teardown(classic_connect_asks_to_resume_the_session, setup, teardown),
+        hub_mqtt_v5_birth_ack_rejects_over_long_varint, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_connect_resumes_the_session_with_an_expiry, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_honors_a_caller_requested_clean_session, setup_next, teardown),
+        hub_mqtt_v5_birth_ack_truncated_payload_is_safe, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_honors_a_caller_requested_session_expiry, setup_next, teardown),
+        hub_mqtt_v5_ignores_mismatched_birth_ack, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        classic_honors_continuity_but_sends_no_expiry_property, setup, teardown),
+        hub_mqtt_v5_birth_ack_after_close_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_ignores_wrong_type_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_suback_failure_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_birth_ack_timeout_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_connect_skips_birth_handshake, setup, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_connect_asks_to_resume_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_will_delay_past_the_session_expiry_extends_it, setup_next_with_will, teardown),
+        hub_mqtt_v5_connect_resumes_the_session_with_an_expiry, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        a_will_rides_the_classic_connect_without_v5_fields, setup_classic_with_will, teardown),
+        hub_mqtt_v5_honors_a_caller_requested_clean_session, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        a_will_rides_the_hub_next_connect_with_delay_and_reason, setup_next_with_will, teardown),
+        hub_mqtt_v5_honors_a_caller_requested_session_expiry, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_session_options_do_not_depend_on_session_present, setup_next, teardown),
-    cmocka_unit_test(hub_next_without_v5_factory_is_not_supported),
-    cmocka_unit_test_setup_teardown(hub_next_birth_publish_failure_faults, setup_next, teardown),
+        mqtt_v3_honors_continuity_but_sends_no_expiry_property, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_ack_before_suback_is_ignored, setup_next, teardown),
+        a_will_delay_past_the_session_expiry_extends_it, setup_mqtt_v5_with_will, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_next_birth_timeout_retries_with_a_new_nonce, setup_next_with_reconnect, teardown),
+        a_will_rides_the_mqtt_v3_connect_without_v5_fields, setup_mqtt_v3_with_will, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_will_rides_the_hub_mqtt_v5_connect_with_delay_and_reason,
+        setup_mqtt_v5_with_will,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_session_options_do_not_depend_on_session_present, setup_mqtt_v5, teardown),
+    cmocka_unit_test(hub_mqtt_v5_without_v5_factory_is_not_supported),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_publish_failure_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_before_suback_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_next_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),

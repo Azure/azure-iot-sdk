@@ -2392,7 +2392,7 @@ static void a_refused_publish_is_reported(void** state)
 /* ------------------------------------------------------------------------- */
 /* MQTT v5 message properties                                                 */
 /*                                                                            */
-/* Hub-Next carries its protocol metadata in v5 User Properties -- the message */
+/* MQTTv5 carries its protocol metadata in v5 User Properties -- the message   */
 /* `type`, its content type, the correlation data that pairs a response with   */
 /* its request -- so an adapter that drops, reorders, de-duplicates or         */
 /* truncates them is not carrying the protocol, however well it carries the    */
@@ -2619,7 +2619,7 @@ static void v5_session_present_from_connack_is_reported(void** state)
 
 /* A v3.1.1 broker must never be sent v5 properties.
  *
- * DPS and IoT Hub classic are both v3.1.1, and the same typed message struct
+ * DPS and MQTTv3 hubs are both v3.1.1, and the same typed message struct
  * reaches every adapter, so a v5 property field left set by a caller must be
  * ignored rather than serialized. A broker handed v5 bytes on a 3.1.1
  * connection closes the connection, so the proof is that the message completes

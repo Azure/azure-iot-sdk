@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* unified/file_upload - sample.
  *
- * File upload is an IoT Hub Classic feature:
+ * File upload is an MQTTv3 hub feature:
  *   1. az_iot_mqttv3_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
  *   2. the app PUTs the file to that SAS URI on Azure Storage (HTTPS)
  *   3. az_iot_mqttv3_file_upload_client_notify_complete()
@@ -16,10 +16,10 @@
  * own HTTPS call.
  *
  * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
- * this client pins Classic, so init() on an MQTT v5 connection is refused with
+ * this client pins MQTTv3, so init() on an MQTT v5 connection is refused with
  * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. init() also needs the assigned hub,
  * so this sample builds its client the way unified/connect_first does: once
- * CONNECTED, after reading the profile. On an AEG hub it reports that and
+ * CONNECTED, after reading the profile. On an MQTTv5 hub it reports that and
  * exits non-zero. One-shot: it does not wait for the device to be moved.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
@@ -217,16 +217,16 @@ static long https_request(
 
 #endif /* AZ_IOT_SAMPLE_WITH_CURL */
 
-/* Paths used by the HTTP hook to authenticate the Classic hub REST calls (mTLS). */
+/* Paths used by the HTTP hook to authenticate the MQTTv3 hub REST calls (mTLS). */
 typedef struct
 {
   const char* cert;
   const char* key;
 } hub_http_ctx;
 
-/* HTTP transport hook the SDK calls for the Classic control plane (SAS-URI
+/* HTTP transport hook the SDK calls for the MQTTv3 control plane (SAS-URI
  * request + completion notification). Always defined so the file upload client
- * can be initialized on Classic even in a build without libcurl. */
+ * can be initialized on MQTTv3 even in a build without libcurl. */
 static az_iot_result curl_http_send(
     const char* method,
     const char* url,
@@ -417,7 +417,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -463,7 +463,7 @@ int main(void)
   {
     /* Already reported. */
   }
-  else if (profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  else if (profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
      * connection at init(). */

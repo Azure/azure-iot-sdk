@@ -173,8 +173,8 @@ az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_
 
   if (version == AZ_IOT_MQTT_VERSION_3_1_1)
   {
-    /* No reason code exists to consult, so the classification comes from what a
-     * Classic device can subscribe to: a topic set fixed at compile time. That
+    /* No reason code exists to consult, so the classification comes from what an
+     * MQTTv3 device can subscribe to: a topic set fixed at compile time. That
      * makes a refusal a property of the filter rather than of the moment. */
     return (suback_code == SUBACK_V3_FAILURE) ? AZ_IOT_ERR_SUBSCRIPTION_REFUSED : AZ_IOT_ERR_MQTT;
   }
