@@ -293,7 +293,7 @@ All default off. Set them in the shell that runs the sample:
 |---|---|
 | `SU_SIM_FAIL_STEP=<n>` | Force `install_fn` to fail at 1-based step *n* (exercises per-step result accumulation + reverse-order rollback) |
 | `SU_SIM_HASH_MISMATCH=1` | Corrupt the synthesized payload to drive the per-file hash-verification failure path |
-| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow |
+| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow; that run makes no startup update check, since a new workflow would supersede the resumed one |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |

@@ -465,8 +465,14 @@ int main(void)
   /* First check, asked before open(): the SDK holds registration until the
    * check on the first provisioning session reaches a verdict, so asking now
    * lets the device register without waiting out that hold. Later checks run
-   * on a provisioning session the SDK reopens on demand. */
-  if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
+   * on a provisioning session the SDK reopens on demand.
+   *
+   * Only from Idle: a workflow restored by resume() is finished first, since a
+   * check now could deliver a different workflow, which supersedes it. The poll
+   * asks once it is done; registration stays held until that check's verdict
+   * (at most AZ_IOT_DPS_HOLD_TIMEOUT_MS). */
+  if (az_iot_su_client_get_state(&state.su_client) == AZ_IOT_SU_STATE_IDLE
+      && az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;

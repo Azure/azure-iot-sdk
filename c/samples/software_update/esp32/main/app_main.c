@@ -170,6 +170,21 @@ static void app_set_registered(void)
   nvs_close(h);
 }
 
+/**
+ * @brief Ask for an update check on the route this device qualifies for.
+ *
+ * @param su Software updates client.
+ * @param registered Whether the device has a device record (regular route).
+ * @param timeout_ms Request timeout.
+ * @return The request call's result.
+ */
+static az_iot_result app_request_check(az_iot_su_client* su, bool registered, uint32_t timeout_ms)
+{
+  ESP_LOGI(TAG, "checking for updates on the %s route", registered ? "regular" : "onboarding");
+  return registered ? az_iot_su_client_request_update(su, timeout_ms)
+                    : az_iot_su_client_request_onboarding_update(su, timeout_ms);
+}
+
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
 
@@ -321,11 +336,12 @@ void app_main(void)
       ? (uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u
       : AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
   const bool registered = app_is_registered();
-  ESP_LOGI(TAG, "checking for updates on the %s route", registered ? "regular" : "onboarding");
-  az_iot_result req = registered
-      ? az_iot_su_client_request_update(&su, request_timeout_ms)
-      : az_iot_su_client_request_onboarding_update(&su, request_timeout_ms);
-  if (req != AZ_IOT_OK)
+  /* Only from Idle: a workflow restored by resume() (e.g. after the OTA
+   * reboot) is finished first, since a check now could deliver a different
+   * workflow, which supersedes it. The check is then asked in the connect loop
+   * below, whose verdict releases the registration hold. */
+  bool check_deferred = (az_iot_su_client_get_state(&su) != AZ_IOT_SU_STATE_IDLE);
+  if (!check_deferred && app_request_check(&su, registered, request_timeout_ms) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "could not request an update check");
     esp_restart();
@@ -356,6 +372,14 @@ void app_main(void)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
     (void)az_iot_su_client_do_work(&su);
+    if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
+    {
+      check_deferred = false;
+      if (app_request_check(&su, registered, request_timeout_ms) != AZ_IOT_OK)
+      {
+        ESP_LOGW(TAG, "could not request an update check");
+      }
+    }
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted)
     {
       break;
