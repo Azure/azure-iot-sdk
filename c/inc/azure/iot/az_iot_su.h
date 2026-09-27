@@ -862,7 +862,8 @@ extern "C"
     size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
     /** Library mode: hand each verified update to the application
      * (AZ_IOT_SU_EVENT_UPDATE_AVAILABLE) instead of installing it. `hooks` then
-     * becomes optional and none of them is called. While one is delegated, a
+     * becomes optional and none of them is called; `root_keys` is required.
+     * While one is delegated, or its terminal report awaits a resend, a
      * different update is ignored; end it with a terminal
      * az_iot_su_client_report_status() first. An update whose workflowId
      * exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE is not delegated. */
@@ -891,8 +892,8 @@ extern "C"
    * @param[in] options Hooks, crypto, trust store, device properties and cache.
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL (hooks only
-   *   outside library mode), or the device properties are malformed (including
-   *   zero compatibility properties).
+   *   outside library mode; root_keys in library mode), or the device
+   *   properties are malformed (including zero compatibility properties).
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
@@ -1104,8 +1105,8 @@ extern "C"
    * The wire result code is 1 for IN_PROGRESS and 700 for SUCCEEDED; otherwise
    * `result->result_code`, or -1 when it is 0. `failure_origin` MUST be
    * NOT_APPLICABLE unless the outcome is FAILED, and not NOT_APPLICABLE when it
-   * is. Step results are ignored for IN_PROGRESS; otherwise none may be
-   * IN_PROGRESS. On SUCCEEDED the manifest's update ID is reported as
+   * is. Step results are ignored for IN_PROGRESS; otherwise there is exactly
+   * one per manifest step, none IN_PROGRESS. On SUCCEEDED the manifest's update ID is reported as
    * installed; otherwise the cached installed update ID.
    *
    * Call on the do_work() thread, or serialize with it. Legal from the
@@ -1118,7 +1119,8 @@ extern "C"
    * @param[in] step_results_count Entries in @p step_results.
    * @return AZ_IOT_OK when recorded; the report is sent on this call or a later
    *   do_work(). On failure nothing changes.
-   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments or an invalid result.
+   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments, an invalid result, or a
+   *   terminal step count other than the manifest's.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The client is not in library mode.
    * @retval AZ_IOT_ERR_NOT_FOUND No update is delegated to the application.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE More than
