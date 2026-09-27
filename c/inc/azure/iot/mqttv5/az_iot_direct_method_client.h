@@ -247,7 +247,7 @@ extern "C"
       az_iot_mqttv5_direct_method_client* client,
       az_iot_connection_client* conn);
 
-  void az_iot_mqttv5_direct_method_client_destroy(az_iot_mqttv5_direct_method_client* client);
+  void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_client* client);
 
   /**
    * @brief Declare a method this device implements, and the handler that runs

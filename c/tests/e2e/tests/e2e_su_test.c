@@ -237,8 +237,8 @@ static void fixture_close(e2e_fixture* fx)
   {
     fx->channel.vtable->close(fx->channel.ctx);
   }
-  az_iot_connection_client_destroy(&fx->conn);
-  az_iot_certificate_provider_pem_destroy(&fx->certs);
+  az_iot_connection_client_deinit(&fx->conn);
+  az_iot_certificate_provider_pem_deinit(&fx->certs);
 }
 
 /* Pump until the predicate holds or the budget runs out. Wall-clock bounded

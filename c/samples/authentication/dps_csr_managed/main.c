@@ -350,10 +350,10 @@ int main(void)
 cleanup:
   if (telemetry_initialized)
   {
-    az_iot_mqttv3_telemetry_client_destroy(&telemetry);
+    az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   }
-  az_iot_connection_client_destroy(&connection_client);
-  az_iot_certificate_provider_managed_destroy(&provider);
+  az_iot_connection_client_deinit(&connection_client);
+  az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);
   free(registration_payload);

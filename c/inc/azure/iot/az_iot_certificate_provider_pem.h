@@ -8,7 +8,7 @@
  * Initialize via az_iot_certificate_provider_pem_init() with a set of file paths.
  * The first call to load() reads all configured files into heap buffers;
  * subsequent loads return the same buffered material (cheap). release() is
- * a no-op; the buffers live until destroy().
+ * a no-op; the buffers live until deinit().
  *
  * This loader is the recommended starting point for X.509 device auth.
  * Production deployments that source cert material from a TPM/HSM/keyvault
@@ -65,7 +65,7 @@ extern "C"
       const az_iot_certificate_provider_pem_options* opts);
 
   /* Release heap-owned file buffers. Does NOT free the struct itself. */
-  void az_iot_certificate_provider_pem_destroy(az_iot_certificate_provider_pem* provider);
+  void az_iot_certificate_provider_pem_deinit(az_iot_certificate_provider_pem* provider);
 
 #ifdef __cplusplus
 }

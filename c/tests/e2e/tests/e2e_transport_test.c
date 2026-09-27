@@ -203,7 +203,7 @@ static void telemetry_round_trip(e2e_fixture* fx, const char* tag)
     e2e_device_do_work(&dev, E2E_PUMP_MS);
   }
 
-  az_iot_mqttv3_telemetry_client_destroy(&telemetry_client);
+  az_iot_mqttv3_telemetry_client_deinit(&telemetry_client);
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   e2e_device_disconnect(&dev);
 

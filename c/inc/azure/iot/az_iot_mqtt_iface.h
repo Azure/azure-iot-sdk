@@ -356,7 +356,7 @@ extern "C"
     az_iot_mqtt_version version;
     az_iot_mqtt_client* (*create)(void* factory_ctx);
     void* factory_ctx;
-    /* Called by connection_client_destroy() to free factory resources.
+    /* Called by az_iot_connection_client_deinit() to free factory resources.
      * NULL means no cleanup needed (e.g. stack-allocated factory). */
     void (*destroy)(void* factory_ctx);
   } az_iot_mqtt_factory;

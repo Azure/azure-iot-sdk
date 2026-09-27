@@ -821,9 +821,9 @@ static int teardown(void** state)
      * open_to_connected) is still owned by the test and must be destroyed
      * here. Check before deinit() clears factory_count. */
     bool factory_adopted = (fx->conn.factory_count > 0);
-    az_iot_su_client_destroy(&fx->su);
+    az_iot_su_client_deinit(&fx->su);
 
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!factory_adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -1469,7 +1469,7 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   assert_int_equal(az_iot_su_client_get_state(fresh), AZ_IOT_SU_STATE_IDLE);
   assert_false(fx->log.have_persist);
 
-  az_iot_su_client_destroy(fresh);
+  az_iot_su_client_deinit(fresh);
   free(fresh);
 }
 
@@ -1744,9 +1744,9 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   /* The connection is NOT open: the bootstrap update check runs before the
    * device registers, so initialize must not require a live session. */
   az_iot_su_client su;
-  assert_int_equal(az_iot_su_client_initialize(&su, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&su), AZ_IOT_SU_STATE_IDLE);
-  az_iot_su_client_destroy(&su);
+  az_iot_su_client_deinit(&su);
 
   /* The channel state lives INSIDE the client. Initialization must not zero the
    * client after building it there, or the channel would be left bound to a
@@ -1754,17 +1754,17 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
    * on the first operation. Reaching the connection through the client proves
    * it survived initialization. */
   az_iot_su_client su_state;
-  assert_int_equal(az_iot_su_client_initialize(&su_state, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su_state, &conn, &o), AZ_IOT_OK);
   const az_iot_su_channel_dps* bound
       = (const az_iot_su_channel_dps*)(const void*)&su_state._internal.channel_storage;
   assert_ptr_equal(bound->connection, &conn);
   assert_ptr_equal(su_state._internal.channel.ctx, bound);
-  az_iot_su_client_destroy(&su_state);
+  az_iot_su_client_deinit(&su_state);
 
   az_iot_su_client su_no_conn;
-  assert_int_equal(az_iot_su_client_initialize(&su_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_init(&su_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
@@ -1860,7 +1860,7 @@ static void device_properties_too_small_is_rejected(void** state)
       az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void device_properties_buffer_size_matches_need(void** state)
@@ -1917,7 +1917,7 @@ static void device_properties_buffer_size_matches_need(void** state)
   az_iot_su_client su_ok;
   o.device_properties_buffer_size = need;
   assert_int_equal(az_iot_su_client__initialize_with_channel(&su_ok, &channel, &o), AZ_IOT_OK);
-  az_iot_su_client_destroy(&su_ok);
+  az_iot_su_client_deinit(&su_ok);
 
   az_iot_su_client su_short;
   o.device_properties_buffer_size = need - 1;
@@ -1925,7 +1925,7 @@ static void device_properties_buffer_size_matches_need(void** state)
       az_iot_su_client__initialize_with_channel(&su_short, &channel, &o),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void rejected_properties_preserve_the_entire_cache(void** state)
@@ -2116,14 +2116,14 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&client, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(fx->conn.dps_hold_count, 0);
 
   dp.manufacturer = "m";
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, "m");
-  az_iot_su_client_destroy(&client);
+  az_iot_su_client_deinit(&client);
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
