@@ -395,12 +395,12 @@ its sample (`samples/mqttv5/c2d_receiver`) and its unit suite were **removed**:
 publishing an API the service cannot serve is the surface-nobody-implements
 problem this split exists to remove. The .NET SDK removed the same surface.
 
-- **`az_iot_mqttv3_c2d_client`** is unchanged, and pins Classic at `init()`. An
+- **`az_iot_mqttv3_c2d_client`** is unchanged, and pins MQTTv3 at `init()`. An
   MQTT v5 assignment fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - `az_iot_c2d_message`, `az_iot_c2d_property` and `az_iot_c2d_handler_callback`
   stay in the shared `az_iot_message.h` ([§5](#5-what-stays-shared)), so an MQTTv5
   client can be added back beside MQTTv3 without moving them.
-- `samples/unified/c2d_receiver` is Classic-only, like
+- `samples/unified/c2d_receiver` is MQTTv3 IoT Hub only, like
   `samples/unified/file_upload`: it reports an AEG assignment and exits non-zero.
 
 ---
@@ -1045,9 +1045,9 @@ connect and on a move in either direction. `samples/unified/connect_first` shows
 the conservative alternative: build once `CONNECTED`, from the profile read then.
 Where AEG has the feature, a `samples/mqttv5/` sample pins MQTTv5 at `init()`.
 `samples/unified/c2d_receiver` and `samples/unified/file_upload` are the
-Classic-only exceptions: they report an MQTT v5 hub, with no rebuild
+MQTTv3 IoT Hub only exceptions: they report an MQTT v5 hub, with no rebuild
 (`file_upload` builds after `CONNECTED`, `c2d_receiver` before `open()`). There
-is no Classic-only group. See [samples/README.md](../../samples/README.md).
+is no MQTTv3-only group. See [samples/README.md](../../samples/README.md).
 
 **Test expansion.** This roughly doubles the feature-client test surface: each
 generation's client needs its own unit suite against the in-memory mock, and each
@@ -1244,5 +1244,5 @@ baseline.
   unified ones (section 11).
 - 09/26/2026: **C2D removed from AEG**, which does not support it yet:
   `az_iot_mqttv5_c2d_client`, `samples/mqttv5/c2d_receiver` and the MQTTv5 C2D unit
-  suite are gone, and `samples/unified/c2d_receiver` is Classic-only. Classic
+  suite are gone, and `samples/unified/c2d_receiver` is MQTTv3 IoT Hub only. MQTTv3
   C2D is unchanged. See [§4](#c2d-is-mqttv3-only).

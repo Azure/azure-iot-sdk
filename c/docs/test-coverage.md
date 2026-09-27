@@ -375,7 +375,7 @@ native content type and user properties. Both use QoS-1 send completion.
 ## Cloud-to-device messages
 
 Covers `az_iot_c2d_client`: the `devices/{device_id}/messages/devicebound/#` subscription
-and the dispatch of inbound messages to the application handler. Classic only: C2D is not
+and the dispatch of inbound messages to the application handler. MQTTv3 IoT Hub only: C2D is not
 supported on AEG, so there is no MQTTv5 client. Wire format per
 [Receive cloud-to-device messages](https://learn.microsoft.com/azure/iot-hub/iot-mqtt-connect-to-iot-hub#receive-cloud-to-device-messages).
 

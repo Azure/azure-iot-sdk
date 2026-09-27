@@ -23,9 +23,9 @@ extern "C"
 /* Well-known IoT Hub system property keys.
  *
  * They apply in both directions: set one on an az_iot_telemetry_message going
- * out, read one off an az_iot_c2d_message coming in (Classic only). The same spelling works
- * either way because the SDK owns the encoding -- these are the plain,
- * human-readable names, never the pre-encoded form.
+ * out, read one off an az_iot_c2d_message coming in (MQTTv3 IoT Hub only). The
+ * same spelling works either way because the SDK owns the encoding -- these
+ * are the plain, human-readable names, never the pre-encoded form.
  *
  * On the Classic (MQTT v3.1.1) path the SDK percent-encodes both halves into
  * the topic's property bag, so "$.ct" travels as "%24.ct" and a value of
@@ -96,7 +96,7 @@ extern "C"
   /**
    * @brief A received cloud-to-device message.
    *
-   * Classic (mqttv3) only: C2D is not carried on the MQTT v5 hub.
+   * MQTTv3 IoT Hub only: C2D is not carried on the MQTT v5 hub.
    *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.

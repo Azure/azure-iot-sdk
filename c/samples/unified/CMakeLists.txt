@@ -16,7 +16,7 @@ foreach(sample
     az_iot_add_sample(unified ${sample} az_iot_mqttv3 az_iot_mqttv5)
 endforeach()
 
-# C2D and file upload exist on Classic only; on an AEG hub each sample says so.
+# C2D and file upload exist on MQTTv3 IoT Hub only; on an AEG hub each sample says so.
 az_iot_add_sample(unified c2d_receiver az_iot_mqttv3)
 az_iot_add_sample(unified file_upload az_iot_mqttv3)
 # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample

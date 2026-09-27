@@ -5,16 +5,16 @@
 /* SPDX-License-Identifier: MIT */
 /* unified/c2d_receiver - sample.
  *
- * Receive cloud-to-device messages for ~60 seconds. C2D is an IoT Hub Classic
+ * Receive cloud-to-device messages for ~60 seconds. C2D is an MQTTv3 IoT Hub
  * feature: the client subscribes to devices/<id>/messages/devicebound/#, and
  * the properties ride in the topic, so the client percent-decodes them before
  * the handler sees anything.
  *
  * There is no MQTT v5 counterpart: C2D is not carried on the AEG hub. The mqttv3
- * client pins Classic at init(), before open(), so DPS assigning an AEG hub --
+ * client pins MQTTv3 at init(), before open(), so DPS assigning an AEG hub --
  * on the first connect or after a move -- stops the connection with
  * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. The sample reports that and exits
- * non-zero; it does not rebuild. A move to another Classic hub needs nothing
+ * non-zero; it does not rebuild. A move to another MQTTv3 hub needs nothing
  * from the application.
  *
  * DPS is handled internally by the connection client when dps.id_scope is set.
@@ -170,7 +170,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* v3.1.1 serves both DPS and a Classic hub. */
+  /* v3.1.1 serves both DPS and an MQTTv3 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -179,7 +179,7 @@ int main(void)
     return 1;
   }
 
-  /* Pins Classic: an AEG assignment is refused before that hub is reached. */
+  /* Pins MQTTv3: an AEG assignment is refused before that hub is reached. */
   if (az_iot_mqttv3_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
