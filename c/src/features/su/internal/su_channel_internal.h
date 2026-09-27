@@ -168,6 +168,19 @@ extern "C"
      */
     az_iot_result (*do_work)(void* ctx);
 
+    /**
+     * @brief OPTIONAL. Stop waiting for the verdict of an accepted fetch.
+     *
+     * Called when the engine abandons @p operation on its deadline. The channel
+     * drops the outstanding request if it is that fetch, so a later request is
+     * not refused as busy and a late answer is ignored; no verdict is reported
+     * for it. May be NULL.
+     *
+     * @param ctx       The channel's context.
+     * @param operation The fetch being abandoned; never AZ_IOT_SU_OP_REPORT_STATUS.
+     */
+    void (*cancel_update)(void* ctx, az_iot_su_operation operation);
+
   } az_iot_su_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */

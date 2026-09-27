@@ -756,6 +756,11 @@ extern "C"
        * must re-issue the route that was actually requested. */
       uint8_t pending_fetch;
 
+      /* Which fetch the channel has accepted and not yet answered, with the
+       * same encoding. Its deadline is pending_fetch_deadline_ms: the timeout
+       * bounds the whole wait, not only the part before the channel accepts. */
+      uint8_t fetch_in_flight;
+
       /* When the pending fetch stops being retried, as a monotonic instant.
        *
        * WALL-CLOCK, and honoured absolutely: the caller asked for an answer
@@ -763,6 +768,9 @@ extern "C"
        * wait. Time spent obeying a service-requested delay is NOT excluded --
        * excluding it would silently move the deadline the caller set and take
        * away its ability to plan.
+       *
+       * Covers the fetch whether it is queued (pending_fetch) or accepted and
+       * awaiting its answer (fetch_in_flight).
        *
        * 0 means NO DEADLINE IS ARMED -- either nothing is pending, or the
        * caller passed timeout_ms = 0, which deliberately leaves a queued

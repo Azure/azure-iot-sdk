@@ -978,6 +978,46 @@ static void finishing_the_check_releases_the_hold_and_registration_follows(void*
   assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
 }
 
+/* Cancelling an unanswered fetch frees the slot, ignores its late answer and
+ * lets registration proceed. No verdict is reported: the engine abandoned it. */
+static void cancelling_an_unanswered_fetch_frees_the_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+  assert_non_null(fx->channel.vtable->cancel_update);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  /* A different operation is not the outstanding one: nothing changes. */
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  size_t results_before = fx->result_count;
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->result_count, results_before);
+
+  /* The hold is released, as on any final verdict for a fetch. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* The late answer is consumed and ignored. */
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  (void)inject(fx, m, topic, "{\"updateMetadata\":null}");
+  assert_int_equal(fx->result_count, results_before);
+  assert_int_equal(fx->update_count, 0);
+}
+
 /* The load-bearing rule: a stalled or unavailable device-update service must
  * never stop a device from provisioning. */
 static void the_hold_expires_and_registration_proceeds_anyway(void** state)
@@ -2578,6 +2618,7 @@ int main(void)
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(
         finishing_the_check_releases_the_hold_and_registration_follows, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancelling_an_unanswered_fetch_frees_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hold_expires_and_registration_proceeds_anyway, setup, teardown),
     cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),

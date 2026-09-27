@@ -467,6 +467,8 @@ typedef struct
   int request_update_count;
   az_iot_result request_update_result;
   az_iot_su_operation last_request_operation;
+  int cancel_count;
+  az_iot_su_operation last_cancel_operation;
   /* When true, the verdict is delivered from INSIDE request_update(), which the
    * channel contract explicitly permits for a synchronous channel. */
   bool result_is_synchronous;
@@ -641,6 +643,13 @@ static az_iot_result fake_channel_set_properties(
   return AZ_IOT_OK;
 }
 
+static void fake_channel_cancel_update(void* ctx, az_iot_su_operation operation)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->cancel_count++;
+  fc->last_cancel_operation = operation;
+}
+
 static const az_iot_su_channel_vtable k_fake_channel_vtable = {
   .open = fake_channel_open,
   .close = fake_channel_close,
@@ -648,6 +657,7 @@ static const az_iot_su_channel_vtable k_fake_channel_vtable = {
   .report = fake_channel_report,
   .set_device_properties = fake_channel_set_properties,
   .do_work = fake_channel_do_work,
+  .cancel_update = fake_channel_cancel_update,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -3684,6 +3694,129 @@ static void a_late_verdict_cannot_resurrect_an_unbounded_request(void** state)
   assert_int_not_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
 }
 
+/* The timeout bounds the WHOLE wait: a request the channel accepted but never
+ * answered is abandoned at its deadline, and the channel told to stop waiting.
+ * Without it one lost answer holds the channel's single slot for good, and
+ * every later request is refused as busy. */
+static void an_accepted_request_without_an_answer_is_abandoned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK; /* accepted; no verdict follows */
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_not_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  /* Awaited while the deadline stands; sent once, not resent. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.cancel_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  /* Once: no repeat, no resend. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* An answer ends the wait: nothing is abandoned after it. */
+static void an_answer_ends_the_in_flight_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+}
+
+/* A newer request queued behind an unanswered one shares its fate at the
+ * deadline: one abandonment, for the newer route, and the older one cancelled
+ * so it does not hold the channel with no bound. */
+static void a_superseded_in_flight_request_is_cancelled_with_the_newer_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 2);
+
+  /* The channel is busy with the first; the second stays queued. */
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 2); /* a refusal does not clear it */
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+}
+
+/* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
+static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  for (int i = 0; i < 20; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+}
+
 /* The documented opt-out: AZ_IOT_SU_REQUEST_NO_TIMEOUT retries indefinitely.
  * Passed as the real argument, so the path is covered through the public API
  * rather than by poking the deadline. */
@@ -4193,6 +4326,13 @@ int main(void)
         a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
     cmocka_unit_test(the_public_timeout_macros_hold_their_contract),
     cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_service_delay_does_not_extend_the_callers_deadline, setup, teardown),
