@@ -5,7 +5,7 @@
     Wi-Fi credentials so it is ready to build and flash.
 
 .DESCRIPTION
-    Automates "Step 2" of samples/software_update/esp32/README.md. Run this AFTER
+    Automates the device configuration (Step 1) of samples/software_update/esp32/README.md. Run this AFTER
     Initialize-SuSampleEnvironment.ps1, which generates the device certificate
     and exports the AZ_IOT_* environment variables this script consumes.
 

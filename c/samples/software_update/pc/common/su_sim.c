@@ -278,11 +278,13 @@ static int32_t sim_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
     return 1; /* nothing persisted */
   }
   size_t r = fread(blob, 1, cap, f);
-  int eof = feof(f);
+  /* A blob of exactly cap bytes fits: EOF is only seen by reading past it. */
+  int overflow = (r == cap && fgetc(f) != EOF);
+  int failed = ferror(f);
   fclose(f);
-  if (!eof)
+  if (overflow || failed)
   {
-    return 1; /* blob did not fit in cap -> treat as no state */
+    return 1; /* did not fit in cap, or unreadable -> treat as no state */
   }
   *out_len = r;
   return 0;
