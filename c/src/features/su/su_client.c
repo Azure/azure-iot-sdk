@@ -2859,14 +2859,16 @@ az_iot_result az_iot_su_client_report_status(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  size_t details_len = (size_t)az_span_size(result->result_details);
-  for (int32_t i = 0; i < steps; ++i)
+  /* Checked per span so the running total cannot wrap. */
+  int32_t details_room = (int32_t)sizeof(SU_I(client).result_details);
+  for (int32_t i = -1; i < steps; ++i)
   {
-    details_len += (size_t)az_span_size(step_results[i].result_details);
-  }
-  if (details_len > sizeof(SU_I(client).result_details))
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    int32_t n = az_span_size((i < 0) ? result->result_details : step_results[i].result_details);
+    if (n > details_room)
+    {
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    details_room -= n;
   }
 
   /* Apply with the caller's spans, check the report, then either roll back or
