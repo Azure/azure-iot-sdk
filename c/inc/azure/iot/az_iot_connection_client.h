@@ -504,16 +504,16 @@ extern "C"
      * close. Leave zeroed (topic NULL) for no Will, which is the default.
      *
      * Scope, deliberately:
-     *  - It is applied to the hub session only -- MQTTv3 and MqttV5 alike. The
+     *  - It is applied to the hub session only -- MQTTv3 and MQTTv5 alike. The
      *    DPS session never carries it: provisioning is a short exchange that is
      *    fully torn down before the hub session exists, and a Will published
      *    from it would announce a departure that never happened.
      *  - `will_delay_seconds` is MQTT 5 only (ignored on an MQTTv3 hub, which
-     *    speaks v3.1.1). On an MqttV5 session the SDK also raises the session
+     *    speaks v3.1.1). On an MQTTv5 session the SDK also raises the session
      *    expiry to cover the delay, because MQTT 5 ends the delay at whichever
      *    comes first -- a delay longer than the session expiry is silently no
      *    delay at all.
-     *  - On an MqttV5 session, configuring a Will also makes the SDK close with
+     *  - On an MQTTv5 session, configuring a Will also makes the SDK close with
      *    DISCONNECT reason 0x04 (Disconnect with Will Message) so an orderly
      *    close announces the departure too, instead of discarding the Will.
      *

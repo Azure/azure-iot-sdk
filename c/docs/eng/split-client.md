@@ -137,7 +137,7 @@ sequenceDiagram
     DPS-->>Dev: RESULT hub_version=2 (MQTTv5)
     Dev->>MQTTv5: CONNECT (MQTT v5)
     Note over Dev: binary has no v5 adapter
-    Dev--xNext: cannot speak v5 - fail
+    Dev--xMQTTv5: cannot speak v5 - fail
 
     Note over Dev,MQTTv5: Solution - OTA first, gated reassignment
     Dev->>Dev: OTA to universal/mqttv5 build
@@ -236,7 +236,7 @@ flowchart TB
     subgraph FIX["Solution: shared core, thin split"]
         CORE["core lib<br/>connection . dispatch . reconnect .<br/>cert . mqtt_iface . platform"]
         PC["profile_mqtt_v3<br/>+ feature topics (v3.1.1)"]
-        PN["profile_next<br/>+ feature topics (v5)"]
+        PN["profile_mqtt_v5<br/>+ feature topics (v5)"]
         CORE --> PC
         CORE --> PN
     end

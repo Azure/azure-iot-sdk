@@ -16,7 +16,7 @@ Canonical pending-work tracker for MQTTv5 hub integration.
 ## Phase 2: Protocol Profile for MQTTv5
 
 - [x] Extend `az_iot_protocol_profile` with MQTTv5-specific fields
-- [x] Implement `s_profile_next` in `protocol_profile.c`
+- [x] Implement `s_profile_mqtt_v5` in `protocol_profile.c`
 - [x] ~~Unit test: `profile_for_hub_mqtt_v5_role_is_mqtt_v5`~~ — moot: the whole
   `protocol_profile` module was deleted in P4 once each generation's feature
   clients owned their own topics.

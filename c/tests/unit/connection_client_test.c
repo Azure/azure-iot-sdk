@@ -1790,7 +1790,7 @@ static void hub_mqtt_v5_birth_ack_before_suback_is_ignored(void** state)
 
 /* Fixture variant: HUB_MQTT_V5 with a reconnection policy, so a stalled handshake
  * retries instead of faulting. */
-static int setup_next_with_reconnect(void** state)
+static int setup_mqtt_v5_with_reconnect(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -2238,7 +2238,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_before_suback_is_ignored, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
-        hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_next_with_reconnect, teardown),
+        hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),

@@ -693,7 +693,7 @@ static void dps_connects_with_a_clean_session_and_no_will(void** state)
 
 /* DPS speaks MQTT v3.1.1 only. Even when the device is headed for a v5
  * MQTTv5 endpoint, the provisioning leg must pick the v3.1.1 factory. */
-static void dps_uses_v3_1_1_even_when_the_hub_is_next(void** state)
+static void dps_uses_v3_1_1_even_when_the_hub_is_mqtt_v5(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = dps_options();
@@ -3431,7 +3431,7 @@ static void provision_only_rejects_a_second_open_while_backing_off(void** state)
 
 /* The mock bypass makes a hostless client a hub connection; an environment
  * variable must not override a declared device shape. */
-static void the_mock_next_bypass_does_not_capture_a_provision_only_client(void** state)
+static void the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
@@ -3891,7 +3891,7 @@ int main(void)
     cmocka_unit_test(dps_carries_the_proxy_and_transport),
     cmocka_unit_test(dps_connects_with_a_clean_session_and_no_will),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
-    cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
+    cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_mqtt_v5),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),
     /* register handshake */
     cmocka_unit_test_setup_teardown(
@@ -4091,7 +4091,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         provision_only_rejects_a_second_open_while_backing_off, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
-        the_mock_next_bypass_does_not_capture_a_provision_only_client,
+        the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client,
         setup_with_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

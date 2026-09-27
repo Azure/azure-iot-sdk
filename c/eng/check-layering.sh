@@ -94,13 +94,23 @@ if [ -n "${destroy_hits}" ]; then
     echo
 fi
 
-# The DPS `connectionProfile` wire value is the literal string "classic", so a
-# quoted occurrence is exempt; everything else must use mqttv3/mqttv5.
+# Generation vocabulary. gen1/gen2/aeg/classic are matched anywhere, including
+# inside an identifier, since none of them has a legitimate use here. `next` is
+# an ordinary English word, so only the forms that pair it with a generation
+# word are banned.
+#
+# The DPS `connectionProfile` wire value is the literal string "classic". The
+# exemption is per-occurrence, not per-line: the sed blanks that literal out and
+# the second grep re-tests what is left, so a line carrying both the wire value
+# and a banned name is still reported.
 banned_hits="$(grep -rniE \
     --include='*.c' --include='*.h' \
-    '(^|[^[:alnum:]_])(gen1|gen2|aeg|classic)([^[:alnum:]_]|$)|hub[-_ ]next' \
+    'gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next' \
     "${root_dir}/inc" "${root_dir}/src" "${root_dir}/tests" "${root_dir}/samples" \
-    2>/dev/null | grep -vE '\\?"classic' || true)"
+    2>/dev/null \
+    | sed 's/\\\{0,1\}"classic\\\{0,1\}"/"@wire@"/g' \
+    | grep -iE 'gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next' \
+    || true)"
 if [ -n "${banned_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then
         echo "Generation layering violations found:"

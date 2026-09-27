@@ -3258,7 +3258,7 @@ static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap
   return port;
 }
 
-static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
+static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 {
   const char* endpoint;
   const char* device_id;
@@ -3860,7 +3860,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * device shape. */
   if (mock_mqtt_v5_configured() && !client->opts.dps.provision_only)
   {
-    az_iot_result r = apply_mock_next_bypass(client);
+    az_iot_result r = apply_mqtt_v5_mock_bypass(client);
     if (r != AZ_IOT_OK)
     {
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
