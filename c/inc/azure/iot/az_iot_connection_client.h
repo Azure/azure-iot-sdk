@@ -141,7 +141,7 @@ extern "C"
     uint8_t jitter_pct; /* 0..100, applied around the backoff */
   } az_iot_reconnection_policy;
 
-  /* Exponential backoff with jitter: 1s initial delay, 30s cap, retry forever,
+  /* Exponential backoff with jitter: 1s initial delay, 60s cap, retry forever,
    * +/-20% jitter. What az_iot_connection_client_options_default() installs. */
   az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void);
 
@@ -352,9 +352,9 @@ extern "C"
        * the reconnection policy gives up -- never asking DPS where the device
        * actually lives now. This bounds that.
        *
-       * Under the default policy (1s initial, 30s cap, +/-20% jitter) the delays
-       * run 1, 2, 4, 8, 16 then 30s, so attempt N >= 6 falls at roughly
-       * 31 + 30*(N-5) seconds: the default 50 is about 23 minutes. Long enough
+       * Under the default policy (1s initial, 60s cap, +/-20% jitter) the delays
+       * run 1, 2, 4, 8, 16, 32 then 60s, so attempt N >= 7 falls at roughly
+       * 63 + 60*(N-6) seconds: the default 50 is about 45 minutes. Long enough
        * that an ordinary network outage does not send a whole fleet to DPS at
        * once, short enough that a device left behind by a migration recovers
        * without an operator. */
@@ -1010,7 +1010,7 @@ extern "C"
      * one must not inherit the other's backoff or spend the other's budget.
      *
      * With a single counter a device that burned its hub attempts up to the
-     * 30s cap and then re-provisioned made its DPS retries at the cap instead
+     * 60s cap and then re-provisioned made its DPS retries at the cap instead
      * of at initial_delay_ms, and reconnection_policy.max_attempts was one
      * budget shared across both -- so a long hub outage could leave zero
      * attempts for a registration that would have succeeded first try.
@@ -1295,7 +1295,7 @@ extern "C"
   /* Returns an options struct with optional fields defaulted (port derived from
    * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no log sink,
    * and the default reconnection policy from
-   * az_iot_reconnection_policy_get_default(): 1s initial delay, 30s cap, retry
+   * az_iot_reconnection_policy_get_default(): 1s initial delay, 60s cap, retry
    * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
    * the returned struct to make every failure terminal instead.
    *

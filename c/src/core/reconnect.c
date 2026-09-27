@@ -105,11 +105,10 @@ uint32_t az_iot_reconnect_delay_ms(
    *
    * Clamping here used to fold the whole upper half of the distribution onto
    * the cap itself. Once the ladder reached the cap, half of all retries fired
-   * at exactly max_delay_ms: measured over 200000 draws of the default policy,
-   * 50.1% landed on 30000 ms and the mean sat at 28507 ms instead of 30000. So
-   * jitter stopped de-correlating a fleet precisely at steady state, which is
-   * the thundering herd it exists to prevent, and it biased every
-   * fixed-interval policy low (a nominal 5s interval averaged 4749 ms).
+   * at exactly max_delay_ms and the mean sat jitter_pct/4 below it. So jitter
+   * stopped de-correlating a fleet precisely at steady state, which is the
+   * thundering herd it exists to prevent, and it biased every fixed-interval
+   * policy low (a nominal 5s interval averaged 4749 ms).
    *
    * Only the representable range is enforced, so a caller using the extreme
    * end of uint32_t saturates instead of wrapping on the cast below. */
@@ -124,7 +123,7 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
 {
   az_iot_reconnection_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
-    .max_delay_ms = 30000u, /* cap exponential backoff at 30s */
+    .max_delay_ms = 60000u, /* cap exponential backoff at 60s */
     .max_attempts = 0u, /* 0 = retry forever              */
     .jitter_pct = 20u, /* +/-20% randomization            */
   };

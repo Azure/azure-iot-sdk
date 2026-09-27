@@ -387,7 +387,7 @@ delay  = clamp(base + jitter, 1, UINT32_MAX)
 | Field | Default | Notes |
 | --- | --- | --- |
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
-| `max_delay_ms` | 30000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
+| `max_delay_ms` | 60000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
 | `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
 

@@ -67,13 +67,14 @@ Keep this file in step with the code. It is expected to change often; `connectio
 | --- | --- | --- |
 | Growth | `initial_delay << (attempt - 1)`, shift clamped at 30 | `2^(baseExponent + attempt)` ms, exponent clamped at 32 |
 | First delay (default) | 1 s | 128 ms (base exponent 6) |
-| Cap (default) | 30 s | 60 s as configured by the connection client; 30 min for the bare policy default |
+| Cap (default) | 60 s | 60 s as configured by the connection client; 30 min for the bare policy default |
 | Max attempts (default) | unlimited | unlimited |
 | Jitter (default) | ±20 % of the computed delay | 95–105 % of the computed delay, skipped below 50 ms |
 | Disable reconnect | zero initial delay | a no-retry policy |
 | Policy is caller-replaceable | no — parameters only | yes — the policy itself is an interface |
 
-Aligning the defaults, and whether C should accept a caller-supplied policy object, are open.
+The cap now matches. Aligning the first delay and the jitter shape, and whether C should accept a
+caller-supplied policy object, are open.
 
 ---
 

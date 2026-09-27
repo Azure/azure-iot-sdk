@@ -249,8 +249,9 @@ static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 3, &rng), 4000);
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 4, &rng), 8000);
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 16000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 6, &rng), 30000); /* capped */
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 20, &rng), 30000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 6, &rng), 32000);
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 7, &rng), 60000); /* capped */
+  assert_int_equal(az_iot_reconnect_delay_ms(&p, 20, &rng), 60000);
 }
 
 static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)

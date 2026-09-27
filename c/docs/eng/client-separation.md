@@ -623,7 +623,7 @@ DPS, and both are deliberate:
 - a CONNACK that **rejects the identity** — the credential cannot work, so
   retrying it is pointless; and
 - **`dps.max_hub_connect_attempts_before_reprovision`** consecutive failed hub
-  attempts (default 50, about 23 minutes under the default backoff). A hub
+  attempts (default 50, about 45 minutes under the default backoff). A hub
   vacated service-side may simply stop answering rather than rejecting anything,
   and without this bound the device would retry a dead assignment until the
   reconnection policy gave up, never asking DPS where it now lives.
