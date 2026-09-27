@@ -113,7 +113,9 @@ function Import-SuE2EUpdate {
         [Parameter(Mandatory)][string]$Version,
         [Parameter(Mandatory)][string]$Manufacturer,
         [Parameter(Mandatory)][string]$Model,
-        [Parameter(Mandatory)][string]$WorkDir
+        [Parameter(Mandatory)][string]$WorkDir,
+        # Receives each uploaded blob name as soon as it exists, for cleanup.
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs
     )
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
@@ -153,6 +155,7 @@ function Import-SuE2EUpdate {
         az storage blob upload --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Upload of $blob failed" }
+        $Blobs.Add($blob)
         $expiry = (Get-Date).ToUniversalTime().AddHours(6).ToString('yyyy-MM-ddTHH:mmZ')
         $url = az storage blob generate-sas --auth-mode login --as-user --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --permissions r --expiry $expiry --full-uri -o tsv
@@ -267,10 +270,10 @@ function New-SuE2EOffers {
             # Short names: the whole offer must fit the client's 4 KiB request buffer.
             $short = $script:Scenarios[$scenario].Short
             $model = "e2e-$tag-$short"
-            $offer = [ordered]@{ Model = $model; Update = $null; Job = $null }
+            $offer = [ordered]@{ Model = $model; Blobs = [System.Collections.Generic.List[string]]::new(); Update = $null; Job = $null }
             $state.Offers[$scenario] = $offer
             $offer.Update = Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $model `
-                -Version '1.0.0' -Manufacturer $manufacturer -Model $model -WorkDir $WorkDir
+                -Version '1.0.0' -Manufacturer $manufacturer -Model $model -WorkDir $WorkDir -Blobs $offer.Blobs
             $offer.Job = "su-e2e-$tag-$short"
             New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $offer.Update
             $exports[$script:Scenarios[$scenario].Variable] = $model
@@ -325,19 +328,34 @@ function Remove-SuE2EOffers {
     $aduToken = Get-SuE2EToken $script:AduScope
     $firstError = $null
     foreach ($offer in $state.Offers.Values) {
-        try {
-            if ($offer.Job) {
-                Invoke-SuE2ERest -Method Delete -Token $armToken `
-                    -Uri "$(Get-SuE2EJobsUri $config)/$($offer.Job)?api-version=$script:ApiVersion" | Out-Null
+        # Each item separately, so one failure does not strand the others.
+        $items = @()
+        if ($offer.Job) { $items += , @('Job', $offer.Job) }
+        if ($offer.Update) { $items += , @('Update', $offer.Update) }
+        foreach ($blob in @($offer.Blobs)) { $items += , @('Blob', $blob) }
+        foreach ($item in $items) {
+            $kind, $name = $item
+            try {
+                switch ($kind) {
+                    'Job' {
+                        Invoke-SuE2ERest -Method Delete -Token $armToken `
+                            -Uri "$(Get-SuE2EJobsUri $config)/$($name)?api-version=$script:ApiVersion" | Out-Null
+                    }
+                    'Update' {
+                        Invoke-SuE2ERest -Method Delete -Token $aduToken `
+                            -Uri "https://$($config.ADU_ENDPOINT)/$($name)?api-version=$script:ApiVersion" | Out-Null
+                    }
+                    'Blob' {
+                        az storage blob delete --auth-mode login --account-name $config.STORAGE_ACCOUNT `
+                            --container-name $config.STORAGE_CONTAINER --name $name --only-show-errors | Out-Null
+                        if ($LASTEXITCODE -ne 0) { throw "Delete of blob $name failed" }
+                    }
+                }
             }
-            if ($offer.Update) {
-                Invoke-SuE2ERest -Method Delete -Token $aduToken `
-                    -Uri "https://$($config.ADU_ENDPOINT)/$($offer.Update)?api-version=$script:ApiVersion" | Out-Null
+            catch {
+                Write-Warning "Cleanup of $kind $name failed: $_"
+                if (-not $firstError) { $firstError = $_ }
             }
-        }
-        catch {
-            Write-Warning "Cleanup of $($offer.Model) failed: $_"
-            if (-not $firstError) { $firstError = $_ }
         }
     }
     if ($firstError) { throw $firstError }

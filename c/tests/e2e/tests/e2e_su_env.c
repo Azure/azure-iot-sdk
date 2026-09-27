@@ -23,10 +23,12 @@ const char* e2e_su_env_require(const char* name)
 }
 
 /**
- * @brief Parses `[scheme://]host[:port][/]` from `https_proxy`.
+ * @brief Parses `[http://]host[:port][/]` from `https_proxy`.
+ *
+ * A missing port means 80, the http default.
  *
  * @return 0 when unset or parsed; non-zero for a form this suite cannot use
- *   (credentials, or a host or port that does not fit).
+ *   (another scheme, credentials, or a host or port that does not fit).
  */
 static int load_proxy(e2e_su_env* env)
 {
@@ -36,6 +38,11 @@ static int load_proxy(e2e_su_env* env)
     return 0;
   }
   const char* host = strstr(v, "://");
+  if (host != NULL && (host - v != 4 || strncmp(v, "http", 4) != 0))
+  {
+    printf("software updates e2e: https_proxy must be an http:// proxy\n");
+    return 1;
+  }
   host = (host != NULL) ? host + 3 : v;
   if (strchr(host, '@') != NULL)
   {
@@ -50,7 +57,7 @@ static int load_proxy(e2e_su_env* env)
   }
   memcpy(env->proxy_host, host, len);
   env->proxy_host[len] = '\0';
-  env->proxy_port = 0;
+  env->proxy_port = 80;
   if (host[len] == ':')
   {
     char* end = NULL;
