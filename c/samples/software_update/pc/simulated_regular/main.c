@@ -63,7 +63,7 @@
  *                             persisted and the sample exits. Re-run (without
  *                             this knob) to resume() and finish the workflow.
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
- *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_state.blob)
+ *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_regular_state.blob)
  */
 #include <signal.h>
 #include <stddef.h>
@@ -335,7 +335,8 @@ int main(void)
   state.simulation_control.hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
   state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
-  state.simulation_control.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
+  state.simulation_control.state_file
+      = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_regular_state.blob");
   if (state.simulation_control.state_file == NULL)
   {
     return 1;

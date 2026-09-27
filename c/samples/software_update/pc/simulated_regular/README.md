@@ -305,7 +305,7 @@ All default off, except `AZ_IOT_SU_POLL_INTERVAL_S`. Set them in the shell that 
 | `SU_SIM_HASH_MISMATCH=1` | Corrupt the synthesized payload to drive the per-file hash-verification failure path |
 | `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
-| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
+| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_regular_state.blob`, distinct from the onboarding sample's) |
 | `AZ_IOT_SU_POLL_INTERVAL_S=<s>` | Seconds between update checks (default `60`); `0` checks once, at startup. A check not answered within half the interval (at most 60 s) is abandoned and asked again at the next poll |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
