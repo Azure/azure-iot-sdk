@@ -242,7 +242,7 @@ figures by a point or so and a gate that fires on noise gets switched off.
 | `adapter-su-crypto-mbedtls` | 80 | 70 | 95 |
 | `adapter-cert-managed` | 75 | 55 | 80 |
 
-Minimum headroom across all eighteen floors is 2.7 points (`features` function).
+Minimum headroom across all twenty-four floors is 2.7 points (`features` function).
 The Paho adapter carries the lowest floors deliberately: its coverage comes
 almost entirely from the broker-gated conformance suites, so a broker outage
 moves it further than any other component.
