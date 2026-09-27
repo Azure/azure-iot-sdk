@@ -1,0 +1,707 @@
+# Software updates client — Implementation Plan, Status & Feature Manual
+
+**One-stop doc for the software updates client in `azure-iot-sdk` (C99).** It is the source for
+(a) **status** to share with other teams, (b) the **implementation / testing /
+manual-action queue**, and (c) a **feature manual** with the
+design detail and caveats for each capability.
+
+> **Direction (current): Software updates is the implementation target. Device Update for IoT Hub is cut.**
+> The twin-based Device Update for IoT Hub delivery channel and its public API have been **removed**,
+> not deprecated-and-kept: there is no Device Update for IoT Hub deployment path in the shipping SDK,
+> no twin subscription for updates, and no reported-property status. Everything in
+> Device Update for IoT Hub that is *not* transport — manifest parsing, JWS/SJWK verification, root
+> keys, SHA-256, the download/backup/install/apply state machine, reboot/resume
+> persistence — is **harvested into a transport-independent `su_core`** and reused
+> verbatim by software updates. See [What "Device Update for IoT Hub is cut" means](#what-device-update-for-iot-hub-is-cut-means).
+> Decision of record: [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented);
+> seam: [client-separation.md §8](client-separation.md#8-device-update).
+
+> **Supersedes `su-feature-support.md`.** This doc replaces the old
+> feature-coverage matrix and folds in the software updates client action plan.
+> Deep internal architecture (public API surface, hook/crypto model, source
+> layout, phase plan) still lives in
+> [su-client-design.md](su-client-design.md) — cross-linked below.
+
+## Scope and philosophy (the software updates reference implementation)
+
+The software updates clients have a **different goal from the rest of this library**. Beyond being
+usable on-device, this API is intended to become the **canonical reference implementation
+of the software updates device protocol** — the source others follow to implement software updates on *non-embedded*
+platforms too.
+
+- **Completeness is mandatory.** *Every* software updates protocol feature MUST be implemented and
+  supported here. There are **no "won't implement" features** — a capability is either
+  ✅ done, 🟡 partial, or 🔜 coming soon.
+- **Embedded usability is a hard requirement, not a filter.** A customer MUST be able to run
+  these clients in a constrained/embedded application. But **"it doesn't fit embedded" is
+  never a reason to omit a feature.** Where a capability is heavy or awkward for constrained
+  devices, that is **noted as a caveat** and the feature is delivered as an **optional /
+  opt-in module or provider** (default-off, with a portable fallback) — it is still
+  implemented, so a non-embedded integrator has a complete reference.
+- **Prioritization still applies:** the embedded-critical core ships first; the broader
+  reference-completeness features follow (they are 🔜, not dropped).
+- **Completeness is scoped to software updates.** "Every software updates protocol feature" means every feature of the
+  **Software updates** device protocol. Device Update for IoT Hub's twin delivery is not a feature gap — it is a **removed
+  channel** (below).
+
+## What "Device Update for IoT Hub is cut" means
+
+Device Update for IoT Hub delivered updates over the IoT Hub **device twin** (service pushes desired properties,
+device reports status back through reported properties). That channel is **removed**. Software updates is a
+**device-initiated pull** protocol over an updating operation on a gateway the device already
+talks to (DPS for Ignite '26, IoT Hub for the operational path afterwards), which proxies to
+ADR → Device Update. The device never talks to Device Update directly and holds no software-updates-specific credential.
+
+| | **Device Update for IoT Hub — cut** | **Software updates — the target** ([spec](su-spec.md)) |
+|---|---|---|
+| Channel | IoT Hub **device twin** (MQTT) | **Updating operations on the DPS gateway** (HTTP/MQTT), reusing the device's existing connection |
+| Model | **Push** (service writes desired props) | **Pull** (device calls `requestSoftwareUpdates` / `requestOnboardingUpdates`) |
+| Auth | Carried by the Hub connection (SAS / X.509) | **Reuse DPS device auth** (X.509 Phase 1; SAS / TPM later) — no software updates creds |
+| Device data store | Twin reported properties | **ADR → Device Update**, proxied by the gateway |
+| Coupling | Requires IoT Hub | **Provisioning-time** (update *before* `Register`); Hub fronts operational post-Ignite |
+| Manifest + signing / install | v5, JWS/RS256, SHA-256, multi-step, reboot/resume | **Same code**, harvested into `su_core` |
+
+**Removed** (public API break, no deprecation window):
+
+- `az_iot_su_client_initialize()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
+- Desired-property deployment parsing/dispatch, twin accept/reject acknowledgement (200/406),
+  reported-property agent state (`0/6/255`) and device-properties reporting, the initial twin GET,
+  and twin re-subscription on reconnect for software updates.
+- The twin-channel-shaped samples and the twin-driven unit tests that assert those wire shapes.
+
+**Kept** (moves into `su_core`, transport-independent):
+
+- Manifest v5 parse/format (delegated to `azure-sdk-for-c`), JWS/SJWK two-level trust chain,
+  RS256-only enforcement, root-key store + revocation, SHA-256 payload integrity.
+- The download → backup → install → apply → restore state machine, multi-step sequencing, per-step
+  results, cancellation, retry/replacement/duplicate detection, reboot/resume persistence.
+- The platform + crypto hook model and the existing adapters.
+
+**Re-shaped, not deleted:** the concepts that had a twin-specific expression get a
+transport-independent one — `workflow.id` + `retryTimestamp` become `workflowId` correlation with
+idempotent reporting; accept/reject collapses into "install or report skipped"; agent state
+becomes the structured `installResult` carried by `reportUpdateStatus`; device
+properties become `agentInfo` (`agentSdkVersion`, `agentProfile`, 1–5 `compatibilityProperties`).
+
+Delivery is via an **`az_iot_su_channel`** vtable so `su_core` never names a transport; the
+Software updates/DPS channel is the only implementation that will ship (plus an in-test fake).
+
+**Legend.** Support: ✅ Implemented (in core) · 🟡 Partial (built but simplified /
+sample-only / not factored) · 🔜 Coming soon (planned / designed, not yet built) ·
+⚙️ Architectural capability (enabled by hooks, no core code) · ❌ Cut (twin-channel-only, removed).
+*(Outside the cut channel there is no "not planned" state — see
+[Scope and philosophy](#scope-and-philosophy-the-software-updates-reference-implementation).)*
+
+> ✅ means the capability named in that row is implemented. It does not imply complete
+> managed-workflow or live-service coverage. The software updates channel exists; remaining freshness,
+> orchestration, and verification gaps are called out separately.
+
+---
+
+## Status at a Glance
+
+**Columns.** `Pri` P0/P1/P2 · `Size` S (≤2d) / M (≤1w) / L (>1w) · `Depends` the row
+numbers that must land first · `Order` suggested sequence across remaining work · `ETA`
+target date (weekend dates moved to the next workday; `~` means not yet estimated), or
+`blocked` when something outside this repository gates it.
+
+`done` in the ETA column means the row is shipped or cut; those rows carry no priority,
+size or order.
+
+**Targets:** P0 by **9/28** (fixed), everything else by **10/9**. See
+[Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
+velocity; three items cannot be dated, and row 59 holds its date only if its gate clears.
+
+† Row 59 meets 9/28 only if the test-environment access grant lands by 9/28.
+
+
+| # | Category | Support | Pri | Size | Depends | Order | ETA | Details |
+|--:|---|:--:|:--:|:--:|:--:|:--:|:--:|---|
+| 1 | Foundation | ✅ | — | — | — | — | done | **Connection state + error propagation** — observer registry, status/reason/source codes, lifecycle guards (Phase 0). [→](#a-foundation) |
+| 3 | Foundation | ✅ | — | — | — | — | done | **`su_core` extraction + `az_iot_su_channel` vtable** — engine takes a manifest string, returns a structured report; delivery/reporting behind the vtable. Prerequisite for every software updates row. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 4 | Core update workflow | ✅ | — | — | — | — | done | **Manifest v5 parsing** — delegated to `azure-sdk-for-c`; only v5 targeted. [→](#b-core-update-workflow) |
+| 5 | Core update workflow | ❌→✅ | — | — | — | — | done | **Agent state reporting** — twin `0/6/255` reported properties are cut; re-expressed as the structured `installResult` on `reportUpdateStatus`. [→](#b-core-update-workflow) |
+| 6 | Core update workflow | ✅ | — | — | — | — | done | **Device-properties payload reporting** — twin `deviceProperties` cut; re-expressed as validated, owned `agentInfo` compatibility data on application-requested fetches; the regular route also carries the cached installed ID. This does not imply revision-safe freshness or automatic identity promotion (row 66). [→](#b-core-update-workflow) |
+| 8 | Core update workflow | ❌→✅ | — | — | — | — | done | **Accept / reject acknowledgement** — twin 200/406 ack is cut; already-installed becomes a `SKIPPED` outcome in the report. [→](#b-core-update-workflow) |
+| 9 | Core update workflow | ✅ | — | — | — | — | done | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
+| 10 | Core update workflow | ✅ | — | — | — | — | done | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
+| 11 | Core update workflow | ✅ | — | — | — | — | done | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in software updates; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
+| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_su_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
+| 13 | Core update workflow | ✅ | — | — | — | — | done | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_SU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
+| 15 | Download and integrity | ✅ | — | — | — | — | done | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
+| 16 | Download and integrity | ✅ | — | — | — | — | done | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
+| 17 | Download and integrity | ✅ | — | — | — | — | done | **SHA-256 integrity (streaming, opt-in)** — runs when `read_file_fn` + incremental hooks supplied. [→](#c-download-and-integrity) |
+| 19 | Security and trust | ✅ | — | — | — | — | done | **JWS manifest signature** verification (RFC 7515) — 6-stage `verify_manifest()` before any download. [→](#d-security-and-trust) |
+| 20 | Security and trust | ✅ | — | — | — | — | done | **Two-level trust chain + `kid` resolution** — root key → SJWK → manifest → SHA-256 binding. [→](#d-security-and-trust) |
+| 21 | Security and trust | ✅ | — | — | — | — | done | **RS256-only enforcement** — rejects any other `alg` from the wire. [→](#d-security-and-trust) |
+| 22 | Security and trust | ✅ | — | — | — | — | done | **Root key store** (compiled-in Microsoft + runtime-loadable). [→](#d-security-and-trust) |
+| 23 | Security and trust | ✅ | — | — | — | — | done | **Root key revocation** — `disabled` roots rejected by `kid`. [→](#d-security-and-trust) |
+| 26 | Install, apply, recovery | ✅ | — | — | — | — | done | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
+| 27 | Install, apply, recovery | ✅ | — | — | — | — | done | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
+| 28 | Install, apply, recovery | ✅ | — | — | — | — | done | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
+| 31 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/su/`. [→](#f-platform-and-crypto-adapters) |
+| 32 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_mbedtls` adapter** — factored into `adapters/su/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
+| 35 | Platform and crypto adapters | ✅ | — | — | — | — | done | **ESP32 platform adapter** — factored into `adapters/su/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
+| 37 | Software updates transport | ✅ | — | — | — | — | done | **DPS update-check binding** — `requestSoftwareUpdates` / `requestOnboardingUpdates` over the device's DPS transport; both send `agentInfo`, and only the regular route sends `installedUpdateId` (onboarding omits it by contract: a day-0 device has nothing installed); parse `serviceConfiguration` + `updateMetadata`. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 39 | Software updates transport | ✅ | — | — | — | — | done | **Reuse DPS device auth** — X.509 (P1) over the existing DPS connection; no Device Update endpoint/creds/mTLS; identity headers are gateway-populated. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 43 | Software updates transport | ✅ | — | — | — | — | done | **Channel observes connection state** — the DPS channel registers as a scoped state observer instead of polling the connection client, and stops asking for a session once EITHER scope has settled in FAULTED rather than retrying into it. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 44 | Software updates transport | ✅ | — | — | — | — | done | **ETag + api-version + agent-info resend** — `agentInfoEtag`/`serviceConfigEtag`; resend full `agentInfo` on `OUTDATED_`/`UNKNOWN_AGENT_INFO`; re-sync on `OUTDATED_SERVICE_CONFIG`. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 45 | Software updates transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
+| 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
+| 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
+| 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
+| 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
+| 56 | Testing and conformance | 🟡 | P0 | S | — | 1 | 9/28 | **Crypto vector tests** — known-good/bad RS256 + SHA-256 vectors. [→](#k-testing-and-conformance) |
+| 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
+| 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
+| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su` runs four DPS-channel scenarios (engine not exercised); the five twin-driven scenarios are retired and not built. An offered-update scenario is still needed. [→](#k-testing-and-conformance) |
+| 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
+| 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
+| 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
+| 42 | Software updates transport | 🔜 | P1 | M | — | 9 | 10/9 | **Root key package download** — fetch/cache from `rootKeyDownloadUrl`, verify as usual. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 25 | Security and trust | 🔜 | P1 | L | 42 | 10 | 10/9 | **Root Key Package runtime rotation** — fetch+verify+apply with threshold continuity; the package URL now arrives as `serviceConfiguration.rootKeyDownloadUrl` (not a twin property). [→](#d-security-and-trust) |
+| 30 | Install, apply, recovery | 🟡 | P1 | M | 29 | 11 | 10/9 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
+| 34 | Platform and crypto adapters | 🔜 | P1 | L | — | 12 | 10/9 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
+| 40 | Software updates transport | 🟡 | P1 | M | — | 13 | 10/9 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 41 | Software updates transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_su_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 57 | Testing and conformance | 🔜 | P1 | M | — | 15 | 10/9 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
+| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/su/esp32` passes the connection client to `az_iot_su_client_initialize()` and asks for an onboarding update; not built or run with ESP-IDF since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
+| 18 | Download and integrity | 🔜 | P2 | L | — | 16 | ~10/9 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
+| 24 | Security and trust | ⚙️ | P2 | M | — | 17 | ~10/9 | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
+| 46 | Day0 recovery | 🔜 | P2 | L | — | 18 | blocked | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
+| 47 | Day0 recovery | 🔜 | P2 | M | 46 | 19 | blocked | **Account-ID binding** — validate signed manifest's Device Update account ID (replay protection). [→](#h-day0-recovery) |
+| 48 | Day0 recovery | 🔜 | P2 | S | 46 | 20 | blocked | **Compatibility-property validation** — device checks compat before applying a replayed response. [→](#h-day0-recovery) |
+| 50 | Delta and handlers | 🔜 | P2 | L | 49 | 21 | ~10/9 | **Delta / differential updates** — `relatedFiles` + delta download handler; depends on registry. [→](#i-delta-and-handlers) |
+| 58 | Testing and conformance | 🔜 | P2 | L | — | 22 | ~10/9 | **Software updates conformance suite** — host-only `az_iot_su_conformance`, all states + multi-step. [→](#k-testing-and-conformance) |
+| 60 | Advanced update model | 🔜 | P2 | M | — | 23 | ~10/9 | **Reference steps** — `type: reference` + detached child manifest: fetch, verify, recurse. [→](#l-advanced-update-model) |
+| 61 | Advanced update model | 🔜 | P2 | L | 60 | 24 | ~10/9 | **Proxy / nested updates** — parent agent orchestrates leaf/component updates (gateway→leaf). [→](#l-advanced-update-model) |
+| 62 | Advanced update model | 🔜 | P2 | L | — | 25 | ~10/9 | **Component-level targeting** — component enumerator hook + `selectedComponents` matching. [→](#l-advanced-update-model) |
+| 63 | Advanced update model | 🔜 | P2 | S | — | 26 | ~10/9 | **`mimeType` handling** — parse + surface file `mimeType` to handlers. [→](#l-advanced-update-model) |
+| 64 | Agent services | 🔜 | P2 | M | — | 27 | ~10/9 | **Diagnostics / log-upload** — respond to a diagnostics request; collect + upload logs to the given SAS URL via an upload hook. [→](#m-agent-services) |
+| 65 | Agent services | 🔜 | P2 | L | — | 28 | ~10/9 | **`adu-shell` / privilege separation** — reference POSIX setuid broker so root-needing steps run out-of-process; inert on single-privilege targets. [→](#m-agent-services) |
+| 66 | Core update workflow | 🟡 | P1 | M | — | — | ~ | **Property/workflow freshness** — property revisions and stale-response handling, terminal-report ordering, and promotion of the applied ID into later checks remain follow-up work. [→](#remaining-device-properties-follow-ups) |
+| 14 | Core update workflow | 🟡 | P2 | S | — | — | blocked | **Cancellation** — cooperative flag still honored at phase boundaries, but software updates has no input that sets it; a new `workflowId` replaces instead. [→](#b-core-update-workflow) |
+
+### Priority & sequencing
+
+Everything is committed (per [Scope and philosophy](#scope-and-philosophy-the-software-updates-reference-implementation)); the tiers below are about **ordering**, not scope.
+
+- **Tier 0 — the cut (blocks everything):** extract `su_core` + the `az_iot_su_channel` vtable and
+  delete the twin channel, its public API and its wire-shape tests.
+- **Tier 1 — embedded-critical core (ship first):** software updates transport (G), adapters (E/F), Day0 (H),
+  library mode (J), the step-handler registry with built-in handlers and dynamic loading (I),
+  testing (K).
+- **Tier 2 — reference-completeness (coming soon):** delta (I), Delivery Optimization, reference steps, proxy/nested, component targeting, `mimeType`, diagnostics/log-upload, `adu-shell`, Root Key Package rotation (D).
+
+```mermaid
+flowchart LR
+    A["Engine code from v1 ✅<br/>(audited, transport-welded)"] --> B["Extract su_core<br/>+ az_iot_su_channel"]
+    B --> C["Delete the twin channel<br/>(Device Update for IoT Hub cut)"]
+    C --> D["Software updates DPS channel<br/>fetch · report · ETags · auth"]
+    D --> E["Bootstrap + operational orchestration"]
+    E --> F["Adapters + health-check"]
+    F --> G["Day0 + library mode"]
+    G --> H["Conformance + E2E"]
+    H --> I["Tier 2: reference-completeness"]
+```
+
+> **Deleting the twin channel is not a rider on the software updates work.** `su_core` must be extractable
+> and testable against a fake channel *before* the DPS channel exists, so Tier 0 lands on its own
+> and the software updates unit suite keeps passing across the break.
+
+---
+
+# Feature Manual (design detail per category)
+
+## Feasibility of the 9/28 / 10/9 targets
+
+**Measured velocity.** Three matrix rows reached ✅ between the 9/17 and 9/23 refreshes.
+software-updates-touching merges ran 2, 11, 9, 11 per week over the last four weeks, but most are
+fixes and review follow-ups rather than new rows. **Call it 3–4 rows per week.**
+
+**Thirty rows remain.** At that rate the backlog is roughly **nine weeks**, and that is
+optimistic: the rows completed so far were the small ones. The remaining tail holds Delta
+updates, proxy/nested updates, Library mode and the conformance suite, all sized L.
+
+**P0 by 9/28 (Sat 9/26 to Mon 9/28: one working day plus a weekend) — fixed, and not achievable at measured pace
+without changes to how the work is done.** P0 is five rows: 29, 38, 56, 59 and library mode
+(54). That is three M and two S rows, roughly 1.5–2 weeks of work at 3–4 rows per week. The
+dates hold only if:
+
+- **The work runs in parallel.** 56, 29→38 and 54 are independent chains; each needs its own
+  owner from 9/26.
+- **Each row ships its minimum.** 54: verify+parse API reusing the trust code. Hardening and
+  extras become follow-up rows.
+- **Review turnaround is same-day.** Each chain has one to two PRs; a day's review latency
+  moves the date.
+- **Row 59's gate clears by 9/28.** Otherwise it cannot finish by 9/28 whatever the effort.
+
+**Everything else by 10/9 (9/29–10/9, nine working days) — not feasible.** Twenty rows in
+nine working days needs roughly 11 rows per week, about three times the measured rate. Nothing in the recent record
+supports it.
+
+**These rows are gated outside this repository.** Rows 14, 33 and 46–48 stay `blocked`; row 59
+is dated 9/28 on the condition above:
+
+| # | Row | Gate |
+|--:|---|---|
+| 14 | Cancellation | No software updates service input sets the flag. The local API is ours; the trigger is not. |
+| 33 | ESP32 sample port | Needs the ESP-IDF toolchain to build or run. |
+| 46–48 | Day0 recovery | The recovery protocol is not yet defined. |
+| 59 | E2E vs real service | The test environment rejects every device-update fetch; needs an access grant. |
+
+Marking these `blocked` rather than giving them a date is deliberate. A date on a row
+nobody here can start is a number, not a plan.
+
+**Custom step handling right after (P1, 9/29–10/2):** handler registry (49) by 9/30, then
+built-in handlers (51) by 10/1 and dynamic loading (52) by 10/2, both on 49. Each ships its
+minimum: 49 a static name→function registry, 51 thin reference handlers on it, 52 a
+build-gated loader over 49. Three M rows in four days is still above measured pace.
+
+**What a realistic 10/9 looks like:** the five P0 rows, 49, 51 and 52, plus root key package
+download (42). That is nine rows in two weeks, above the measured pace; the other rows dated
+10/9 or `~10/9` will slip.
+
+---
+
+## A. Foundation
+
+- **Connection state + error propagation (✅, Phase 0).** Shared observer registry
+  (public + internal registration, two-pass dispatch, compile-time capacity),
+  rich `az_iot_connection_state_event` fields (`az_iot_conn_reason` /
+  `az_iot_error_source`), lifecycle guards (`DEINITIALIZING`, re-init poison
+  guard, `AZ_IOT_ERR_DETACHED`). Detail:
+  [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md).
+- **Twin multi-subscriber (Phase 1).** The `az_iot_twin_client` desired-property subscriber
+  registry stays — it is a twin-client feature with other consumers. **Software updates stops being one of
+  its subscribers** when the twin channel is cut. What survives on the software updates side is the client
+  struct / `do_work()` pump and the device-properties cache, which move into `su_core` (the
+  cache being re-shaped as `agentInfo`).
+
+## B. Core update workflow
+
+All ✅ and audited against `c/src/features/su/`. The engine advances one phase per
+`do_work()`. The phases are transport-independent and survive the cut; only how a manifest
+**arrives** and how a result **leaves** changes (twin properties → channel vtable).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> ManifestReceived: updateMetadata in a fetch response
+    ManifestReceived --> VerifyingManifest
+    VerifyingManifest --> Idle: already installed / not applicable (report SKIPPED)
+    VerifyingManifest --> DownloadStarted: applicable
+    DownloadStarted --> DownloadComplete
+    DownloadComplete --> BackupStarted
+    BackupStarted --> BackupComplete
+    BackupComplete --> InstallStarted
+    InstallStarted --> InstallComplete
+    InstallComplete --> ApplyStarted: reboot? persist + resume()
+    ApplyStarted --> Idle: next step / done (report outcome)
+    DownloadStarted --> RestoreStarted: failure
+    InstallStarted --> RestoreStarted: failure
+    ApplyStarted --> RestoreStarted: failure
+    RestoreStarted --> Idle: Failed
+```
+
+- **Manifest v5 parsing** — v5 is what the service emits today; older versions can be added
+  here if a deployment ever needs them (not refused on scope grounds).
+- **Agent state / device properties / re-reporting (❌→✅ re-shaped)** — the twin `0/6/255`
+  agent state, the `deviceProperties` object, the startup/reconnect re-report and the initial
+  twin GET are all **cut**. Software updates has no subscription and no unsolicited offer: the device sends
+  `agentInfo` on every fetch — plus `installedUpdateId` on the regular route only, since an
+  onboarding device has nothing installed — and a structured `installResult` on
+  `reportUpdateStatus`. The device-properties cache survives as the `agentInfo` cache.
+- **Device-properties validation and ownership** — the managed client and fetch codec
+  enforce the specified **1-5 compatibility KVPs**. Manufacturer/model each consume
+  a slot when supplied; custom keys are otherwise opaque. Keys must be nonempty and
+  unique, and values must be non-NULL (empty strings are allowed). `agentProfile`
+  is a separate field and does not consume a compatibility slot.
+  The installed ID is absent or a complete nonempty provider/name/version triple.
+  Replacement is atomic: invalid input, a short caller cache, or channel serialization
+  failure leaves the previous engine/channel properties and pending request untouched.
+  Caller storage holds only copied strings and needs no special alignment; typed
+  descriptors live in the client. `az_iot_su_device_properties_buffer_size()` gives the
+  exact string-storage requirement, or zero for invalid/unsupported properties.
+  Managed snapshots are bounded to 256 bytes of compatibility strings (custom names
+  and every terminator included) plus 192 bytes of installed-ID strings; the channel
+  separately checks the escaped request against its body capacity, without cached ETags;
+  a request that cached ETags would overflow is sent without them.
+  These inherited byte budgets are SDK capacities, not service limits. Configurable
+  or caller-sized capacity is deferred to a separate team design discussion.
+  The unused managed legacy serialized-ID cache is removed. The standalone report
+  builder retains its legacy wire/count contract but correctly escapes installed IDs.
+  Initialization/replacement uses transient stack scratch: bounded property snapshots
+  (several KiB in total, ABI/compiler dependent) and a 64-byte sizing buffer; the
+  2048-byte channel body lives in the channel state. Include this in embedded
+  task-stack sizing; it is not hidden heap allocation.
+  **Scope:** this is cache correctness and software updates reporting cleanup, not a new polling
+  or orchestration feature. The application already chooses route and timing via
+  `az_iot_su_client_request_onboarding_update()` / `az_iot_su_client_request_update()`
+  (#195); service-directed `retry-after` deferral and retrying synchronously refused
+  status reports are already implemented (#197). The property setter does not
+  schedule a fetch or select a route.
+- **Accept / reject (❌→🔜 re-shaped)** — the twin 200/406 acknowledgement is cut. The
+  `is_installed_fn` decision stays in `su_core`; an already-installed or non-applicable update
+  becomes a `SKIPPED` outcome in the report rather than a wire-level rejection. *Caveat:* still
+  no app-level `accept_deployment_fn` veto hook (e.g. battery / critical-op deferral) — a
+  candidate add, now more useful because the device controls the poll.
+- **Multi-step / per-step results** — sequential per-step loop; `step_results[]` with a
+  4-bit facility + raw-code `extendedResultCode` for field debugging. The engine exposes the
+  accumulated entries through `az_iot_su_report.step_results` and `step_results_count`, in
+  manifest-step order on terminal reports; in-progress reports omit the map. These are borrowed views valid only
+  during the internal channel's report call; a retaining channel must copy the entries and
+  their `result_details` span contents. Existing per-step codes are preserved without conversion.
+  Software updates serialization ships: terminal reports write `stepResults` as a map keyed by step, each
+  entry carrying `outcome`, `failureOrigin`, `resultCode` and a comma-separated hex
+  `extendedResultCodes`, plus `resultDetails` when the step supplied any.
+- **Replacement vs. duplicate (✅)** — keyed on **`workflowId` alone**, as software updates defines it: a
+  new id restarts the workflow, the same id is ignored whatever the manifest bytes. The
+  `retryTimestamp` input is gone.
+- **Cancellation (🟡)** — the cooperative flag and `az_iot_su_is_cancelled()` stay, but no
+  Software updates input sets the flag and no local cancel API exists yet; a superseding `workflowId`
+  restarts the workflow instead. Core never force-interrupts a hook.
+- **Application notification (✅)** — `az_iot_su_client_add_observer()` /
+  `remove_observer()`, matching the connection client's registry. Two event kinds:
+  `WORKFLOW_STATE_CHANGED` carries the `az_iot_su_state`, replacing a polled
+  `get_state()`; `OPERATION_ABANDONED` carries the operation and the reason, and is the
+  only way an application learns the client has stopped trying. Both fetch entry points
+  take a `timeout_ms` that bounds the wait, so a request that can never be served ends in
+  `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT` instead of being retried for the life of
+  the client.
+
+### Remaining device-properties follow-ups
+
+The cache and serializer work does not need another route-selection implementation:
+the application chooses the route and timing using the existing request APIs.
+Explicit request coalescing, route-preserving retries, and service `retry-after`
+handling should be reused rather than rebuilt. Remaining work is narrower:
+
+1. **Property freshness and API contract.** Invalidate agent-info freshness when
+   properties change and prevent an outstanding response for an older property
+   snapshot from restoring stale ETags or delivering an outdated offer. Keep checks
+   explicitly application-requested; automatic setter-triggered polling is not
+   included. Documentation must distinguish cache acceptance from service delivery.
+2. **Workflow reporting and current installed identity.** Terminal results now
+   survive the return to Idle; order them against later workflow activity, and
+   propagate the successfully applied ID into the cached identity for subsequent
+   checks. Reuse the existing refused-report retry; it currently rebuilds from live
+   state rather than retaining a terminal snapshot. Reboot-durable reporting remains
+   a separate persistence concern.
+3. **Managed end-to-end evidence.** Test property replacement plus an explicit public
+   request through the managed client and shipping channel, then verify operational
+   convergence using a supported live-service fixture. Actual offered workflows also
+   need the remaining software updates offer-to-engine normalization; channel-only tests do not
+   prove that path.
+
+## C. Download and integrity
+
+- **Download / chunked** — core resolves each file's URL from the request `fileUrls`
+  map and drives `download_fn`, which may return `IN_PROGRESS` to stay non-blocking.
+- **SHA-256 (opt-in)** — streaming via incremental `sha256_*` hooks + `read_file_fn`,
+  constant-time compare. *Caveat:* if those hooks are absent, core **skips** the hash and
+  the platform owns integrity — document this clearly for integrators.
+- *No mid-download resume (yet)* — a partially fetched file is re-downloaded after a reboot;
+  byte-range resume is a candidate add (not refused, just unscheduled).
+- **Delivery Optimization / peer cache (🔜).** Offload payload download to a
+  peer-to-peer / CDN-cache provider (e.g. a Delivery-Optimization / Connected-Cache agent)
+  behind the same download seam as `download_fn`, selected as an optional **download
+  provider**. *Caveat:* the provider is heavy for constrained targets, so it is **default-off
+  with a direct-HTTPS fallback** — but it is implemented so non-embedded integrators have the
+  reference. Verification/hashing is unchanged (runs on the assembled bytes).
+
+## D. Security and trust
+
+- **JWS / two-level chain / RS256 / revocation (✅)** — `verify_manifest()` runs the full
+  root-key → SJWK → manifest chain, enforces `alg == RS256` on both headers, binds
+  SHA-256(manifest) to the deployment, and rejects `disabled` roots by `kid`. Failure ⇒
+  `Failed` with facility `0x1`. This is the crown-jewel code, it is **transport-free already**,
+  and the cut must move it into `su_core` **verbatim** — no rewrite, no behavioural change.
+- **HSM / PKCS#11 (⚙️)** — verification uses only public keys via `verify_rs256_fn`, so an
+  HSM backend is a drop-in hook; none ships.
+- **Root Key Package runtime rotation (🔜).** Fetch, persist and apply a root-key package with
+  N-of-M threshold-signature continuity, to rotate roots without a firmware update. Under
+  Software updates the package URL is **`serviceConfiguration.rootKeyDownloadUrl`**, returned inline by the
+  same fetch that carries the update — the Device Update for IoT Hub unsigned twin property `rootKeyPackageUrl`
+  is cut. Keys from the package are **never** trusted directly; only the compiled-in anchors
+  vouch for them. *Caveat:* needs its own design pass; **not** the Day0 mechanism (Day0 keeps
+  roots fixed). Today roots rotate via firmware. Work items: [TODO.md](../TODO.md).
+- **Account scoping (🔜, deferred).** `accountId`-in-signature binding (manifest-signature-v2)
+  is deferred past Ignite '26 — the device verifies provenance-from-Device-Update but not account scoping.
+  Base signature validation stays **required** on every path.
+
+## E. Install, apply, recovery
+
+- **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
+  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**; v2 still
+  read) carrying `retryTimestamp` and a manifest CRC (kept for format compatibility, unused
+  for duplicate detection), the overall result, each step's result, and the download URLs
+  so a resume before the last step can fetch later steps' files; `resume()` re-enters at the
+  persisted phase boundary (`INSTALL_COMPLETE` → Apply). A failed checkpoint write holds
+  Apply and is retried; the blob is cleared (zero-length write) once the workflow returns to
+  Idle or is superseded. *Caveats:* the only persist point today is the install-requested
+  reboot; post-reboot rollback assumes the platform retained per-step backups across the
+  reboot.
+- **Persistence must grow for software updates (🔜).** software updates makes reporting a **durable write**, so the
+  blob gains a **blob v4**: the unsent `reportUpdateStatus` payload (keyed by
+  `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
+  device that reboots mid-install still reports its result afterwards and does not resend a full
+  `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
+- **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
+  A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
+  resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback
+  path when confirmation fails.
+
+## F. Platform and crypto adapters
+
+- **`crypto_openssl` (✅)**, **`crypto_mbedtls` (✅)** and the **ESP32 platform adapter (✅)**
+  are factored under `adapters/su/`. Crypto adapters are transport-free and were
+  **unaffected by the cut**.
+- **To do:** the **Linux** adapter (🔜 — libcurl chunked/streaming-hash download, configurable
+  install command, file-based persistence). *Caveat:* the PC sample's download/install hooks are
+  still **simulated** and live in the sample, so there is no real Linux install/apply reference
+  under `adapters/`.
+- **The PC sample is current** (`samples/su/pc`): it provisions through DPS, asks for an
+  onboarding update explicitly, and follows the workflow through the software updates observer rather
+  than polling. It runs on a device with no IoT Hub via `dps.provision_only`.
+- **The ESP32 sample is ported but unverified (🟡).** `samples/su/esp32` passes the connection
+  client to `az_iot_su_client_initialize()` and asks for an onboarding update, like the PC
+  sample. It is not part of the CMake build (it needs the ESP-IDF toolchain) and has not been
+  built or run on a device since the port. Its platform hooks live in `adapters/su/esp32/`.
+
+## G. Software updates transport (via the DPS gateway)
+
+**This is the only software updates channel the SDK will ship.** software updates has no dedicated device-facing software updates
+endpoint. The device calls **three device-update operations on DPS** —
+`requestOnboardingUpdates`, `requestSoftwareUpdates`, `reportUpdateStatus` (spec working names:
+`GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus`) — under its own
+registration on the **existing DPS endpoint, reusing its DPS credential**; DPS is an authenticated
+**pass-through** to **ADR → Device Update** (the device never talks to Device Update). The manifest content and the
+verify → download → install → report engine are **unchanged** from Device Update for IoT Hub. Full digest, including
+the exact URL shape and which parts are measured vs. drafted:
+**[su-spec.md](su-spec.md)**; lifecycle placement:
+[connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented).
+
+```mermaid
+sequenceDiagram
+    participant Dev as Device (SDK)
+    participant DPS as DPS
+    participant SU as ADR to Device Update
+    %% Planned. Today the application asks for each check; the SDK runs no loop.
+    loop planned: until "no update"
+      Dev->>DPS: requestOnboardingUpdates (agentInfo; no installedUpdateId)
+      DPS->>SU: proxy (externalDeviceId)
+      SU-->>DPS: serviceConfiguration [+ updateMetadata]
+      DPS-->>Dev: 200 (no updateMetadata = no update)
+      alt update available
+        Dev->>Dev: verify sig, download fileUrls, install (shared engine)
+        Dev->>DPS: reportUpdateStatus (workflowId, result)
+        DPS-->>Dev: 200
+      end
+    end
+    Dev->>DPS: Register (unchanged)
+    DPS-->>Dev: IoT Hub assignment
+```
+
+**Chosen architecture — `su_core` + one channel:** extract the protocol-free engine
+(verify/download/install/apply/backup/restore + resume + step results) and drive it through an
+`az_iot_su_channel` vtable. The engine takes a manifest **string** and returns a **structured**
+report; the channel serializes it to the wire. The **twin wrapper is not built — it is deleted**;
+the vtable exists so `su_core` never names a transport (and so the engine is testable against a
+fake channel), not to keep two generations alive.
+
+```mermaid
+flowchart TB
+    ENG["su_core<br/>verify → download → install → apply → resume<br/>step results · persistence"]
+    DP["Software updates channel<br/>request(Onboarding|Software)Updates / reportUpdateStatus<br/>over the device's DPS connection"] --> ENG
+    FK["test fake channel"] --> ENG
+    TW["v1 twin wrapper — cut"]:::cut -.->|removed| ENG
+    ENG --> CR["crypto hooks<br/>RS256 · SHA-256"]
+    ENG --> PL["platform hooks<br/>download/install/apply/backup/restore/persist"]
+    classDef cut stroke-dasharray: 4 4,color:#888;
+```
+
+Work items, in the order they were taken. Shipped (✅): **`su_core` + channel extraction and
+twin-channel deletion** → **DPS update-check binding** (`GetDeviceUpdate` /
+`GetOnboardingDeviceUpdate`) → **reuse DPS device auth** (X.509) → **ETag/api-version +
+agent-info resend** → **advisory + load contracts** → **channel observes scoped connection
+state**. Partial (🟡): **`ReportDeviceUpdateStatus`** (not durable across a reboot),
+**bootstrap orchestration** (requests are bounded, but there is no re-check loop),
+**operational polling loop** (no SDK-owned cadence). Not started (🔜): **root key package
+download**. The per-row detail is in the matrix above.
+
+*Key points / caveats:*
+- **Reuse DPS auth & transport** (X.509 over HTTP/MQTT for Ignite) — no Device Update endpoint, no mTLS to software updates,
+  no software updates credentials; identity headers (`x-ms-external-device-id`, `x-ms-device-id`) are
+  **gateway-populated**, so the client sets none.
+- **Device selects onboarding vs regular** by which endpoint it calls (DPS doesn't infer/validate).
+- **Advisory:** a failed update check MUST NOT block `Register`, and the **device is the sole
+  retrier**. `Retry-After` arrives as a response-topic query parameter (measured, e.g.
+  `&retry-after=3`) — MQTT carries no headers — and the channel defers every publish until it
+  elapses. `ReportDeviceUpdateStatus` is idempotent on `workflowId`, but the SDK's retry is
+  in-memory only — see the persistence note above.
+- **The agent owns the cadence.** There is no subscription and no offer to lose, so a reconnect
+  replays no software updates state — that is precisely what the twin channel required and what the cut removes.
+- **The gateway is a channel parameter, not a constant.** DPS fronts bootstrap **and** the interim
+  operational path for Ignite '26; the operational path moves to IoT Hub afterwards with **no
+  device-contract change**. The channel must not hard-code DPS in its request shapes.
+- **Config is inline** in the fetch response (`serviceConfiguration` + ETags) — there is **no separate
+  `syncConfiguration` call** anymore.
+- **Report shape** matches Gen1's structured result (`outcome`/`failureOrigin`, hex `extendedResultCodes`,
+  `stepResults` map) — the engine emits structured data and the channel serializes it.
+- **Contract is DRAFT** (api-version `2026-11-02-preview`); DPS re-syncs on software updates revs — see
+  [Manual / external actions](#manual--external-actions).
+
+## H. Day0 recovery
+
+A device too stale to reach DPS/Hub/software updates recovers via a separate **unauthenticated,
+plain-HTTP** endpoint. *No new crypto:* trust rests on the existing signed-manifest +
+provisioned-root-key model, so signature verification MUST NOT be skipped on this path.
+Adds a **transport + two validation checks**: (1) **account-ID binding** — validate the
+signed manifest's Device Update account ID against one stamped at manufacturing (replay protection);
+(2) **compatibility-property validation** before applying. *Caveat:* Day0 is **out of scope of the
+DPS first-time-update work** and its wire contract is **not yet defined** — provisional until protocol
+owners confirm. The account-ID binding here is the same **manifest-signature-v2** binding that is
+**deferred for Ignite** (base signature validation stays required).
+
+## I. Delta and handlers
+
+Field/customer demand exists for **delta / differential updates** (ship only the diff
+between image versions and reconstruct on-device). Software updates stays **content-agnostic**: the diff
+is a `relatedFiles` entry processed by a swappable **download handler**, selected by name —
+*not* baked into the state machine.
+
+- **Static step/download-handler registry (🔜).** A small C99 name→function map
+  ("filter") passed to the engine/sample so integrators register handlers (static,
+  in-process). This is the SDK-friendly equivalent of the reference agent's extension model.
+- **Delta / differential updates (🔜).** Parse `relatedFiles`, resolve the delta file,
+  and route it to the registered handler (e.g. a delta reconstruct step) before install;
+  fall back to full download when the prior version is absent. Depends on the registry.
+- **Per-handler-type built-in handlers (🔜).** Ship reference handlers for the common
+  types (`microsoft/apt`, `microsoft/script`, `microsoft/swupdate`) as optional modules that
+  register into the handler registry and map the manifest `handler` string + step files to a
+  concrete install action — turnkey parity with the reference agent on capable platforms.
+- **Dynamic `ContentHandler` plugin loading (🔜).** An **optional** runtime registrar
+  (`dlopen` / `LoadLibrary`) layered over the static registry, matching the reference agent's
+  `--register-extension` model so handlers can be added without recompiling. *Caveat:* dynamic
+  loading is unavailable/undesirable on many embedded targets, so it is a **build-gated
+  provider** and the static registry stays the portable default — but it is implemented so the
+  non-embedded reference is complete. The manifest `handler` string is always parsed and passed
+  to hooks, so static in-process dispatch remains available with zero loader.
+
+## J. Library and agent-core mode
+
+Beyond the turnkey client, the SDK should be usable as the **vetted core** others build a
+full agent on. Provide a way to **validate + parse a manifest**, then let the consumer pick:
+
+- **Turnkey (✅):** the SDK drives the whole workflow (today's client).
+- **Library mode (🔜):** hand back a **filled, already-verified** manifest struct; the
+  consumer drives download/install/apply/report on their own state machine, threading and
+  extension model. Reuses the same trust code so nobody re-implements JWS/RS256/SHA-256.
+  Detail: [su-client-design.md](su-client-design.md) Part C.
+
+## K. Testing and conformance
+
+Per the phase plan, **L1 unit tests land with each feature** (state machine in Phase 1,
+crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in Phase 5).
+
+- **Unit tests (✅, partly ❌)** — cmocka state-machine coverage in `tests/unit/su_client_test.c`.
+  The cases that assert **engine behaviour** (multi-step ordering, rollback, hash mismatch,
+  cancel-during-download, resume) are kept and re-pointed at `su_core` + a **fake channel**;
+  the cases that assert **twin wire shapes** (desired-property deployment, reported agent state,
+  the 200/406 acknowledgement, `retryTimestamp` redelivery) go with the cut and are replaced by
+  software-updates-shaped equivalents. Migrating this suite is part of Tier 0, not follow-up work.
+- **Crypto vector tests (🟡)** — known-good/bad RS256 + SHA-256 vectors; prove hooks
+  are primitive-only. Unaffected by the cut.
+- **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
+- **Conformance suite (🔜)** — reusable host-only `az_iot_su_conformance` over all
+  protocol states + single/multi-step manifests, written against the **Software updates** contract.
+- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`) runs four
+  DPS-channel scenarios and does not exercise the workflow engine
+  ([end-to-end-tests.md](end-to-end-tests.md)). The five twin-driven scenarios
+  (`tests/e2e_su_twin_test.c`) are retired and not built; an offered-update scenario is still
+  needed. Its device fixture and mocked crypto/payload hooks carry over.
+
+## L. Advanced update model
+
+Full reference parity with the software update model. Each is 🔜 (implemented so non-embedded
+integrators have the complete reference); on a single-image embedded device several are inert
+at runtime, which is a **caveat, not an exclusion**.
+
+- **Reference steps (🔜).** Parse `type: reference` steps that point to a **detached
+  child manifest** (by file id): fetch it, verify its signature with the same trust chain, and
+  recurse into it. Prerequisite for proxy/nested updates.
+- **Proxy / nested updates (🔜).** A parent/gateway agent receives a bundle and
+  orchestrates updates for **leaf** devices/components (the IoT-Edge parent→leaf topology),
+  built on reference steps + component enumeration. *Caveat:* inert on a standalone device.
+- **Component-level targeting (🔜).** A **component-enumerator hook** lets a device
+  enumerate its updatable components; the engine matches `selectedComponents` / per-component
+  compatibility and iterates the workflow per selected component.
+- **`mimeType` handling (🔜).** Parse and surface the file `mimeType` to handlers for
+  dispatch/validation (currently skipped by the parser).
+
+## M. Agent services
+
+Agent-level services from the reference agent, provided so the reference is complete; both are 🔜.
+
+- **Diagnostics / log-upload (🔜).** Respond to a diagnostics/log-upload request:
+  collect the configured logs and upload them to the service-provided (SAS) storage URL via an
+  **upload hook**. Independent of the update workflow.
+- **`adu-shell` / privilege separation (🔜).** A reference **POSIX setuid broker** so
+  install/apply steps that need root run out-of-process while the SDK core stays unprivileged
+  and calls the broker through a hook. *Caveat:* irrelevant on single-privilege RTOS targets
+  (the core simply calls the hook directly); this is a POSIX reference, not a core requirement.
+
+---
+
+## Manual / external actions
+
+Not code — things I (or the team) must do out-of-band:
+
+- **Announce the Device Update for IoT Hub removal.** The twin-based software updates API is going away without a deprecation
+  window; confirm no consumer is depending on it, and land the removal in a release whose notes
+  call the header break out explicitly.
+- **Track the DPS device-update contract** (api-version `2026-11-02-preview`, **confirmed deployed**)
+  — the on-the-wire operation names and the request/response shapes are now measured against a live
+  environment, but per-transport payload caps, throttle/`Retry-After` values and the agent-info /
+  service-config ETag resend semantics are still settling (DRAFT). See
+  [su-spec.md](su-spec.md), which separates what is measured from what is drafted.
+- **Confirm auth/transport phasing** — the design phases X.509 first, then symmetric key, TPM and AMQP.
+  Measured today: **SAS from the DPS enrollment-group symmetric key over HTTPS** works on this path;
+  X.509 on it is not yet confirmed, and no MQTT binding for the three operations has been observed.
+  Identity headers stay DPS-gateway-populated (the client sets none).
+- **Use the reference ADR → Device Update cloud demo to stand up DPS + ADR + Device Update** rather than building an
+  environment by hand. Point its config at your own resource group, namespace and update instance; it
+  provisions a working environment to test against. *(Location and access details are kept in local
+  notes, not in this repo.)*
+- **`accountId`-in-signature binding (manifest-sig-v2) is deferred for Ignite** — base manifest signature
+  validation stays required; plan the account binding post-Ignite.
+- **Get visibility into upcoming manifest schema changes** to validate forward-compatibility.
+
+## Assumptions
+
+- `✅` items are **audited against `c/src/features/su/`**, not just intent — but they are audited
+  as *engine* code; none of them is reachable end-to-end until the software updates channel exists.
+- The cut assumes **no external consumer of the twin-based software updates API** needs a migration window.
+- Software updates items assume the **DPS device-update contract** (api-version `2026-11-02-preview`, **DRAFT**) stays
+  stable on the points this SDK depends on; DPS re-syncs on software updates revs and open items are tracked under
+  *Manual actions*. See [su-spec.md](su-spec.md).
+
+## References
+
+- [su-spec.md](su-spec.md) — **Software updates device contract** + diagrams (request/response shapes,
+  error codes, trust model).
+- [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) — decision of record
+  for the cut, and where the bootstrap/operational checks sit in the connection lifecycle.
+- [client-separation.md §8](client-separation.md#8-device-update) — where the `su_core` /
+  `az_iot_su_channel` seam lands relative to the client split.
+- [su-client-design.md](su-client-design.md) — deep architecture: public API, hook/crypto
+  model, state machine, source layout, phase plan, library mode (§5.3), test strategy.
+- [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md) —
+  the Phase-0 foundation.
+- [split-client.md](split-client.md) — packaging / client-split considerations.
+- [TODO.md](../TODO.md) — root-key-package rotation work items.
+- Superseded: `su-feature-support.md` (folded into this doc).
+- [software updates/DPS Specs](https://dev.azure.com/msazure/One/_git/Azure-IoT-Hub-DeviceRegistrationService?path=/specs/002-adu-first-time-update)

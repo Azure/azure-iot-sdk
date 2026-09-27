@@ -28,7 +28,7 @@ extern "C"
 {
 #endif
 
-/* Sized for the IoT Hub service REST calls, including an ADU deployment twin
+/* Sized for the IoT Hub service REST calls, including a software updates deployment twin
  * PATCH: the request buffer holds headers (incl. the ~300 B SAS token) plus a
  * ~3 KB desired-property body; the response buffer holds a full twin GET whose
  * desired properties carry the deployment manifest plus its $metadata. */

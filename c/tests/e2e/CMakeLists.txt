@@ -16,7 +16,7 @@ include_directories(${CMAKE_SOURCE_DIR}/tests)
 # with AZ_IOT_WITH_PAHO=OFF.
 if(AZ_IOT_WITH_PAHO)
 
-# The ADUv2 device-update suite. Uses the shipping Paho adapter and X.509, so it
+# The software updates device-update suite. Uses the shipping Paho adapter and X.509, so it
 # needs no transport or credential of its own -- it exercises the SDK's real
 # auth and transport path rather than a test substitute.
 #
@@ -31,19 +31,19 @@ if(AZ_IOT_WITH_PAHO)
 # and these targets build with /WX). Excluded rather than converted to the
 # copying form, because nothing runs this suite on Windows today and the
 # copies would have to be tracked and freed for no gain.
-if(AZ_IOT_BUILD_E2E_ADU_V2 AND WIN32)
-    message(STATUS "ADUv2 e2e suite skipped on Windows.")
+if(AZ_IOT_BUILD_E2E_SU AND WIN32)
+    message(STATUS "Software updates e2e suite skipped on Windows.")
 endif()
 
-if(AZ_IOT_BUILD_E2E_ADU_V2 AND NOT WIN32)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_adu tests/e2e_adu_v2_test.c)
-    target_link_libraries(az_iot_tests_e2e_adu PRIVATE az_iot_core az_iot_adapter_paho)
+if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_su tests/e2e_su_test.c)
+    target_link_libraries(az_iot_tests_e2e_su PRIVATE az_iot_core az_iot_adapter_paho)
     # The suite asserts on the channel and the codecs, which are internal.
-    target_include_directories(az_iot_tests_e2e_adu PRIVATE
+    target_include_directories(az_iot_tests_e2e_su PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/features/adu/internal)
+        ${CMAKE_SOURCE_DIR}/src/features/su/internal)
 else()
-    message(STATUS "ADUv2 e2e suite disabled (set AZ_IOT_BUILD_E2E_ADU_V2=ON).")
+    message(STATUS "Software updates e2e suite disabled (set AZ_IOT_BUILD_E2E_SU=ON).")
 endif()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
@@ -74,29 +74,29 @@ target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az
 # ---------------------------------------------------------------------------
 # (historical description of the retired twin-driven suite)
 #
-# Device Update (ADU) e2e suite. It drives a signed deployment end-to-end
+# Software updates e2e suite. It drives a signed deployment end-to-end
 # through the device twin: the cloud PATCHes a signed manifest into desired
 # properties and the device runs the download -> install -> apply workflow
-# (crypto + platform ops mocked, as in the ADU unit test) and reports the
+# (crypto + platform ops mocked, as in the software updates unit test) and reports the
 # outcome back. Because a twin desired-property PATCH is the entire trigger, it
 # needs NO Device Update account, so it is fast. Like the fast suite it plays
 # both halves in one process, so it links the same device (Paho) + service
 # facade libraries.
 #
 # It runs in the fast PR workflow (ci-c-e2e.yml, `ctest -R e2e`, which matches
-# BOTH e2e executables) AND, as an interim placeholder, in the nightly ADU
-# workflow (ci-c-e2e-adu.yml, `ctest -R e2e_adu`, which selects only this one)
-# until the real-ADU suite -- one that provisions an actual Device Update
-# account and triggers updates through the ADU service -- lands. The `e2e` name
-# filters never match the adu_crypto_openssl unit test.
+# BOTH e2e executables) AND, as an interim placeholder, in the nightly software updates
+# workflow (ci-c-e2e-adu.yml, `ctest -R e2e_su`, which selects only this one)
+# until the real software updates suite -- one that provisions an actual Device Update
+# account and triggers updates through the software updates service -- lands. The `e2e` name
+# filters never match the su_crypto_openssl unit test.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# az_iot_tests_e2e_adu -- RETIRED WITH THE ADUv1 CUT, AWAITING THE ADUv2 REWRITE
+# tests/e2e_su_twin_test.c -- RETIRED WITH THE TWIN CHANNEL CUT (NOT BUILT)
 #
-# All five scenarios in tests/e2e_adu_test.c drove a deployment through a twin
-# desired-property PATCH. That channel no longer exists: ADU is now driven
-# through an az_iot_adu_channel, so the suite cannot compile and its trigger has
-# no equivalent until the ADUv2 channel lands.
+# All five scenarios in tests/e2e_su_twin_test.c drove a deployment through a twin
+# desired-property PATCH. That channel no longer exists: software updates is now driven
+# through an az_iot_su_channel, so the suite cannot compile and its trigger has
+# no equivalent until the software updates channel lands.
 #
 # The file is deliberately KEPT rather than deleted: its device fixture and its
 # mocked crypto/payload hooks carry over to the rewritten suite unchanged, and
@@ -106,7 +106,7 @@ target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_gen1 az
 # coverage gap between the cut and the rewrite stays visible instead of quietly
 # disappearing from the pipeline.
 #
-# Re-enable this target as part of the ADUv2 channel work.
+# Re-enable this target as part of the software updates channel work.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

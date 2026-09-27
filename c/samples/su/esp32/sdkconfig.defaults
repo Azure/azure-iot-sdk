@@ -1,0 +1,39 @@
+# ESP-IDF default configuration for the software updates ESP32-WROOM sample.
+# These are applied on a fresh `idf.py build`; tweak the rest with `idf.py menuconfig`.
+
+# --- Target -----------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# --- Custom OTA partition table (see partitions.csv) ------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- OTA / rollback ---------------------------------------------------------
+# Require the freshly-booted image to confirm itself healthy, otherwise the
+# bootloader rolls back to the previous slot on the next reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- esp-mqtt (native MQTT client used by the SDK adapter) ------------------
+CONFIG_MQTT_PROTOCOL_5=y
+CONFIG_MQTT_TRANSPORT_SSL=y
+
+# --- TLS / mbedTLS ----------------------------------------------------------
+# The Azure endpoints present 2048/4096-bit RSA chains; give the TLS handshake
+# and the software updates manifest-verification path enough RSA headroom.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# --- HTTPS OTA download -----------------------------------------------------
+CONFIG_ESP_TLS_INSECURE=n
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
+# Trust the Azure blob/IoT roots via the built-in certificate bundle
+# (esp_crt_bundle_attach) used by the OTA download and the MQTT CA fallback.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# --- Main task stack --------------------------------------------------------
+# The single-threaded SDK pump plus the TLS handshake and OTA download all run
+# on the main task; give it a generous stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288

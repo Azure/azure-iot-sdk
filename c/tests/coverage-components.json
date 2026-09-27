@@ -13,7 +13,7 @@
         "line": 65,
         "branch": 50,
         "function": 85,
-        "comment": "Feature clients not yet split: twin, direct method, c2d, file upload, adu. Measured 68.6/54.6/87.7 on unit+conformance before telemetry moved to generation libraries."
+        "comment": "Feature clients not yet split: twin, direct method, c2d, file upload, su. Measured 68.6/54.6/87.7 on unit+conformance before telemetry moved to generation libraries."
     },
     {
         "name": "gen1",
@@ -40,12 +40,12 @@
         "comment": "Shipped (AZ_IOT_WITH_PAHO default ON). Coverage comes almost entirely from the broker-gated conformance suites, not from unit tests. Measured 65.1/41.8/81.6 on unit+conformance; the lowest floors in the file because a broker outage moves this component further than any other."
     },
     {
-        "name": "adapter-adu-crypto",
-        "prefix": "adapters/adu/crypto_openssl/",
+        "name": "adapter-su-crypto",
+        "prefix": "adapters/su/crypto_openssl/",
         "line": 75,
         "branch": 40,
         "function": 95,
-        "comment": "Shipped (AZ_IOT_WITH_ADU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
+        "comment": "Shipped (AZ_IOT_WITH_SU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
     },
     {
         "name": "adapter-cert-managed",

@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Shared device-side fixture for the in-process end-to-end suites.
  *
- * Both e2e executables (the fast scenario suite and the ADU suite) need the same
+ * Both e2e executables (the fast scenario suite and the software updates suite) need the same
  * "device half": load the DPS/X.509 configuration from the environment, provision
  * via a DPS X.509 individual enrollment, and connect to the assigned IoT Hub over
  * the Paho MQTT adapter. This module owns that boilerplate so each suite only adds

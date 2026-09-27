@@ -123,7 +123,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Split into `az_iot_gen1_twin_client` / `az_iot_gen2_twin_client`; gen2 binds its inbound
       topics at connect instead of resolving the device id inside `init()`
 - [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
-      consumer (ADU) was re-layered off the twin channel
+      consumer (software updates) was re-layered off the twin channel
 - [x] gen2: desired deliveries carry the version and a PATCH/SNAPSHOT kind; the client fetches a
       snapshot whenever the version sequence shows the device behind.
 
@@ -151,10 +151,10 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 
 ---
 
-## ADU: Root Key Package Runtime Rotation (Option B — deferred)
+## Software updates: Root Key Package Runtime Rotation (Option B — deferred)
 
 **Status:** Not started. Option A (compiled-in Microsoft production root keys via
-`az_iot_adu_microsoft_root_keys()`, defined in `src/features/adu/adu_root_keys_microsoft.c`)
+`az_iot_su_microsoft_root_keys()`, defined in `src/features/su/su_root_keys_microsoft.c`)
 ships now and anchors trust for every Microsoft-signed update manifest out of the box.
 
 Option B adds *rotation* on top of those immutable anchors. The hardcoded keys are
@@ -164,10 +164,10 @@ package is referenced by an **unprotected (unsigned)** URL — keys from it must
 trusted directly; they are only trusted because the compiled-in anchor keys vouch for
 them. Skipping anchor validation would be a remote-code-execution backdoor.
 
-**Where the URL comes from:** ADUv1 carried it as the top-level twin property
-`rootKeyPackageUrl`. That channel is cut; under ADUv2 it arrives as
+**Where the URL comes from:** Device Update for IoT Hub carried it as the top-level twin property
+`rootKeyPackageUrl`. That channel is cut; under software updates it arrives as
 `serviceConfiguration.rootKeyDownloadUrl` in the update-check response
-(see [eng/aduv2-spec.md](eng/aduv2-spec.md)). Either way it is unsigned input.
+(see [eng/su-spec.md](eng/su-spec.md)). Either way it is unsigned input.
 
 Work items:
 - [ ] Surface `serviceConfiguration.rootKeyDownloadUrl` from the update-check response to the app.
@@ -180,14 +180,14 @@ Work items:
 - [ ] Enforce threshold/continuity rules (a rotation must remain verifiable by the
       currently trusted set; reject downgrade/replay).
 - [ ] Apply the validated package to the in-memory root key store (respecting
-      `AZ_IOT_ADU_MAX_ROOT_KEYS`), honoring disabled/revoked entries.
+      `AZ_IOT_SU_MAX_ROOT_KEYS`), honoring disabled/revoked entries.
 - [ ] Unit tests: valid package applies; package with too-few valid signatures rejected;
       package signed by an untrusted/disabled key rejected; downgrade/replay rejected.
-- [ ] Update `docs/eng/adu-client-plan.md` (§ "Root Key Package runtime rotation",
+- [ ] Update `docs/eng/su-client-plan.md` (§ "Root Key Package runtime rotation",
       currently 🔜 Deferred) once implemented.
 
-**Dependencies:** Option A anchor keys (done). Needs the ADUv2 channel for the package URL.
-Distinct from ADUv2 Day-0 recovery.
+**Dependencies:** Option A anchor keys (done). Needs the software updates channel for the package URL.
+Distinct from software updates Day-0 recovery.
 
 ---
 

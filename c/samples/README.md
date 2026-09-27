@@ -10,7 +10,7 @@
 | [unified/](unified/) | Classic (gen1, MQTT v3.1.1) **or** AEG (gen2, MQTT v5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
 | [gen2/](gen2/) | AEG only | The device is known to be on an AEG hub. |
 | [authentication/](authentication/) | Either generation | Certificate providers, CSR enrollment, non-extractable keys. See its [README](authentication/README.md). |
-| [adu/](adu/) | Either generation | Device Update agent. See [adu/pc](adu/pc/README.md). |
+| [su/](su/) | Either generation | Software updates agent. See [su/pc](su/pc/README.md). |
 | [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
 
 There is no Classic-only group: the unified samples cover Classic hubs. The one
@@ -55,7 +55,7 @@ first.
 - Device certificate, private key and trusted CA as PEM files.
 
 Device setup is done with scripts, not with a sample program.
-[common/scripts](common/scripts/) holds the scripts for the ADU sample.
+[common/scripts](common/scripts/) holds the scripts for the software updates sample.
 
 ## Configuration
 
@@ -110,4 +110,4 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [gen2/direct_method_slow_responder](gen2/direct_method_slow_responder/) | Deferred direct-method answers on AEG. |
 | [gen2/c2d_receiver](gen2/c2d_receiver/) | Cloud-to-device messages on AEG. |
 | [authentication](authentication/) | Certificate providers, CSR enrollment, operational certificates, key custody. |
-| [adu](adu/) | Device Update agent: manifest verify, download, install, report. |
+| [su](su/) | Software updates agent: manifest verify, download, install, report. |

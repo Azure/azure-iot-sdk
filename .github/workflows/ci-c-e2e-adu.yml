@@ -5,9 +5,9 @@
 #
 # PARKED -- AWAITING THE ADUv2 e2e SUITE
 # --------------------------------------
-# The suite this workflow ran (az_iot_tests_e2e_adu) drove a deployment through a
+# The suite this workflow ran (az_iot_tests_e2e_su) drove a deployment through a
 # twin desired-property PATCH. That delivery channel has been removed: ADU is now
-# driven through an az_iot_adu_channel, so the target no longer builds and the
+# driven through an az_iot_su_channel, so the target no longer builds and the
 # trigger it depended on has no equivalent until the new channel lands.
 #
 # The workflow is PARKED rather than deleted, so that the coverage gap between
@@ -17,7 +17,7 @@
 # so the wiring can still be exercised by hand once the suite is restored.
 #
 # To restore: rewrite the scenarios against the new channel operations, re-enable
-# the CMake target (-DAZ_IOT_BUILD_E2E_ADU_V2=ON, see c/tests/e2e/CMakeLists.txt),
+# the CMake target (-DAZ_IOT_BUILD_E2E_SU=ON, see c/tests/e2e/CMakeLists.txt),
 # and put the pull_request/schedule triggers back.
 #
 # The device fixture and the mocked crypto/payload hooks in the existing test
@@ -28,7 +28,7 @@
 # ---------------------------------------------------
 # Fully in-process: the ADU scenario runs as a native CTest. Crypto and the
 # platform payload operations are mocked; signature/hash correctness is covered
-# by the unit tests (adu_client_test.c and the adu_crypto_openssl unit tests).
+# by the unit tests (su_client_test.c and the su_crypto_openssl unit tests).
 #
 # Stages
 # ------
@@ -139,7 +139,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e_adu
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e_su
 
       - name: Download shared test config
         uses: actions/download-artifact@v4
@@ -209,9 +209,9 @@ jobs:
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e_adu` selects ONLY az_iot_tests_e2e_adu (not the fast e2e
-          # suite az_iot_tests_e2e, nor the adu_crypto_openssl unit test).
-          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e_adu `
+          # `-R e2e_su` selects ONLY az_iot_tests_e2e_su (not the fast e2e
+          # suite az_iot_tests_e2e, nor the su_crypto_openssl unit test).
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e_su `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-adu-${{ matrix.os }}.xml
 

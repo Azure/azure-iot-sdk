@@ -85,7 +85,7 @@ buffer overflow.
 
 ## Style
 
-- No `_t` type suffixes (3 ADU types are documented exceptions - upstream collision).
+- No `_t` type suffixes.
 - Options structs get `az_iot_<x>_options_default(void)`, no arguments.
 - Error type is `az_iot_result`, not `az_result`.
 - `AZ_NODISCARD` only where ignoring the result is likely a bug (init/open/send/parse).

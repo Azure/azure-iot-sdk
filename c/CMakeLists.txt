@@ -107,8 +107,8 @@ if(AZ_IOT_WITH_RUST_MQTT)
     add_subdirectory(adapters/rust_mqtt)
 endif()
 
-if(AZ_IOT_WITH_ADU_CRYPTO_OPENSSL)
-    add_subdirectory(adapters/adu/crypto_openssl)
+if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
+    add_subdirectory(adapters/su/crypto_openssl)
 endif()
 
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)

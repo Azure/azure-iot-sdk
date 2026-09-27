@@ -7,7 +7,7 @@
  *
  * Kept separate from connection_test_harness.h on purpose: that header pulls in
  * internal/reconnect.h, which is only on the include path for the connection
- * suites. The feature suites (twin, c2d, direct method, ADU) need this helper
+ * suites. The feature suites (twin, c2d, direct method, software updates) need this helper
  * and nothing else from it.
  *
  * Include AFTER <cmocka.h>.

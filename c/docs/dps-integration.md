@@ -88,7 +88,7 @@ copts.dps.registration_body_buffer = az_span_create(body_buf, sizeof(body_buf));
 Both options live in the nested `dps` struct, with the other provisioning
 options they belong with. `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` follows the
 convention the rest of the library uses for caller-owned buffers
-(`AZ_IOT_CSR_PAYLOAD_STORAGE`, `AZ_IOT_ADU_DEVICE_PROPERTIES_STORAGE`): a single
+(`AZ_IOT_CSR_PAYLOAD_STORAGE`, `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE`): a single
 `name` argument, sized by an `#ifndef`-overridable constant. The option itself
 takes an `az_span`, so a caller who wants a different size can declare the
 buffer directly and skip the macro.

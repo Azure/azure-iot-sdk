@@ -98,7 +98,7 @@
 #define DPS_REGISTER_PAYLOAD_MEMBER_PREFIX "\"payload\":"
 
 /* The pinned azure-sdk-for-c helper emits 2019-03-31. Build the CONNECT
- * username here for every DPS session, including CSR and provision-only ADU. */
+ * username here for every DPS session, including CSR and provision-only software updates. */
 #define DPS_API_VERSION "2026-11-02-preview"
 #define DPS_USERNAME_INFIX "/registrations/"
 #define DPS_USERNAME_SUFFIX "/api-version=" DPS_API_VERSION
@@ -604,7 +604,7 @@ static void resolve_connect_transport(
  *
  *    This reason is deliberately a property of the SERVICE, not of how long the
  *    session happens to live. The session is torn down at registration today,
- *    but a feature client (ADU) can hold one open past that, and a longer-lived
+ *    but a feature client (software updates) can hold one open past that, and a longer-lived
  *    or hub-concurrent DPS session does not change the answer: clean_start is
  *    only read at CONNECT, and it is inert at this service whenever it is read.
  *

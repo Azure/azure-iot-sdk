@@ -807,7 +807,7 @@ extern "C"
  * watch its own connection.
  *
  * The feature-client pool is sized for the clients that exist (telemetry, c2d,
- * direct method, twin, file upload, adu). Raise either at compile time. */
+ * direct method, twin, file upload, su). Raise either at compile time. */
 #ifndef AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
 #define AZ_IOT_MAX_FEATURE_STATE_OBSERVERS 6
 #endif

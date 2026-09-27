@@ -54,7 +54,7 @@ separate SDKs turn that into a **synchronized device + service change**.
 | 3 | Large shared core duplicated across two repos/packages | 🟠 Medium | Keep a shared **`core` library** (connection, dispatch, reconnect, cert, platform); split only the protocol-profile + feature topic layer |
 | 4 | DPS must know which SDK the device runs before it can route | 🔴 High | Make `hub_version` advisory only for the *split* build; have DPS **fail closed** if the device can't honor the assigned flavor |
 | 5 | Customer decision/packaging burden (which SDK do I pick?) | 🟠 Medium | Clear naming, a decision matrix, and a meta-package that pulls the right one |
-| 6 | Feature drift between the two SDKs (twin, methods, ADU…) | 🟠 Medium | Shared feature-client interfaces + conformance suite run against both |
+| 6 | Feature drift between the two SDKs (twin, methods, software updates…) | 🟠 Medium | Shared feature-client interfaces + conformance suite run against both |
 | 7 | 2× build/CI/test matrix and release cadence | 🟡 Low | Monorepo with two build targets; shared CI templates |
 | 8 | Versioning & support-policy divergence | 🟡 Low | Lockstep semver for the shared core; independent minor versions per flavor |
 | 9 | Documentation, samples, and support channels fork | 🟡 Low | Single docs site with per-flavor tabs; shared sample skeleton |
@@ -386,12 +386,12 @@ sequenceDiagram
 ## 6. Feature drift between SDKs
 
 **Consideration.** Two codebases (or two build targets maintained by different
-people) drift: twin, direct methods, C2D, telemetry, and especially **ADU** can
-diverge in behavior, error mapping, or API shape. ADU keeps this bounded by having
-**one** channel: the twin channel (ADUv1) is cut, and the ADUv2 pull protocol,
+people) drift: twin, direct methods, C2D, telemetry, and especially **Software updates** can
+diverge in behavior, error mapping, or API shape. Software updates keeps this bounded by having
+**one** channel: the twin channel (Device Update for IoT Hub) is cut, and the software updates pull protocol,
 fronted by the DPS gateway, is the only channel that will ship — it is the
 implementation target, not yet built. See
-[adu-client-plan.md](adu-client-plan.md). Drift would therefore be drift in the
+[su-client-plan.md](su-client-plan.md). Drift would therefore be drift in the
 shared engine, which is exactly what the conformance suite has to catch.
 
 **Mitigations.**
@@ -401,8 +401,8 @@ shared engine, which is exactly what the conformance suite has to catch.
   differences only behind the protocol profile.
 - Run the **conformance suite** (`tests/conformance`) against *both* build
   flavors in CI, asserting identical public behavior where the protocols allow.
-- Keep ADU's verify→download→install→report core shared (`adu_core`); the
-  only variation is the channel implementation behind `az_iot_adu_channel`, and for now
+- Keep software updates' verify→download→install→report core shared (`su_core`); the
+  only variation is the channel implementation behind `az_iot_su_channel`, and for now
   there is exactly one.
 
 **Flow — issue vs. solution.**
@@ -410,8 +410,8 @@ shared engine, which is exactly what the conformance suite has to catch.
 ```mermaid
 flowchart TB
     subgraph ISSUE["Issue: drift"]
-        T1["Classic twin/methods/ADU impl"]
-        T2["Next twin/methods/ADU impl"]
+        T1["Classic twin/methods/software updates impl"]
+        T2["Next twin/methods/software updates impl"]
         T1 -. "behaviour diverges" .- T2
     end
 

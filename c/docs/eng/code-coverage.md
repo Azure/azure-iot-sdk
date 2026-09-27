@@ -107,7 +107,7 @@ Every adapter is behind a build option, and two of them additionally require
 | Adapter | Option | Default | Extra condition |
 | --- | --- | --- | --- |
 | `az_iot_adapter_paho` | `AZ_IOT_WITH_PAHO` | ON | — |
-| `az_iot_adu_crypto_openssl` | `AZ_IOT_WITH_ADU_CRYPTO_OPENSSL` | ON | OpenSSL ≥ 3.0 found |
+| `az_iot_su_crypto_openssl` | `AZ_IOT_WITH_SU_CRYPTO_OPENSSL` | ON | OpenSSL ≥ 3.0 found |
 | `az_iot_certificate_provider_managed` | `AZ_IOT_WITH_CERT_PROVIDER_MANAGED` | ON | OpenSSL ≥ 3.0 found |
 | `az_iot_adapter_rust_mqtt` | `AZ_IOT_WITH_RUST_MQTT` | **OFF** | does not currently compile |
 
@@ -146,7 +146,7 @@ presence assertion:
   { "name": "core",                 "prefix": "src/core/",                     "line": null, "branch": null },
   { "name": "features",             "prefix": "src/features/",                 "line": null, "branch": null },
   { "name": "adapter-paho",         "prefix": "adapters/paho/",                "line": null, "branch": null },
-  { "name": "adapter-adu-crypto",   "prefix": "adapters/adu/crypto_openssl/",  "line": null, "branch": null },
+  { "name": "adapter-su-crypto",   "prefix": "adapters/su/crypto_openssl/",  "line": null, "branch": null },
   { "name": "adapter-cert-managed", "prefix": "adapters/cert_openssl/",        "line": null, "branch": null }
 ]
 ```
@@ -165,7 +165,7 @@ reports every one of them in the job summary whether it passed or not, and with
 
 **Rule: built and measured always; gated when shipped by default.**
 
-That gates Paho, the ADU OpenSSL crypto adapter, and the managed certificate
+That gates Paho, the software updates OpenSSL crypto adapter, and the managed certificate
 provider.
 
 `az_iot_adapter_rust_mqtt` is excluded from the coverage build entirely, and
@@ -193,7 +193,7 @@ passing:
 | `core` | 11 | 1221 | 77.5% | 53.7% |
 | `features` | 8 | 1743 | 68.5% | 49.4% |
 | `adapter-paho` | 1 | 461 | 67.0% | 38.4% |
-| `adapter-adu-crypto` | 1 | 91 | 80.2% | 46.5% |
+| `adapter-su-crypto` | 1 | 91 | 80.2% | 46.5% |
 | `adapter-cert-managed` | 1 | 161 | 89.4% | 57.9% |
 | **total** | 22 | 3677 | **72.5%** | **49.9%** |
 
@@ -232,7 +232,7 @@ figures by a point or so and a gate that fires on noise gets switched off.
 | `core` | 75 | 60 | 80 |
 | `features` | 65 | 50 | 85 |
 | `adapter-paho` | 60 | 35 | 75 |
-| `adapter-adu-crypto` | 75 | 40 | 95 |
+| `adapter-su-crypto` | 75 | 40 | 95 |
 | `adapter-cert-managed` | 75 | 55 | 80 |
 
 Minimum headroom across all fifteen floors is 2.7 points (`features` function).
@@ -347,7 +347,7 @@ endfunction()
 
 Called from [src/CMakeLists.txt](../../src/CMakeLists.txt) for `az_iot_core`,
 and from each adapter's `CMakeLists.txt` for `az_iot_adapter_paho`,
-`az_iot_adapter_rust_mqtt`, `az_iot_adu_crypto_openssl`, and
+`az_iot_adapter_rust_mqtt`, `az_iot_su_crypto_openssl`, and
 `az_iot_certificate_provider_managed`.
 
 **Not** called for `az_iot_test_support`, `az_iot_conformance`, or any cmocka
@@ -373,7 +373,7 @@ Coverage gets its own preset, `linux-gcc-coverage`, in
         // Anything not built is not measured -- see "Shipped adapters".
         "AZ_IOT_WITH_PAHO": "ON",
         "AZ_IOT_WITH_RUST_MQTT": "ON",
-        "AZ_IOT_WITH_ADU_CRYPTO_OPENSSL": "ON",
+        "AZ_IOT_WITH_SU_CRYPTO_OPENSSL": "ON",
         "AZ_IOT_WITH_CERT_PROVIDER_MANAGED": "ON"
     },
     "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }

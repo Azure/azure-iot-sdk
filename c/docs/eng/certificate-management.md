@@ -5,8 +5,7 @@
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
-> **Naming:** types use the current SDK convention — no `_t` suffix (except a few that
-> collide with vendored azure-sdk-for-c names, e.g. `az_iot_adu_client_t`), struct/enum
+> **Naming:** types use the current SDK convention — no `_t` suffix, struct/enum
 > tags match the type name, and callbacks use the `_callback` suffix.
 
 ## Status
@@ -179,7 +178,7 @@ result codes (`AZ_IOT_ERR_DPS`, `AZ_IOT_ERR_NOT_SUPPORTED`); no additions to
 
 The PEM loader (`certificate_provider_pem`) stays a static loader (documented "no
 generation"). Add a new provider `az_iot_certificate_provider_managed`, backed by the
-existing OpenSSL crypto adapter under `adapters/adu/crypto_openssl/`, built only when
+existing OpenSSL crypto adapter under `adapters/su/crypto_openssl/`, built only when
 OpenSSL is available. New header `inc/azure/iot/az_iot_certificate_provider_managed.h`:
 
 ```c
