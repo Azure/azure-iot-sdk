@@ -911,8 +911,8 @@ extern "C"
    * (the client stays Idle) and re-sends it from do_work().
    *
    * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
-   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for any
-   *   record when persist_state_fn is NULL (it could never be cleared);
+   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for a valid
+   *   record of this format when persist_state_fn is NULL (it could never be cleared);
    *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
    *   AZ_IOT_ERR_DETACHED if the client is detached.

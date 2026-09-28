@@ -2306,11 +2306,6 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK; /* too small, including an invalidated (empty) record */
   }
-  if (SU_I(client).hooks.persist_state_fn == NULL)
-  {
-    /* It could never be invalidated, so every later boot would re-apply it. */
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
   if (blob[0] != AZ_IOT_SU_PERSIST_MAGIC0 || blob[1] != AZ_IOT_SU_PERSIST_MAGIC1
       || blob[2] != AZ_IOT_SU_PERSIST_MAGIC2 || blob[3] != AZ_IOT_SU_PERSIST_MAGIC3)
   {
@@ -2374,6 +2369,11 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   if (su_crc32(blob, end) != rd_u32le(&blob[end]))
   {
     return AZ_IOT_OK; /* corrupt */
+  }
+  if (SU_I(client).hooks.persist_state_fn == NULL)
+  {
+    /* It could never be invalidated, so every later boot would re-apply it. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
   uint16_t flags = rd_u16le(&blob[6]);

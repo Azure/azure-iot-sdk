@@ -2922,19 +2922,24 @@ static void a_snapshot_missing_a_needed_url_is_refused(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A record of another magic or format version is ignored, not resumed. */
+/* A record of another magic or format version is ignored, not resumed, with or
+ * without a persist hook. */
 static void a_record_of_another_format_is_ignored(void** state)
 {
   fixture* source = (fixture*)*state;
-  for (int c = 0; c < 2; ++c)
+  for (int c = 0; c < 4; ++c)
   {
     void* fresh_state = NULL;
     fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+    if (c >= 2)
+    {
+      fresh->su._internal.hooks.persist_state_fn = NULL;
+    }
     uint8_t* b = fresh->log.persist_blob;
     assert_memory_equal(b, "SUCP", 4);
     assert_int_equal(b[4], 1);
     assert_int_equal(b[5], 0);
-    if (c == 0)
+    if (c % 2 == 0)
     {
       memcpy(b, "XXXX", 4);
     }

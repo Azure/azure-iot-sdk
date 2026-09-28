@@ -376,7 +376,7 @@ The byte layout is documented next to the serializer in
 1. Call `load_state_fn`. If it reports no state (including an empty record), or
    `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
    success — the agent starts clean and waits for the next update offer. A
-   stored record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
+   valid record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
    `persist_state_fn` is NULL (it could never be cleared), and with
    `AZ_IOT_ERR_INVALID_ARG` when its URLs do not cover the remaining steps; the
    latter is cleared.
