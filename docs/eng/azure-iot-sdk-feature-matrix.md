@@ -1,6 +1,6 @@
 # Azure/azure-iot-sdk — client feature matrix
 
-Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `59b531a`, 2026-09-27. Verified by reading the code, not docs or the public SDKs.
+Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `3cd46fa`, 2026-09-28. Verified by reading the code, not docs or the public SDKs.
 
 **This is not the old public SDK.** It ships two client libraries only — **C** (`/c`, C99, `AZ_IOT_VERSION_STRING "0.0.1"`, status "early bootstrap") and **.NET** (`/dotnet`, `net10.0`, `Microsoft.Azure.Iot.Device` 2.0.0 — renamed from `Microsoft.Azure.Devices.Client` in #226 — published to **GitHub Packages**, not nuget.org). No Java/Node/Python/embedded columns exist.
 
@@ -77,10 +77,10 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | CSR at DPS enrollment | Yes | **Yes** | Both send it. .NET fixed in #202 (`AbstractConnectionClient.cs:621`), was previously dead code |
 | CSR renewal against the hub | Yes | Yes | C `az_iot_connection_client_send_csr()`/`_cancel_csr()`; .NET `SendCertificateSigningRequestAsync` — **MQTTv5 throws `NotImplementedException`** |
 | Issued-cert callback / persistence | Yes | Yes | C `store_issued_certificate`; .NET swaps the auth provider and reconnects |
-| Credential rotation without app restart | Yes | Yes | .NET file-upload `HttpClient` vs rotated cert is an open TODO |
-| Non-extractable keys (PKCS#11 / HSM / TPM URI) | Yes | No — **in progress** | C `client_key_uri` + `crypto_engine_id`, `az_iot_paho_key_custody.c`, Linux e2e leg. .NET: SoftHSM support in draft PR #236 |
-| Custom signing callback | Partial | No | C vtable `sign` hook exists but **Paho refuses it** — needs a BYO adapter |
-| Trust bundle / custom CA | Partial | No — **in progress** | C single CA path/PEM, no rotation API. .NET `RemoteCertificateValidationCallback` lands with draft PR #236 |
+| Credential rotation without app restart | Yes | Yes | C reissues via CSR; .NET swaps the auth provider and reconnects, and `LocalCertificateSelectionCallback` can pick the new cert per handshake (#236) |
+| Non-extractable keys (PKCS#11 / HSM / TPM URI) | Yes | **Yes** | C `client_key_uri` + `crypto_engine_id`, `az_iot_paho_key_custody.c`, Linux e2e leg. .NET via `LocalCertificateSelectionCallback` + an HSM-backed `X509Certificate2`, SoftHSM-tested (#236, merged 2026-09-26) |
+| Custom signing callback | Partial | No | C vtable `sign` hook with a `samples/authentication/hsm_sign_callback` sample, but **Paho refuses a sign()-only credential** (`AZ_IOT_ERR_NOT_SUPPORTED`) — it needs a BYO/mbedTLS/BearSSL adapter |
+| Trust bundle / custom CA | Partial | **Yes** | C single CA path/PEM, no rotation API. .NET `RemoteCertificateValidationCallback` on `X509AuthenticationProvider` supports pinning and private roots (#236) |
 
 ## 4. Device features
 
@@ -94,11 +94,11 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | C2D receive | Yes | **N/A** | **No** | **N/A** | Service supports C2D on mqttv3 only. C mqttv5 C2D client was **removed** (#272); .NET dropped C2D from the unified API (#255) |
 | C2D settlement (accept/reject/abandon) | No | N/A | N/A | N/A | C: "design C2D strict-settlement state machine" still open (mqttv3 only) |
 | Direct methods | Yes | Yes | Yes | Yes | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake |
-| Slow / async method responses | Yes | Yes | Partial | Partial | C has dedicated `direct_method_slow_responder_gen1/mqttv5` samples |
+| Slow / async method responses | Yes | Yes | Partial | Partial | C has a `direct_method_slow_responder` sample under both `samples/unified/` and `samples/mqttv5/` (#260) |
 | Twin get | Yes | Yes | Yes | Yes | .NET mqttv5 supports selective/ETag (`getReported`, `ifNotMatch`) |
 | Reported-properties patch | Yes | Yes | Yes | Yes | |
 | Desired-properties patch events | Yes | Yes | Yes | Yes | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240) |
-| Twin push (MQTTv5 birth-driven) | No | No | No | Yes | C options default false and the dispatch is not consumed; .NET has `TwinPushReceived`/`TwinPushOptions` |
+| Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | Yes | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions` |
 | MQTTv5 presence / birth handshake | N/A | Yes | N/A | Yes | `common/Protos/presence.proto`; C `presence_encode_birth()` |
 | File upload (SAS URI + notify) | Yes | **N/A** | **No** | **N/A** | Not offered on mqttv5. C mqttv3 has it (app supplies the HTTP hook); .NET **removed** file upload from the unified API (#255) |
 | Device update (software updates) | Partial | Partial | **No** | **No** | C only: `az_iot_su.h`, su-over-DPS (renamed from ADU in #270). **.NET has no software-update code at all** |
@@ -132,7 +132,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Model ID on connect | Partial | No | C uses `opts.model_id` for the **MQTTv3 username only**; mqttv5 path unverified. .NET does not set it |
+| Model ID on connect | Partial | No | C sets `opts.model_id` **only on the mqttv3 username** — `connection_client.c:3080` excludes the mqttv5 role, so it is never announced there. .NET does not set it |
 | Model ID via DPS payload | No | Partial | .NET references a `ModelIdPayload` type that is not in the repo |
 | Components | Partial | No | C exposes only the `$.sub` component-name property; no component APIs |
 | Digital twin / PnP conventions | No | No | |
@@ -152,6 +152,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Feature | C | .NET | Notes |
 |---|---|---|---|
 | Language / TFM | C99-strict | **net10.0 only** | No netstandard/net472 multi-targeting |
+| Language-standard conformance | **Yes** | N/A | C builds `-pedantic -Werror` under **c99, c11, c17 and c23** in CI (#282); Paho pinned to C99 (its v1.3.13 `typedef unsigned int bool` breaks C23) |
 | Dependencies | azure-sdk-for-c 1.5.0 (FetchContent, mandatory), Paho | MQTTnet 5.1.0.1559, Google.Protobuf 3.34.1, Google.Protobuf.Tools + Grpc.Tools 2.80.0 (build-only) | `az::core`/`az::iot::hub`/`az::iot::provisioning`; MQTTv5 protocol logic lives in this repo |
 | Dependency acquisition | vcpkg manifest (primary) or CPM.cmake | NuGet | `azure-sdk-for-c` is a git submodule **only** under the ESP32 sample |
 | Build options | 16 CMake options (`cmake/az_iot_options.cmake`) | — | PAHO, RUST_MQTT, KEY_CUSTODY, software-update crypto, cert provider, tests, e2e, conformance, coverage |
@@ -163,21 +164,45 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Unit tests | Yes (39 cmocka files) | Yes (xunit.v3 + Moq, 57 facts) | C added `paho_event_queue_race_test.c`, `connection_dps_payload_test.c` |
+| Unit tests | Yes (40 cmocka files) | Yes (xunit.v3 + Moq, 57 facts) | 42 ctest cases pass on each of the four C standards (#282) |
+| Known-answer crypto vectors | **Yes** | N/A | C software-update adapters: FIPS 180-4 SHA-256, RS256 good/bad, root→SJWK→manifest chain (#276) |
 | MQTT-interface conformance suite | Yes | No | C `tests/conformance/` for BYO adapters (Paho v3 + v5), needs a broker |
 | Integration tests | Yes | Yes | C `reconnect_real_stack_test.c` |
 | E2E against live Azure | Yes | Yes | Resources provisioned per run via OIDC, torn down after; Windows + Linux legs |
 | **MQTTv5 e2e actually executed** | Yes (vs mock Hub-MQTTv5) | **No** | .NET `Setup.cs` skips 5×: 3 "No test infrastructure setup for MQTTv5 client testing yet.", 2 "No MQTTv5 hub to test against yet" |
 | Dedicated software-update / CSR / PKCS#11 e2e | Yes | **Disabled** | C: `ci-c-e2e-adu.yml`, `ci-c-e2e-csr.yml` (Linux only), PKCS#11 on the Linux leg. .NET CSR/cert-mgmt tests exist but are `Skip`-ped (#229) |
+| Software-update e2e vs the real service | **Yes** | N/A | `az_iot_tests_e2e_su_offer` (#279): real offered update, libcurl download, engine hash check; missing env **fails** rather than skips |
 | Fault injection | Partial | **Yes** | .NET covers faults by **unit test** by design — `ConnectionFaultedUnitTests.cs`, 12 facts (identity fault, reprovision, terminal fault, pending-op cancellation). The empty `MqttNetFaultInjectionIntegrationTests.cs` is dead and is being deleted |
 | Sanitizers | Yes | No | valgrind (Linux) + MSVC ASan, plus a **race-detector job** (helgrind/DRD) added with #205 |
 | Style / layering gates | Yes | No | `check-banned-constructs.sh`, `check-layering.sh`, clang-format |
-| Coverage | Yes | Yes | C: gcovr + gate, combined unit+e2e; **72.5 % line / 49.9 % branch**. .NET: XPlat + CodeCoverageSummary |
+| Coverage | Yes | Yes | C: gcovr + gate, combined unit+e2e; **72.5 % line / 49.9 % branch** (recorded baseline). .NET: XPlat + CodeCoverageSummary |
+| Static analysis | **No** | **No** | No clang-tidy, CodeQL, cppcheck or MISRA anywhere in the repo |
 | Fuzzing | No | No | |
 
-## 10. Concrete open gaps (from TODOs and code markers)
+## 10. Cross-cutting client concerns
 
-**C** (`c/docs/TODO.md` + source) — 21 items still unticked, 37 done.
+Areas that decide whether a device client is adoptable, distinct from protocol features. Added 2026-09-28; most were never tracked before, and several are **not implemented at all**, which is the point of listing them.
+
+| Concern | C | .NET | Notes |
+|---|---|---|---|
+| Installable / linkable package | **No** | Yes | C has **no CMake `install()` or `export()` targets and no pkg-config**; consumers must vendor the tree or use FetchContent. `c/vcpkg.json` is a consumer manifest, not a published port |
+| Generated API reference | **No** | **No** | Public C headers are written in Doxygen format but there is **no Doxyfile and no doc build**, so no API reference is produced or published |
+| Static analysis | **No** | **No** | No clang-tidy, CodeQL, cppcheck or MISRA configuration in the repo |
+| Supply chain / SBOM | **No** | **No** | No SBOM and no third-party notices file. Dependencies are version-pinned (azure-sdk-for-c 1.5.0 via FetchContent; Paho pinned), which is the mitigating half |
+| Secret hygiene in memory | Partial | **No** | C zeroizes in exactly one place: `OPENSSL_cleanse` on an extractable private-key PEM in the key-custody path (`az_iot_paho_key_custody.c:532`). There is **no general zeroization** of SAS, CSR or key buffers on teardown |
+| Log redaction guarantees | Partial | Partial | C redacts where it matters most — `redact_key_uri()` strips the PKCS#11 query, and the Paho trace hook truncates to `<redacted>`. But neither library **documents** what must never reach a sink, and C logs the DPS username at DEBUG |
+| Measured footprint (ROM/RAM) | **No** | N/A | The C library targets constrained devices and is non-allocating on the hot path, but **no measured size figures are published**, so the claim is unverifiable by a reader |
+| Portable time source | Partial | N/A | `az_iot_time_mono_ms()` is POSIX `clock_gettime(CLOCK_MONOTONIC)` or Win32 `GetTickCount64`, selected by `#if defined(_WIN32)`. **There is no platform hook**, so an RTOS/bare-metal port with neither has to patch `reconnect.c` |
+| Thread-safety contract | Partial | Partial | C is a single-threaded `do_work()` pump with callbacks on the caller's thread, stated in `README.md`/`design.md` but not in a dedicated contract doc or enforced by a test |
+| Reboot persistence / session resumption | Partial | **No** | The software-update client has a real checkpoint API — `persist_state_fn`/`load_state_fn` with a CRC-32 guarded blob — so an update survives a reboot. **No other feature persists**: MQTT session, twin version and in-flight operations are all cold-started |
+| Backpressure / in-flight bounds | Partial | Partial | C refuses overlapping operations with `AZ_IOT_ERR_BUSY` rather than queuing; no configurable in-flight window |
+| Credential expiry handling | Partial | Partial | CSR renewal exists on both; neither warns an application ahead of client-certificate expiry |
+| Clock-skew tolerance | Partial | Partial | Monotonic time drives backoff; no guidance on wall-clock skew, which affects certificate validity |
+| API deprecation policy | N/A | N/A | Unreleased, `git tag` empty — no policy needed yet, but none is written either |
+
+## 11. Concrete open gaps (from TODOs and code markers)
+
+**C** (`c/docs/TODO.md` + source) — 21 items still unticked, 37 done. See also §10 for cross-cutting gaps (packaging, API docs, static analysis, SBOM, secret zeroization, portable time source).
 - Paho v5: CONNECT user properties, and PUBLISH `response_topic` / `topic_alias`, are accepted by the API but **not serialized** (residual Phase 3).
 - mqttv5 direct-method ready-token sweep still runs only on inbound messages; needs a periodic tick.
 - C2D (mqttv3 only): no strict-settlement state machine; **no e2e against a real MQTTv3 IoT Hub**.
@@ -199,7 +224,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 - `dotnet/README.md` is 0 bytes.
 - Fixed since the last revision: the placeholder `DeviceException("TODO")` / `Exception("todo")` throws are **gone** (#259), and the CD pipeline is green again.
 
-## 11. Net-new vs the old public SDKs
+## 12. Net-new vs the old public SDKs
 
 Present here, no analogue in `azure-iot-sdk-c` / `azure-iot-sdk-csharp`:
 - mqttv5/MQTTv5 clients over MQTT v5 with a presence/birth handshake.
@@ -212,9 +237,9 @@ Present here, no analogue in `azure-iot-sdk-c` / `azure-iot-sdk-csharp`:
 
 Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport, SAS/symmetric-key and TPM auth, connection strings, modules/IoT Edge, service SDK (registry, jobs, query, digital twin, C2D send, feedback/file-upload notification receivers), PnP conventions and digital twin, device streams.
 
-## 12. Caveats on this report
+## 13. Caveats on this report
 
-- Read from a local clone at `59b531a` (2026-09-27); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
+- Read from a local clone at `3cd46fa` (2026-09-28); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
 - Per-version rows for .NET describe the **wire behaviour** of each MQTT version. Because `Unified` implements mqttv3 itself but delegates mqttv5 to nested `MQTTv5` clients, some mqttv5 cells differ depending on whether `MQTTv5` is used directly or through the facade; those cases are flagged in the Notes.
 - **Cut ≠ missing.** C2D and file upload are absent on mqttv5 because the *service* does not offer them there. Both libraries have now **deleted** their mqttv5 C2D/file-upload code rather than shipping clients ahead of the service (#272, #255) — a reversal of the earlier "keep it, it returns after Ignite 2026" position recorded in the previous revision.
 - These libraries are **unreleased** — `git tag` is empty, so there is no shipped ABI and no back-compat constraint on any of the shapes described here.
@@ -224,11 +249,23 @@ Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport,
 ### Corrections from Tim (owner of `dotnet/`), 2026-09-23
 
 - **Subscription-ack gating is Yes for .NET, both MQTT versions** — this matrix previously said No. Verified: `Unified/Connection/ConnectionClient.cs:116-133` and `MQTTv5/Connection/ConnectionClient.cs:61-88` both check SUBACK reason codes and reconnect on refusal. The remaining difference is policy, not capability: C lets you choose the failure scope, .NET always disconnects and reconnects.
-- **Non-extractable keys and trust bundle / custom CA are in progress**, not simply absent — draft PR #236 adds SoftHSM-backed keys and a `RemoteCertificateValidationCallback`. Still No on `main`.
+- **Non-extractable keys and trust bundle / custom CA** — **#236 merged 2026-09-26**, so both are now Yes for .NET. An earlier revision of this matrix recorded #236 as an open draft and carried that forward; corrected 2026-09-28.
 - **.NET fault-injection coverage is by unit test, by design** — `ConnectionFaultedUnitTests.cs`, 12 facts. The empty `MqttNetFaultInjectionIntegrationTests.cs` is dead code pending deletion, not a coverage gap.
 - Found while re-auditing on the back of the above: **.NET does expose a DISCONNECT reason code** (`MqttDisconnect.Reason`, enum includes `DisconnectWithWillMessage`=4) — previously recorded as No. It is always sent as `NormalDisconnection`.
 
-## 13. What changed since the 2026-09-23 revision
+## 14. What changed since the 2026-09-27 revision
+
+Rechecked at `3cd46fa` after #275–#282.
+
+- **C builds strict under c99, c11, c17 and c23** in CI, `-pedantic -Werror`, 42/42 ctest on each (#282). Paho is pinned to C99 because v1.3.13 declares `typedef unsigned int bool`, which C23 rejects (fixed upstream in v1.3.15).
+- **Software-update e2e against the real service** with an offered update, real libcurl download and engine hash check (#279); missing environment now fails the suite instead of skipping. Known-answer crypto vectors added for every su crypto adapter (#276).
+- Caller-allocated teardown renamed `_destroy()` → `_deinit()` (#277). Adapter factories still use `_destroy()`, so both spellings are live.
+- Software-update samples: regular-update sample added, ESP32 route fixed (#275).
+- **New §10 "Cross-cutting client concerns"** records adoption-blocking areas the matrix never tracked — several are unimplemented.
+
+**Full re-verification pass, 2026-09-28.** Every pre-existing row was re-checked against `3cd46fa` rather than carried forward. That found four errors that had survived earlier revisions: #236 had **merged** on 2026-09-26 while this matrix still called it an open draft (so .NET non-extractable keys and trust bundle / custom CA were wrongly No); C mqttv5 **does** consume twin push (`on_twin_push()`); `model_id` on the mqttv5 path is now settled as **not announced** rather than "unverified"; and a credential-rotation note still referred to .NET file upload, which #255 removed.
+
+## 15. What changed in the 2026-09-27 revision
 
 Rechecked at `59b531a` after #255–#273.
 
