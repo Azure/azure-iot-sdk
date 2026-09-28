@@ -8,7 +8,8 @@
 #   target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 #
 # Components are the installed library targets, named without the azure::iot::
-# prefix: core, mqttv3, mqttv5 and each adapter the build produced.
+# prefix: core, mqttv3, mqttv5 and each adapter the build produced. Each also
+# gets a pkg-config file, azure-iot-sdk-<component>.pc (az_iot_pkgconfig.cmake).
 #
 # azure-sdk-for-c has no install rules and its types are embedded in our public
 # structs, so its libraries and headers ship in this package (headers under
@@ -174,6 +175,8 @@ install(FILES
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config-version.cmake"
     DESTINATION ${_az_iot_pkg_cmake_dir}
 )
+
+include(az_iot_pkgconfig)
 
 unset(_n)
 unset(_last)

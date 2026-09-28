@@ -69,7 +69,18 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 - MSVC: the libraries use the static CRT; set
   `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
 
-[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package.
+pkg-config (not MSVC): one `azure-iot-sdk-<component>.pc` per component. The
+libraries are static, so pass `--static`; OpenSSL's and mbedTLS's `.pc` files
+must be on `PKG_CONFIG_PATH`.
+
+```sh
+cc app.c $(pkg-config --static --cflags --libs azure-iot-sdk-mqttv3 azure-iot-sdk-adapter_paho)
+```
+
+Yocto: [eng/yocto/meta-azure-iot-sdk](eng/yocto/meta-azure-iot-sdk/README.md) (scarthgap).
+
+[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
+with CMake and with pkg-config alone ([pkg-config-test.sh](tests/install/pkg-config-test.sh)).
 
 ## Project layout
 

@@ -509,7 +509,7 @@ jobs:
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev pkg-config
 
       - name: Set paths
         # Forward slashes on Windows: these values end up in CMake files.
@@ -568,6 +568,15 @@ jobs:
         run: cmake --build "$AZ_IOT_CONSUMER"
       - name: Test the consumer
         run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
+
+      # No CMake: the .pc files alone must give a working compile and link line.
+      # MSVC builds install no .pc files.
+      - name: Build and run the pkg-config consumer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export PKG_CONFIG_PATH="$AZ_IOT_PREFIX/lib/pkgconfig:$AZ_IOT_MBEDTLS/lib/pkgconfig"
+          IFS=';' read -ra comps <<< "${{ matrix.components }}"
+          bash tests/install/pkg-config-test.sh --run "$RUNNER_TEMP/pkg-config-test" "${comps[@]}"
 
   # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.

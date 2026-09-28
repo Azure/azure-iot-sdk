@@ -1,0 +1,44 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Builds the Azure IoT C SDK recipe and its pkg-config consumer for qemux86-64
+# on Yocto scarthgap (poky):
+#   kas build c/eng/yocto/kas.yml
+#
+# conf/azure-iot-sdk-local.conf in the build directory, if present, is included
+# last; CI uses it to build the checkout instead of the pinned SRCREV.
+
+header:
+  version: 14
+
+machine: qemux86-64
+distro: poky
+target:
+  - azure-iot-sdk
+  - azure-iot-sdk-pkgconfig-test
+
+repos:
+  azure-iot-sdk:
+    layers:
+      c/eng/yocto/meta-azure-iot-sdk:
+
+  poky:
+    url: https://git.yoctoproject.org/poky
+    # yocto-5.0.20
+    commit: 64e69ed23703f6358ec431d3f5f1f8483f974cae
+    branch: scarthgap
+    layers:
+      meta:
+      meta-poky:
+
+local_conf_header:
+  azure-iot-sdk: |
+    INHERIT += "rm_work"
+    RM_WORK_EXCLUDE += "azure-iot-sdk azure-iot-sdk-pkgconfig-test"
+    # Any QA warning from this layer's recipes fails the build.
+    ERROR_QA:append:pn-azure-iot-sdk = " ${WARN_QA}"
+    ERROR_QA:append:pn-azure-iot-sdk-pkgconfig-test = " ${WARN_QA}"
+    # Yocto Project's public shared state.
+    BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"
+    SSTATE_MIRRORS ?= "file://.* http://sstate.yoctoproject.org/all/PATH;downloadfilename=PATH"
+    include conf/azure-iot-sdk-local.conf
