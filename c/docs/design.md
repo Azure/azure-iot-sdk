@@ -206,7 +206,7 @@ sequenceDiagram
 
 ## 4. Open design questions (tracked)
 
-1. DPS → device handoff: how the device learns whether the assigned hub is MQTTv3 or MQTTv5. Currently assumed to be carried in the DPS assignment payload (`version_hint`). Revisit once Auth design discussion closes.
+1. ~~DPS → device handoff: how the device learns whether the assigned hub is MQTTv3 or MQTTv5.~~ **Resolved:** DPS returns `registrationState.connectionProfile`, a string — `"classic"` (also the absent/null default) or `"mqttV5"` — not the numeric `version_hint` once assumed. Reported to the application through `az_iot_connection_client_get_hub_profile()`.
 2. Reconnect policy defaults (initial delay, max delay, max attempts, jitter %); all user-overridable via `az_iot_reconnection_policy`, with `az_iot_reconnection_policy_get_default()`, `az_iot_reconnection_policy_get_retry_disabled()` and `az_iot_reconnection_policy_get_fixed_interval()` naming the usual shapes.
 3. Whether cert management is mandatory on MQTTv5. Current assumption: optional surface, mandatory pluggable hook (`az_iot_certificate_provider`).
 4. Adapter sharing across roles: should a single adapter object be reusable across the DPS→Hub transition (when both are v3.1.1, i.e., DPS→MQTTv3)? Current assumption: **no** — always destroy and recreate to keep the lifecycle uniform and reconnect logic simple. Revisit if the extra TLS handshake hurts cold-start latency.

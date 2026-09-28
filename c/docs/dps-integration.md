@@ -15,6 +15,13 @@ This document tries bridge many needs regarding the clients for working with the
 > the application as `az_iot_hub_profile.connection_profile` via
 > `az_iot_connection_client_get_hub_profile()`, so the application can pick the
 > matching per-generation feature clients.
+>
+> The `HUB_VERSION` / `hub_version` numeric field below was the original
+> proposal and is **superseded**. The shipped contract is the DPS
+> `registrationState.connectionProfile` **string** -- `"classic"` (absent or
+> null resolves to it) or `"mqttV5"` -- deliberately an extensible union, which
+> a numeric version could not represent. See
+> [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h).
 
 ## Proposed Design
 
