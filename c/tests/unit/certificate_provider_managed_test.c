@@ -446,7 +446,11 @@ static int count_temp_files(void)
     {
       do
       {
-        n++;
+        /* "name.*" also matches "name" itself. */
+        if (strcmp(fd.cFileName, OP_CERT) != 0 && strcmp(fd.cFileName, OP_KEY) != 0)
+        {
+          n++;
+        }
       } while (FindNextFileA(h, &fd));
       FindClose(h);
     }
