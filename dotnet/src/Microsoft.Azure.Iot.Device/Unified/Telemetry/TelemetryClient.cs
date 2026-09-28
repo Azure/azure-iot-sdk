@@ -18,7 +18,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         private const string ClassicTelemetryTopicFormat = "devices/{0}/messages/events/";
 
         private IConnectionClient _connection;
-        private MQTTv5.Telemetry.TelemetryClient _mqttv5TelemetryClient;
 
         public const string MessagePropertyCorrelationId = "$.cid";
         public const string MessagePropertyMessageId = "$.mid";
@@ -36,7 +35,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _mqttv5TelemetryClient = new(new Stub(_connection));
         }
 
         /// <summary>
@@ -59,57 +57,49 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
 
             string deviceId = currentConnectionContext.DeviceId;
 
-            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
             {
-                await _mqttv5TelemetryClient.SendTelemetryAsync(message, cancellationToken);
-                return;
+                throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
             }
-            else
+
+            //TODO fill in content type, encoding, etc from message user properties
+            var mqttMessage = new MqttPublish
             {
-                if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
-                {
-                    throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
-                }
+                Topic = string.Format(ClassicTelemetryTopicFormat, deviceId),
+                PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            };
 
-                //TODO fill in content type, encoding, etc from message user properties
-                var mqttMessage = new MqttPublish
-                {
-                    Topic = string.Format(ClassicTelemetryTopicFormat, deviceId),
-                    PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                };
-
-                // When publishing to MQTTv3 Hub, the topic string includes all the system properties (correlation id, message id, etc.)
-                // and all the custom user properties. The values of all these properties must be URL encoded. The user property keys should
-                // also be URL encoded, but the system properties' keys should not be URL encoded.
-                if (message.MessageId != null)
-                {
-                    mqttMessage.Topic += $"&{MessagePropertyMessageId}={Uri.EscapeDataString(message.MessageId)}";
-                }
-
-                if (message.CorrelationId != null)
-                {
-                    mqttMessage.Topic += $"&{MessagePropertyCorrelationId}={Uri.EscapeDataString(message.CorrelationId)}";
-                }
-
-                if (message.ContentType != null)
-                {
-                    mqttMessage.Topic += $"&{MessagePropertyContentType}={Uri.EscapeDataString(message.ContentType)}";
-                }
-
-                if (message.ContentEncoding != null)
-                {
-                    mqttMessage.Topic += $"&{MessagePropertyContentEncoding}={Uri.EscapeDataString(message.ContentEncoding)}";
-                }
-
-                foreach (var customUserPropertyKey in message.UserProperties.Keys)
-                {
-                    mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
-                }
-
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            // When publishing to MQTTv3 Hub, the topic string includes all the system properties (correlation id, message id, etc.)
+            // and all the custom user properties. The values of all these properties must be URL encoded. The user property keys should
+            // also be URL encoded, but the system properties' keys should not be URL encoded.
+            if (message.MessageId != null)
+            {
+                mqttMessage.Topic += $"&{MessagePropertyMessageId}={Uri.EscapeDataString(message.MessageId)}";
             }
+
+            if (message.CorrelationId != null)
+            {
+                mqttMessage.Topic += $"&{MessagePropertyCorrelationId}={Uri.EscapeDataString(message.CorrelationId)}";
+            }
+
+            if (message.ContentType != null)
+            {
+                mqttMessage.Topic += $"&{MessagePropertyContentType}={Uri.EscapeDataString(message.ContentType)}";
+            }
+
+            if (message.ContentEncoding != null)
+            {
+                mqttMessage.Topic += $"&{MessagePropertyContentEncoding}={Uri.EscapeDataString(message.ContentEncoding)}";
+            }
+
+            foreach (var customUserPropertyKey in message.UserProperties.Keys)
+            {
+                mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
+            }
+
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
+            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
         }
 
         /// <summary>
