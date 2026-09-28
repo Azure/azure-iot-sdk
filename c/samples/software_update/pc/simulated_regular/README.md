@@ -3,56 +3,50 @@ Copyright (c) Microsoft. All rights reserved.
 Licensed under the MIT license. See LICENSE file in the project root for full license information.
 -->
 
-# Software updates PC Sample — device update over DPS (simulated install)
+# Software Updates Sample - Simulated Regular Install on PC
 
-This sample runs the **entire** software updates on-device workflow end to end
+This sample runs the **entire** software updates on-device workflow end-to-end
 against a real service, but with **simulated** download/install hooks so it is
-safe to run on a dev box or in CI — it never touches real firmware. It builds and
-runs on both **Linux** and **Windows**.
+safe to run on a dev box or in CI — it never touches real firmware.
 
-The device-facing update operations are issued on the device's **DPS** session and
-proxied by the service to Device Update. The device never talks to Device Update
-directly and needs no Device Update credential.
+## Sample features
+- Target Platforms: **Linux** and **Windows**.
+- Shows regular updates only (requestSoftwareUpdates), for a device that has
+  registered and so has a device record. For a day-0 device, see
+  [simulated_onboarding](../simulated_onboarding/README.md).
+- Checks at startup, then every `AZ_IOT_SU_POLL_INTERVAL_S` (default 60 s)
+- Reports the applied update as installed, so the next check asks for what
+  comes after it
+- Simulated download and install steps
+- Requires Azure Device Provisioning service
+- Requires an Azure IoT Hub service
 
-| Operation | When the sample uses it |
-|---|---|
-| `requestOnboardingUpdates` | Before provisioning — this sample calls `az_iot_su_client_request_onboarding_update()` |
-| `requestSoftwareUpdates` | Operational (already provisioned) — not used by this sample |
-| `reportUpdateStatus` | After an install attempt |
+## Service Requirements
+- Azure Device Provisioning service
+- Azure IoT Hub, linked to the device's enrollment
+- Azure Device Update service
 
-## No IoT Hub is required
+### Why is an IoT Hub required?
 
-Every one of those operations runs on the provisioning session, before the device
-registers. The sample therefore sets `dps.provision_only`: the provisioning
-session is brought up and kept up, registration never runs, and the hub lifecycle
-stays `Idle`. That session *is* the connection.
+The regular route is served only for a device with a device record, and
+registration is what creates it. So the sample does not set
+`dps.provision_only`: it registers through DPS and connects to its assigned hub.
 
-This is **declared, not inferred**. A device whose enrollment has no linked hub
-and a device that is simply misconfigured both fail registration the same way, so
-a sample that guessed from the failure would hide real misconfiguration.
+The update checks and status reports still run on the provisioning session, not
+the hub session. The first check is asked before the device registers, on the
+first provisioning session; later ones run on a provisioning session the SDK
+reopens on demand.
 
-Set `AZ_IOT_SU_REGISTER_WITH_HUB=1` for a device that should also register and
-connect to its assigned hub. The update workflow is identical either way; only
-the connection lifecycle differs.
+On a device that has never registered, the first check is rejected
+(`INVALID_REQUEST`, no device record). The sample prints that, registers, and
+the next check succeeds.
 
-The sample prints both lifecycles as they move, for example:
-
-```
-Provisioning: Idle -> Connecting (AZ_IOT_OK)
-Provisioning: Connecting -> Connected (AZ_IOT_OK)
-Provisioning session up. Running (Ctrl-C to exit)...
-```
-
-That line reports only which lifecycle came up. It says nothing about whether
-the update check has been answered — the SDK raises no event for a successful
-"no update available", so the sample does not claim to know. With
-`AZ_IOT_SU_REGISTER_WITH_HUB=1` it reads `Hub connection up.` and appears
-*after* that answer, since a successful verdict releases the provisioning hold
-and only then do registration and the hub connect run.
+## Sample Termination
 
 It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
 and exits 0. It stops early and exits non-zero only if a lifecycle settles at
-`Faulted`, or if the update check is abandoned — both of which it prints first.
+`Faulted`, which it prints first. An abandoned update check is printed, and the
+next poll asks again.
 
 > Its output is block-buffered when piped or redirected, so a run that is killed
 > rather than interrupted can lose it. Prefix with `stdbuf -oL -eL` when
@@ -60,39 +54,9 @@ and exits 0. It stops early and exits non-zero only if a lifecycle settles at
 
 ---
 
-## What you need from the service
-
-This sample is the **device half** only. It needs a Device Update service
-environment that is already provisioned and that will offer it an update; setting
-one up is the service operator's side and is not covered here.
-
-From that environment you need four things, all of which go into the environment
-variables in the next section:
-
-| You need | Used for |
-|---|---|
-| A DPS **ID scope** | Identifies the provisioning service the device talks to |
-| A **registration id** for the device | The device's identity in that service |
-| A device **X.509 certificate and private key** | How this sample authenticates to DPS |
-| A **trusted CA bundle** | Validates the service's TLS certificate |
-
-The update offered to the device must declare `compatibility` matching what this
-sample reports — by default manufacturer `Contoso` and model `SU-Sim`.
-An update that does not match is never offered, however it was imported. See
-[Configure the sample](#configure-the-sample) to change what is reported.
-
-> The PowerShell scripts under [samples/common/scripts](../../common/scripts)
-> provision an older, IoT-Hub-based Device Update model that this sample does not
-> talk to. The DPS, device certificate, X.509 enrollment and the `AZ_IOT_*`
-> variables they produce are still usable; the Device Update account, instance and
-> deployment are not.
-
----
-
 ## Configure the sample
 
-The sample reads these environment variables (see
-[samples/common/sample_utils.c](../../common/sample_utils.c)):
+The sample [reads](../../../common/sample_utils.c) these environment variables:
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -115,9 +79,10 @@ requires them.
 | `AZ_IOT_SU_MANUFACTURER` | `Contoso` |
 | `AZ_IOT_SU_MODEL` | `SU-Sim` |
 
-**Reported, not matched.** The installed update id says what is on the device
-now. It takes no part in matching, and the onboarding route this sample uses
-omits it entirely — changing it cannot make an update eligible.
+**Installed.** The update id installed at startup. It is sent on every check,
+which is how the service knows what to offer next, and an offered update with
+this id is skipped as already installed. After an update succeeds the sample
+replaces it, in memory only: a restart starts from these values again.
 
 | Variable | Default |
 |---|---|
@@ -157,8 +122,9 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 
 ## Build and run
 
-The sample target is `az_iot_sample_su` (built when `AZ_IOT_WITH_PAHO=ON` and the
-OpenSSL software updates crypto adapter is available — both are on by default).
+The sample target is `az_iot_sample_software_update_simulated_regular` (built
+when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL software updates crypto adapter is
+available — both are on by default).
 
 ### Prerequisites
 
@@ -200,24 +166,26 @@ MSVC environment is available).
 
 ### Build
 
+Run these from the repository's `c/` directory.
+
 On Linux:
 
 ```bash
 cmake --preset linux-gcc-debug
-cmake --build --preset linux-gcc-debug --target az_iot_sample_su
+cmake --build --preset linux-gcc-debug --target az_iot_sample_software_update_simulated_regular
 
 # Set the environment variables above, then run the binary:
-./build/linux-gcc-debug/samples/az_iot_sample_su
+./build/linux-gcc-debug/samples/software_update/az_iot_sample_simulated_regular
 ```
 
 On Windows (the same sources, the simulation knobs work identically):
 
 ```powershell
 cmake --preset windows-msvc-debug
-cmake --build --preset windows-msvc-debug --target az_iot_sample_su
+cmake --build --preset windows-msvc-debug --target az_iot_sample_software_update_simulated_regular
 
 # Set the environment variables above in this shell, then run the binary:
-./build/windows-msvc-debug/samples/Debug/az_iot_sample_su.exe
+./build/windows-msvc-debug/samples/software_update/Debug/az_iot_sample_simulated_regular.exe
 ```
 
 <details>
@@ -234,22 +202,22 @@ apt-get install -y git build-essential cmake ninja-build libssl-dev \
 update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 
 git clone https://github.com/Azure/azure-iot-sdk.git
-cd azure-iot-sdk
+cd azure-iot-sdk/c
 cmake --preset linux-gcc-debug
-cmake --build --preset linux-gcc-debug --target az_iot_sample_su
+cmake --build --preset linux-gcc-debug --target az_iot_sample_software_update_simulated_regular
 ```
 
 In a separate host shell, copy the device certificate and key into the build
 directory so `$PWD`-relative paths resolve, then run it:
 
 ```bash
-docker cp device-cert.pem su-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
-docker cp device-key.pem  su-sample:/azure-iot-sdk/build/linux-gcc-debug/samples/
+docker cp device-cert.pem su-sample:/azure-iot-sdk/c/build/linux-gcc-debug/samples/software_update/
+docker cp device-key.pem  su-sample:/azure-iot-sdk/c/build/linux-gcc-debug/samples/software_update/
 
 # --- back inside the container ---
-cd /azure-iot-sdk/build/linux-gcc-debug/samples
+cd /azure-iot-sdk/c/build/linux-gcc-debug/samples/software_update
 # export the variables from "Configure the sample", then:
-./az_iot_sample_su
+./az_iot_sample_simulated_regular
 ```
 
 > The container needs outbound network access to clone the repo, fetch CMake
@@ -257,36 +225,37 @@ cd /azure-iot-sdk/build/linux-gcc-debug/samples
 
 </details>
 
-Leave it running. It brings up its provisioning session, asks for an onboarding
-update on that session, and waits there. By default it never registers — see
-[No IoT Hub is required](#no-iot-hub-is-required).
-
-**A 200 response carrying no `updateMetadata` means "nothing for me on this
-route" — it is not an error.** An update is only offered on the route that matches
-the job type: an `OnboardingUpdate` job is served **only** on the onboarding
-route, which is the one this sample uses.
+Leave it running. It asks for an update on its first provisioning session,
+registers, connects to its hub, and then asks again every
+`AZ_IOT_SU_POLL_INTERVAL_S` — see
+[Why is an IoT Hub required?](#why-is-an-iot-hub-required).
 
 ---
 
 ## When an update is offered
 
-**Have the update deployed before you start the sample.** It asks once, on the
-onboarding route, when its provisioning session comes up — it does not poll. A
-deployment created after that check has run is not picked up; restart the sample
-to ask again.
+A deployment created while the sample runs is picked up at the next check, at
+most `AZ_IOT_SU_POLL_INTERVAL_S` later. No check is made while a deployment is in
+flight.
 
 If an update is waiting, the sample verifies the manifest signature, runs the
 simulated download/install/apply workflow and reports the result, all on stdout.
+On success it prints `Update applied. Installed: <provider>/<name>/<version>`
+and sends that id on later checks.
 
-**A response carrying no update means "nothing for me on this route" — it is not
-an error.** An update is only offered on the route matching the deployment, and
-this sample asks on the onboarding route.
+**A 200 response carrying no `updateMetadata` means "nothing for me on this
+route" — it is not an error.** An update is only offered on the route that matches
+the job type: an `OnboardingUpdate` job is served **only** on the onboarding
+route, so it is never offered to this sample, which asks on the regular route.
 
 ---
 
-## Details
+## Additional Details
 
 ### What is real vs. simulated
+
+The simulated hooks are shared with the onboarding sample, in
+[../common/su_sim.c](../common/su_sim.c).
 
 | Concern | Behavior |
 |---|---|
@@ -295,7 +264,7 @@ this sample asks on the onboarding route.
 | `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
-| `is_installed_fn` | Always reports "not installed" so the deployment proceeds |
+| `is_installed_fn` | Reports "already installed" for a manifest whose update id equals the installed one; the workflow then ends as skipped |
 | `persist_state_fn` / `load_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised |
 
 The simulated update payload is **zero-filled** on purpose: the device synthesizes
@@ -309,7 +278,7 @@ offered (see [main.c](main.c)):
 |---|---|---|---|
 | Manufacturer | `Contoso` | `AZ_IOT_SU_MANUFACTURER` | yes |
 | Model | `SU-Sim` | `AZ_IOT_SU_MODEL` | yes |
-| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
+| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — sent on every check; replaced after a successful update |
 
 The sample prints what it reported at startup, so a mismatch is visible rather
 than silent.
@@ -328,27 +297,27 @@ signature verification.
 
 ### Simulation knobs
 
-All default off. Set them in the shell that runs the sample:
+All default off, except `AZ_IOT_SU_POLL_INTERVAL_S`. Set them in the shell that runs the sample:
 
 | Variable | Effect |
 |---|---|
 | `SU_SIM_FAIL_STEP=<n>` | Force `install_fn` to fail at 1-based step *n* (exercises per-step result accumulation + reverse-order rollback) |
 | `SU_SIM_HASH_MISMATCH=1` | Corrupt the synthesized payload to drive the per-file hash-verification failure path |
-| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow |
+| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample persists state and **exits**. Re-run it (without this knob) to `resume()` and finish the workflow; that run skips the startup check (a new workflow would supersede the resumed one); the next poll asks |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
-| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
-| `AZ_IOT_SU_REGISTER_WITH_HUB=1` | Also register and connect to the assigned hub, instead of keeping only the provisioning session (see [No IoT Hub is required](#no-iot-hub-is-required)) |
+| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_regular_state.blob`, distinct from the onboarding sample's) |
+| `AZ_IOT_SU_POLL_INTERVAL_S=<s>` | Seconds between update checks (default `60`); `0` checks once, at startup. A check not answered within half the interval (at most 60 s) is abandoned and asked again at the next poll |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
 
 ```bash
 # Force step 1 install to fail -> reverse-order rollback, failure reported.
-SU_SIM_FAIL_STEP=1 ./az_iot_sample_su
+SU_SIM_FAIL_STEP=1 ./az_iot_sample_simulated_regular
 
 # Drive a payload hash mismatch -> download verification failure.
-SU_SIM_HASH_MISMATCH=1 ./az_iot_sample_su
+SU_SIM_HASH_MISMATCH=1 ./az_iot_sample_simulated_regular
 
 # Require a reboot at install -> persist + exit; re-run to resume() and finish.
-SU_SIM_REBOOT=1 ./az_iot_sample_su
-./az_iot_sample_su            # resumes from the persisted blob
+SU_SIM_REBOOT=1 ./az_iot_sample_simulated_regular
+./az_iot_sample_simulated_regular            # resumes from the persisted blob
 ```

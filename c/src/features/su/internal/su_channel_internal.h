@@ -168,6 +168,20 @@ extern "C"
      */
     az_iot_result (*do_work)(void* ctx);
 
+    /**
+     * @brief REQUIRED. Stop waiting for the verdict of an accepted fetch.
+     *
+     * Called when the engine abandons @p operation on its deadline. The channel
+     * drops the outstanding request if it is that fetch, so a later request is
+     * not refused as busy and a late answer is never delivered; no verdict is
+     * reported for it. Required because verdicts carry no request identity: a
+     * late one would otherwise be taken for a newer request's.
+     *
+     * @param ctx       The channel's context.
+     * @param operation The fetch being abandoned; never AZ_IOT_SU_OP_REPORT_STATUS.
+     */
+    void (*cancel_update)(void* ctx, az_iot_su_operation operation);
+
   } az_iot_su_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */

@@ -807,10 +807,10 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
  * timeout_ms bounds the whole wait in WALL-CLOCK terms;
  * AZ_IOT_SU_REQUEST_NO_TIMEOUT (0) means no bound, and
  * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
- * with no policy of its own -- it bounds the retries an unservable check keeps
- * issuing, not the wait. On
- * expiry the request is dropped and OPERATION_ABANDONED is raised with
- * AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
+ * with no policy of its own. The bound covers the retries before the channel
+ * accepts the check AND the wait for its answer after. On expiry the request
+ * is dropped (the channel stops waiting, so a late answer is ignored) and
+ * OPERATION_ABANDONED is raised with AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
  * onboarding probe and a nightly poll do not share a deadline.
  *
  * Time spent obeying a service-requested delay COUNTS against it. Excluding it

@@ -1007,6 +1007,29 @@ static az_iot_result channel_do_work(void* ctx)
  *
  * Reported raw, without expiring it: retry_after_in_force() clears the deadline
  * as a side effect of reading it, and the engine needs the instant itself. */
+/**
+ * @brief Drop the outstanding request if it is @p operation (a fetch).
+ *
+ * Its response is then ignored (no rid match), the slot is free for the next
+ * request, and the pre-registration hold is released, as on any other final
+ * verdict for a fetch.
+ *
+ * @param ctx       The channel.
+ * @param operation The fetch the engine abandoned.
+ */
+static void channel_cancel_update(void* ctx, az_iot_su_operation operation)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c == NULL || operation == AZ_IOT_SU_OP_REPORT_STATUS || !c->request_pending
+      || c->pending_operation != operation)
+  {
+    return;
+  }
+  AZ_IOT_LOG_DEBUG("su: no longer waiting for the answer to an abandoned update check");
+  c->request_pending = false;
+  channel_release_hold(c);
+}
+
 static const az_iot_su_channel_vtable k_channel_vtable = {
   .open = channel_open,
   .close = channel_close,
@@ -1014,6 +1037,7 @@ static const az_iot_su_channel_vtable k_channel_vtable = {
   .report = channel_report,
   .set_device_properties = channel_set_device_properties,
   .do_work = channel_do_work,
+  .cancel_update = channel_cancel_update,
 };
 
 az_iot_result az_iot_su_channel_dps_init(

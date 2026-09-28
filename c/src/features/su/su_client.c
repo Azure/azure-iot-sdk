@@ -48,6 +48,23 @@
 /* Defined below; used from the workflow state machine above it. */
 static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
+static bool fetch_in_flight_overdue(const az_iot_su_client* client);
+static bool expire_fetch_in_flight(az_iot_su_client* client);
+
+/* fetch_in_flight occupies padding after pending_fetch, so adding it left the
+ * caller-allocated client's size and offsets unchanged. Fails the build if that
+ * padding is ever gone. */
+typedef struct
+{
+  char c;
+  uint64_t v;
+} su_u64_alignment_probe;
+typedef char az_iot_su_fetch_in_flight_uses_padding
+    [((offsetof(az_iot_su_client, _internal.pending_fetch) + 1u)
+          % offsetof(su_u64_alignment_probe, v)
+      != 0u)
+         ? 1
+         : -1];
 
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
@@ -1204,6 +1221,13 @@ static void on_channel_update(
   {
     return;
   }
+  /* Past the check's deadline: the caller was promised an answer by then, so a
+   * late one is ignored; its verdict abandons the check. */
+  if (fetch_in_flight_overdue(client))
+  {
+    AZ_IOT_LOG_ERROR("su: ignoring an update that arrived after its check's deadline");
+    return;
+  }
   process_update_metadata(client, update_payload, update_payload_len);
 }
 
@@ -1327,6 +1351,22 @@ static void on_channel_result(
   if (client == NULL || SU_I(client).detached)
   {
     return;
+  }
+  if (operation != AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    /* A verdict after the deadline is ignored and the check abandoned, as the
+     * tick would have done had it run first. With a newer request queued, that
+     * request's expiry (same deadline) reports it instead. */
+    if (fetch_in_flight_overdue(client))
+    {
+      if (!expire_fetch_in_flight(client))
+      {
+        SU_I(client).fetch_in_flight = SU_FETCH_NONE;
+      }
+      return;
+    }
+    /* The accepted fetch has its verdict; nothing is awaited any more. */
+    SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   }
   if (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
       || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
@@ -1453,16 +1493,64 @@ static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeou
       = (timeout_ms == 0u) ? 0u : az_iot_time_mono_ms() + (uint64_t)timeout_ms;
 }
 
+/** @brief True when the awaited fetch's deadline has passed. */
+static bool fetch_in_flight_overdue(const az_iot_su_client* client)
+{
+  return SU_I(client).fetch_in_flight != SU_FETCH_NONE
+      && SU_I(client).pending_fetch_deadline_ms != 0
+      && az_iot_time_mono_ms() >= SU_I(client).pending_fetch_deadline_ms;
+}
+
+/** @brief The operation a SU_FETCH_* value stands for. */
+static az_iot_su_operation fetch_operation(uint8_t fetch)
+{
+  return (fetch == SU_FETCH_ONBOARDING) ? AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE
+                                        : AZ_IOT_SU_OP_GET_UPDATE;
+}
+
+/**
+ * @brief Abandon an accepted fetch whose answer has not arrived by its deadline.
+ *
+ * The timeout bounds the whole wait, so being accepted by the channel does not
+ * stop the clock. The channel is told to stop waiting, which frees its slot
+ * and makes a late answer be ignored.
+ *
+ * @param client The software updates client.
+ * @return true if the fetch was abandoned.
+ */
+static bool expire_fetch_in_flight(az_iot_su_client* client)
+{
+  uint8_t in_flight = SU_I(client).fetch_in_flight;
+  if (in_flight == SU_FETCH_NONE || SU_I(client).pending_fetch != SU_FETCH_NONE
+      || SU_I(client).pending_fetch_deadline_ms == 0
+      || az_iot_time_mono_ms() < SU_I(client).pending_fetch_deadline_ms)
+  {
+    return false;
+  }
+  AZ_IOT_LOG_ERROR("su: giving up on an update check; no answer before its deadline");
+  SU_I(client).fetch_in_flight = SU_FETCH_NONE;
+  SU_I(client).pending_fetch_deadline_ms = 0;
+  if (SU_I(client).channel.vtable != NULL && SU_I(client).channel.vtable->cancel_update != NULL)
+  {
+    SU_I(client).channel.vtable->cancel_update(
+        SU_I(client).channel.ctx, fetch_operation(in_flight));
+  }
+  raise_abandoned(client, fetch_operation(in_flight), AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+  return true;
+}
+
 static void drive_pending_fetch(az_iot_su_client* client)
 {
+  if (expire_fetch_in_flight(client))
+  {
+    return;
+  }
   uint8_t requested = SU_I(client).pending_fetch;
   if (requested == SU_FETCH_NONE)
   {
     return;
   }
-  az_iot_su_operation operation = (requested == SU_FETCH_ONBOARDING)
-      ? AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE
-      : AZ_IOT_SU_OP_GET_UPDATE;
+  az_iot_su_operation operation = fetch_operation(requested);
 
   /* Give up on a request that has gone unaccepted for too long -- refused, or
    * accepted and returned by a retryable verdict. Checked BEFORE the attempt,
@@ -1481,15 +1569,37 @@ static void drive_pending_fetch(az_iot_su_client* client)
     AZ_IOT_LOG_ERROR("su: giving up on a pending update check; its deadline expired");
     SU_I(client).pending_fetch = SU_FETCH_NONE;
     SU_I(client).pending_fetch_deadline_ms = 0;
+    /* A superseded fetch still awaiting its answer shares the deadline and
+     * goes with it; otherwise it would hold the channel with no bound. */
+    uint8_t in_flight = SU_I(client).fetch_in_flight;
+    SU_I(client).fetch_in_flight = SU_FETCH_NONE;
+    if (in_flight != SU_FETCH_NONE && SU_I(client).channel.vtable != NULL
+        && SU_I(client).channel.vtable->cancel_update != NULL)
+    {
+      SU_I(client).channel.vtable->cancel_update(
+          SU_I(client).channel.ctx, fetch_operation(in_flight));
+    }
     raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
     return;
   }
 
   SU_I(client).pending_fetch = SU_FETCH_NONE;
+  /* Set before the call: a synchronous channel may deliver the verdict from
+   * inside it, which clears this again. */
+  uint8_t previous_in_flight = SU_I(client).fetch_in_flight;
+  SU_I(client).fetch_in_flight = requested;
   az_iot_result r = channel_request_update(client, operation);
-  if (r != AZ_IOT_OK && SU_I(client).pending_fetch == SU_FETCH_NONE)
+  if (r != AZ_IOT_OK)
   {
-    SU_I(client).pending_fetch = requested;
+    /* Refused, so not sent; whatever was in flight before still is. */
+    if (SU_I(client).fetch_in_flight == requested)
+    {
+      SU_I(client).fetch_in_flight = previous_in_flight;
+    }
+    if (SU_I(client).pending_fetch == SU_FETCH_NONE)
+    {
+      SU_I(client).pending_fetch = requested;
+    }
   }
   /* No refresh on a refusal: the deadline is the caller's, and a request whose
    * verdict never arrives has to stay bounded. */
@@ -1524,9 +1634,11 @@ static az_iot_result su_client_init_core(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* open/close/request_update/report are required; do_work is optional. */
+  /* open/close/request_update/report/cancel_update are required; do_work and
+   * set_device_properties are optional. */
   if (channel->vtable->open == NULL || channel->vtable->close == NULL
-      || channel->vtable->request_update == NULL || channel->vtable->report == NULL)
+      || channel->vtable->request_update == NULL || channel->vtable->report == NULL
+      || channel->vtable->cancel_update == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1581,6 +1693,7 @@ static az_iot_result su_client_init_core(
    * asks, with az_iot_su_client_request_onboarding_update() or
    * az_iot_su_client_request_update(). */
   SU_I(client).pending_fetch = SU_FETCH_NONE;
+  SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   return AZ_IOT_OK;
 }
 
