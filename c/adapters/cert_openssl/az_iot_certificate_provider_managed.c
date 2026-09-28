@@ -424,7 +424,7 @@ static az_iot_result managed_store(
 
 static void managed_deinit_vtable(az_iot_certificate_provider* self)
 {
-  az_iot_certificate_provider_managed_destroy((az_iot_certificate_provider_managed*)self);
+  az_iot_certificate_provider_managed_deinit((az_iot_certificate_provider_managed*)self);
 }
 
 static const az_iot_certificate_provider_vtable s_managed_vtable = {
@@ -441,7 +441,7 @@ static const az_iot_certificate_provider_vtable s_managed_vtable = {
  * Public API
  * ------------------------------------------------------------------------ */
 
-void az_iot_certificate_provider_managed_destroy(az_iot_certificate_provider_managed* provider)
+void az_iot_certificate_provider_managed_deinit(az_iot_certificate_provider_managed* provider)
 {
   if (!provider)
   {
@@ -486,7 +486,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
   if (!provider->bootstrap_cert_path || !provider->bootstrap_key_path
       || !provider->operational_key_path || !provider->operational_cert_path)
   {
-    az_iot_certificate_provider_managed_destroy(provider);
+    az_iot_certificate_provider_managed_deinit(provider);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   if (is_nonempty_cstr(opts->trusted_ca_pem_path))
@@ -494,7 +494,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
     provider->trusted_ca_path = dup_str(opts->trusted_ca_pem_path);
     if (!provider->trusted_ca_path)
     {
-      az_iot_certificate_provider_managed_destroy(provider);
+      az_iot_certificate_provider_managed_deinit(provider);
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
@@ -506,14 +506,14 @@ az_iot_result az_iot_certificate_provider_managed_init(
     key = generate_key(provider->key_type);
     if (!key)
     {
-      az_iot_certificate_provider_managed_destroy(provider);
+      az_iot_certificate_provider_managed_deinit(provider);
       return AZ_IOT_ERR_INTERNAL;
     }
     az_iot_result wr = write_key_file(provider->operational_key_path, key);
     if (wr != AZ_IOT_OK)
     {
       EVP_PKEY_free(key);
-      az_iot_certificate_provider_managed_destroy(provider);
+      az_iot_certificate_provider_managed_deinit(provider);
       return wr;
     }
   }

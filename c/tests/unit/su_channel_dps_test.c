@@ -153,7 +153,7 @@ static int teardown(void** state)
   {
     fx->channel.vtable->close(fx->channel.ctx);
     bool adopted = (fx->client.factory_count > 0);
-    az_iot_connection_client_destroy(&fx->client);
+    az_iot_connection_client_deinit(&fx->client);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -879,7 +879,7 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   options.device_properties_buffer = storage;
   options.device_properties_buffer_size = sizeof(storage);
   az_iot_su_client client;
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->client, &options), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
   char escaped_compat[256];
   char escaped_provider[188];
@@ -900,11 +900,11 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
       az_iot_su_client_update_device_properties(&client, &properties), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_memory_equal(storage, storage_before, sizeof(storage_before));
-  az_iot_su_client_destroy(&client);
+  az_iot_su_client_deinit(&client);
 
   /* The same validation must run during initialization, before opening the channel. */
   assert_int_equal(
-      az_iot_su_client_initialize(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
 }
@@ -976,6 +976,46 @@ static void finishing_the_check_releases_the_hold_and_registration_follows(void*
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
+}
+
+/* Cancelling an unanswered fetch frees the slot, ignores its late answer and
+ * lets registration proceed. No verdict is reported: the engine abandoned it. */
+static void cancelling_an_unanswered_fetch_frees_the_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+  assert_non_null(fx->channel.vtable->cancel_update);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  /* A different operation is not the outstanding one: nothing changes. */
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  size_t results_before = fx->result_count;
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->result_count, results_before);
+
+  /* The hold is released, as on any final verdict for a fetch. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* The late answer is consumed and ignored. */
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  (void)inject(fx, m, topic, "{\"updateMetadata\":null}");
+  assert_int_equal(fx->result_count, results_before);
+  assert_int_equal(fx->update_count, 0);
 }
 
 /* The load-bearing rule: a stalled or unavailable device-update service must
@@ -1302,7 +1342,7 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
   fx->channel.vtable->close(fx->channel.ctx);
-  az_iot_connection_client_destroy(&fx->client);
+  az_iot_connection_client_deinit(&fx->client);
   free(fx);
 }
 
@@ -2578,6 +2618,7 @@ int main(void)
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(
         finishing_the_check_releases_the_hold_and_registration_follows, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancelling_an_unanswered_fetch_frees_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hold_expires_and_registration_proceeds_anyway, setup, teardown),
     cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),

@@ -467,6 +467,8 @@ typedef struct
   int request_update_count;
   az_iot_result request_update_result;
   az_iot_su_operation last_request_operation;
+  int cancel_count;
+  az_iot_su_operation last_cancel_operation;
   /* When true, the verdict is delivered from INSIDE request_update(), which the
    * channel contract explicitly permits for a synchronous channel. */
   bool result_is_synchronous;
@@ -641,6 +643,13 @@ static az_iot_result fake_channel_set_properties(
   return AZ_IOT_OK;
 }
 
+static void fake_channel_cancel_update(void* ctx, az_iot_su_operation operation)
+{
+  fake_channel* fc = (fake_channel*)ctx;
+  fc->cancel_count++;
+  fc->last_cancel_operation = operation;
+}
+
 static const az_iot_su_channel_vtable k_fake_channel_vtable = {
   .open = fake_channel_open,
   .close = fake_channel_close,
@@ -648,6 +657,7 @@ static const az_iot_su_channel_vtable k_fake_channel_vtable = {
   .report = fake_channel_report,
   .set_device_properties = fake_channel_set_properties,
   .do_work = fake_channel_do_work,
+  .cancel_update = fake_channel_cancel_update,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -821,9 +831,9 @@ static int teardown(void** state)
      * open_to_connected) is still owned by the test and must be destroyed
      * here. Check before deinit() clears factory_count. */
     bool factory_adopted = (fx->conn.factory_count > 0);
-    az_iot_su_client_destroy(&fx->su);
+    az_iot_su_client_deinit(&fx->su);
 
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!factory_adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -1469,7 +1479,7 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   assert_int_equal(az_iot_su_client_get_state(fresh), AZ_IOT_SU_STATE_IDLE);
   assert_false(fx->log.have_persist);
 
-  az_iot_su_client_destroy(fresh);
+  az_iot_su_client_deinit(fresh);
   free(fresh);
 }
 
@@ -1744,9 +1754,9 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   /* The connection is NOT open: the bootstrap update check runs before the
    * device registers, so initialize must not require a live session. */
   az_iot_su_client su;
-  assert_int_equal(az_iot_su_client_initialize(&su, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&su), AZ_IOT_SU_STATE_IDLE);
-  az_iot_su_client_destroy(&su);
+  az_iot_su_client_deinit(&su);
 
   /* The channel state lives INSIDE the client. Initialization must not zero the
    * client after building it there, or the channel would be left bound to a
@@ -1754,17 +1764,17 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
    * on the first operation. Reaching the connection through the client proves
    * it survived initialization. */
   az_iot_su_client su_state;
-  assert_int_equal(az_iot_su_client_initialize(&su_state, &conn, &o), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su_state, &conn, &o), AZ_IOT_OK);
   const az_iot_su_channel_dps* bound
       = (const az_iot_su_channel_dps*)(const void*)&su_state._internal.channel_storage;
   assert_ptr_equal(bound->connection, &conn);
   assert_ptr_equal(su_state._internal.channel.ctx, bound);
-  az_iot_su_client_destroy(&su_state);
+  az_iot_su_client_deinit(&su_state);
 
   az_iot_su_client su_no_conn;
-  assert_int_equal(az_iot_su_client_initialize(&su_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_init(&su_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
@@ -1860,7 +1870,41 @@ static void device_properties_too_small_is_rejected(void** state)
       az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
+}
+
+/* cancel_update is required: without it a late verdict could be taken for a
+ * newer request's, since verdicts carry no request identity. */
+static void a_channel_without_cancel_update_is_rejected(void** state)
+{
+  (void)state;
+  fake_channel fc;
+  memset(&fc, 0, sizeof(fc));
+  az_iot_su_channel_vtable vtable = k_fake_channel_vtable;
+  vtable.cancel_update = NULL;
+  az_iot_su_channel channel = { .vtable = &vtable, .ctx = &fc };
+
+  hook_log log = { 0 };
+  az_iot_su_platform_hooks hooks = { 0 };
+  az_iot_su_crypto_hooks crypto = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+  crypto.verify_rs256_fn = mock_verify_rs256;
+  crypto.user_ctx = &log;
+  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  uint8_t buf[256];
+  az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
+  su_opts.hooks = &hooks;
+  su_opts.crypto = &crypto;
+  su_opts.device_properties = &dp;
+  su_opts.device_properties_buffer = buf;
+  su_opts.device_properties_buffer_size = sizeof(buf);
+
+  az_iot_su_client su;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_false(fc.opened);
 }
 
 static void device_properties_buffer_size_matches_need(void** state)
@@ -1917,7 +1961,7 @@ static void device_properties_buffer_size_matches_need(void** state)
   az_iot_su_client su_ok;
   o.device_properties_buffer_size = need;
   assert_int_equal(az_iot_su_client__initialize_with_channel(&su_ok, &channel, &o), AZ_IOT_OK);
-  az_iot_su_client_destroy(&su_ok);
+  az_iot_su_client_deinit(&su_ok);
 
   az_iot_su_client su_short;
   o.device_properties_buffer_size = need - 1;
@@ -1925,7 +1969,7 @@ static void device_properties_buffer_size_matches_need(void** state)
       az_iot_su_client__initialize_with_channel(&su_short, &channel, &o),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void rejected_properties_preserve_the_entire_cache(void** state)
@@ -2116,14 +2160,14 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&client, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(fx->conn.dps_hold_count, 0);
 
   dp.manufacturer = "m";
-  assert_int_equal(az_iot_su_client_initialize(&client, &fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, "m");
-  az_iot_su_client_destroy(&client);
+  az_iot_su_client_deinit(&client);
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -2138,6 +2182,7 @@ static void property_updates_work_without_a_channel_setter(void** state)
     .request_update = fake_channel_request_update,
     .report = fake_channel_report,
     .do_work = fake_channel_do_work,
+    .cancel_update = fake_channel_cancel_update,
   };
   fx->su._internal.channel.vtable = &vtable;
   az_iot_su_custom_property custom = { "board", "" };
@@ -3684,6 +3729,189 @@ static void a_late_verdict_cannot_resurrect_an_unbounded_request(void** state)
   assert_int_not_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
 }
 
+/* The timeout bounds the WHOLE wait: a request the channel accepted but never
+ * answered is abandoned at its deadline, and the channel told to stop waiting.
+ * Without it one lost answer holds the channel's single slot for good, and
+ * every later request is refused as busy. */
+static void an_accepted_request_without_an_answer_is_abandoned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK; /* accepted; no verdict follows */
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_not_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  /* Awaited while the deadline stands; sent once, not resent. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->chan.cancel_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  /* Once: no repeat, no resend. */
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* An answer that arrives after the deadline -- before the tick noticed -- is
+ * ignored: the update is not started, and the check is abandoned once. */
+static void an_answer_after_the_deadline_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+
+  /* The channel delivers the update, then its verdict. */
+  const char* patch = signed_patch();
+  fx->chan.cb((const uint8_t*)patch, strlen(patch), fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  pump(fx, 5);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->abandoned_count, 1);
+}
+
+/* A retryable verdict after the deadline does not re-arm the check. */
+static void a_retryable_verdict_after_the_deadline_abandons(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  int sent = fx->chan.request_update_count;
+  pump(fx, 5);
+  assert_int_equal(fx->chan.request_update_count, sent);
+}
+
+/* An answer ends the wait: nothing is abandoned after it. */
+static void an_answer_ends_the_in_flight_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+}
+
+/* A newer request queued behind an unanswered one shares its fate at the
+ * deadline: one abandonment, for the newer route, and the older one cancelled
+ * so it does not hold the channel with no bound. */
+static void a_superseded_in_flight_request_is_cancelled_with_the_newer_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 2);
+
+  /* The channel is busy with the first; the second stays queued. */
+  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 2); /* a refusal does not clear it */
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+}
+
+/* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
+static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  for (int i = 0; i < 20; ++i)
+  {
+    (void)az_iot_su_client_do_work(&fx->su);
+  }
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+}
+
 /* The documented opt-out: AZ_IOT_SU_REQUEST_NO_TIMEOUT retries indefinitely.
  * Passed as the real argument, so the path is covered through the public API
  * rather than by poking the deadline. */
@@ -4193,6 +4421,17 @@ int main(void)
         a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
     cmocka_unit_test(the_public_timeout_macros_hold_their_contract),
     cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
+    cmocka_unit_test(a_channel_without_cancel_update_is_rejected),
+    cmocka_unit_test_setup_teardown(an_answer_after_the_deadline_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retryable_verdict_after_the_deadline_abandons, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_service_delay_does_not_extend_the_callers_deadline, setup, teardown),

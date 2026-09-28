@@ -251,7 +251,7 @@ static void device_disconnect(custody_fixture* fx)
 {
   if (fx->telemetry_ok)
   {
-    az_iot_mqttv3_telemetry_client_destroy(&fx->telemetry);
+    az_iot_mqttv3_telemetry_client_deinit(&fx->telemetry);
     fx->telemetry_ok = false;
   }
   if (fx->conn_ok)
@@ -261,7 +261,7 @@ static void device_disconnect(custody_fixture* fx)
     {
       (void)az_iot_connection_client_do_work(&fx->conn, 50);
     }
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     fx->conn_ok = false;
   }
   free(fx->config.id_scope);

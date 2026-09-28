@@ -22,11 +22,9 @@ The infrastructure was designed to satisfy these requirements:
   resource group.
 - **As parallel as possible.** The OS matrix legs run concurrently, each in its
   own isolated resource group.
-- **Long-running suites out of PRs.** The software updates service takes
-  ~25 minutes to provision, so software updates e2e is excluded from normal PRs and runs on a
-  fixed nightly schedule / manual dispatch — *unless* a PR changes software updates code
-  paths, in which case it is opted in automatically.
-- **Cross-platform.** Every scenario runs on both Windows and Linux hosts.
+- **Long-running suites out of PRs.** Software updates e2e needs a DPS, ADR namespace and
+  Device Update instance linked together, so it runs in its own workflow, not on PRs.
+- **Cross-platform.** Every scenario runs on both Windows and Linux hosts (software updates e2e: Linux only).
 
 ---
 
@@ -202,14 +200,65 @@ The two `test` legs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a leg fails — or if the run is cancelled — so resources
 are never leaked.
 
-> **Software updates e2e** is `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`, built with
-> `-DAZ_IOT_BUILD_E2E_SU=ON`, not on Windows). Its four scenarios drive the DPS channel
-> directly: onboarding check, hold release and registration, ETag storage, and an
-> unknown-workflow report. The workflow engine is not exercised. The five twin-driven
-> scenarios in `tests/e2e_su_twin_test.c` retired with the Device Update for IoT Hub cut
-> and are not built. The slow-lane workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) is parked (manual
-> dispatch only) — see *Future work*.
+> **Software updates e2e** runs in its own workflow
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch
+> until its environment exists). See [Software updates e2e](#software-updates-e2e).
+
+---
+
+## Software updates e2e
+
+Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` (not on Windows) and selected by
+`ctest -R e2e_su`. Both run the shipping SDK over Paho and X.509 against the real service.
+
+| Suite | What it drives |
+| --- | --- |
+| `az_iot_tests_e2e_su` (`e2e_su_test.c`) | The DPS channel with no update offered: onboarding check, hold release and registration, ETag storage, unknown-workflow report. |
+| `az_iot_tests_e2e_su_offer` (`e2e_su_offer_test.c`) | Offered updates through `az_iot_su_client`: OpenSSL crypto, Microsoft plus test root keys, real download (libcurl) and hash; install/apply recorded, failures injected. A spy around the channel records each report and the service's verdict. |
+
+Offered-update scenarios:
+
+| Scenario | Offer |
+| --- | --- |
+| real update downloaded, verified, installed, reported SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL` |
+| identical terminal report accepted; conflicting one gets 409000 `REPORT_CONFLICT` | same |
+| workflow offered again after its terminal report; identical re-report accepted | same |
+| incompatible device offered nothing | none |
+| install failure rolled back, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE` |
+| already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
+| manifest verified against the wrong keys, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED` |
+
+The device identity is fixed by its certificate, so offers are told apart by compatibility:
+each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
+its own Azure Device Registry `OnboardingUpdate` job.
+[`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
+checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
+(`Remove-SuE2EOffers`).
+
+Every variable is required; a missing one fails the suite or the scenario that needs it.
+
+| Env var | Meaning |
+| --- | --- |
+| `AZ_IOT_E2E_SU_DPS_HOST` | DPS global endpoint |
+| `AZ_IOT_E2E_SU_ID_SCOPE` | DPS id scope |
+| `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
+| `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
+| `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
+| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers`) |
+
+`https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
+
+Measured against the service:
+
+- A workflow is offered again after its terminal report.
+- Re-sending the identical terminal report is accepted.
+- A different terminal outcome for the same workflow is rejected with 409000 `REPORT_CONFLICT`.
+  A SKIPPED report after SUCCEEDED was accepted, and a later SUCCEEDED was still accepted.
+
+Placeholders (`E2E-PLACEHOLDER`) mark what is not done: the workflow's environment and
+triggers, test root keys pinned in `e2e_su_test_roots.c` instead of fetched at run time, the job
+status expected for a SKIPPED report, the run lookup for a continuous onboarding job, and
+scenarios for the operational route, multi-step updates and reboot/resume.
 
 ---
 
@@ -249,11 +298,3 @@ are never leaked.
    devices, provision more via
    `New-AzIotTestEnvironment -DpsX509IndividualEnrollments <N>` and thread the
    extra registration ids/material through.
-
-### Future work
-
-- Re-target the device-side software updates e2e scenarios at **Software updates**. The five scenarios in
-  `tests/e2e/tests/e2e_su_twin_test.c` drove a device-twin deployment and are retired (not built) (see [su-client-plan.md](su-client-plan.md#what-device-update-for-iot-hub-is-cut-means)).
-  The replacement drives the update check, install and report through the DPS-fronted
-  operations, with the service side verified in the software updates workflow's test job. The device
-  fixture and the mocked crypto/payload hooks carry over unchanged.

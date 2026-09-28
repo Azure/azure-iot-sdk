@@ -174,6 +174,29 @@ char* sample_env_dup(const char* name, const char* fallback)
 #endif
 }
 
+bool sample_copy_str(char* dst, size_t dst_size, const char* src)
+{
+  size_t n = strlen(src);
+  if (n >= dst_size)
+  {
+    return false;
+  }
+  memcpy(dst, src, n + 1);
+  return true;
+}
+
+bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
+{
+  char* v = sample_env_dup(name, fallback);
+  bool ok = (v != NULL) && sample_copy_str(dst, dst_size, v);
+  if (v != NULL && !ok)
+  {
+    fprintf(stderr, "%s is too long (max %zu characters).\n", name, dst_size - 1);
+  }
+  free(v);
+  return ok;
+}
+
 uint64_t sample_now_ms(void)
 {
 #ifdef _WIN32

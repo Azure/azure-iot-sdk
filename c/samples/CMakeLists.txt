@@ -27,22 +27,8 @@ if(AZ_IOT_WITH_PAHO)
     # AEG (MQTT v5) hubs only.
     add_subdirectory(mqttv5)
 
-    # The software updates sample additionally needs the OpenSSL crypto adapter for real
-    # manifest JWS verification + SHA-256. Built only when that adapter exists.
-    if(TARGET az_iot_su_crypto_openssl)
-        add_executable(az_iot_sample_su
-            su/pc/main.c common/sample_utils.c)
-        target_include_directories(az_iot_sample_su PRIVATE common)
-        target_link_libraries(az_iot_sample_su
-            PRIVATE az_iot_core az_iot_adapter_paho az_iot_su_crypto_openssl)
-        # nanosleep()/struct timespec need the POSIX feature-test macros under -std=c99.
-        if(NOT WIN32)
-            target_compile_definitions(az_iot_sample_su PRIVATE
-                _POSIX_C_SOURCE=200809L
-                _DEFAULT_SOURCE)
-        endif()
-        az_iot_apply_warnings(az_iot_sample_su)
-    endif()
+    # Software Update PC samples; they need the OpenSSL crypto adapter.
+    add_subdirectory(software_update)
 endif()
 
 # Authentication / certificate-management samples. The subdirectory decides

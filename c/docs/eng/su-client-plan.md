@@ -63,7 +63,7 @@ ADR → Device Update. The device never talks to Device Update directly and hold
 
 **Removed** (public API break, no deprecation window):
 
-- `az_iot_su_client_initialize()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
+- `az_iot_su_client_init()`'s mandatory `az_iot_twin_client*` and the five twin call sites.
 - Desired-property deployment parsing/dispatch, twin accept/reject acknowledgement (200/406),
   reported-property agent state (`0/6/255`) and device-properties reporting, the initial twin GET,
   and twin re-subscription on reconnect for software updates.
@@ -112,7 +112,7 @@ size or order.
 [Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
 velocity; three items cannot be dated, and row 59 holds its date only if its gate clears.
 
-† Row 59 meets 9/28 only if the test-environment access grant lands by 9/28.
+† Row 59 meets 9/28 only if the CI environment is provided by 9/28.
 
 
 | # | Category | Support | Pri | Size | Depends | Order | ETA | Details |
@@ -156,7 +156,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
-| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su` runs four DPS-channel scenarios (engine not exercised); the five twin-driven scenarios are retired and not built. An offered-update scenario is still needed. [→](#k-testing-and-conformance) |
+| 59 | Testing and conformance | 🟡 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su_offer` drives offered updates through the whole client (real crypto, download and report). Four scenarios pass against the service; three need their own staged offers, and `ci-c-e2e-adu` needs its environment. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
 | 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
 | 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
@@ -167,7 +167,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 40 | Software updates transport | 🟡 | P1 | M | — | 13 | 10/9 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 41 | Software updates transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_su_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 57 | Testing and conformance | 🔜 | P1 | M | — | 15 | 10/9 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
-| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/su/esp32` passes the connection client to `az_iot_su_client_initialize()` and asks for an onboarding update; not built or run with ESP-IDF since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
+| 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/software_update/esp32` passes the connection client to `az_iot_su_client_init()`, asks on the onboarding route until it has connected to its hub (recorded in NVS) and on the regular route after, and polls every `SU_POLL_INTERVAL_S`. Builds with ESP-IDF v6.0; not run on a device since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
 | 18 | Download and integrity | 🔜 | P2 | L | — | 16 | ~10/9 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
 | 24 | Security and trust | ⚙️ | P2 | M | — | 17 | ~10/9 | **HSM / PKCS#11 backend** — possible via `verify_rs256_fn`; no adapter ships. [→](#d-security-and-trust) |
 | 46 | Day0 recovery | 🔜 | P2 | L | — | 18 | blocked | **Unauthenticated recovery transport** — plain-HTTP recovery endpoint (protocol not yet defined). [→](#h-day0-recovery) |
@@ -250,7 +250,7 @@ is dated 9/28 on the condition above:
 | 14 | Cancellation | No software updates service input sets the flag. The local API is ours; the trigger is not. |
 | 33 | ESP32 sample port | Needs the ESP-IDF toolchain to build or run. |
 | 46–48 | Day0 recovery | The recovery protocol is not yet defined. |
-| 59 | E2E vs real service | The test environment rejects every device-update fetch; needs an access grant. |
+| 59 | E2E vs real service | `ci-c-e2e-adu` needs a standing environment (repository variables and secrets) with rights to import updates and create ADR jobs. |
 
 Marking these `blocked` rather than giving them a date is deliberate. A date on a row
 nobody here can start is a number, not a plan.
@@ -463,13 +463,16 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
   install command, file-based persistence). *Caveat:* the PC sample's download/install hooks are
   still **simulated** and live in the sample, so there is no real Linux install/apply reference
   under `adapters/`.
-- **The PC sample is current** (`samples/su/pc`): it provisions through DPS, asks for an
-  onboarding update explicitly, and follows the workflow through the software updates observer rather
-  than polling. It runs on a device with no IoT Hub via `dps.provision_only`.
-- **The ESP32 sample is ported but unverified (🟡).** `samples/su/esp32` passes the connection
-  client to `az_iot_su_client_initialize()` and asks for an onboarding update, like the PC
-  sample. It is not part of the CMake build (it needs the ESP-IDF toolchain) and has not been
-  built or run on a device since the port. Its platform hooks live in `adapters/su/esp32/`.
+- **The PC samples are current** (`samples/software_update/pc`): both provision through DPS
+  and follow the workflow through the software updates observer. `simulated_onboarding` asks
+  for an onboarding update once and runs on a device with no IoT Hub via `dps.provision_only`;
+  `simulated_regular` registers, asks on the regular route at startup and then at a fixed
+  interval, and reports the applied update as installed.
+- **The ESP32 sample is ported but unverified (🟡).** `samples/software_update/esp32` passes the
+  connection client to `az_iot_su_client_init()`, picks the onboarding or regular route
+  from an NVS flag, and polls on the regular route once connected. It is not part of the CMake
+  build (it needs the ESP-IDF toolchain); it builds with ESP-IDF v6.0 but has not been run on a
+  device since the port. Its platform hooks live in `adapters/su/esp32/`.
 
 ## G. Software updates transport (via the DPS gateway)
 
@@ -624,11 +627,13 @@ crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in P
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_su_conformance` over all
   protocol states + single/multi-step manifests, written against the **Software updates** contract.
-- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`) runs four
-  DPS-channel scenarios and does not exercise the workflow engine
-  ([end-to-end-tests.md](end-to-end-tests.md)). The five twin-driven scenarios
-  (`tests/e2e_su_twin_test.c`) are retired and not built; an offered-update scenario is still
-  needed. Its device fixture and mocked crypto/payload hooks carry over.
+- **E2E (🟡)** — `az_iot_tests_e2e_su` drives the DPS channel with no update offered;
+  `az_iot_tests_e2e_su_offer` drives offered updates through the whole client with real crypto,
+  real download and hash, and records every report and verdict
+  ([end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e)). The twin-driven suite is
+  deleted. Open: staged offers for the install-failure, already-installed and untrusted
+  scenarios, the `ci-c-e2e-adu` environment, and scenarios for the operational route,
+  multi-step updates and reboot/resume.
 
 ## L. Advanced update model
 
@@ -675,8 +680,8 @@ Not code — things I (or the team) must do out-of-band:
   service-config ETag resend semantics are still settling (DRAFT). See
   [su-spec.md](su-spec.md), which separates what is measured from what is drafted.
 - **Confirm auth/transport phasing** — the design phases X.509 first, then symmetric key, TPM and AMQP.
-  Measured today: **SAS from the DPS enrollment-group symmetric key over HTTPS** works on this path;
-  X.509 on it is not yet confirmed, and no MQTT binding for the three operations has been observed.
+  Measured today: **SAS from the DPS enrollment-group symmetric key** (HTTPS) and **X.509** (HTTPS and
+  the DPS MQTT session the SDK uses) both work on this path.
   Identity headers stay DPS-gateway-populated (the client sets none).
 - **Use the reference ADR → Device Update cloud demo to stand up DPS + ADR + Device Update** rather than building an
   environment by hand. Point its config at your own resource group, namespace and update instance; it

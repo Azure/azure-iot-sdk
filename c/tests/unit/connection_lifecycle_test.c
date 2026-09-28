@@ -56,10 +56,10 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    /* A registered factory is adopted by the client and freed from destroy();
+    /* A registered factory is adopted by the client and freed from deinit();
      * an unregistered one is still ours. */
     bool adopted = (fx->client->factory_count > 0);
-    az_iot_connection_client_destroy(&fx->client_storage);
+    az_iot_connection_client_deinit(&fx->client_storage);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -109,7 +109,7 @@ static void open_without_host_or_dps_is_rejected(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 static void open_without_client_id_is_rejected(void** state)
@@ -121,7 +121,7 @@ static void open_without_client_id_is_rejected(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 static void open_while_connecting_is_rejected(void** state)
@@ -169,7 +169,7 @@ static void open_rejects_factory_of_the_wrong_version(void** state)
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, v5), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 static void open_connects_to_the_configured_endpoint(void** state)
@@ -189,7 +189,7 @@ static void open_connects_to_the_configured_endpoint(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* Open a throwaway client with the given options and hand back the CONNECT the
- * adapter recorded. The record is copied out by value before destroy(), which
+ * adapter recorded. The record is copied out by value before deinit(), which
  * frees the mock the call history lives in. */
 static void connect_call_for(
     const az_iot_connection_client_options* opts,
@@ -208,7 +208,7 @@ static void connect_call_for(
   assert_non_null(rec);
   *out_connect = *rec;
 
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 static void keep_alive_defaults_when_unset(void** state)
@@ -403,7 +403,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
   assert_true(az_iot_connection_client__is_connected(&c));
 
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 /* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
@@ -437,7 +437,7 @@ static void reconnection_can_still_be_disabled(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
 
   assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 /* ...but a clean peer DISCONNECT with retrying disabled is NOT a fault. It is
@@ -480,7 +480,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
 
   /* IDLE means reopenable, which is the point of the distinction. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 /* The default options must not pin a port, or selecting WebSockets on top of
@@ -703,14 +703,14 @@ static void close_from_faulted_twice_is_idempotent(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* destroy()                                                                 */
+/* deinit()                                                                 */
 /* ------------------------------------------------------------------------- */
 
 /* Register a factory the client will NOT free.
  *
- * destroy() calls every registered factory's destroy hook, and the mock's hook
+ * deinit() calls every registered factory's destroy hook, and the mock's hook
  * frees the factory itself -- so a test that inspects the factory AFTER
- * destroy() would be reading freed memory. glibc happens to leave the bytes
+ * deinit() would be reading freed memory. glibc happens to leave the bytes
  * looking like the values the assertions want, which is why this passes on a
  * plain Linux build; valgrind reports an invalid read, and the MSVC debug CRT
  * fills freed blocks with 0xDD so the assertion fails outright. The client
@@ -723,7 +723,7 @@ static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_f
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(c, &borrowed), AZ_IOT_OK);
 }
 
-static void destroy_while_connected_destroys_the_adapter(void** state)
+static void deinit_while_connected_destroys_the_adapter(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_classic_options();
@@ -738,15 +738,15 @@ static void destroy_while_connected_destroys_the_adapter(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&c, 0);
 
-  /* The mock frees itself inside destroy(), so read the state we care about
+  /* The mock frees itself inside deinit(), so read the state we care about
    * from the factory: a destroyed client detaches itself from last_client. */
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
 
   az_iot_mock_mqtt_factory_destroy(factory);
 }
 
-static void destroy_while_connecting_destroys_the_adapter(void** state)
+static void deinit_while_connecting_destroys_the_adapter(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_classic_options();
@@ -759,19 +759,19 @@ static void destroy_while_connecting_destroys_the_adapter(void** state)
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
 
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
 
   az_iot_mock_mqtt_factory_destroy(factory);
 }
 
-static void destroy_is_silent_on_the_state_callback(void** state)
+static void deinit_is_silent_on_the_state_callback(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   (void)open_to_connected(fx);
 
   size_t transitions = fx->log.count;
-  az_iot_connection_client_destroy(fx->client);
+  az_iot_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
   /* Neutralize the fixture teardown: the client is already destroyed and the
@@ -780,10 +780,10 @@ static void destroy_is_silent_on_the_state_callback(void** state)
   fx->factory = NULL;
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_connection_client_destroy(NULL);
+  az_iot_connection_client_deinit(NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1200,10 +1200,10 @@ static void adding_is_refused_from_inside_an_observer_but_removing_is_not(void**
 /* The case the removal rule exists for: an owner that tears itself down from
  * inside an observer.
  *
- * This is what a feature client's destroy path does when an application
+ * This is what a feature client's deinit path does when an application
  * destroys it in reaction to a transition. Withdrawing must take effect, or the
  * registry keeps calling a callback whose context has been released -- the
- * entry holds a raw pointer, and the storage is gone the moment destroy()
+ * entry holds a raw pointer, and the storage is gone the moment deinit()
  * returns.
  *
  * Asserted as "no further deliveries", which is the property that matters; a
@@ -1369,11 +1369,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(close_from_faulted_twice_is_idempotent, setup, teardown),
     cmocka_unit_test_setup_teardown(
         open_after_close_from_faulted_starts_a_new_session, setup, teardown),
-    /* destroy() */
-    cmocka_unit_test(destroy_while_connected_destroys_the_adapter),
-    cmocka_unit_test(destroy_while_connecting_destroys_the_adapter),
-    cmocka_unit_test_setup_teardown(destroy_is_silent_on_the_state_callback, setup, teardown),
-    cmocka_unit_test(destroy_tolerates_null),
+    /* deinit() */
+    cmocka_unit_test(deinit_while_connected_destroys_the_adapter),
+    cmocka_unit_test(deinit_while_connecting_destroys_the_adapter),
+    cmocka_unit_test_setup_teardown(deinit_is_silent_on_the_state_callback, setup, teardown),
+    cmocka_unit_test(deinit_tolerates_null),
     /* do_work() */
     cmocka_unit_test(do_work_rejects_null_client),
     cmocka_unit_test_setup_teardown(do_work_before_open_touches_no_adapter, setup, teardown),
