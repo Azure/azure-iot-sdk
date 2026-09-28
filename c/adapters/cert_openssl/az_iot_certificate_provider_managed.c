@@ -319,6 +319,20 @@ static BIO* key_to_bio(EVP_PKEY* key)
   return mem;
 }
 
+/** @brief Stage private @p key next to @p path (stage_bio). */
+static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
+{
+  *out_tmp = NULL;
+  BIO* mem = key_to_bio(key);
+  if (!mem)
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result rc = stage_bio(path, mem, out_tmp);
+  BIO_free(mem);
+  return rc;
+}
+
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
   BIO* mem = key_to_bio(key);
@@ -784,33 +798,49 @@ static az_iot_result managed_store(
   }
   else if (rc == AZ_IOT_OK)
   {
-    /* Stage both files, then swap key before chain. Only a failed final rename
-     * can split the pair; the previous key is then restored so they match. */
+    /* Stage the new key, the new chain and a copy of the current key, then
+     * rename key before chain. If the chain rename fails, the copy is renamed
+     * back so the pair on disk still matches. If that fails too, the new key
+     * stays on disk with the old chain: adopt the new key in memory and stop
+     * serving the operational identity, so load() never returns a pair that
+     * cannot match. */
     char* key_tmp = NULL;
     char* cert_tmp = NULL;
-    BIO* key_mem = key_to_bio(pending);
-    rc = key_mem ? stage_bio(m->operational_key_path, key_mem, &key_tmp) : AZ_IOT_ERR_INTERNAL;
-    BIO_free(key_mem);
+    char* backup_tmp = NULL;
+    rc = stage_key(m->operational_key_path, pending, &key_tmp);
     if (rc == AZ_IOT_OK)
     {
       rc = stage_bio(m->operational_cert_path, mem, &cert_tmp);
     }
     if (rc == AZ_IOT_OK)
     {
+      rc = stage_key(m->operational_key_path, (EVP_PKEY*)m->operational_key, &backup_tmp);
+    }
+    if (rc == AZ_IOT_OK)
+    {
       rc = commit_file(key_tmp, m->operational_key_path);
       key_tmp = NULL;
-      if (rc == AZ_IOT_OK)
+    }
+    if (rc == AZ_IOT_OK)
+    {
+      rc = commit_file(cert_tmp, m->operational_cert_path);
+      cert_tmp = NULL;
+      if (rc != AZ_IOT_OK)
       {
-        rc = commit_file(cert_tmp, m->operational_cert_path);
-        cert_tmp = NULL;
-        if (rc != AZ_IOT_OK)
+        az_iot_result restored = commit_file(backup_tmp, m->operational_key_path);
+        backup_tmp = NULL;
+        if (restored != AZ_IOT_OK)
         {
-          (void)write_key_file(m->operational_key_path, (EVP_PKEY*)m->operational_key);
+          EVP_PKEY_free((EVP_PKEY*)m->operational_key);
+          m->operational_key = pending;
+          m->pending_key = NULL;
+          m->has_operational = false;
         }
       }
     }
     discard_file(key_tmp);
     discard_file(cert_tmp);
+    discard_file(backup_tmp);
     if (rc == AZ_IOT_OK)
     {
       EVP_PKEY_free((EVP_PKEY*)m->operational_key);

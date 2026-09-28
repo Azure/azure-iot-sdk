@@ -16,8 +16,9 @@
  *     process restarts. A store is refused unless every certificate in the
  *     chain parses and the leaf certifies the pending CSR key (which then
  *     replaces the operational key file) or the current operational key. A
- *     failed store keeps the previous key and certificate. A pending key does not survive deinit or a
- *     restart: a chain for it arriving afterwards is refused; request a new CSR.
+ *     failed store keeps the previous key and certificate. A pending key does
+ *     not survive deinit or a restart: a chain for it arriving afterwards is
+ *     refused; request a new CSR.
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name

@@ -856,7 +856,19 @@ static void managed_each_csr_uses_a_new_key(void** state)
   /* The key file still holds the current key until a chain arrives. */
   assert_true(key_file_is(OP_KEY, (EVP_PKEY*)prov.operational_key));
 
+  /* Newest wins: a chain for the superseded CSR is refused and leaves the
+   * newest pending, which then completes. */
+  char* stale = make_cert_base64(k1, 1);
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, store_one(&prov, stale));
+  assert_non_null(prov.pending_key);
+  char* fresh = make_cert_base64(k2, 2);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, fresh));
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, k2));
+  assert_true(key_file_is(OP_KEY, k2));
+
   az_iot_certificate_provider_managed_deinit(&prov);
+  free(fresh);
+  free(stale);
   EVP_PKEY_free(k1);
   EVP_PKEY_free(k2);
   remove_test_files();
@@ -1064,6 +1076,37 @@ static void managed_writes_replace_a_link_instead_of_following_it(void** state)
   (void)remove(LINK_TARGET);
   remove_test_files();
 }
+
+/* If the chain cannot be renamed into place after the new key was, the old
+ * key is put back: the pair on disk still matches and nothing is left behind.
+ * A directory at the chain path makes that rename fail. */
+static void managed_a_failed_chain_rename_restores_the_key(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(old_key);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  assert_int_equal(0, mkdir(OP_CERT, 0700));
+
+  char* cert = make_cert_base64(csr_key, 1);
+  assert_int_equal(AZ_IOT_ERR_INTERNAL, store_one(&prov, cert));
+  assert_true(key_file_is(OP_KEY, old_key));
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, old_key));
+  assert_non_null(prov.pending_key);
+  assert_false(prov.has_operational);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  assert_int_equal(0, rmdir(OP_CERT));
+  free(cert);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(old_key);
+  remove_test_files();
+}
 #endif
 
 /* Neither bundled provider implements the optional sign() hook, so the connect
@@ -1113,6 +1156,7 @@ int main(void)
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
+    cmocka_unit_test(managed_a_failed_chain_rename_restores_the_key),
 #endif
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
