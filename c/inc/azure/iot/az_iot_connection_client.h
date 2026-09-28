@@ -565,6 +565,27 @@ extern "C"
      * disconnected session is also bounded by its queue (100 messages / 1 MB) --
      * overflowing that destroys the session regardless of this value. */
     uint32_t session_expiry_seconds;
+
+    /**
+     * @brief Store a certificate issued by az_iot_connection_client_send_csr()
+     * in #certificate_provider, so the next hub connect uses it.
+     *
+     * When true, on AZ_IOT_CSR_ISSUED the client calls the provider's
+     * store_issued_certificate() before the CSR callback, and reports the result
+     * in az_iot_csr_event.store_status. The live session is never torn down; the
+     * new certificate takes effect on the next connect (reconnect, or close() +
+     * open()). If storing fails, the client stays connected and keeps using the
+     * previous credential.
+     *
+     * When false, the application owns the issued chain.
+     *
+     * Hub renewal (mqttv3) only. DPS enrollment always stores (see
+     * dps.request_operational_certificate).
+     *
+     * az_iot_connection_client_options_default() sets true; a zeroed struct has
+     * false.
+     */
+    bool use_issued_certificates;
   } az_iot_connection_client_options;
 
   /* Which of the client's two lifecycles something refers to.
@@ -725,15 +746,35 @@ extern "C"
     int32_t service_code; /* hub errorCode on FAILED; 0 otherwise     */
     uint32_t retry_after_s; /* suggested retry delay; 0 if none         */
     const az_iot_issued_certificate* issued; /* non-NULL on ISSUED          */
+    /**
+     * @brief ISSUED only: outcome of storing the chain in the certificate provider.
+     *
+     * AZ_IOT_OK: stored; the next hub connect uses it.
+     * AZ_IOT_ERR_NOT_SUPPORTED: not stored (opts.use_issued_certificates is
+     * false, or the provider has no store_issued_certificate()).
+     * Other: the provider's failure; the previous credential stays in use.
+     */
+    az_iot_result store_status;
   } az_iot_csr_event;
 
   typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
-  /* Fired when the connection client obtains a DPS/provider-issued operational
-   * certificate during provisioning (D4). Optional; use for app-side persistence
-   * or to react (e.g. inventory). The chain is valid only during the callback. */
-  typedef void (
-      *az_iot_operational_cert_callback)(const az_iot_issued_certificate* issued, void* user_ctx);
+  /**
+   * @brief Fired when DPS issues an operational certificate during provisioning (D4).
+   *
+   * Fires after the client tries to store the chain in the certificate provider,
+   * whether or not that succeeded.
+   *
+   * @param issued Issued chain, leaf first. Valid only during the callback.
+   * @param store_result AZ_IOT_OK: stored in the provider. AZ_IOT_ERR_NOT_SUPPORTED:
+   * the provider has no store_issued_certificate(). Other: the provider's failure;
+   * the registration then fails, as any DPS failure does (see reconnection_policy).
+   * @param user_ctx Context given at registration.
+   */
+  typedef void (*az_iot_operational_cert_callback)(
+      const az_iot_issued_certificate* issued,
+      az_iot_result store_result,
+      void* user_ctx);
 
   /* Fired when a DPS registration completes and the assignment carries a custom
    * payload -- `registrationState.payload`, the counterpart of
@@ -1378,8 +1419,8 @@ extern "C"
       const az_iot_connection_client* client,
       az_iot_connection_scope scope);
 
-  /* Register a callback fired when a DPS/provider-issued operational certificate
-   * is obtained during provisioning (D4). Optional. */
+  /* Register a callback fired when DPS issues an operational certificate during
+   * provisioning (D4), with the result of storing it. Optional. */
   az_iot_result az_iot_connection_client_set_operational_cert_callback(
       az_iot_connection_client* client,
       az_iot_operational_cert_callback cb,
@@ -1434,6 +1475,9 @@ extern "C"
    * The request's device id is taken from the connected client_id. Only one CSR
    * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The issued
    * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
+   * With opts.use_issued_certificates, the chain is stored in the certificate
+   * provider before that callback (result in evt->store_status) and used on the
+   * next hub connect; the live session is not torn down.
    * If no terminal (200/error) response arrives within an internal timeout, the
    * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
    * is released, so a lost response can never wedge renewal permanently. */

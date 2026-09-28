@@ -12,7 +12,8 @@
  *   - produces PKCS#10 CSRs over that operational key (get_csr);
  *   - persists the DPS/Hub-issued operational certificate chain to disk
  *     (store_issued_certificate) and serves it back on subsequent loads and
- *     process restarts.
+ *     process restarts. A store replaces the file only once the new chain is
+ *     written and parses, so a failed store keeps the previous certificate.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
  * with a TPM/HSM/secure element should implement their own provider with a
@@ -50,7 +51,8 @@ extern "C"
      * is generated and written here (PEM). Required. */
     const char* operational_key_pem_path; /* required */
     /* Where the issued operational certificate chain is persisted. Written by
-     * store_issued_certificate(); read back on load() and on restart. Required. */
+     * store_issued_certificate() via "<path>.tmp"; read back on load() and on
+     * restart. Required. */
     const char* operational_cert_pem_path; /* required */
     /* Key type used only when generating a new operational key. */
     az_iot_certificate_managed_key_type key_type;

@@ -12,10 +12,12 @@
  *   1. Connect, then produce a fresh CSR from the managed provider and call
  *      az_iot_connection_client_send_csr().
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
- *      the new chain - and the sample persists it through the provider.
+ *      the new chain. The client stores it in the provider
+ *      (opts.use_issued_certificates, on by default) and reports the outcome.
  *   3. Apply the renewed cert by reconnecting: close + reopen re-establishes the
  *      session with the new operational identity (a new client certificate
- *      requires a fresh TLS handshake, so the cert is applied on reconnect).
+ *      requires a fresh TLS handshake). Without this, the next reconnect
+ *      applies it.
  *
  * Requires the managed provider (OpenSSL 3.0+).
  *
@@ -38,7 +40,6 @@ typedef struct
 {
   az_iot_connection_state conn_state;
   int provisioning_faulted;
-  az_iot_certificate_provider_managed* provider;
   int csr_done;
   az_iot_result csr_status;
 } user_context;
@@ -83,13 +84,9 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
           stderr,
           "[hub_renew] renewed chain issued: %zu cert(s)\n",
           evt->issued ? evt->issued->count : (size_t)0);
-      /* Persist the renewed chain through the provider. */
-      if (evt->issued)
-      {
-        (void)ctx->provider->base.vtable->store_issued_certificate(
-            &ctx->provider->base, evt->issued);
-      }
-      ctx->csr_status = AZ_IOT_OK;
+      /* The client already stored it in the provider (use_issued_certificates). */
+      fprintf(stderr, "[hub_renew] stored in provider: status=%d\n", (int)evt->store_status);
+      ctx->csr_status = evt->store_status;
       ctx->csr_done = 1;
       break;
     case AZ_IOT_CSR_FAILED:
@@ -124,7 +121,6 @@ int main(void)
   user_context user_ctx = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  user_ctx.provider = &provider;
 
   az_iot_certificate_provider_managed_options mopts = {
     .bootstrap_cert_pem_path = config.cert,
@@ -209,12 +205,10 @@ int main(void)
     }
   }
 
-  /* Apply the renewed certificate. on_csr_event persisted it through the
-   * provider, which flips load() to the OPERATIONAL identity; a new client
-   * certificate needs a fresh TLS handshake, so we close and reopen. The
-   * reopen's hub connection loads the OPERATIONAL identity first and thus
-   * reconnects with the renewed cert. (A production device that already knows
-   * its hub could reconnect to it directly instead of re-provisioning.) */
+  /* Apply the renewed certificate now. The client stored it in the provider,
+   * which serves it as the OPERATIONAL identity; a new client certificate needs
+   * a fresh TLS handshake, so close and reopen. The reopen reconnects to the
+   * same hub (no re-provisioning) with the renewed cert. */
   if (user_ctx.csr_done && user_ctx.csr_status == AZ_IOT_OK)
   {
     fprintf(stderr, "[hub_renew] renewal complete; reconnecting to apply the new certificate\n");

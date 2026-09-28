@@ -10,8 +10,17 @@
  * no CRT fopen and stays clean under MSVC /W4 /WX). */
 #include "az_iot_certificate_provider_managed.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+/* Lean: keeps wincrypt.h out, whose X509_* macros clash with OpenSSL. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -46,6 +55,9 @@
 
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
+
+/* Suffix of the temporary file a new operational cert is staged in. */
+#define MANAGED_TMP_SUFFIX ".tmp"
 
 /* --------------------------------------------------------------------------
  * Small helpers
@@ -122,6 +134,19 @@ static bool operational_cert_is_valid(const char* path)
   }
   X509_free(cert);
   return true;
+}
+
+/**
+ * @brief Replace @p to with @p from in one step, overwriting @p to if present.
+ * @return true on success.
+ */
+static bool replace_file(const char* from, const char* to)
+{
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return rename(from, to) == 0;
+#endif
 }
 
 /* --------------------------------------------------------------------------
@@ -391,13 +416,25 @@ static az_iot_result managed_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  BIO* b = BIO_new_file(m->operational_cert_path, "wb");
+  /* All-or-nothing: write and validate a temporary file, then replace the
+   * operational cert with it, so a failure leaves the previous one in use. */
+  size_t path_len = strlen(m->operational_cert_path);
+  char* tmp_path = (char*)malloc(path_len + sizeof(MANAGED_TMP_SUFFIX));
+  if (!tmp_path)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  memcpy(tmp_path, m->operational_cert_path, path_len);
+  memcpy(tmp_path + path_len, MANAGED_TMP_SUFFIX, sizeof(MANAGED_TMP_SUFFIX));
+
+  BIO* b = BIO_new_file(tmp_path, "wb");
   if (!b)
   {
+    free(tmp_path);
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* Write each issued cert (leaf first) into the operational cert file. */
+  /* Write each issued cert (leaf first) into the temporary file. */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
@@ -413,7 +450,25 @@ static az_iot_result managed_store(
       break;
     }
   }
+  if (BIO_flush(b) != 1)
+  {
+    rc = AZ_IOT_ERR_INTERNAL;
+  }
   BIO_free(b);
+
+  if (rc == AZ_IOT_OK && !operational_cert_is_valid(tmp_path))
+  {
+    rc = AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (rc == AZ_IOT_OK && !replace_file(tmp_path, m->operational_cert_path))
+  {
+    rc = AZ_IOT_ERR_INTERNAL;
+  }
+  if (rc != AZ_IOT_OK)
+  {
+    (void)remove(tmp_path);
+  }
+  free(tmp_path);
 
   if (rc == AZ_IOT_OK)
   {

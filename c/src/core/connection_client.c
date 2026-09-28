@@ -1604,24 +1604,27 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   issued.certificates = certs;
   issued.count = count;
 
-  /* Persist via the provider (if capable) and/or notify the app (D4). The
-   * issued chain must be handled by at least one of the two. */
-  bool handled = false;
-  if (p && p->vtable && p->vtable->store_issued_certificate)
+  /* Persist via the provider (if capable), then always notify the app with the
+   * outcome (D4). At least one of the two must exist to take the chain. */
+  bool has_store = p && p->vtable && p->vtable->store_issued_certificate;
+  az_iot_result store_rc = AZ_IOT_ERR_NOT_SUPPORTED;
+  if (has_store)
   {
-    rc = p->vtable->store_issued_certificate(p, &issued);
-    handled = (rc == AZ_IOT_OK);
+    store_rc = p->vtable->store_issued_certificate(p, &issued);
+    if (store_rc != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERRORF("dps: storing the issued certificate failed (%d)", (int)store_rc);
+    }
   }
-  if (rc == AZ_IOT_OK && c->op_cert_cb)
+  if (c->op_cert_cb)
   {
-    c->op_cert_cb(&issued, c->op_cert_cb_ctx);
-    handled = true;
+    c->op_cert_cb(&issued, store_rc, c->op_cert_cb_ctx);
   }
-  if (rc == AZ_IOT_OK && !handled)
+  if (has_store)
   {
-    rc = AZ_IOT_ERR_NOT_SUPPORTED;
+    return store_rc;
   }
-  return rc;
+  return c->op_cert_cb ? AZ_IOT_OK : AZ_IOT_ERR_NOT_SUPPORTED;
 }
 
 static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
@@ -3357,6 +3360,7 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
   opts.reconnection_policy = az_iot_reconnection_policy_get_default();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
+  opts.use_issued_certificates = true;
   return opts;
 }
 
@@ -5387,6 +5391,33 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
   }
 }
 
+/**
+ * @brief Store a hub-issued chain in the certificate provider when
+ * opts.use_issued_certificates is set. Never touches the live session: on
+ * failure the previous credential stays in use.
+ *
+ * @return AZ_IOT_OK if stored, AZ_IOT_ERR_NOT_SUPPORTED if not attempted, else
+ * the provider's error.
+ */
+static az_iot_result csr_store_issued(
+    az_iot_connection_client* c,
+    const az_iot_issued_certificate* issued)
+{
+  az_iot_certificate_provider* p = c->opts.certificate_provider;
+  if (!c->opts.use_issued_certificates || !p || !p->vtable
+      || p->vtable->version < CERT_PROVIDER_VTABLE_V2 || !p->vtable->store_issued_certificate)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  az_iot_result rc = p->vtable->store_issued_certificate(p, issued);
+  if (rc != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "csr: storing the issued certificate failed (%d); keeping the current one", (int)rc);
+  }
+  return rc;
+}
+
 /* Inbound handler for $iothub/credentials/res/{status}/?$rid={rid}. */
 static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
@@ -5490,6 +5521,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       evt.kind = AZ_IOT_CSR_ISSUED;
       evt.status = AZ_IOT_OK;
       evt.issued = &issued;
+      evt.store_status = csr_store_issued(c, &issued);
       if (cb)
       {
         cb(&evt, uc);

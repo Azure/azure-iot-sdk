@@ -146,7 +146,7 @@ sequenceDiagram
         DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain)
         opt issued chain present
             Conn->>Cert: store_issued_certificate(chain)
-            Conn-->>App: operational_cert_callback(chain)
+            Conn-->>App: operational_cert_callback(chain, store result)
         end
         alt no ref held (dps_refs_held() false)
             Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
@@ -527,7 +527,7 @@ flowchart TD
     J --> K{credentials response}
     K -->|202 accepted| L["CSR_ACCEPTED callback,<br/>keep waiting"]
     L --> K
-    K -->|200 issued| M["CSR_ISSUED callback with chain,<br/>app persists"]
+    K -->|200 issued| M["store_issued_certificate<br/>(use_issued_certificates), then<br/>CSR_ISSUED callback with chain + store_status"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
     M --> O["New certificate is used on<br/>the NEXT connect attempt"]
 ```
@@ -545,7 +545,14 @@ Rules every client must implement. The C client meets all of them; where .NET do
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
 - The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
-  callback — the application must copy or persist it.
+  callback — the application must copy it to use it afterwards.
+- The DPS operational-cert callback fires whether or not the store succeeded, with its result. A
+  failed DPS store fails the registration.
+- Hub renewal: with `opts.use_issued_certificates` (default on) the client stores the chain in the
+  provider before `CSR_ISSUED`, reported in `store_status`. If the store fails the session stays up
+  and the previous credential stays in use. Off: the application owns the chain.
+- `store_issued_certificate()` must be all-or-nothing: on failure the provider keeps serving the
+  previous credential.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when

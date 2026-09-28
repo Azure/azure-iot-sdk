@@ -72,7 +72,8 @@ adapter. Setup, run and troubleshooting: [dps_csr_managed/README.md](dps_csr_man
 Runtime operational-certificate renewal against a connected MQTTv3 hub (not
 available on MQTTv5 hubs): builds
 a fresh CSR from the managed provider, calls `az_iot_connection_client_send_csr()`,
-and persists the renewed chain. Requires the managed provider and Paho.
+and reconnects with the renewed chain, which the client stores in the provider
+(`opts.use_issued_certificates`). Requires the managed provider and Paho.
 
 ### `hsm_pkcs11`
 Provisions through DPS and connects with a device key that never leaves a

@@ -355,14 +355,16 @@ az_iot_result az_iot_connection_client_send_csr(
     void* user_ctx);
 ```
 
-After `AZ_IOT_CSR_ISSUED`, the new chain is persisted and the client reconnects with it.
+With `opts.use_issued_certificates` (default on), the client stores the new chain in the
+provider before `AZ_IOT_CSR_ISSUED` (result in `evt->store_status`); the next connect uses it.
+The live session is kept, and a failed store keeps the previous credential.
 Two integration options, mirroring the two ownership models:
 
 - **App-owned (C# style):** app supplies `csr` bytes, receives the chain in the callback,
   swaps certs, and calls `close()` / `open()` — explicit, no provider needed.
-- **Provider-owned (this design):** the client calls `get_csr()` /
-  `store_issued_certificate()` around the exchange and re-`load()`s, so renewal is
-  transparent (same seam as the DPS path).
+- **Provider-owned (this design):** the app takes the CSR from `get_csr()`; the client calls
+  `store_issued_certificate()` and the next connect re-`load()`s, so renewal is transparent
+  (same seam as the DPS path).
 
 ---
 

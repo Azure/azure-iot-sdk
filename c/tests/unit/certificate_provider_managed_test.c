@@ -371,14 +371,116 @@ static void managed_deinit_through_the_vtable_destroys_the_provider(void** state
   remove_test_files();
 }
 
+/* base64 DER of every certificate in @p path, concatenated with ';' (heap;
+ * caller frees). Empty string when the file has none. */
+static char* read_chain_base64(const char* path)
+{
+  char* out = calloc(1, 1);
+  assert_non_null(out);
+  BIO* b = BIO_new_file(path, "rb");
+  if (!b)
+  {
+    return out;
+  }
+  X509* x;
+  while ((x = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
+  {
+    unsigned char* der = NULL;
+    int der_len = i2d_X509(x, &der);
+    assert_true(der_len > 0);
+    size_t cur = strlen(out);
+    size_t add = (((size_t)der_len + 2) / 3) * 4 + 2;
+    out = realloc(out, cur + add);
+    assert_non_null(out);
+    if (cur > 0)
+    {
+      out[cur++] = ';';
+    }
+    int n = EVP_EncodeBlock((unsigned char*)out + cur, der, der_len);
+    assert_true(n > 0);
+    out[cur + (size_t)n] = '\0';
+    OPENSSL_free(der);
+    X509_free(x);
+  }
+  BIO_free(b);
+  return out;
+}
+
+static bool file_exists(const char* path)
+{
+  FILE* f = fopen(path, "rb");
+  if (f)
+  {
+    fclose(f);
+    return true;
+  }
+  return false;
+}
+
 /* Renewal replaces the identity rather than appending to it: a file that
- * accumulated every chain ever issued would present a stale leaf on connect.
- *
- * Proven through the public API rather than by inspecting the file: store a
- * valid chain, then store a chain that is not a certificate, then restart. If
- * the second store had appended, the valid first certificate would still be
- * there and the restart would find a usable operational identity. */
+ * accumulated every chain ever issued would present a stale leaf on connect. */
 static void managed_store_overwrites_a_previously_issued_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  char* first = make_self_signed_cert_base64();
+  char* second = make_self_signed_cert_base64();
+  assert_string_not_equal(first, second);
+
+  az_span chain1[1] = { az_span_create_from_str(first) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+  az_span chain2[1] = { az_span_create_from_str(second) };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, second);
+  assert_false(file_exists(OP_CERT ".tmp"));
+
+  free(on_disk);
+  free(first);
+  free(second);
+  remove_test_files();
+}
+
+/* A chain that does not parse is refused and never becomes the identity. */
+static void managed_a_stored_chain_that_is_not_a_certificate_is_refused(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_span chain[1] = { AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_not_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  assert_false(file_exists(OP_CERT));
+  assert_false(file_exists(OP_CERT ".tmp"));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+  remove_test_files();
+}
+
+/* A failed store is all-or-nothing: the previous certificate stays in use, in
+ * this process and after a restart, so a failed renewal cannot break the next
+ * connect. */
+static void managed_a_failed_store_keeps_the_previous_certificate(void** state)
 {
   (void)state;
   remove_test_files();
@@ -391,53 +493,26 @@ static void managed_store_overwrites_a_previously_issued_chain(void** state)
   az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
   assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
 
-  /* A restart here would find the good chain, which is the control for the
-   * assertion below. */
-  az_iot_certificate_provider_managed_deinit(&prov);
-  az_iot_certificate_provider_managed check;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&check, &opts));
-  assert_true(check.has_operational);
-  az_iot_certificate_provider_managed_deinit(&check);
-
-  az_iot_certificate_provider_managed prov2;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
   az_span chain2[1] = { AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
   az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
-  assert_int_equal(AZ_IOT_OK, prov2.base.vtable->store_issued_certificate(&prov2.base, &issued2));
-  az_iot_certificate_provider_managed_deinit(&prov2);
-
-  az_iot_certificate_provider_managed prov3;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov3, &opts));
-  assert_false(prov3.has_operational);
-  az_iot_certificate_provider_managed_deinit(&prov3);
-
-  free(good);
-  remove_test_files();
-}
-
-static void managed_a_stored_chain_that_is_not_a_certificate_is_rejected_on_restart(void** state)
-{
-  (void)state;
-  remove_test_files();
-  az_iot_certificate_provider_managed_options opts = test_options();
-  az_iot_certificate_provider_managed prov;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
-
-  az_span chain[1] = { AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
-  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
-  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
-  az_iot_certificate_provider_managed_deinit(&prov);
-
-  az_iot_certificate_provider_managed prov2;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
-  assert_false(prov2.has_operational);
+  assert_int_not_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(
-      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  assert_string_equal(OP_CERT, mat.client_cert_path);
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  assert_false(file_exists(OP_CERT ".tmp"));
+  az_iot_certificate_provider_managed_deinit(&prov);
 
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
   az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(good);
   remove_test_files();
 }
 
@@ -472,7 +547,8 @@ int main(void)
     cmocka_unit_test(managed_deinit_tolerates_null),
     cmocka_unit_test(managed_deinit_through_the_vtable_destroys_the_provider),
     cmocka_unit_test(managed_store_overwrites_a_previously_issued_chain),
-    cmocka_unit_test(managed_a_stored_chain_that_is_not_a_certificate_is_rejected_on_restart),
+    cmocka_unit_test(managed_a_stored_chain_that_is_not_a_certificate_is_refused),
+    cmocka_unit_test(managed_a_failed_store_keeps_the_previous_certificate),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
