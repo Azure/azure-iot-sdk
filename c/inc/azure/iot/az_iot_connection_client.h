@@ -718,8 +718,13 @@ extern "C"
     AZ_IOT_CSR_FAILED /* rejected/failed (evt->status, service_code)  */
   } az_iot_csr_event_kind;
 
+  /* SDK-produced, callback-lifetime. The SDK stamps _internal_size; callers
+   * never initialize this struct. Future SDKs may append fields, so callbacks
+   * must check _internal_size before reading a field added after the version
+   * they were compiled against. */
   typedef struct az_iot_csr_event
   {
+    uint32_t _internal_size;
     az_iot_csr_event_kind kind;
     az_iot_result status; /* AZ_IOT_OK unless FAILED                  */
     int32_t service_code; /* hub errorCode on FAILED; 0 otherwise     */

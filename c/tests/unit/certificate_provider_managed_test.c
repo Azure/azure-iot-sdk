@@ -606,6 +606,75 @@ static void managed_store_refuses_a_chain_for_another_key(void** state)
   remove_test_files();
 }
 
+/* Every entry must parse, not just the leaf: a matching leaf followed by an
+ * entry that is not a certificate is refused and the previous chain kept. */
+static void managed_store_refuses_a_chain_with_a_bad_trailing_entry(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain1[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  char* next = make_cert_base64((EVP_PKEY*)prov.operational_key, 2);
+  az_span chain2[2]
+      = { az_span_create_from_str(next), AZ_SPAN_FROM_STR("bm90LWEtY2VydGlmaWNhdGU=") };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 2 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
+
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(on_disk);
+  free(next);
+  free(good);
+  remove_test_files();
+}
+
+/* A persisted chain whose trailing entry is truncated is not served after a
+ * restart, even though its leaf is valid. */
+static void managed_a_persisted_chain_with_a_truncated_entry_is_not_used(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  /* Control: the file as written is usable after a restart. */
+  az_iot_certificate_provider_managed check;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&check, &opts));
+  assert_true(check.has_operational);
+  az_iot_certificate_provider_managed_deinit(&check);
+
+  FILE* f = fopen(OP_CERT, "ab");
+  assert_non_null(f);
+  const char tail[] = "-----BEGIN CERTIFICATE-----\nMIIB\n";
+  assert_int_equal((int)sizeof(tail) - 1, (int)fwrite(tail, 1, sizeof(tail) - 1, f));
+  assert_int_equal(0, fclose(f));
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(good);
+  remove_test_files();
+}
+
 /* A chain on disk that no longer matches the key (the key was replaced) is not
  * served as the operational identity after a restart. */
 static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
@@ -745,6 +814,8 @@ int main(void)
     cmocka_unit_test(managed_a_failed_store_keeps_the_previous_certificate),
     cmocka_unit_test(managed_store_refuses_a_chain_for_another_key),
     cmocka_unit_test(managed_a_persisted_chain_for_another_key_is_not_used),
+    cmocka_unit_test(managed_store_refuses_a_chain_with_a_bad_trailing_entry),
+    cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),

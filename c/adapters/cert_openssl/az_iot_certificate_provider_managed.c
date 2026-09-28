@@ -270,19 +270,45 @@ static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 }
 
 /**
- * @brief True when the first PEM certificate in @p b parses and certifies @p key.
+ * @brief True when @p b holds at least one PEM certificate, every one parses,
+ * and the first (the leaf) certifies @p key.
+ *
+ * Reading stops at the first object that is not a certificate; the chain is
+ * accepted only if that is the end of the input, so a malformed or truncated
+ * entry anywhere in the chain rejects it.
+ *
+ * @param[out] out_count Certificates parsed; may be NULL.
  */
-static bool leaf_matches_key(BIO* b, EVP_PKEY* key)
+static bool chain_matches_key(BIO* b, EVP_PKEY* key, size_t* out_count)
 {
-  X509* leaf = PEM_read_bio_X509(b, NULL, NULL, NULL);
-  bool ok = leaf != NULL && key != NULL && X509_check_private_key(leaf, key) == 1;
-  X509_free(leaf);
+  size_t count = 0;
+  bool ok = key != NULL;
+  X509* cert = NULL;
+  while (ok && (cert = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
+  {
+    if (count == 0 && X509_check_private_key(cert, key) != 1)
+    {
+      ok = false;
+    }
+    X509_free(cert);
+    count++;
+  }
+  unsigned long err = ERR_peek_last_error();
+  if (ok && !(ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE))
+  {
+    ok = false;
+  }
   ERR_clear_error();
-  return ok;
+  if (out_count)
+  {
+    *out_count = count;
+  }
+  return ok && count > 0;
 }
 
 /**
- * @brief True when @p path holds a certificate chain whose leaf certifies @p key.
+ * @brief True when @p path holds a certificate chain that passes
+ * chain_matches_key() for @p key.
  *
  * An empty, partial or unparseable file, or one issued for a different key,
  * is not a usable identity: TLS would fail with it on every connect.
@@ -295,7 +321,7 @@ static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
     ERR_clear_error();
     return false;
   }
-  bool ok = leaf_matches_key(b, key);
+  bool ok = chain_matches_key(b, key, NULL);
   BIO_free(b);
   return ok;
 }
@@ -567,9 +593,10 @@ static az_iot_result managed_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* All-or-nothing: build the chain in memory, refuse it unless its leaf
-   * certifies the operational key, then replace the file in one step. A
-   * failure leaves the previous certificate in use. */
+  /* All-or-nothing: build the chain in memory, refuse it unless every entry
+   * parses as a certificate and the leaf certifies the operational key, then
+   * replace the file in one step. A failure leaves the previous certificate in
+   * use. */
   BIO* mem = BIO_new(BIO_s_mem());
   if (!mem)
   {
@@ -578,6 +605,7 @@ static az_iot_result managed_store(
 
   /* Write each issued cert (leaf first). */
   az_iot_result rc = AZ_IOT_OK;
+  size_t written = 0;
   for (size_t i = 0; i < issued->count; ++i)
   {
     az_span cert = issued->certificates[i];
@@ -591,6 +619,7 @@ static az_iot_result managed_store(
       rc = AZ_IOT_ERR_INTERNAL;
       break;
     }
+    written++;
   }
 
   if (rc == AZ_IOT_OK)
@@ -598,7 +627,9 @@ static az_iot_result managed_store(
     char* data = NULL;
     long data_len = BIO_get_mem_data(mem, &data);
     BIO* check = (data_len > 0) ? BIO_new_mem_buf(data, (int)data_len) : NULL;
-    if (!check || !leaf_matches_key(check, (EVP_PKEY*)m->operational_key))
+    size_t parsed = 0;
+    if (!check || !chain_matches_key(check, (EVP_PKEY*)m->operational_key, &parsed)
+        || parsed != written)
     {
       rc = AZ_IOT_ERR_INVALID_ARG;
     }

@@ -1649,6 +1649,7 @@ typedef struct csr_test_ctx
 static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
 {
   csr_test_ctx* t = (csr_test_ctx*)uc;
+  assert_int_equal(evt->_internal_size, sizeof(az_iot_csr_event));
   switch (evt->kind)
   {
     case AZ_IOT_CSR_ACCEPTED:
@@ -1928,6 +1929,7 @@ typedef struct renew_cb_ctx
 static void on_renew_evt(const az_iot_csr_event* evt, void* uc)
 {
   renew_cb_ctx* t = (renew_cb_ctx*)uc;
+  assert_int_equal(evt->_internal_size, sizeof(az_iot_csr_event));
   if (evt->kind == AZ_IOT_CSR_ISSUED)
   {
     t->issued++;

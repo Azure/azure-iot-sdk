@@ -4260,6 +4260,7 @@ az_iot_result az_iot_connection_client_do_work(
     client->csr_op.in_use = false;
     az_iot_csr_event evt;
     memset(&evt, 0, sizeof(evt));
+    evt._internal_size = (uint32_t)sizeof(evt);
     evt.kind = AZ_IOT_CSR_FAILED;
     evt.status = AZ_IOT_ERR_TIMEOUT;
     if (cb)
@@ -5460,6 +5461,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   az_span payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
   az_iot_csr_event evt;
   memset(&evt, 0, sizeof(evt));
+  evt._internal_size = (uint32_t)sizeof(evt);
 
   if (status == 202)
   {
