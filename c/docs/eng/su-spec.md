@@ -157,11 +157,11 @@ conflicting terminal for the same id ⇒ `409 REPORT_CONFLICT`.
   X.509 first, with symmetric key and TPM to follow (TPM is a two-phase 401-challenge, individual-only).
   **Measured:** the deployed preview accepts a **SAS token** derived from the DPS enrollment group's
   symmetric key — `Authorization: SharedAccessSignature sr={idScope}%2Fregistrations%2F{registrationId}&sig=…&se=…&skn=registration`
-  — so symmetric-key auth works today, ahead of the documented phasing. X.509 on this path is not yet
-  confirmed by measurement.
+  — so symmetric-key auth works today, ahead of the documented phasing. **X.509** (DPS individual
+  enrollment certificate) is measured too, over HTTPS and over MQTT.
 - **Transport:** **Phase 1 HTTP + MQTT**; Phase 2 AMQP. (TPM works on HTTP/AMQP only, not MQTT.)
-  **Measured:** the operations are exercised as **HTTPS REST** on the DPS device endpoint. No MQTT topic
-  binding for them has been observed yet — confirm before assuming the existing DPS MQTT session can carry them.
+  **Measured:** the operations work as **HTTPS REST** on the DPS device endpoint and on the device's
+  DPS **MQTT** session (`$dps/registrations/...`), which is what the SDK uses.
 - **api-version:** `2026-11-02-preview` — **confirmed deployed**; it is the value the reference
   environment runs with.
 - **Request headers:** `Authorization` plus `x-ms-client-request-id` (a per-call GUID, for correlation).
@@ -174,13 +174,15 @@ read off a DRAFT spec. Treat them differently.
 
 | Measured | Still drafted / unconfirmed |
 |---|---|
-| api-version `2026-11-02-preview` | X.509 on the update path; TPM; AMQP |
-| Device-facing URL shape and the three operation names | Whether an MQTT binding exists for the three operations |
-| SAS (enrollment-group symmetric key) auth | Payload caps, throttle / `Retry-After` values |
-| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer | Per-step `resultDetails`; reports with more than one step |
-| Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update) | Root-key-package fetch and verification end to end |
+| api-version `2026-11-02-preview` | TPM; AMQP |
+| Device-facing URL shape and the three operation names; the same operations over the DPS MQTT session | Payload caps, throttle / `Retry-After` values |
+| SAS (enrollment-group symmetric key) and X.509 auth | Per-step `resultDetails`; reports with more than one step |
+| `agentInfo` = `{ agentSdkVersion, agentProfile, compatibilityProperties }`; `agentProfile` sent as an integer; compatibility values match case-insensitively | Root-key-package verification end to end |
+| Response `agentInfoEtag` / `serviceConfigEtag` / `updateMetadata` (null ⇒ no update); a test environment's `rootKeyDownloadUrl` is plain `http://` and its manifests are signed under test roots (`ADU.200703.R.T`) | Job-result status recorded for a SKIPPED report |
 | Report `{ workflowId, installedUpdateId, installResult{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails } }`; `resultCode` 700 = success; `failureOrigin` `AGENT_CORE` / `NOT_APPLICABLE` | The error-code table below (drawn from the spec, not exercised) |
 | `stepResults` entries `{ outcome, failureOrigin, resultCode, extendedResultCodes }` accepted (single-step update); without `outcome`/`failureOrigin` the report was rejected with `400012` | |
+| Re-sending the identical terminal report is accepted; a different terminal outcome for the same workflow is `409000 REPORT_CONFLICT`; SKIPPED after SUCCEEDED was accepted | |
+| An onboarding job keeps offering a workflow to a device after its terminal report | |
 | No separate `syncConfiguration` call | |
 
 ## Trust model
@@ -235,6 +237,8 @@ is a durable write — retry until acked; safe because the service is idempotent
 
 - **No per-device retry.** Once a device reaches a terminal failure the only recovery is to cancel and
   reschedule the run, and devices that already installed successfully do not rejoin.
+- Measured on an onboarding job: a device keeps being offered a workflow after reporting it
+  SUCCEEDED; a different terminal outcome is then refused with `409000 REPORT_CONFLICT`.
 - Offline devices do not appear in the job's progress metrics.
 
 ## What this means for the software updates client SDK

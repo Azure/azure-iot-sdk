@@ -112,7 +112,7 @@ size or order.
 [Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
 velocity; three items cannot be dated, and row 59 holds its date only if its gate clears.
 
-† Row 59 meets 9/28 only if the test-environment access grant lands by 9/28.
+† Row 59 meets 9/28 only if the CI environment is provided by 9/28.
 
 
 | # | Category | Support | Pri | Size | Depends | Order | ETA | Details |
@@ -156,7 +156,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
-| 59 | Testing and conformance | ✅→🔜 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su` runs four DPS-channel scenarios (engine not exercised); the five twin-driven scenarios are retired and not built. An offered-update scenario is still needed. [→](#k-testing-and-conformance) |
+| 59 | Testing and conformance | 🟡 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su_offer` drives offered updates through the whole client (real crypto, download and report). Four scenarios pass against the service; three need their own staged offers, and `ci-c-e2e-adu` needs its environment. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
 | 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
 | 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
@@ -250,7 +250,7 @@ is dated 9/28 on the condition above:
 | 14 | Cancellation | No software updates service input sets the flag. The local API is ours; the trigger is not. |
 | 33 | ESP32 sample port | Needs the ESP-IDF toolchain to build or run. |
 | 46–48 | Day0 recovery | The recovery protocol is not yet defined. |
-| 59 | E2E vs real service | The test environment rejects every device-update fetch; needs an access grant. |
+| 59 | E2E vs real service | `ci-c-e2e-adu` needs a standing environment (repository variables and secrets) with rights to import updates and create ADR jobs. |
 
 Marking these `blocked` rather than giving them a date is deliberate. A date on a row
 nobody here can start is a number, not a plan.
@@ -621,11 +621,13 @@ crypto vectors in Phase 2, adapter integration in Phases 3–4, persistence in P
 - **Adapter integration tests (🔜)** — mock HTTP server + test manifest per adapter.
 - **Conformance suite (🔜)** — reusable host-only `az_iot_su_conformance` over all
   protocol states + single/multi-step manifests, written against the **Software updates** contract.
-- **E2E (✅→🔜 re-target)** — `az_iot_tests_e2e_su` (`tests/e2e_su_test.c`) runs four
-  DPS-channel scenarios and does not exercise the workflow engine
-  ([end-to-end-tests.md](end-to-end-tests.md)). The five twin-driven scenarios
-  (`tests/e2e_su_twin_test.c`) are retired and not built; an offered-update scenario is still
-  needed. Its device fixture and mocked crypto/payload hooks carry over.
+- **E2E (🟡)** — `az_iot_tests_e2e_su` drives the DPS channel with no update offered;
+  `az_iot_tests_e2e_su_offer` drives offered updates through the whole client with real crypto,
+  real download and hash, and records every report and verdict
+  ([end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e)). The twin-driven suite is
+  deleted. Open: staged offers for the install-failure, already-installed and untrusted
+  scenarios, the `ci-c-e2e-adu` environment, and scenarios for the operational route,
+  multi-step updates and reboot/resume.
 
 ## L. Advanced update model
 
@@ -672,8 +674,8 @@ Not code — things I (or the team) must do out-of-band:
   service-config ETag resend semantics are still settling (DRAFT). See
   [su-spec.md](su-spec.md), which separates what is measured from what is drafted.
 - **Confirm auth/transport phasing** — the design phases X.509 first, then symmetric key, TPM and AMQP.
-  Measured today: **SAS from the DPS enrollment-group symmetric key over HTTPS** works on this path;
-  X.509 on it is not yet confirmed, and no MQTT binding for the three operations has been observed.
+  Measured today: **SAS from the DPS enrollment-group symmetric key** (HTTPS) and **X.509** (HTTPS and
+  the DPS MQTT session the SDK uses) both work on this path.
   Identity headers stay DPS-gateway-populated (the client sets none).
 - **Use the reference ADR → Device Update cloud demo to stand up DPS + ADR + Device Update** rather than building an
   environment by hand. Point its config at your own resource group, namespace and update instance; it
