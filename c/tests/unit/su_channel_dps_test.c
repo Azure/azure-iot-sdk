@@ -890,6 +890,7 @@ static void malformed_saved_state_is_refused(void** state)
     size_t len;
   } cases[] = {
     { (const uint8_t*)"\0", 1 }, /* too short */
+    { (const uint8_t*)"\0\0", 2 }, /* both empty: never saved */
     { (const uint8_t*)"\1a\1b\0", 5 }, /* trailing byte */
     { (const uint8_t*)"\2a", 2 }, /* agent ETag past the end */
     { (const uint8_t*)"\1a\2b", 4 }, /* config ETag past the end */

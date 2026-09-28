@@ -1055,7 +1055,8 @@ static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t
     return AZ_IOT_ERR_INVALID_ARG;
   }
   size_t s = buf[1u + a];
-  if (s >= sizeof(c->service_config_etag) || 2u + a + s != len)
+  /* save_state() writes nothing when both are empty, so {0, 0} is malformed. */
+  if (s >= sizeof(c->service_config_etag) || 2u + a + s != len || a + s == 0u)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
