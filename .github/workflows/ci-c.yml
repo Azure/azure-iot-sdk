@@ -252,7 +252,7 @@ jobs:
           # that here is a deliberate choice, not an accident: the coverage job
           # below provisions a real token and proves it on every push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
-        run: ctest --test-dir build/c99-strict --output-on-failure
+        run: ctest --test-dir build/${{ matrix.std }}-strict --output-on-failure
 
   # ---------------------------------------------------------------------------
   # Memory-checker jobs. Run the full test set (excluding the broker-gated
