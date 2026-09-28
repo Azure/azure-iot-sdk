@@ -6,10 +6,16 @@
 /* OpenSSL 3.0+ implementation of the "managed" certificate provider (D5).
  *
  * Uses only public OpenSSL 3.0 APIs: EVP_PKEY_Q_keygen for key generation,
- * the X509_REQ_* family for PKCS#10, and BIO for file I/O (so this file needs
- * no CRT fopen and stays clean under MSVC /W4 /WX). */
+ * the X509_REQ_* family for PKCS#10, and BIO for reads. Writes are built in a
+ * memory BIO and written with OS calls (write_file_private), so no CRT FILE*
+ * crosses the OpenSSL boundary and the file stays clean under MSVC /W4 /WX. */
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "az_iot_certificate_provider_managed.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +26,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <sddl.h>
+#else
+#include <errno.h>
+#include <unistd.h>
 #endif
 
 #include <openssl/bio.h>
@@ -56,8 +66,16 @@
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
 
-/* Suffix of the temporary file a new operational cert is staged in. */
-#define MANAGED_TMP_SUFFIX ".tmp"
+#ifdef _WIN32
+/* Owner-only DACL for written files: full access for the owner and SYSTEM,
+ * protected from inheriting the directory's ACEs. */
+#define MANAGED_PRIVATE_SDDL "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+/* Attempts at a unique temporary name before giving up. */
+#define MANAGED_TMP_ATTEMPTS 16
+#else
+/* mkstemp() template appended to the destination path. */
+#define MANAGED_TMP_TEMPLATE ".XXXXXX"
+#endif
 
 /* --------------------------------------------------------------------------
  * Small helpers
@@ -101,52 +119,185 @@ static EVP_PKEY* load_key_file(const char* path)
   return k;
 }
 
-static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
+#ifdef _WIN32
+/**
+ * @brief Create a new file with an owner-only DACL, failing if it exists.
+ * @return The open handle, or INVALID_HANDLE_VALUE (errors other than a name
+ * collision leave *collided false).
+ */
+static HANDLE create_private_file(const char* path, bool* collided)
 {
-  BIO* b = BIO_new_file(path, "wb");
-  if (!b)
+  *collided = false;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(
+          MANAGED_PRIVATE_SDDL, SDDL_REVISION_1, &sd, NULL))
+  {
+    return INVALID_HANDLE_VALUE;
+  }
+  SECURITY_ATTRIBUTES sa = { (DWORD)sizeof(sa), sd, FALSE };
+  HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, &sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    DWORD err = GetLastError();
+    *collided = (err == ERROR_FILE_EXISTS || err == ERROR_ALREADY_EXISTS);
+  }
+  LocalFree(sd);
+  return h;
+}
+#endif
+
+/**
+ * @brief Replace @p path with @p data, all-or-nothing.
+ *
+ * Writes a new file next to @p path that only the current user can access
+ * (0600 / owner-only DACL), created exclusively under a unique name so an
+ * existing file or link there is never opened, flushes it, then renames it over
+ * @p path. The rename replaces a link at @p path rather than following it. On
+ * failure @p path is untouched and the temporary file is removed.
+ */
+static az_iot_result write_file_private(const char* path, const char* data, size_t len)
+{
+  size_t path_len = strlen(path);
+#ifdef _WIN32
+  /* "<path>.<8 hex>.tmp" */
+  char* tmp = (char*)malloc(path_len + 14);
+  if (!tmp)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  HANDLE h = INVALID_HANDLE_VALUE;
+  unsigned long seed = (unsigned long)GetTickCount() ^ ((unsigned long)GetCurrentProcessId() << 16)
+      ^ (unsigned long)(uintptr_t)tmp;
+  for (int i = 0; i < MANAGED_TMP_ATTEMPTS && h == INVALID_HANDLE_VALUE; ++i)
+  {
+    seed = seed * 1103515245UL + 12345UL;
+    (void)snprintf(tmp, path_len + 14, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    bool collided = false;
+    h = create_private_file(tmp, &collided);
+    if (h == INVALID_HANDLE_VALUE && !collided)
+    {
+      break;
+    }
+  }
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    free(tmp);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  bool ok = true;
+  size_t off = 0;
+  while (ok && off < len)
+  {
+    DWORD chunk = (len - off) > 0x40000000u ? 0x40000000u : (DWORD)(len - off);
+    DWORD written = 0;
+    ok = WriteFile(h, data + off, chunk, &written, NULL) && written > 0;
+    off += written;
+  }
+  ok = ok && FlushFileBuffers(h);
+  ok = CloseHandle(h) && ok;
+  ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+  if (!ok)
+  {
+    (void)DeleteFileA(tmp);
+  }
+#else
+  char* tmp = (char*)malloc(path_len + sizeof(MANAGED_TMP_TEMPLATE));
+  if (!tmp)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  memcpy(tmp, path, path_len);
+  memcpy(tmp + path_len, MANAGED_TMP_TEMPLATE, sizeof(MANAGED_TMP_TEMPLATE));
+  int fd = mkstemp(tmp); /* O_CREAT|O_EXCL, mode 0600 */
+  if (fd < 0)
+  {
+    free(tmp);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  bool ok = true;
+  size_t off = 0;
+  while (ok && off < len)
+  {
+    ssize_t n = write(fd, data + off, len - off);
+    if (n < 0 && errno == EINTR)
+    {
+      continue;
+    }
+    ok = n > 0;
+    off += ok ? (size_t)n : 0;
+  }
+  ok = ok && fsync(fd) == 0;
+  ok = (close(fd) == 0) && ok;
+  ok = ok && rename(tmp, path) == 0;
+  if (!ok)
+  {
+    (void)unlink(tmp);
+  }
+#endif
+  free(tmp);
+  return ok ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+}
+
+/**
+ * @brief Write the contents of memory BIO @p mem to @p path (write_file_private),
+ * then wipe the BIO's buffer.
+ */
+static az_iot_result write_bio_private(const char* path, BIO* mem)
+{
+  char* data = NULL;
+  long len = BIO_get_mem_data(mem, &data);
+  if (len <= 0 || !data)
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  int ok = PEM_write_bio_PrivateKey(b, key, NULL, NULL, 0, NULL, NULL);
-  BIO_free(b);
-  return (ok == 1) ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+  az_iot_result rc = write_file_private(path, data, (size_t)len);
+  OPENSSL_cleanse(data, (size_t)len);
+  return rc;
 }
 
-static bool operational_cert_is_valid(const char* path)
+static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
-  /* Treat the operational cert as present only when the file holds at least one
-   * parseable PEM certificate. A zero-length or partially-written file (e.g. a
-   * crash mid-write, or a pre-created empty file) must NOT be mistaken for a
-   * usable identity, or TLS would later fail to load a valid chain. */
+  BIO* mem = BIO_new(BIO_s_mem());
+  if (!mem)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  az_iot_result rc = (PEM_write_bio_PrivateKey(mem, key, NULL, NULL, 0, NULL, NULL) == 1)
+      ? write_bio_private(path, mem)
+      : AZ_IOT_ERR_INTERNAL;
+  BIO_free(mem);
+  return rc;
+}
+
+/**
+ * @brief True when the first PEM certificate in @p b parses and certifies @p key.
+ */
+static bool leaf_matches_key(BIO* b, EVP_PKEY* key)
+{
+  X509* leaf = PEM_read_bio_X509(b, NULL, NULL, NULL);
+  bool ok = leaf != NULL && key != NULL && X509_check_private_key(leaf, key) == 1;
+  X509_free(leaf);
+  ERR_clear_error();
+  return ok;
+}
+
+/**
+ * @brief True when @p path holds a certificate chain whose leaf certifies @p key.
+ *
+ * An empty, partial or unparseable file, or one issued for a different key,
+ * is not a usable identity: TLS would fail with it on every connect.
+ */
+static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
+{
   BIO* b = BIO_new_file(path, "rb");
   if (!b)
   {
     ERR_clear_error();
     return false;
   }
-  X509* cert = PEM_read_bio_X509(b, NULL, NULL, NULL);
+  bool ok = leaf_matches_key(b, key);
   BIO_free(b);
-  if (!cert)
-  {
-    ERR_clear_error();
-    return false;
-  }
-  X509_free(cert);
-  return true;
-}
-
-/**
- * @brief Replace @p to with @p from in one step, overwriting @p to if present.
- * @return true on success.
- */
-static bool replace_file(const char* from, const char* to)
-{
-#ifdef _WIN32
-  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  return rename(from, to) == 0;
-#endif
+  return ok;
 }
 
 /* --------------------------------------------------------------------------
@@ -416,25 +567,16 @@ static az_iot_result managed_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* All-or-nothing: write and validate a temporary file, then replace the
-   * operational cert with it, so a failure leaves the previous one in use. */
-  size_t path_len = strlen(m->operational_cert_path);
-  char* tmp_path = (char*)malloc(path_len + sizeof(MANAGED_TMP_SUFFIX));
-  if (!tmp_path)
+  /* All-or-nothing: build the chain in memory, refuse it unless its leaf
+   * certifies the operational key, then replace the file in one step. A
+   * failure leaves the previous certificate in use. */
+  BIO* mem = BIO_new(BIO_s_mem());
+  if (!mem)
   {
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  memcpy(tmp_path, m->operational_cert_path, path_len);
-  memcpy(tmp_path + path_len, MANAGED_TMP_SUFFIX, sizeof(MANAGED_TMP_SUFFIX));
 
-  BIO* b = BIO_new_file(tmp_path, "wb");
-  if (!b)
-  {
-    free(tmp_path);
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
-  /* Write each issued cert (leaf first) into the temporary file. */
+  /* Write each issued cert (leaf first). */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
@@ -444,31 +586,29 @@ static az_iot_result managed_store(
     {
       continue;
     }
-    if (!write_issued_cert(b, az_span_ptr(cert), len))
+    if (!write_issued_cert(mem, az_span_ptr(cert), len))
     {
       rc = AZ_IOT_ERR_INTERNAL;
       break;
     }
   }
-  if (BIO_flush(b) != 1)
-  {
-    rc = AZ_IOT_ERR_INTERNAL;
-  }
-  BIO_free(b);
 
-  if (rc == AZ_IOT_OK && !operational_cert_is_valid(tmp_path))
+  if (rc == AZ_IOT_OK)
   {
-    rc = AZ_IOT_ERR_INVALID_ARG;
+    char* data = NULL;
+    long data_len = BIO_get_mem_data(mem, &data);
+    BIO* check = (data_len > 0) ? BIO_new_mem_buf(data, (int)data_len) : NULL;
+    if (!check || !leaf_matches_key(check, (EVP_PKEY*)m->operational_key))
+    {
+      rc = AZ_IOT_ERR_INVALID_ARG;
+    }
+    BIO_free(check);
   }
-  if (rc == AZ_IOT_OK && !replace_file(tmp_path, m->operational_cert_path))
+  if (rc == AZ_IOT_OK)
   {
-    rc = AZ_IOT_ERR_INTERNAL;
+    rc = write_bio_private(m->operational_cert_path, mem);
   }
-  if (rc != AZ_IOT_OK)
-  {
-    (void)remove(tmp_path);
-  }
-  free(tmp_path);
+  BIO_free(mem);
 
   if (rc == AZ_IOT_OK)
   {
@@ -574,9 +714,9 @@ az_iot_result az_iot_certificate_provider_managed_init(
   }
   provider->operational_key = key;
 
-  /* An operational cert persisted by a previous run means we can connect
-   * with the OPERATIONAL identity immediately (no re-enrollment needed). */
-  provider->has_operational = operational_cert_is_valid(provider->operational_cert_path);
+  /* An operational cert persisted by a previous run, issued for this key, means
+   * we can connect with the OPERATIONAL identity immediately (no re-enrollment). */
+  provider->has_operational = operational_cert_is_valid(provider->operational_cert_path, key);
 
   provider->loaded = true;
   return AZ_IOT_OK;

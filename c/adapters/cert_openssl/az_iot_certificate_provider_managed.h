@@ -12,8 +12,14 @@
  *   - produces PKCS#10 CSRs over that operational key (get_csr);
  *   - persists the DPS/Hub-issued operational certificate chain to disk
  *     (store_issued_certificate) and serves it back on subsequent loads and
- *     process restarts. A store replaces the file only once the new chain is
- *     written and parses, so a failed store keeps the previous certificate.
+ *     process restarts. A store is refused unless the chain parses and its
+ *     leaf certifies the operational key, and replaces the file in one step, so
+ *     a failed store keeps the previous certificate.
+ *
+ * Files it writes (key and chain) are created readable only by the current user
+ * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
+ * next to the destination, then renamed over it. The private key is stored
+ * unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
  * with a TPM/HSM/secure element should implement their own provider with a
@@ -48,11 +54,12 @@ extern "C"
     /* Trusted CA presented to both bootstrap and operational connections. */
     const char* trusted_ca_pem_path; /* may be NULL */
     /* Operational private key. Loaded if the file exists, otherwise a new key
-     * is generated and written here (PEM). Required. */
+     * is generated and written here (unencrypted PEM, owner-only). The mode of
+     * an existing file is not changed. Required. */
     const char* operational_key_pem_path; /* required */
     /* Where the issued operational certificate chain is persisted. Written by
-     * store_issued_certificate() via "<path>.tmp"; read back on load() and on
-     * restart. Required. */
+     * store_issued_certificate(); read back on load() and on restart, and used
+     * only if its leaf certifies the operational key. Required. */
     const char* operational_cert_pem_path; /* required */
     /* Key type used only when generating a new operational key. */
     az_iot_certificate_managed_key_type key_type;

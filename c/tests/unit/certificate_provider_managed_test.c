@@ -5,6 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 /* Tests for the OpenSSL-backed "managed" certificate provider (D5). Links
  * OpenSSL only to decode and validate the CSR the provider produces. */
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -13,6 +17,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <cmocka.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include "az_iot_certificate_provider_managed.h"
 
@@ -49,19 +64,19 @@ static X509_REQ* decode_csr(const char* b64)
   return req;
 }
 
-/* Build a real, self-signed certificate as base64 DER (heap; caller frees) - the
- * on-the-wire form the store hook receives. The provider PEM-wraps it, so the
- * persistence test still exercises the provider's parse-based validity check. */
-static char* make_self_signed_cert_base64(void)
+/* Build a certificate for @p subject_key, signed by a throwaway issuer key, as
+ * base64 DER (heap; caller frees) - the on-the-wire form the store hook
+ * receives. @p serial makes two certificates for the same key differ. */
+static char* make_cert_base64(EVP_PKEY* subject_key, long serial)
 {
   EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
   assert_non_null(key);
   X509* x = X509_new();
   assert_non_null(x);
-  ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
+  ASN1_INTEGER_set(X509_get_serialNumber(x), serial);
   X509_gmtime_adj(X509_getm_notBefore(x), 0);
   X509_gmtime_adj(X509_getm_notAfter(x), 3600);
-  assert_int_equal(1, X509_set_pubkey(x, key));
+  assert_int_equal(1, X509_set_pubkey(x, subject_key));
   X509_NAME* name = X509_NAME_new();
   assert_non_null(name);
   X509_NAME_add_entry_by_txt(
@@ -164,7 +179,7 @@ static void managed_store_persists_and_survives_restart(void** state)
 
   /* A real cert as base64 DER (the wire form). The provider PEM-wraps it; the
    * restart check then rejects empty/garbage, so the chain must be valid. */
-  char* cert_b64 = make_self_signed_cert_base64();
+  char* cert_b64 = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
   az_span chain[2] = { az_span_create_from_str(cert_b64), az_span_create_from_str(cert_b64) };
   az_iot_issued_certificate issued = {
     .certificates = chain,
@@ -417,6 +432,42 @@ static bool file_exists(const char* path)
   return false;
 }
 
+/* Temporary files the provider left next to OP_CERT or OP_KEY. */
+static int count_temp_files(void)
+{
+  int n = 0;
+#if defined(_WIN32)
+  static const char* const patterns[] = { OP_CERT ".*", OP_KEY ".*" };
+  for (size_t i = 0; i < sizeof(patterns) / sizeof(patterns[0]); ++i)
+  {
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(patterns[i], &fd);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+      do
+      {
+        n++;
+      } while (FindNextFileA(h, &fd));
+      FindClose(h);
+    }
+  }
+#else
+  DIR* d = opendir(".");
+  assert_non_null(d);
+  struct dirent* e;
+  while ((e = readdir(d)) != NULL)
+  {
+    if (strncmp(e->d_name, OP_CERT ".", strlen(OP_CERT ".")) == 0
+        || strncmp(e->d_name, OP_KEY ".", strlen(OP_KEY ".")) == 0)
+    {
+      n++;
+    }
+  }
+  closedir(d);
+#endif
+  return n;
+}
+
 /* Renewal replaces the identity rather than appending to it: a file that
  * accumulated every chain ever issued would present a stale leaf on connect. */
 static void managed_store_overwrites_a_previously_issued_chain(void** state)
@@ -427,8 +478,8 @@ static void managed_store_overwrites_a_previously_issued_chain(void** state)
   az_iot_certificate_provider_managed prov;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
-  char* first = make_self_signed_cert_base64();
-  char* second = make_self_signed_cert_base64();
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  char* second = make_cert_base64((EVP_PKEY*)prov.operational_key, 2);
   assert_string_not_equal(first, second);
 
   az_span chain1[1] = { az_span_create_from_str(first) };
@@ -441,7 +492,7 @@ static void managed_store_overwrites_a_previously_issued_chain(void** state)
 
   char* on_disk = read_chain_base64(OP_CERT);
   assert_string_equal(on_disk, second);
-  assert_false(file_exists(OP_CERT ".tmp"));
+  assert_int_equal(0, count_temp_files());
 
   free(on_disk);
   free(first);
@@ -467,7 +518,7 @@ static void managed_a_stored_chain_that_is_not_a_certificate_is_refused(void** s
   assert_int_equal(
       AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
   assert_false(file_exists(OP_CERT));
-  assert_false(file_exists(OP_CERT ".tmp"));
+  assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
   az_iot_certificate_provider_managed prov2;
@@ -488,7 +539,7 @@ static void managed_a_failed_store_keeps_the_previous_certificate(void** state)
   az_iot_certificate_provider_managed prov;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
-  char* good = make_self_signed_cert_base64();
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
   az_span chain1[1] = { az_span_create_from_str(good) };
   az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
   assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
@@ -503,7 +554,7 @@ static void managed_a_failed_store_keeps_the_previous_certificate(void** state)
   assert_string_equal(OP_CERT, mat.client_cert_path);
   char* on_disk = read_chain_base64(OP_CERT);
   assert_string_equal(on_disk, good);
-  assert_false(file_exists(OP_CERT ".tmp"));
+  assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
   az_iot_certificate_provider_managed prov2;
@@ -515,6 +566,145 @@ static void managed_a_failed_store_keeps_the_previous_certificate(void** state)
   free(good);
   remove_test_files();
 }
+
+/* The leaf must certify the operational key: a chain issued for another key
+ * would fail every connect, so it is refused and the previous one kept. */
+static void managed_store_refuses_a_chain_for_another_key(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain1[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  EVP_PKEY* other = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+  assert_non_null(other);
+  char* foreign = make_cert_base64(other, 2);
+  az_span chain2[2] = { az_span_create_from_str(foreign), az_span_create_from_str(good) };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 2 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
+
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(on_disk);
+  free(foreign);
+  free(good);
+  EVP_PKEY_free(other);
+  remove_test_files();
+}
+
+/* A chain on disk that no longer matches the key (the key was replaced) is not
+ * served as the operational identity after a restart. */
+static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  /* Lose the key: init generates a new one, which the stored chain does not certify. */
+  assert_int_equal(0, remove(OP_KEY));
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(good);
+  remove_test_files();
+}
+
+#if !defined(_WIN32)
+#define LINK_TARGET "az_iot_managed_test_link_target.pem"
+#define LINK_TARGET_KEY "az_iot_managed_test_link_target_key.pem"
+
+static mode_t file_mode(const char* path)
+{
+  struct stat st;
+  assert_int_equal(0, lstat(path, &st));
+  return st.st_mode;
+}
+
+/* The key and chain are readable only by their owner, whatever the umask. */
+static void managed_written_files_are_owner_only(void** state)
+{
+  (void)state;
+  remove_test_files();
+  mode_t old_umask = umask(022);
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_int_equal(0600, file_mode(OP_KEY) & 0777);
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  assert_int_equal(0600, file_mode(OP_CERT) & 0777);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  (void)umask(old_umask);
+  free(good);
+  remove_test_files();
+}
+
+/* A link at either destination is replaced, never written through. */
+static void managed_writes_replace_a_link_instead_of_following_it(void** state)
+{
+  (void)state;
+  remove_test_files();
+  (void)remove(LINK_TARGET);
+  (void)remove(LINK_TARGET_KEY);
+  FILE* v = fopen(LINK_TARGET, "wb");
+  assert_non_null(v);
+  assert_int_equal(6, (int)fwrite("target", 1, 6, v));
+  assert_int_equal(0, fclose(v));
+  assert_int_equal(0, symlink(LINK_TARGET, OP_CERT));
+  assert_int_equal(0, symlink(LINK_TARGET_KEY, OP_KEY)); /* dangling: init generates a key */
+
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_true(S_ISREG(file_mode(OP_KEY)));
+  assert_false(file_exists(LINK_TARGET_KEY));
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  assert_true(S_ISREG(file_mode(OP_CERT)));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char buf[16] = { 0 };
+  v = fopen(LINK_TARGET, "rb");
+  assert_non_null(v);
+  assert_int_equal(6, (int)fread(buf, 1, sizeof(buf) - 1, v));
+  assert_int_equal(0, fclose(v));
+  assert_string_equal(buf, "target");
+
+  free(good);
+  (void)remove(LINK_TARGET);
+  remove_test_files();
+}
+#endif
 
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
@@ -549,6 +739,12 @@ int main(void)
     cmocka_unit_test(managed_store_overwrites_a_previously_issued_chain),
     cmocka_unit_test(managed_a_stored_chain_that_is_not_a_certificate_is_refused),
     cmocka_unit_test(managed_a_failed_store_keeps_the_previous_certificate),
+    cmocka_unit_test(managed_store_refuses_a_chain_for_another_key),
+    cmocka_unit_test(managed_a_persisted_chain_for_another_key_is_not_used),
+#if !defined(_WIN32)
+    cmocka_unit_test(managed_written_files_are_owner_only),
+    cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
+#endif
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
