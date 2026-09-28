@@ -189,12 +189,12 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 | Generated API reference | **No** | **No** | Public C headers are written in Doxygen format but there is **no Doxyfile and no doc build**, so no API reference is produced or published |
 | Static analysis | **No** | **No** | No clang-tidy, CodeQL, cppcheck or MISRA configuration in the repo |
 | Supply chain / SBOM | **No** | **No** | No SBOM and no third-party notices file. Dependencies are version-pinned (azure-sdk-for-c 1.5.0 via FetchContent; Paho pinned), which is the mitigating half |
-| Secret hygiene in memory | **No** | **No** | No zeroization of key material or SAS/CSR buffers on teardown — no `explicit_bzero`/`memset_s` equivalent anywhere |
-| Log redaction guarantees | Partial | Partial | Both log connection metadata; neither documents what must never reach a sink. C logs the DPS username at DEBUG |
+| Secret hygiene in memory | Partial | **No** | C zeroizes in exactly one place: `OPENSSL_cleanse` on an extractable private-key PEM in the key-custody path (`az_iot_paho_key_custody.c:532`). There is **no general zeroization** of SAS, CSR or key buffers on teardown |
+| Log redaction guarantees | Partial | Partial | C redacts where it matters most — `redact_key_uri()` strips the PKCS#11 query, and the Paho trace hook truncates to `<redacted>`. But neither library **documents** what must never reach a sink, and C logs the DPS username at DEBUG |
 | Measured footprint (ROM/RAM) | **No** | N/A | The C library targets constrained devices and is non-allocating on the hot path, but **no measured size figures are published**, so the claim is unverifiable by a reader |
 | Portable time source | Partial | N/A | `az_iot_time_mono_ms()` is POSIX `clock_gettime(CLOCK_MONOTONIC)` or Win32 `GetTickCount64`, selected by `#if defined(_WIN32)`. **There is no platform hook**, so an RTOS/bare-metal port with neither has to patch `reconnect.c` |
 | Thread-safety contract | Partial | Partial | C is a single-threaded `do_work()` pump with callbacks on the caller's thread, stated in `README.md`/`design.md` but not in a dedicated contract doc or enforced by a test |
-| Reboot persistence / session resumption | **No** | **No** | Neither persists session, twin version or in-flight state across a process restart; every start is a cold start |
+| Reboot persistence / session resumption | Partial | **No** | The software-update client has a real checkpoint API — `persist_state_fn`/`load_state_fn` with a CRC-32 guarded blob — so an update survives a reboot. **No other feature persists**: MQTT session, twin version and in-flight operations are all cold-started |
 | Backpressure / in-flight bounds | Partial | Partial | C refuses overlapping operations with `AZ_IOT_ERR_BUSY` rather than queuing; no configurable in-flight window |
 | Credential expiry handling | Partial | Partial | CSR renewal exists on both; neither warns an application ahead of client-certificate expiry |
 | Clock-skew tolerance | Partial | Partial | Monotonic time drives backoff; no guidance on wall-clock skew, which affects certificate validity |
