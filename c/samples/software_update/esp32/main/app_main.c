@@ -125,6 +125,8 @@ static const char* su_state_name(az_iot_su_state s)
       return "RestoreStarted";
     case AZ_IOT_SU_STATE_FAILED:
       return "Failed";
+    case AZ_IOT_SU_STATE_DELEGATED:
+      return "Delegated";
     default:
       return "?";
   }

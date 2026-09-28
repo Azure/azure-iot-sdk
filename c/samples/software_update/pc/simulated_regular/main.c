@@ -239,6 +239,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       break;
+
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      /* Library mode only; this sample runs the managed client. */
+      break;
   }
 }
 

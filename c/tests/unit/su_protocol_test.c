@@ -579,6 +579,44 @@ static void outcome_and_failure_origin_must_agree(void** state)
   assert_int_equal(az_iot_su__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_OK);
 }
 
+/* Step details past the JSON writer's input limit fail rather than tripping
+ * its precondition, and the sizer agrees with the builder. */
+static void oversized_step_details_are_refused(void** state)
+{
+  (void)state;
+  uint8_t buf[512];
+  uint8_t tiny[1] = { 'x' };
+  az_iot_su_step_result step = { 0 };
+  step.outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
+  step.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  step.result_details = az_span_create(tiny, (int32_t)AZ_IOT_SU_MAX_JSON_STRING_SIZE + 1);
+  az_iot_su_report report = { 0 };
+  report.workflow_id = "wf-1";
+  report.outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
+  report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  report.result_code = 700;
+  report.extended_result_codes = "0";
+  report.step_results = &step;
+  report.step_results_count = 1;
+
+  size_t len = 1;
+  assert_int_equal(
+      az_iot_su__build_report_request(&report, buf, sizeof(buf), &len),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(len, 0);
+  assert_int_equal(
+      az_iot_su__report_request_size(&report, sizeof(buf), NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  step.result_details = az_span_create(tiny, 1);
+  size_t built = 0;
+  size_t sized = 0;
+  assert_int_equal(az_iot_su__build_report_request(&report, buf, sizeof(buf), &built), AZ_IOT_OK);
+  assert_int_equal(az_iot_su__report_request_size(&report, sizeof(buf), &sized), AZ_IOT_OK);
+  assert_int_equal(built, sized);
+  assert_int_equal(
+      az_iot_su__report_request_size(&report, built - 1, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+}
+
 static void report_without_a_workflow_id_is_rejected(void** state)
 {
   (void)state;
@@ -687,6 +725,96 @@ static void a_report_with_a_partial_installed_update_id_is_rejected(void** state
 
   assert_int_equal(
       az_iot_su__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
+
+  /* Empty members are refused too, by builder and sizer alike. */
+  const az_iot_su_report_update_id empties[]
+      = { { "", "Foobar", "2.0" }, { "Contoso", "", "2.0" }, { "Contoso", "Foobar", "" } };
+  for (size_t i = 0; i < sizeof(empties) / sizeof(empties[0]); ++i)
+  {
+    report.installed_update_id = &empties[i];
+    assert_int_equal(
+        az_iot_su__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
+    assert_int_equal(
+        az_iot_su__report_request_size(&report, sizeof(buf), NULL), AZ_IOT_ERR_INVALID_ARG);
+  }
+}
+
+/* The sizer is the builder's preflight, so it must agree with it at every
+ * capacity: exact fit, one byte short, escaped details, and every step. */
+static void report_request_size_matches_the_builder(void** state)
+{
+  (void)state;
+  static char details[97];
+  memset(details, '"', sizeof(details) - 1); /* each byte escapes to two */
+  static uint8_t step_details[40];
+  memset(step_details, '\n', sizeof(step_details));
+  az_iot_su_report_update_id installed = { "Contoso", "Foo\tbar", "1.0" };
+  az_iot_su_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); ++i)
+  {
+    steps[i].outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    steps[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_DEVICE;
+    steps[i].result_code = -2147483647 - 1;
+    steps[i].extended_result_code = -1;
+    steps[i].result_details = az_span_create(step_details, (int32_t)sizeof(step_details));
+  }
+  az_iot_su_report reports[3];
+  memset(reports, 0, sizeof(reports));
+  for (size_t k = 0; k < 3; ++k)
+  {
+    reports[k].workflow_id = "wf-\"1\"";
+    reports[k].outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    reports[k].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+    reports[k].result_code = -1;
+    reports[k].extended_result_codes = "80000001";
+  }
+  reports[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
+  reports[0].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
+  reports[1].result_details = details;
+  reports[1].installed_update_id = &installed;
+  reports[2] = reports[1];
+  reports[2].step_results = steps;
+  reports[2].step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+
+  uint8_t json[2048];
+  size_t checked = 0;
+  for (size_t k = 0; k < sizeof(reports) / sizeof(reports[0]); ++k)
+  {
+    size_t need = 0;
+    assert_int_equal(
+        az_iot_su__build_report_request(&reports[k], json, sizeof(json), &need), AZ_IOT_OK);
+    assert_true(need + 80 <= sizeof(json));
+    size_t fit = 0;
+    for (size_t capacity = 1; capacity <= need + 80; ++capacity)
+    {
+      size_t built = 1;
+      size_t sized = 1;
+      az_iot_result b = az_iot_su__build_report_request(&reports[k], json, capacity, &built);
+      az_iot_result s = az_iot_su__report_request_size(&reports[k], capacity, &sized);
+      assert_int_equal(s, b);
+      assert_int_equal(sized, built);
+      /* The writer needs headroom past what it emits: find the smallest fit. */
+      if (b == AZ_IOT_OK && fit == 0)
+      {
+        fit = capacity;
+      }
+      assert_int_equal(b, (fit != 0) ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      ++checked;
+    }
+    assert_true(fit >= need);
+    size_t sized = 1;
+    assert_int_equal(az_iot_su__report_request_size(&reports[k], fit, &sized), AZ_IOT_OK);
+    assert_int_equal(sized, need);
+    assert_int_equal(
+        az_iot_su__report_request_size(&reports[k], fit - 1, &sized), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(sized, 0);
+  }
+  assert_true(checked > 1000);
+
+  size_t len = 1;
+  assert_int_equal(az_iot_su__report_request_size(&reports[0], 0, &len), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(len, 0);
+  assert_int_equal(az_iot_su__report_request_size(NULL, 64, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* Truncated JSON must not read as a successful parse carrying partial data: the
@@ -1438,6 +1566,8 @@ int main(void)
     cmocka_unit_test(report_drops_installed_update_id_when_absent),
     cmocka_unit_test(outcome_and_failure_origin_must_agree),
     cmocka_unit_test(report_without_a_workflow_id_is_rejected),
+    cmocka_unit_test(oversized_step_details_are_refused),
+    cmocka_unit_test(report_request_size_matches_the_builder),
     cmocka_unit_test(an_offered_update_is_captured_verbatim),
     cmocka_unit_test(no_update_is_success_whether_absent_or_null),
     cmocka_unit_test(the_root_key_url_is_read_from_service_configuration),

@@ -126,6 +126,12 @@ extern "C"
  * version is internal and checked by az_iot_su_client_resume(). */
 #define AZ_IOT_SU_STATE_BLOB_MAX_SIZE AZ_IOT_SU_PERSIST_BLOB_SIZE
 
+/** @brief Bytes of result details one az_iot_su_client_report_status() call may
+ * carry, overall and per step combined, excluding terminators. */
+#ifndef AZ_IOT_SU_RESULT_DETAILS_SIZE
+#define AZ_IOT_SU_RESULT_DETAILS_SIZE 256
+#endif
+
   /* --- Internal fine-grained state enum ------------------------------------ */
 
   typedef enum az_iot_su_state
@@ -142,6 +148,9 @@ extern "C"
     AZ_IOT_SU_STATE_APPLY_STARTED,
     AZ_IOT_SU_STATE_RESTORE_STARTED,
     AZ_IOT_SU_STATE_FAILED,
+    /** Library mode: the verified update is with the application, which drives
+     * it and reports through az_iot_su_client_report_status(). */
+    AZ_IOT_SU_STATE_DELEGATED,
   } az_iot_su_state;
 
   /* --- Platform hooks (vtable) --------------------------------------------- */
@@ -343,8 +352,7 @@ extern "C"
    *
    * The managed client requires 1 to AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES
    * compatibility properties: manufacturer and model count one each when
-   * non-NULL, plus the custom ones. az_iot_su_build_report() keeps its own
-   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility
+   * non-NULL, plus the custom ones. The copy holds at most 256 bytes of compatibility
    * strings and 192 bytes of installed-ID strings, NUL terminators included; these are SDK storage
    * limits, not protocol limits.
    */
@@ -466,7 +474,8 @@ extern "C"
   } az_iot_su_report_update_id;
 
   /**
-   * @brief Terminal result for one manifest step.
+   * @brief Terminal result for one manifest step; also the overall result
+   *        passed to az_iot_su_client_report_status().
    *
    * The DPS report contract requires every serialized step to carry all four
    * structured result fields. `result_details` is optional and its span is
@@ -588,7 +597,13 @@ extern "C"
      * while. That is the intended behaviour, not a gap to work around: do not
      * drive a workflow from the reported state, and treat this event as
      * something to log rather than something to act on. */
-    AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+    AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
+
+    /** Library mode only: an update passed verification and is now the
+     * application's to drive. Carries `request` and `manifest`. The SDK runs
+     * none of its platform hooks for it; report progress and the outcome with
+     * az_iot_su_client_report_status(). */
+    AZ_IOT_SU_EVENT_UPDATE_AVAILABLE
   } az_iot_su_event_kind;
 
   /**
@@ -655,6 +670,13 @@ extern "C"
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
+
+    /** UPDATE_AVAILABLE only: the verified request (workflow id, file URLs).
+     * Owned by the client; unlike the event, valid until the workflow ends: a
+     * terminal az_iot_su_client_report_status(), or destroy. */
+    const az_iot_su_client_update_request* request;
+    /** UPDATE_AVAILABLE only: the verified manifest. Same lifetime as `request`. */
+    const az_iot_su_client_update_manifest* manifest;
   } az_iot_su_event;
 
   /**
@@ -805,6 +827,17 @@ extern "C"
       /* Connection-state observer / detach safety (see design doc §16). */
       bool detached;
 
+      /** Library mode: verified updates are handed to the application. */
+      bool library_mode;
+      /** The hand-off events are being dispatched. */
+      bool delegating;
+      /** A terminal report arrived during the hand-off; applied after it. */
+      bool delegated_end_pending;
+      /** Failure origin of a FAILED report; NOT_APPLICABLE means AGENT_CORE. */
+      az_iot_su_failure_origin pending_failure_origin;
+      /** Result details of the last az_iot_su_client_report_status(). */
+      uint8_t result_details[AZ_IOT_SU_RESULT_DETAILS_SIZE];
+
       /* Application observers, and the guard that keeps the array stable while
        * it is being walked. Fixed-size: the client allocates nothing. */
       struct
@@ -839,15 +872,22 @@ extern "C"
     /** Required. Holds the copied strings; must outlive the client. */
     uint8_t* device_properties_buffer;
     size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
-
+    /** Library mode: hand each verified update to the application
+     * (AZ_IOT_SU_EVENT_UPDATE_AVAILABLE) instead of installing it. `hooks` then
+     * becomes optional and none of them is called; `root_keys` is required.
+     * While one is delegated, or its terminal report awaits a resend, a
+     * different update is ignored; end it with a terminal
+     * az_iot_su_client_report_status() first. An update whose workflowId
+     * exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE is not delegated. */
+    bool library_mode;
   } az_iot_su_client_config_options;
 
   /**
    * @brief Returns zero-initialized options.
    *
-   * Set hooks, crypto, root_keys, root_key_count, device_properties,
-   * device_properties_buffer and device_properties_buffer_size before
-   * az_iot_su_client_init().
+   * Set hooks (unless library_mode), crypto, root_keys, root_key_count,
+   * device_properties, device_properties_buffer and device_properties_buffer_size
+   * before az_iot_su_client_init().
    *
    * @return Zero-initialized options.
    */
@@ -863,7 +903,8 @@ extern "C"
    *   run before registration. Initialization sends nothing.
    * @param[in] options Hooks, crypto, trust store, device properties and cache.
    * @return AZ_IOT_OK on success.
-   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
+   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL (hooks only
+   *   outside library mode; root_keys in library mode), or the device
    *   properties are malformed (including zero compatibility properties).
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
@@ -1062,14 +1103,56 @@ extern "C"
       az_iot_su_client* client,
       const az_iot_su_device_properties* device_properties);
 
-  /* --- Agent core-library API (library mode / bring-your-own state machine) - */
+  /**
+   * @brief Library mode: report the application's progress or outcome for the
+   *        delegated update.
+   *
+   * Reported for the delegated `workflowId`. Asynchronous and retried like the
+   * managed client's reports; a report the service refuses for good raises
+   * AZ_IOT_SU_EVENT_OPERATION_ABANDONED for AZ_IOT_SU_OP_REPORT_STATUS. A
+   * terminal outcome ends the workflow: the client returns to Idle and the
+   * event's `request` / `manifest` become invalid. Until then, a later call
+   * replaces the earlier one.
+   *
+   * The wire result code is 1 for IN_PROGRESS and 700 for SUCCEEDED; otherwise
+   * `result->result_code`, or -1 when it is 0. `failure_origin` MUST be
+   * NOT_APPLICABLE unless the outcome is FAILED, and not NOT_APPLICABLE when it
+   * is. Step results are ignored for IN_PROGRESS; otherwise there is exactly
+   * one per manifest step, none IN_PROGRESS. On SUCCEEDED the manifest's update ID is reported as
+   * installed; otherwise the cached installed update ID.
+   *
+   * Call on the do_work() thread, or serialize with it. Legal from an
+   * observer; a terminal report made during the hand-off events takes effect
+   * once every observer has had them, and later calls get NOT_FOUND.
+   *
+   * @param[in,out] client Library-mode client.
+   * @param[in] result Overall result. `result_details` is copied and must not
+   *   contain a NUL byte.
+   * @param[in] step_results Per-step results, in manifest step order; copied.
+   *   May be NULL when @p step_results_count is 0.
+   * @param[in] step_results_count Entries in @p step_results.
+   * @return AZ_IOT_OK when recorded; the report is sent on this call or a later
+   *   do_work(). On failure nothing changes.
+   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments, an invalid result, or a
+   *   terminal step count other than the manifest's.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The client is not in library mode.
+   * @retval AZ_IOT_ERR_NOT_FOUND No update is delegated to the application.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE More than
+   *   _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS steps, details over
+   *   AZ_IOT_SU_RESULT_DETAILS_SIZE, or a report body too large to send.
+   * @retval AZ_IOT_ERR_DETACHED The client is detached.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
+      az_iot_su_client* client,
+      const az_iot_su_step_result* result,
+      const az_iot_su_step_result* step_results,
+      int32_t step_results_count);
+
+  /* --- Transport-free primitives ------------------------------------------ */
   /*
-   * The functions below let a caller build their OWN software updates agent on top of the
-   * SDK's vetted parse + trust + report code, WITHOUT adopting the managed state
-   * machine, a channel, or any transport. They take spans/structs only, perform no
-   * hidden allocation, and (where they verify) are fail-closed. The managed
-   * az_iot_su_client is implemented in terms of the same internal cores, so both
-   * modes share one copy of the security-critical path. See
+   * The SDK's parse + trust + report code with no client, channel or transport.
+   * Spans/structs only, no hidden allocation, fail-closed where they verify. The
+   * managed client and library mode share the same internal cores. See
    * docs/eng/su-client-design.md §5.3.
    */
 
@@ -1136,28 +1219,23 @@ extern "C"
       void* read_ctx);
 
   /**
-   * @brief Builds the agent-state report payload without the state machine or a channel.
+   * @brief Builds the status-report request body for @p report.
    *
-   * Emits the same reported-property JSON the managed client publishes.
+   * The body the managed client and library mode send; for an agent that
+   * carries reports itself.
    *
-   * @param[in] device_properties Manufacturer, model, installed update ID and custom
-   *   properties. Only read during the call.
-   * @param[in] result Accumulated install result (overall and per step); NULL if none yet.
-   * @param[in] request In-progress deployment request, for the workflow ID; NULL when idle.
-   * @param[in] state Agent state to report (mapped to Idle / InProgress / Failed).
+   * @param[in] report The report. Only read during the call.
    * @param[out] out_json Destination buffer.
    * @param[in] out_size Size of @p out_json.
    * @param[out] out_len Bytes written; zero on error. May be NULL.
    * @return AZ_IOT_OK on success.
-   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The payload does not fit @p out_json, or a
-   *   string exceeds the JSON writer's input limit.
+   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments, or a report the service would
+   *   refuse (empty `workflow_id`, incomplete `installed_update_id`, or an
+   *   outcome / failure-origin mismatch).
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The body does not fit @p out_json.
    */
   AZ_NODISCARD az_iot_result az_iot_su_build_report(
-      const az_iot_su_device_properties* device_properties,
-      const az_iot_su_client_install_result* result,
-      const az_iot_su_client_update_request* request,
-      az_iot_su_state state,
+      const az_iot_su_report* report,
       uint8_t* out_json,
       size_t out_size,
       size_t* out_len);
