@@ -329,7 +329,7 @@ static void suback_v3_failure_maps_to_subscription_refused(void** state)
 {
   (void)state;
   /* 0x80 Failure is the only refusal MQTT 3.1.1 can express and it carries no
-   * reason, so the classification comes from what a Classic device can ask for:
+   * reason, so the classification comes from what an MQTTv3 device can ask for:
    * a topic set fixed at compile time, which cannot become acceptable later. */
   assert_int_equal(
       az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, 0x80), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);

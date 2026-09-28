@@ -13,7 +13,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 Implemented. The certificate-provider vtable is versioned to v2 with the
 role-aware `load()`, CSR hooks (`get_csr`/`release_csr`) and issued-cert storage;
 the connection client performs DPS CSR enrollment (opt-in via
-`dps.request_operational_certificate`) and Classic-hub runtime renewal
+`dps.request_operational_certificate`) and MQTTv3 hub runtime renewal
 (`az_iot_connection_client_send_csr`). An optional OpenSSL 3.0+ "managed"
 provider (`az_iot_certificate_provider_managed`), unit + E2E tests, and
 `samples/authentication/` ship alongside.
@@ -294,7 +294,7 @@ DPS-time enrollment (above) issues the *first* operational cert. To **renew** be
 expiry without re-provisioning through DPS, the C# SDK exposes a device-initiated,
 Hub-side CSR over MQTT — this design should mirror it.
 
-- **Topics** (Classic Hub): publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`,
+- **Topics** (MQTTv3 Hub): publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`,
   subscribe `$iothub/credentials/res/#`.
 - **Two-phase**: `202 Accepted` (Hub started signing) → `200` (issued chain delivered).
 - **Body**: `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|null }`.
@@ -319,7 +319,7 @@ Hub-side CSR over MQTT — this design should mirror it.
   > a 2026-01-30 test run) lists an *older* set (`400004/400006/400037/409004/412001`)
   > that disagrees with the shipping code (`400040`/`409005`). Treat the code + API
   > version above as authoritative and confirm against the service before freezing.
-- **Hub-Next (AEG)**: not defined yet (C# throws `NotImplementedException` for the AEG
+- **MQTTv5**: not defined yet (C# throws `NotImplementedException` for the MQTTv5
   path); MQTT v5 topic shape TBD.
 
 Proposed C surface (callback-driven to fit the single-threaded `do_work()` model):
@@ -401,7 +401,7 @@ for parity (see decision 9).
 
 ### Reference implementation & lessons applied
 
-The **most complete** implementation is the classic `azure-iot-sdk-csharp` repo on branch
+The **most complete** implementation is the legacy `azure-iot-sdk-csharp` repo on branch
 `feature/iot-csr-preview` (not the newer `dotnet/` in this repo, which is still partial):
 it ships **both** DPS issuance and Hub re-issuance with full error handling, a 26-scenario
 spec (`iothub/device/src/csr-scenarions.md`), and MQTT-handler unit tests. Treat it as the
@@ -517,7 +517,7 @@ HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items fro
    the *app* owns persistence (OS keystore, remote key, data-in/out per D9) or must react
    (inventory, trigger reconnect). Decoupled from provider storage.
 5. **Reference provider — ship both: hooks in core, OpenSSL `managed` provider as an
-   optional adapter.** The classic SDK's lesson is that the fork-me reference is what gets
+   optional adapter.** The legacy SDK's lesson is that the fork-me reference is what gets
    used; ship a real one for a correctness baseline, but gate it on OpenSSL so
    BearSSL/mbedTLS/secure-element-only builds are not forced to pull it.
 6. **Attestation — X.509 bootstrap for v1, architecture open for TPM/symmetric key.**
@@ -529,7 +529,7 @@ HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items fro
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
    low. Ship `az_iot_connection_client_send_csr()`.
 8. **HSM key reference — add now: key-reference fields *and* a `sign()` vtable slot.**
-   This is exactly where the classic SDK fails (its X.509 key is an extractable `char*`).
+   This is exactly where the legacy SDK fails (its X.509 key is an extractable `char*`).
    Non-extractable keys need (a) `client_key_uri` + `crypto_engine_id` for stacks with an
    engine/provider abstraction (OpenSSL + PKCS#11 / tpm2), and (b) an optional provider
    `sign()` hook the TLS layer calls for stacks without one (BearSSL/custom). Reserve both
@@ -599,9 +599,9 @@ typedef struct az_iot_certificate_provider_vtable
 
 ---
 
-## Alignment with `azure-iot-sdk-c` (classic C HSM model)
+## Alignment with `azure-iot-sdk-c` (legacy C HSM model)
 
-The classic C SDK (`azure-iot-sdk-c`) solved device-credential storage with a similar
+The legacy C SDK (`azure-iot-sdk-c`) solved device-credential storage with a similar
 seam — worth comparing since it shipped to a large fleet.
 
 - **Model:** a vtable per attestation type (`HSM_CLIENT_X509_INTERFACE` with
@@ -627,7 +627,7 @@ seam — worth comparing since it shipped to a large fleet.
 - **Extractable X.509 key** (`get_key` returns a `char*` PEM; no sign hook) → cannot support
   non-extractable secure-element/PKCS#11/TPM-TLS keys. Our D8 `sign()` hook + key-reference
   fixes exactly this.
-- **No CSR / certificate management** → the classic SDK has none; it is the whole point here.
+- **No CSR / certificate management** → the legacy SDK has none; it is the whole point here.
 
 Verdict: same seam, simpler contract, but strictly weaker on runtime pluggability,
 non-extractable-key custody, and CSR — the three axes this feature needs.
@@ -649,7 +649,7 @@ samples/authentication/
   custom_certificate_provider/ SHIPS - D9 app-owned: app builds the CSR, data-in/out
   hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho, either hub generation
   hsm_sign_callback/           SHIPS - D8 provider sign() hook (stack without an engine)
-  custom_provider_template/    SHIPS - fork-me stub (mirrors classic custom_hsm_example)
+  custom_provider_template/    SHIPS - fork-me stub (mirrors legacy custom_hsm_example)
 
   x509_file/                   planned - baseline covered today by the feature samples,
                                so it has no folder of its own
@@ -707,7 +707,7 @@ dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
   `feature/iot-csr-preview`); pinned the Hub-renewal error-code table to API
   `2025-08-01-preview` + transient set, and added "Reference implementation & lessons
   applied". By ewertons.
-- 07/03/2026: Resolved all open questions into **Decisions** (D1–D9); added the classic
+- 07/03/2026: Resolved all open questions into **Decisions** (D1–D9); added the legacy
   `azure-iot-sdk-c` HSM comparison, a consolidated provider interface, and **Samples** and
   **E2E tests** plans. By ewertons.
 - 07/03/2026: Rebased the cert work onto `main` (independent of the drop-`_t` rename); doc

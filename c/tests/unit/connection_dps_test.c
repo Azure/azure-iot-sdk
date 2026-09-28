@@ -72,7 +72,7 @@ static const char k_disabled_body[] = "{\"operationId\":\"op-1\",\"status\":\"di
   "\"connectionProfile\":" profile_json ","                  \
   "\"deviceId\":\"assigned-device\"}}"
 
-static const char k_assigned_classic[] = ASSIGNED_BODY_WITH_PROFILE("\"classic\"");
+static const char k_assigned_mqtt_v3[] = ASSIGNED_BODY_WITH_PROFILE("\"classic\"");
 static const char k_assigned_mqtt_v5[] = ASSIGNED_BODY_WITH_PROFILE("\"mqttV5\"");
 static const char k_assigned_profile_null[] = ASSIGNED_BODY_WITH_PROFILE("null");
 static const char k_assigned_profile_unknown[] = ASSIGNED_BODY_WITH_PROFILE("\"mqttV9-quantum\"");
@@ -692,8 +692,8 @@ static void dps_connects_with_a_clean_session_and_no_will(void** state)
 }
 
 /* DPS speaks MQTT v3.1.1 only. Even when the device is headed for a v5
- * Hub-Next endpoint, the provisioning leg must pick the v3.1.1 factory. */
-static void dps_uses_v3_1_1_even_when_the_hub_is_next(void** state)
+ * MQTTv5 endpoint, the provisioning leg must pick the v3.1.1 factory. */
+static void dps_uses_v3_1_1_even_when_the_hub_is_mqtt_v5(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = dps_options();
@@ -1938,17 +1938,17 @@ static void profile_fixture_open_with_override(profile_fixture* pf, const char* 
 }
 
 /* Carry the hub leg all the way to CONNECTED, which is what makes the profile
- * readable. Classic needs only a CONNACK; Hub-Next additionally has to complete
+ * readable. MQTTv3 needs only a CONNACK; MQTTv5 additionally has to complete
  * the presence handshake, since there it is the birth-ack -- not the CONNACK --
  * that announces the session. */
-static void profile_finish_hub_leg(profile_fixture* pf, bool next)
+static void profile_finish_hub_leg(profile_fixture* pf, bool mqtt_v5)
 {
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(next ? pf->v5 : pf->v3);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(mqtt_v5 ? pf->v5 : pf->v3);
   assert_non_null(hub);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&pf->c, 0);
 
-  if (!next)
+  if (!mqtt_v5)
   {
     return;
   }
@@ -1982,7 +1982,7 @@ static void profile_finish_hub_leg(profile_fixture* pf, bool next)
 }
 
 /* "mqttV5" is the whole reason the field exists: it is what routes a
- * DPS-provisioned device onto an AEG/IoT Hub endpoint instead of Classic. */
+ * DPS-provisioned device onto an MQTTv5 hub endpoint instead of MQTTv3. */
 static void dps_mqtt_v5_profile_connects_the_hub_over_v5(void** state)
 {
   (void)state;
@@ -2002,12 +2002,12 @@ static void dps_mqtt_v5_profile_connects_the_hub_over_v5(void** state)
   profile_fixture_close(&pf);
 }
 
-static void dps_classic_profile_connects_the_hub_over_v3_1_1(void** state)
+static void dps_mqtt_v3_profile_connects_the_hub_over_v3_1_1(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
   profile_fixture_open(&pf);
-  profile_assign(&pf, k_assigned_classic);
+  profile_assign(&pf, k_assigned_mqtt_v3);
 
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
@@ -2015,7 +2015,7 @@ static void dps_classic_profile_connects_the_hub_over_v3_1_1(void** state)
 
   az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
 
   profile_fixture_close(&pf);
@@ -2048,15 +2048,15 @@ static void assert_state_event_contract(
   assert_true(saw_connected);
 }
 
-static void classic_state_events_are_stamped_and_profile_only_on_connected(void** state)
+static void mqtt_v3_state_events_are_stamped_and_profile_only_on_connected(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
   profile_fixture_open(&pf);
-  profile_assign(&pf, k_assigned_classic);
+  profile_assign(&pf, k_assigned_mqtt_v3);
   profile_finish_hub_leg(&pf, false);
 
-  assert_state_event_contract(&pf.log, AZ_IOT_CONNECTION_PROFILE_CLASSIC, "classic");
+  assert_state_event_contract(&pf.log, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic");
 
   profile_fixture_close(&pf);
 }
@@ -2076,7 +2076,7 @@ static void mqtt_v5_state_events_are_stamped_and_profile_only_on_connected(void*
 
 /* Absent is not an error. The service contract documents it as meaning
  * "classic", which is also what every hub predating the field will send. */
-static void dps_absent_profile_defaults_to_classic(void** state)
+static void dps_absent_profile_defaults_to_mqtt_v3(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
@@ -2088,14 +2088,14 @@ static void dps_absent_profile_defaults_to_classic(void** state)
 
   az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
 
   profile_fixture_close(&pf);
 }
 
 /* Explicit null resolves the same way as absent -- the contract lists both. */
-static void dps_null_profile_defaults_to_classic(void** state)
+static void dps_null_profile_defaults_to_mqtt_v3(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
@@ -2107,12 +2107,12 @@ static void dps_null_profile_defaults_to_classic(void** state)
 
   az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
 
   profile_fixture_close(&pf);
 }
 
-/* Development can exercise a real AEG assignment before the DPS api-version
+/* Development can exercise a real MQTTv5 assignment before the DPS api-version
  * carrying connectionProfile ships: keep the assigned host and identity, but
  * synthesize only the missing profile at the same parser boundary. */
 static void dps_absent_profile_can_be_overridden_to_mqtt_v5(void** state)
@@ -2155,20 +2155,20 @@ static void dps_wire_profile_wins_over_the_development_override(void** state)
   /* Deliberately invalid: proving a wire value wins means proving the
    * environment is not even validated once that value exists. */
   profile_fixture_open_with_override(&pf, "not-a-profile");
-  profile_assign(&pf, k_assigned_classic);
+  profile_assign(&pf, k_assigned_mqtt_v3);
 
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
 
   az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
 
   profile_fixture_close(&pf);
 }
 
-static void dps_classic_development_override_is_accepted(void** state)
+static void dps_mqtt_v3_development_override_is_accepted(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
@@ -2180,13 +2180,13 @@ static void dps_classic_development_override_is_accepted(void** state)
 
   az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
 
   profile_fixture_close(&pf);
 }
 
-/* A typo must fail at the assignment instead of silently selecting Classic,
+/* A typo must fail at the assignment instead of silently selecting MQTTv3,
  * which would connect with the wrong MQTT version and surface much later. */
 static void dps_invalid_development_override_faults_before_the_hub(void** state)
 {
@@ -2356,7 +2356,7 @@ static void get_hub_profile_rejects_null_arguments(void** state)
 
 /* UNKNOWN only ever comes back FROM the service. A caller declaring it is asking
  * the SDK to speak a protocol it has no implementation for, so it is refused at
- * the boundary rather than silently falling through to classic. */
+ * the boundary rather than silently falling through to MQTTv3. */
 static void init_rejects_a_connection_profile_the_sdk_cannot_speak(void** state)
 {
   (void)state;
@@ -2368,7 +2368,7 @@ static void init_rejects_a_connection_profile_the_sdk_cannot_speak(void** state)
 }
 
 /* A reassignment can move a device to a different generation. Filters registered
- * for the old one must not be re-issued at the new hub -- AEG does not grant
+ * for the old one must not be re-issued at the new hub -- MQTTv5 does not grant
  * $iothub/..., and once CONNECTED is gated on those SUBACKs (P1c) a session
  * carrying them could never come up. Dropping them is what keeps the two P1c
  * fixes from deadlocking each other. */
@@ -2379,8 +2379,8 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   profile_fixture pf = { 0 };
   profile_fixture_open(&pf);
 
-  /* A Classic-shaped filter, registered while the client still defaults to
-   * classic -- exactly what an mqttv3 feature client would have left behind. */
+  /* An MQTTv3-shaped filter, registered while the client still defaults to
+   * MQTTv3 -- exactly what an mqttv3 feature client would have left behind. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           &pf.c,
@@ -2402,7 +2402,7 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
   assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
 
   /* The only SUBSCRIBE on an mqttv5 session is the presence handshake's own
-   * ih/{id}/dev/#; the Classic filter must not have come along. */
+   * ih/{id}/dev/#; the MQTTv3 filter must not have come along. */
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
   assert_non_null(hub);
   assert_int_not_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
@@ -2421,7 +2421,7 @@ static void reassignment_to_another_generation_drops_the_old_filters(void** stat
 }
 
 /* Removal withdraws the filter from the broker on mqttv5 as well, not just on
- * Classic. The device-wide ih/{id}/dev/# subscription is not endangered by
+ * MQTTv3. The device-wide ih/{id}/dev/# subscription is not endangered by
  * that: the presence handshake issues it directly rather than through the
  * persistent-subscription registry, so it has no owner and removal can never
  * select it. Anything an mqttv5 feature client did register is its own, and
@@ -3431,16 +3431,16 @@ static void provision_only_rejects_a_second_open_while_backing_off(void** state)
 
 /* The mock bypass makes a hostless client a hub connection; an environment
  * variable must not override a declared device shape. */
-static void the_mock_next_bypass_does_not_capture_a_provision_only_client(void** state)
+static void the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
 
 #if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "localhost:8883");
+  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "localhost:8883");
 #else
-  setenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "localhost:8883", 1);
+  setenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "localhost:8883", 1);
 #endif
 
   fx->client->opts.dps.provision_only = true;
@@ -3455,9 +3455,9 @@ static void the_mock_next_bypass_does_not_capture_a_provision_only_client(void**
       AZ_IOT_CONN_STATE_IDLE);
 
 #if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT", "");
+  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "");
 #else
-  unsetenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
+  unsetenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
 #endif
   (void)az_iot_connection_client_close(fx->client);
 }
@@ -3891,7 +3891,7 @@ int main(void)
     cmocka_unit_test(dps_carries_the_proxy_and_transport),
     cmocka_unit_test(dps_connects_with_a_clean_session_and_no_will),
     cmocka_unit_test(dps_honors_a_custom_global_endpoint),
-    cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_next),
+    cmocka_unit_test(dps_uses_v3_1_1_even_when_the_hub_is_mqtt_v5),
     cmocka_unit_test(dps_without_a_v3_1_1_factory_is_not_supported),
     /* register handshake */
     cmocka_unit_test_setup_teardown(
@@ -3997,15 +3997,15 @@ int main(void)
         identity_rejection_without_a_policy_still_reprovisions_on_reopen, setup, teardown),
     /* connection profile */
     cmocka_unit_test(dps_mqtt_v5_profile_connects_the_hub_over_v5),
-    cmocka_unit_test(dps_classic_profile_connects_the_hub_over_v3_1_1),
-    cmocka_unit_test(classic_state_events_are_stamped_and_profile_only_on_connected),
+    cmocka_unit_test(dps_mqtt_v3_profile_connects_the_hub_over_v3_1_1),
+    cmocka_unit_test(mqtt_v3_state_events_are_stamped_and_profile_only_on_connected),
     cmocka_unit_test(mqtt_v5_state_events_are_stamped_and_profile_only_on_connected),
-    cmocka_unit_test(dps_absent_profile_defaults_to_classic),
-    cmocka_unit_test(dps_null_profile_defaults_to_classic),
+    cmocka_unit_test(dps_absent_profile_defaults_to_mqtt_v3),
+    cmocka_unit_test(dps_null_profile_defaults_to_mqtt_v3),
     cmocka_unit_test(dps_absent_profile_can_be_overridden_to_mqtt_v5),
     cmocka_unit_test(dps_null_profile_can_be_overridden_to_mqtt_v5),
     cmocka_unit_test(dps_wire_profile_wins_over_the_development_override),
-    cmocka_unit_test(dps_classic_development_override_is_accepted),
+    cmocka_unit_test(dps_mqtt_v3_development_override_is_accepted),
     cmocka_unit_test(dps_invalid_development_override_faults_before_the_hub),
     cmocka_unit_test(dps_overlong_development_override_faults_before_the_hub),
     cmocka_unit_test(dps_unknown_profile_faults_the_connection),
@@ -4091,7 +4091,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         provision_only_rejects_a_second_open_while_backing_off, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
-        the_mock_next_bypass_does_not_capture_a_provision_only_client,
+        the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client,
         setup_with_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

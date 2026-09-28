@@ -12,7 +12,7 @@
  * reconnects automatically in response to real adapter events, not just
  * injected ones.
  *
- * A classic v3.1.1 connection client with no certificate_provider connects in
+ * A v3.1.1 connection client with no certificate_provider connects in
  * plaintext (the adapter only enables TLS when the provider supplies material),
  * so it can talk to a local test broker through the proxy.
  *
@@ -138,7 +138,7 @@ static void reconnect_after_real_drop(void** state)
   az_iot_connection_client* client = (az_iot_connection_client*)calloc(1, sizeof(*client));
   assert_non_null(client);
 
-  /* Classic v3.1.1, plaintext (no certificate_provider), pointed at the proxy,
+  /* MQTTv3 v3.1.1, plaintext (no certificate_provider), pointed at the proxy,
    * with reconnect armed on a short delay. */
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.host = "127.0.0.1";

@@ -60,7 +60,7 @@ if (-not $KeepBuild) {
 # ─────────────────────────────────────────────────────────────────────────────
 
 $envVars = @(
-    "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT",
+    "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT",
     "AZ_IOT_DEVICE_ID",
     "AZ_IOT_CLIENT_CERT",
     "AZ_IOT_CLIENT_KEY",

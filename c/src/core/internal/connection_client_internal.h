@@ -19,7 +19,7 @@ extern "C"
 #endif
 
   /* Override the session role used by the next open(). Direct-host opens default
-   * to HUB_CLASSIC (v3.1.1); DPS calls this with the assigned role before driving
+   * to HUB_MQTT_V3 (v3.1.1); DPS calls this with the assigned role before driving
    * the post-provisioning open. */
   az_iot_result az_iot_connection_client__set_session_role(
       az_iot_connection_client* client,
@@ -45,29 +45,29 @@ extern "C"
    * monotonic clock during create(). */
   void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed);
 
-  /* Test seam: force any in-flight AEG/Hub-Next presence (birth) handshake to time
+  /* Test seam: force any in-flight MQTTv5 presence (birth) handshake to time
    * out on the next do_work(). No-op when no handshake is active. Lets unit tests
    * exercise the birth-ack timeout path without waiting the real
    * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
 
-  /* Authoritative twin versions the service reported on the most recent AEG
+  /* Authoritative twin versions the service reported on the most recent MQTTv5
    * birth-ack, as of birth admission on the current connection. The twin client
    * uses `reported_version` as the if_match anchor for its next reported patch
    * and `desired_version` as its view of the current desired version. Both are 0
-   * before the first birth-ack, on Classic/DPS sessions, and when the service
+   * before the first birth-ack, on MQTTv3/DPS sessions, and when the service
    * omits the fields. Returns AZ_IOT_ERR_INVALID_ARG on NULL arguments. */
   az_iot_result az_iot_connection_client__presence_twin_versions(
       const az_iot_connection_client* client,
       uint64_t* out_desired_version,
       uint64_t* out_reported_version);
 
-/* Width of the MQTT v5 Correlation Data every AEG flow uses: a 16-byte UUID,
+/* Width of the MQTT v5 Correlation Data every MQTTv5 flow uses: a 16-byte UUID,
  * for the connection's birth nonce and for per-request correlation ids alike. */
 #define AZ_IOT_CORRELATION_UUID_LEN 16u
 
   /* Fill `out` with a fresh RFC 4122 version 4 UUID from the client's PRNG.
-   * Feature clients use this for the per-attempt Correlation Data that the AEG
+   * Feature clients use this for the per-attempt Correlation Data that the MQTTv5
    * request/response flows (twin GET, reported patch, ...) require. */
   void az_iot_connection_client__gen_uuid(
       az_iot_connection_client* client,
@@ -77,7 +77,7 @@ extern "C"
    * dev-bound messages (twin-push, desired-patch) carry it as Correlation Data
    * so the device can tell traffic for this connection from traffic left over
    * from a defunct one. Returns AZ_IOT_ERR_NOT_CONNECTED when no presence
-   * handshake has completed on this connection (Classic/DPS sessions included). */
+   * handshake has completed on this connection (MQTTv3/DPS sessions included). */
   az_iot_result az_iot_connection_client__presence_nonce(
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
@@ -329,13 +329,13 @@ extern "C"
    * number removed.
    *
    * Each removed entry is also UNSUBSCRIBEd when connected, on both
-   * generations. AEG's device-wide `ih/{device_id}/dev/#` subscription is not
+   * generations. MQTTv5's device-wide `ih/{device_id}/dev/#` subscription is not
    * at risk from this: the presence handshake takes it out directly rather than
    * through the persistent-subscription registry, so it has no owner and this
    * function can never select it. Withdrawing an entry underneath it does not
    * disturb it either -- the wildcard keeps matching.
    *
-   * On AEG this is now a registry removal in practice, because no feature
+   * On MQTTv5 this is now a registry removal in practice, because no feature
    * client registers a filter there any more: the wildcard covers them all. It
    * still issues the UNSUBSCRIBE for anything that is registered, which is what
    * an application custom topic will be.
@@ -401,10 +401,10 @@ extern "C"
   {
     switch (role)
     {
-      case AZ_IOT_MQTT_ROLE_HUB_NEXT:
+      case AZ_IOT_MQTT_ROLE_HUB_MQTT_V5:
         return AZ_IOT_MQTT_VERSION_5;
       case AZ_IOT_MQTT_ROLE_DPS:
-      case AZ_IOT_MQTT_ROLE_HUB_CLASSIC:
+      case AZ_IOT_MQTT_ROLE_HUB_MQTT_V3:
       default:
         return AZ_IOT_MQTT_VERSION_3_1_1;
     }

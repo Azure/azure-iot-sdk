@@ -5,9 +5,9 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hub_renew
  *
- * Runtime operational-certificate renewal against a connected Classic hub
+ * Runtime operational-certificate renewal against a connected MQTTv3 hub
  * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
- * Classic-only, so on an AEG hub the sample reports that and exits non-zero.
+ * MQTTv3-only, so on an MQTTv5 hub the sample reports that and exits non-zero.
  * End to end:
  *   1. Connect, then produce a fresh CSR from the managed provider and call
  *      az_iot_connection_client_send_csr().
@@ -153,7 +153,7 @@ int main(void)
 
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -184,9 +184,9 @@ int main(void)
   az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
       && sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK
-      && profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+      && profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
-    /* send_csr() is Classic-only and returns AZ_IOT_ERR_NOT_SUPPORTED here. */
+    /* send_csr() is MQTTv3-only and returns AZ_IOT_ERR_NOT_SUPPORTED here. */
     fprintf(stderr, "[hub_renew] runtime renewal is not available on this hub generation\n");
   }
   else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)

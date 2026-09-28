@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file
- * @brief MQTT v5 (IoT Hub Next) twin client.
+ * @brief MQTT v5 (MQTTv5 hub) twin client.
  *
  * Desired properties are kept in sync with the service: the handler receives a
  * @ref AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT (full document) whenever the device is
@@ -224,7 +224,7 @@ extern "C"
    * already covers. @p conn need not be open.
    *
    * @return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p conn is known to be
-   *         Classic, or an mqttv3 twin client is attached.
+   *         MQTTv3, or an mqttv3 twin client is attached.
    */
   AZ_NODISCARD az_iot_result
   az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connection_client* conn);

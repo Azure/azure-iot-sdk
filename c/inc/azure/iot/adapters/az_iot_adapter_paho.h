@@ -7,7 +7,7 @@
  *
  * Construct one or both factories and register them with the connection
  * client. The SDK selects the appropriate factory by MQTT version at
- * connection time (v3.1.1 for DPS/Classic, v5 for Hub-Next). Each factory
+ * connection time (v3.1.1 for DPS/MQTTv3, v5 for MQTTv5). Each factory
  * creates a fresh Paho client per session.
  *
  * Lifetime: the returned factory pointer remains valid until

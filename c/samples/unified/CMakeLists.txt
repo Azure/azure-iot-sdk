@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Each serves a Classic or an AEG hub, whichever DPS assigns, so each links
+# Each serves an MQTTv3 or an MQTTv5 hub, whichever DPS assigns, so each links
 # both generations.
 foreach(sample
         telemetry

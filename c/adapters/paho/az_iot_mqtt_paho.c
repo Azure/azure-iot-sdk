@@ -726,7 +726,7 @@ static void paho_connect_success(void* context, MQTTAsync_successData* response)
   }
   /* Report Session Present from the CONNACK, as the v5 path does. MQTT 3.1.1
    * carries the flag too, and a caller that connects with Clean Session 0 --
-   * which is what a Classic hub session does, so its queued cloud-to-device
+   * which is what an MQTTv3 hub session does, so its queued cloud-to-device
    * messages survive a reconnect -- has no other way to learn whether the
    * broker actually resumed the session or quietly started a fresh one. */
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));

@@ -67,7 +67,7 @@ static int setup_profile(
 
 static int setup(void** state)
 {
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_CLASSIC, AZ_IOT_MQTT_VERSION_3_1_1);
+  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static int setup_v5(void** state)
@@ -105,7 +105,7 @@ static const az_iot_mock_call* find_publish(fixture* test, const char* topic)
   return NULL;
 }
 
-static void open_classic(fixture* test)
+static void open_mqtt_v3(fixture* test)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
@@ -212,7 +212,7 @@ static void init_rejects_v5_profile(void** state)
 static void lifecycle_is_deterministic(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   az_iot_mqttv3_telemetry_client local;
   memset(&local, 0xEE, sizeof(local));
@@ -229,7 +229,7 @@ static void lifecycle_is_deterministic(void** state)
 static void send_rejects_invalid_arguments(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   az_iot_telemetry_message message = { .payload_len = 1 };
   assert_int_equal(
@@ -247,10 +247,10 @@ static void send_rejects_invalid_arguments(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void send_uses_the_classic_wire_shape_and_waits_for_puback(void** state)
+static void send_uses_the_mqtt_v3_wire_shape_and_waits_for_puback(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   static const uint8_t payload[] = "hello";
   az_iot_telemetry_message message = { .payload = payload, .payload_len = sizeof(payload) - 1 };
@@ -276,7 +276,7 @@ static void send_uses_the_classic_wire_shape_and_waits_for_puback(void** state)
 static void properties_are_percent_encoded_in_order(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   const az_iot_telemetry_property properties[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json;charset=utf-8" },
@@ -311,7 +311,7 @@ static void properties_are_percent_encoded_in_order(void** state)
 static void property_edges_do_not_corrupt_the_bag(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   const az_iot_telemetry_property properties[] = {
     { NULL, "orphan" },
@@ -336,7 +336,7 @@ static void property_edges_do_not_corrupt_the_bag(void** state)
 static void mqtt_wildcards_in_a_value_cannot_reach_the_topic(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   const az_iot_telemetry_property properties[] = {
     { "w", "a#b+c/d?e" },
@@ -354,13 +354,13 @@ static void mqtt_wildcards_in_a_value_cannot_reach_the_topic(void** state)
   assert_null(strchr(publish->topic + strlen("devices/ut-device/messages/events/"), '+'));
 }
 
-/* Classic gives system properties no special treatment on the way out, so a
+/* MQTTv3 gives system properties no special treatment on the way out, so a
  * name the SDK has never heard of encodes exactly like an application one. The
  * mqttv5 client does discriminate, which is why this is worth stating on both. */
 static void an_unknown_system_property_is_encoded_like_any_other(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   const az_iot_telemetry_property properties[] = {
     { "$.unknown", "keep-me" },
@@ -386,7 +386,7 @@ static void an_unknown_system_property_is_encoded_like_any_other(void** state)
 static void the_topic_length_boundary_is_sharp(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   /* Must be able to overshoot the client's topic buffer, which is larger than
    * the mock's record of it. */
@@ -442,7 +442,7 @@ static void the_topic_length_boundary_is_sharp(void** state)
 static void topic_overflow_is_reported_without_publishing(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   char value[1024];
   memset(value, 'x', sizeof(value) - 1);
@@ -458,7 +458,7 @@ static void topic_overflow_is_reported_without_publishing(void** state)
 static void empty_payload_is_valid_and_publish_failures_are_returned(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   az_iot_telemetry_message empty = { 0 };
   assert_int_equal(
@@ -479,7 +479,7 @@ static void empty_payload_is_valid_and_publish_failures_are_returned(void** stat
 static void a_disconnect_completes_the_pending_send(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   az_iot_telemetry_message message = { 0 };
   send_record record = { 0 };
@@ -494,7 +494,7 @@ static void a_disconnect_completes_the_pending_send(void** state)
 static void a_full_puback_table_reports_that_completion_cannot_be_tracked(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   az_iot_telemetry_message message = { 0 };
   send_record records[AZ_IOT_MAX_PENDING_PUBACKS];
@@ -523,7 +523,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(lifecycle_is_deterministic, setup, teardown),
     cmocka_unit_test_setup_teardown(send_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        send_uses_the_classic_wire_shape_and_waits_for_puback, setup, teardown),
+        send_uses_the_mqtt_v3_wire_shape_and_waits_for_puback, setup, teardown),
     cmocka_unit_test_setup_teardown(properties_are_percent_encoded_in_order, setup, teardown),
     cmocka_unit_test_setup_teardown(property_edges_do_not_corrupt_the_bag, setup, teardown),
     cmocka_unit_test_setup_teardown(

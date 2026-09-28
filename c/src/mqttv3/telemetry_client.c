@@ -27,7 +27,7 @@ az_iot_result az_iot_mqttv3_telemetry_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));

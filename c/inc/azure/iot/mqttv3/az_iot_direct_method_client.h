@@ -29,7 +29,7 @@ extern "C"
 #define AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS 300u
 #endif
 
-  /* IoT Hub Classic direct methods (MQTT v3.1.1).
+  /* MQTTv3 hub direct methods (MQTT v3.1.1).
    *
    *   Subscribe  "$iothub/methods/POST/#"
    *   Inbound    "$iothub/methods/POST/{methodName}/?$rid={rid}"
@@ -60,10 +60,10 @@ extern "C"
   } az_iot_mqttv3_direct_method_client;
 
   /**
-   * @brief Initialize the IoT Hub Classic direct method client.
+   * @brief Initialize the MQTTv3 hub direct method client.
    *
    * The connection need not be open: this records that it must resolve to the
-   * Classic profile. A connection already known to be MQTT_V5 -- a direct
+   * MQTTv3 profile. A connection already known to be MQTT_V5 -- a direct
    * connection, or a DPS one past assignment -- is rejected here with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
    * the connection resolves, which fails it before it reports CONNECTED. The

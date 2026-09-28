@@ -37,7 +37,7 @@
 
 static az_iot_connection_client_options reconnect_options(uint32_t max_attempts)
 {
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.reconnection_policy.initial_delay_ms = RETRY_DELAY_MS;
   opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
   opts.reconnection_policy.max_attempts = max_attempts;
@@ -88,7 +88,7 @@ static int setup_no_reconnect(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
@@ -865,7 +865,7 @@ static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  /* 0x87 Not authorized, as an AEG topic-space refusal would arrive. */
+  /* 0x87 Not authorized, as an MQTTv5 topic-space refusal would arrive. */
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;

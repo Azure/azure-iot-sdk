@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Shows logs from the mock Hub-Next service worker container.
+    Shows logs from the mock MQTTv5 service worker container.
 
 .PARAMETER Follow
     Continuously stream new log output (like tail -f).
@@ -18,7 +18,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ComposeFile = Join-Path $PSScriptRoot ".env-hub-next\docker-compose.yml"
+$ComposeFile = Join-Path $PSScriptRoot ".env-mqttv5\docker-compose.yml"
 
 if (-not (Test-Path $ComposeFile)) {
     throw "Environment not found. Run .\New-TestEnv.ps1 first."

@@ -78,5 +78,5 @@ option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           O
 # externally by OpenCppCoverage against an ordinary build.
 option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       OFF)
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
-# MANDATORY dependency. It is how we talk to DPS and IoTHub-Classic. There is
+# MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.

@@ -94,9 +94,9 @@ int sample_config_load(sample_config* config)
 {
   memset(config, 0, sizeof(*config));
 
-  /* Optional: Hub-Next mock bypass. When set, DPS vars are still loaded
+  /* Optional: MQTTv5 mock bypass. When set, DPS vars are still loaded
    * but provisioning is skipped internally by the connection client. */
-  config->mock_endpoint = read_env_var_optional("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
+  config->mock_endpoint = read_env_var_optional("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
   config->device_id = read_env_var_optional("AZ_IOT_DEVICE_ID");
 
   config->id_scope = read_env_var("AZ_IOT_DPS_ID_SCOPE");
@@ -254,10 +254,10 @@ const char* sample_connection_profile_name(az_iot_connection_profile profile)
 {
   switch (profile)
   {
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      return "Classic (mqttv3, MQTT v3.1.1)";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
+      return "MQTTv3 (MQTT v3.1.1)";
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      return "AEG (mqttv5, MQTT v5)";
+      return "MQTTv5 (MQTT v5)";
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
       return "not known to this SDK";
@@ -305,7 +305,7 @@ az_iot_connection_profile sample_initial_profile(const sample_config* config)
 {
   /* The mock bypass skips DPS, so no mismatch would ever correct a guess. */
   return (config != NULL && config->mock_endpoint != NULL) ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-                                                           : AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+                                                           : AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
 }
 
 void sample_report_unsupported_profile(const az_iot_connection_state_event* event)
