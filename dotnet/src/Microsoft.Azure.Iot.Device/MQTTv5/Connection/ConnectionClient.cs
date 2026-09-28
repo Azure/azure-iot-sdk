@@ -85,6 +85,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 {
                     Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again...", e);
                     await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                    return;
                 }
             }
 
@@ -168,6 +169,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
                 Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message with reason code: {0}.", birthMessagePuback.ReasonCode);
+                return;
             }
 
             BirthAck birthAck;
@@ -180,6 +182,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
                 await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
                 Trace.TraceWarning("Timed out waiting for birth ack message");
+                return;
             }
 
             // Birth ack was received, so stop listening for birth acks.
