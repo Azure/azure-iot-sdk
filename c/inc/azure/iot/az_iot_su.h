@@ -1126,7 +1126,8 @@ extern "C"
    * once every observer has had them, and later calls get NOT_FOUND.
    *
    * @param[in,out] client Library-mode client.
-   * @param[in] result Overall result. `result_details` is copied.
+   * @param[in] result Overall result. `result_details` is copied and must not
+   *   contain a NUL byte.
    * @param[in] step_results Per-step results, in manifest step order; copied.
    *   May be NULL when @p step_results_count is 0.
    * @param[in] step_results_count Entries in @p step_results.
