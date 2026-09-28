@@ -550,7 +550,7 @@ static az_iot_result esp_publish(
 #if defined(CONFIG_MQTT_PROTOCOL_5)
   /* Attach v5 properties (correlation data / response topic / content type /
    * user properties) to the next publish. These are required for the twin and
-   * direct-method feature clients on Hub-Next. */
+   * direct-method feature clients on MQTTv5. */
   mqtt5_user_property_handle_t up = NULL;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {

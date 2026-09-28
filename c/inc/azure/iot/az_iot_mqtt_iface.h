@@ -17,8 +17,8 @@ extern "C"
 {
 #endif
 
-  /* MQTT protocol versions supported by adapters. DPS + IoTHub-Classic require v3.1.1;
-   * IoTHub-Next requires v5. A single adapter binary may register factories for both,
+  /* MQTT protocol versions supported by adapters. DPS + MQTTv3 hub require v3.1.1;
+   * MQTTv5 hub requires v5. A single adapter binary may register factories for both,
    * but each instance speaks exactly one version. */
   typedef enum az_iot_mqtt_version
   {
@@ -350,7 +350,7 @@ extern "C"
 
   /* Factory: produces a client that speaks a specific MQTT version. The SDK
    * selects a factory by version at connection time based on the service being
-   * targeted (DPS/Classic require v3.1.1, Hub-Next requires v5). */
+   * targeted (DPS/MQTTv3 require v3.1.1, MQTTv5 requires v5). */
   typedef struct az_iot_mqtt_factory
   {
     az_iot_mqtt_version version;

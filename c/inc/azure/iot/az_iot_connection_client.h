@@ -33,8 +33,7 @@ extern "C"
    *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
-   *     CLASSIC (MQTT v3.1.1); set MQTT_V5 for an IoT Hub Next / Event Grid
-   *     (AEG) endpoint.
+   *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
    * Either way az_iot_connection_client_get_hub_profile() reports the result.
    *
    * On the wire `connectionProfile` is a STRING and an extensible union -- the
@@ -43,7 +42,7 @@ extern "C"
    * verbatim string is carried alongside it. See docs/eng/client-separation.md. */
   typedef enum az_iot_connection_profile
   {
-    AZ_IOT_CONNECTION_PROFILE_CLASSIC = 0, /* "classic" -- also the absent/null default */
+    AZ_IOT_CONNECTION_PROFILE_MQTT_V3 = 0, /* "classic" -- also the absent/null default */
     AZ_IOT_CONNECTION_PROFILE_MQTT_V5 = 1, /* "mqttV5"                                  */
     /* A value newer than this SDK. Only ever produced by the service; passing it
      * to az_iot_connection_client_init() is rejected, since the caller cannot
@@ -101,7 +100,7 @@ extern "C"
 #define AZ_IOT_HUB_PROFILE_INIT                                                              \
   {                                                                                          \
     ._internal_size = sizeof(az_iot_hub_profile),                                            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC, .connection_profile_raw = NULL, \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3, .connection_profile_raw = NULL, \
     .connection_profile_raw_truncated = false,                                               \
   }
 
@@ -271,8 +270,8 @@ extern "C"
     uint32_t subscription_ack_timeout_seconds;
     const char* client_id; /* device id */
     az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
-                                                   * no DPS): CLASSIC (v3.1.1, default) or
-                                                   * MQTT_V5 (AEG). Ignored when using DPS,
+                                                   * no DPS): MQTT_V3 (v3.1.1, default) or
+                                                   * MQTT_V5 (MQTTv5). Ignored when using DPS,
                                                    * where it is learned instead. */
     const char* model_id; /* IoT Plug and Play model id announced at
                            * connection (NULL = none). Not used by device
@@ -389,7 +388,7 @@ extern "C"
        *   copts.dps.registration_payload
        *       = az_span_create((uint8_t*)k_payload, (int32_t)(sizeof(k_payload) - 1));
        *
-       * Note that opts.model_id is NOT announced here: it feeds the Classic
+       * Note that opts.model_id is NOT announced here: it feeds the MQTTv3
        * MQTT username only, and injecting it would have to merge with (or
        * silently override) a `modelId` this payload already carries. Put the
        * model id in this payload when provisioning should see it.
@@ -476,7 +475,7 @@ extern "C"
      * explicit and independent of the environment. */
     az_iot_mqtt_proxy_options proxy;
 
-    /* IoT Hub Next (AEG) twin push advertisement. These two bits ride the birth
+    /* MQTTv5 hub twin push advertisement. These two bits ride the birth
      * message on every connection and tell the service which twin traffic this
      * device wants dispatched to it. They reflect the application's
      * configuration at init and MUST stay constant for the lifetime of the
@@ -487,7 +486,7 @@ extern "C"
      * the desired snapshot on connect instead of the mqttv5 twin client fetching
      * it. With push_reported, a pushed reported section reaches
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
-     * dropped. Ignored for Classic hubs and for DPS sessions.
+     * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
      * Appended, like the options above it and for the same reason: this struct
      * is filled by callers, so a member inserted anywhere else would shift
@@ -505,16 +504,16 @@ extern "C"
      * close. Leave zeroed (topic NULL) for no Will, which is the default.
      *
      * Scope, deliberately:
-     *  - It is applied to the hub session only -- Classic and MqttV5 alike. The
+     *  - It is applied to the hub session only -- MQTTv3 and MQTTv5 alike. The
      *    DPS session never carries it: provisioning is a short exchange that is
      *    fully torn down before the hub session exists, and a Will published
      *    from it would announce a departure that never happened.
-     *  - `will_delay_seconds` is MQTT 5 only (ignored on a Classic hub, which
-     *    speaks v3.1.1). On an MqttV5 session the SDK also raises the session
+     *  - `will_delay_seconds` is MQTT 5 only (ignored on an MQTTv3 hub, which
+     *    speaks v3.1.1). On an MQTTv5 session the SDK also raises the session
      *    expiry to cover the delay, because MQTT 5 ends the delay at whichever
      *    comes first -- a delay longer than the session expiry is silently no
      *    delay at all.
-     *  - On an MqttV5 session, configuring a Will also makes the SDK close with
+     *  - On an MQTTv5 session, configuring a Will also makes the SDK close with
      *    DISCONNECT reason 0x04 (Disconnect with Will Message) so an orderly
      *    close announces the departure too, instead of discarding the Will.
      *
@@ -561,7 +560,7 @@ extern "C"
      * only meaningful alongside a resumed session: a session asked to expire
      * immediately is gone before any reconnect can resume it.
      *
-     * MQTT 5 only, so it has no effect on a Classic hub. The Event Grid
+     * MQTT 5 only, so it has no effect on an MQTTv3 hub. The Event Grid
      * namespace clamps this to its configured maximum (8 hours), and a
      * disconnected session is also bounded by its queue (100 messages / 1 MB) --
      * overflowing that destroys the session regardless of this value. */
@@ -575,7 +574,7 @@ extern "C"
    * to. They fail, retry and settle independently, so anything scoped to one
    * of them -- today the retry ladders below -- has to say which.
    *
-   * DPS and HUB only. Which hub GENERATION a hub session speaks (Classic or
+   * DPS and HUB only. Which hub GENERATION a hub session speaks (MQTTv3 or
    * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
    * logical connection either way, and splitting the scope by generation would
    * make a caller handle two values for it. */
@@ -709,7 +708,7 @@ extern "C"
    * client down and the context the callback closes over may already be gone. */
   typedef void (*az_iot_session_end_callback)(void* user_ctx);
 
-  /* ---- Runtime Hub-side certificate renewal (Classic hub) ------------------ */
+  /* ---- Runtime Hub-side certificate renewal (MQTTv3 hub) ------------------ */
   /* Device-initiated CSR to the connected hub. Two-phase: ACCEPTED (202) then
    * ISSUED (200) with the new chain, or FAILED. See docs/eng/certificate-management.md. */
   typedef enum az_iot_csr_event_kind
@@ -786,8 +785,8 @@ extern "C"
 #endif
 /* Topic filters the connection re-subscribes on every session. Feature clients
  * take one slot per filter they need, so the default leaves headroom over what
- * a fully loaded device asks for: five on Classic (C2D, direct methods, twin
- * response, twin desired, certificate renewal) and six on Hub-Next. Registering
+ * a fully loaded device asks for: five on MQTTv3 (C2D, direct methods, twin
+ * response, twin desired, certificate renewal) and six on MQTTv5. Registering
  * past the array fails with AZ_IOT_ERR_NOT_ENOUGH_SPACE and names the filter
  * that did not fit -- raise this if an application needs more slots than the
  * default holds. */
@@ -879,11 +878,11 @@ extern "C"
 #define AZ_IOT_MQTT_USERNAME_BUF 256
 #endif
 /* Buffer sizing the ih/{deviceId}/srv|dev/presence topics built for the
- * AEG/Hub-Next birth handshake. */
+ * MQTTv5 birth handshake. */
 #ifndef AZ_IOT_PRESENCE_TOPIC_BUF
 #define AZ_IOT_PRESENCE_TOPIC_BUF 256
 #endif
-/* How long to wait for the SUBACK + birth-ack that complete the AEG/Hub-Next
+/* How long to wait for the SUBACK + birth-ack that complete the MQTTv5
  * presence handshake before abandoning the attempt (mirrors the .NET SDK's
  * 60s defensive birth-ack timeout). */
 #ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
@@ -924,7 +923,7 @@ extern "C"
      * order so the existing phase values do not shift. */
     AZ_IOT_DPS_PHASE_HOLD
   };
-  /* AEG/Hub-Next presence (birth) handshake phases. Classic/DPS sessions never
+  /* MQTTv5 presence (birth) handshake phases. MQTTv3/DPS sessions never
    * leave AZ_IOT_PRESENCE_PHASE_NONE. */
   enum
   {
@@ -940,8 +939,8 @@ extern "C"
   typedef enum az_iot_mqtt_role
   {
     AZ_IOT_MQTT_ROLE_DPS = 0, /* requires MQTT v3.1.1 */
-    AZ_IOT_MQTT_ROLE_HUB_CLASSIC = 1, /* requires MQTT v3.1.1 */
-    AZ_IOT_MQTT_ROLE_HUB_NEXT = 2 /* requires MQTT v5     */
+    AZ_IOT_MQTT_ROLE_HUB_MQTT_V3 = 1, /* requires MQTT v3.1.1 */
+    AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 = 2 /* requires MQTT v5     */
   } az_iot_mqtt_role;
 
   /* Inbound provisioning-session messages that the provisioning flow does not
@@ -1208,7 +1207,7 @@ extern "C"
     /* True once connection_profile is authoritative rather than the value
      * seeded at init: immediately for a direct connect, where opts declares it,
      * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
-     * carries no connectionProfile, since absent resolves to classic. */
+     * carries no connectionProfile, since absent resolves to "classic". */
     bool connection_profile_resolved;
 
     /* The generation the attached feature clients require, refcounted by them.
@@ -1266,12 +1265,12 @@ extern "C"
       bool active;
     } subscription_gate;
 
-    /* AEG/Hub-Next presence (birth) handshake. After CONNACK on a HUB_NEXT (v5)
+    /* MQTTv5 presence (birth) handshake. After CONNACK on a HUB_MQTT_V5 (v5)
      * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
      * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
      * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
      * topic -- whose correlation data matches `nonce`.
-     * Classic/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
+     * MQTTv3/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
     struct
     {
       int phase;
@@ -1308,7 +1307,7 @@ extern "C"
    *     certificate_provider.
    *   - Direct hub connect: host, client_id, certificate_provider; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
-   *     Next / AEG (v5) endpoint (defaults to Classic v3.1.1). */
+   *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1). */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
   AZ_NODISCARD az_iot_result az_iot_connection_client_init(
@@ -1320,7 +1319,7 @@ extern "C"
   /* Register an MQTT factory in the client's adapter registry. The client may hold
    * multiple factories; at session-open time it picks the one whose
    * (version, supported_roles_mask) matches the required (version, role) for that
-   * session. Adapters for DPS+Classic must be v3.1.1; adapters for Next must be v5. */
+   * session. Adapters for DPS+MQTTv3 must be v3.1.1; adapters for MQTTv5 must be v5. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
       az_iot_connection_client* client,
       const az_iot_mqtt_factory* factory);
@@ -1427,7 +1426,7 @@ extern "C"
       az_iot_connection_client* client,
       uint32_t timeout_ms);
 
-  /* Request a renewed operational certificate from the connected (Classic) hub by
+  /* Request a renewed operational certificate from the connected (MQTTv3) hub by
    * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
    * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
    *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.

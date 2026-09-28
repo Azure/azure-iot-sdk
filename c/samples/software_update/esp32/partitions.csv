@@ -3,7 +3,7 @@
 # Two equally-sized OTA app slots (ota_0 / ota_1) plus the otadata partition let
 # the device flash a new firmware image into the *inactive* slot, mark it as the
 # next boot target, and reboot into it — the basis of a real (A/B) software update.
-# Sized for a 4 MB flash (the classic ESP32-WROOM-32 module).
+# Sized for a 4 MB flash (the original ESP32-WROOM-32 module).
 #
 # Name,     Type, SubType, Offset,   Size,    Flags
 nvs,        data, nvs,     0x9000,   0x6000,

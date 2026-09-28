@@ -37,7 +37,7 @@ static int setup(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
@@ -155,12 +155,12 @@ static void open_from_faulted_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* The adapter registry is keyed by MQTT version; a Classic (v3.1.1) session
+/* The adapter registry is keyed by MQTT version; an MQTTv3 (v3.1.1) session
  * cannot borrow a v5 factory. */
 static void open_rejects_factory_of_the_wrong_version(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 
@@ -214,7 +214,7 @@ static void connect_call_for(
 static void keep_alive_defaults_when_unset(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(c.connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
@@ -226,7 +226,7 @@ static void keep_alive_is_configurable(void** state)
   /* IoT Hub derives its own timeout from this value (1.5x, capped at 1767 s),
    * so a device on a metered link has a real reason to raise it and a device
    * on a lossy one has a real reason to lower it. It used to be hardcoded. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.keep_alive_seconds = 120;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -239,7 +239,7 @@ static void the_largest_useful_keep_alive_reaches_the_adapter(void** state)
   /* 1177 s is the largest value IoT Hub does not clamp (1177 * 1.5 = 1765.5,
    * under the 1767 s server cap). The SDK must pass it through rather than
    * truncating it into a uint8 or its own smaller bound. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.keep_alive_seconds = 1177;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -249,7 +249,7 @@ static void the_largest_useful_keep_alive_reaches_the_adapter(void** state)
 static void connect_timeout_defaults_when_unset(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(c.connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
@@ -258,7 +258,7 @@ static void connect_timeout_defaults_when_unset(void** state)
 static void connect_timeout_is_configurable(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.connect_timeout_seconds = 5;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -274,7 +274,7 @@ static void connect_timeout_is_configurable(void** state)
 static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.port = 0; /* derive */
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -289,7 +289,7 @@ static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
 static void websockets_derive_port_443(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.port = 0;
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   az_iot_mock_call c;
@@ -301,7 +301,7 @@ static void websockets_derive_port_443(void** state)
 static void an_explicit_port_survives_the_transport_default(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   opts.port = 8443;
   az_iot_mock_call c;
@@ -312,7 +312,7 @@ static void an_explicit_port_survives_the_transport_default(void** state)
 static void the_proxy_reaches_the_adapter_whole(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.proxy.host = "proxy.corp.example";
   opts.proxy.port = 3128;
   opts.proxy.username = "device";
@@ -330,7 +330,7 @@ static void the_proxy_reaches_the_adapter_whole(void** state)
 static void the_websocket_path_reaches_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   opts.websocket_path = "/mqtt";
   az_iot_mock_call c;
@@ -495,7 +495,7 @@ static void the_default_options_leave_the_port_to_the_transport(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Classic CONNECT packet shape                                              */
+/* MQTTv3 CONNECT packet shape                                              */
 /*                                                                           */
 /* These pin what IoT Hub actually requires of the CONNECT. They all passed  */
 /* the day they were written -- the point is that nothing would have noticed */
@@ -511,7 +511,7 @@ static void the_username_carries_the_host_and_device_id(void** state)
    * and the "/?" is what separates the identity from the query string -- a
    * username missing it is malformed, so the check has to include it. */
   static const char k_expected_prefix[] = "broker.example/ut-device/?";
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(strncmp(c.username, k_expected_prefix, sizeof(k_expected_prefix) - 1), 0);
@@ -523,7 +523,7 @@ static void the_username_carries_an_api_version(void** state)
   /* The service documents omitting api-version as a source of "unexpected
    * behaviour", and the SDK gets it from azure-sdk-for-c rather than building
    * it here -- so a dependency bump could drop it without anything failing. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_non_null(strstr(c.username, "api-version="));
@@ -534,7 +534,7 @@ static void the_model_id_is_announced_in_the_username(void** state)
   (void)state;
   /* Plug and Play model announcement. Device Update discovers a device by this
    * value, so losing it silently disables software updates on every device. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -545,7 +545,7 @@ static void the_model_id_is_announced_in_the_username(void** state)
 static void no_model_id_means_none_in_the_username(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_null(strstr(c.username, "model-id="));
@@ -554,7 +554,7 @@ static void no_model_id_means_none_in_the_username(void** state)
 static void an_empty_model_id_is_treated_as_none(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -567,7 +567,7 @@ static void the_connect_does_not_request_a_clean_session(void** state)
   /* CleanSession 0 is what makes the C2D subscription survive a reconnect and
    * lets the hub deliver messages queued while the device was away. Asking for
    * a clean session would drop them, and the loss would be invisible. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_false(c.connect.clean_start);
@@ -726,7 +726,7 @@ static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_f
 static void deinit_while_connected_destroys_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 
@@ -749,7 +749,7 @@ static void deinit_while_connected_destroys_the_adapter(void** state)
 static void deinit_while_connecting_destroys_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 

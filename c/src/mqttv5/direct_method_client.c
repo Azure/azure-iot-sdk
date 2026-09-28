@@ -3,9 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Next / Event Grid direct methods (MQTT v5).
+/* MQTTv5 direct methods (MQTT v5).
  *
- * A three-phase handshake over two flat topics, per the AEG direct-methods
+ * A three-phase handshake over two flat topics, per the MQTTv5 direct-methods
  * design and common/Protos/directmethods.proto:
  *
  *   probe:1      service -> device   ih/{device_id}/dev/methods

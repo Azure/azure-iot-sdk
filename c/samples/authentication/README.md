@@ -2,7 +2,7 @@
 
 These samples show the certificate-management options of the SDK, from a plain
 X.509 file identity to CSR-based enrollment (DPS) and runtime certificate
-renewal (Classic hub). See [docs/eng/certificate-management.md](../../docs/eng/certificate-management.md)
+renewal (MQTTv3 hub). See [docs/eng/certificate-management.md](../../docs/eng/certificate-management.md)
 for the full design.
 
 ## Scenario matrix
@@ -12,7 +12,7 @@ for the full design.
 | X.509 from files (no CSR) | `az_iot_certificate_provider_pem` | [../unified/telemetry](../unified/telemetry/main.c), [../mqttv5/telemetry](../mqttv5/telemetry/main.c) and the other feature samples | Baseline device auth (via DPS). Identical on both generations -- the provider is generation-agnostic. |
 | DPS CSR enrollment (issued operational cert) | managed (OpenSSL) | [`dps_csr_managed`](dps_csr_managed/README.md) | Bootstrap X.509 → CSR in DPS register → operational cert persisted. |
 | App-notified issuance (D4) | managed (OpenSSL) | `dps_csr_managed` | Uses `set_operational_cert_callback` to observe the issued chain. |
-| Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected Classic hub. |
+| Runtime Hub renewal (D7) | managed (OpenSSL) | `hub_renew` | `send_csr()` two-phase renewal on a connected MQTTv3 hub. |
 | DPS CSR enrollment with an APP-OWNED provider | `sample_cert_provider` (samples/common) | `custom_certificate_provider` | Same flow as `dps_csr_managed`, but the provider - incl. real PKCS#10 issuance - lives in the samples tree so you can copy it. |
 | Non-extractable key, engine/provider stack (D8) | your own (10 lines) | `hsm_pkcs11` | Key stays in a PKCS#11 token / TPM; the provider returns a `pkcs11:` URI + provider id and the **Paho adapter signs the TLS handshake through it**. Needs OpenSSL 3.0+ and a provider for the token. Serves either hub generation. |
 | Non-extractable key, no engine abstraction (D8) | your own | `hsm_sign_callback` | Only "sign these bytes" is available, so the provider implements the `sign()` hook and a BYO adapter drives the handshake through it. **Not a Paho path** — see below. |
@@ -20,8 +20,8 @@ for the full design.
 
 Every connecting sample here reaches its hub through **DPS**. The Paho-based ones
 register both MQTT adapters, so they serve whichever hub generation DPS assigns (see
-[../README.md](../README.md)), except `dps_csr_managed`, which connects to Classic
-hubs only. `hub_renew` needs a Classic hub: on an AEG hub it reports that runtime
+[../README.md](../README.md)), except `dps_csr_managed`, which connects to MQTTv3
+hubs only. `hub_renew` needs an MQTTv3 hub: on an MQTTv5 hub it reports that runtime
 renewal is unavailable and exits non-zero.
 
 The reusable app-owned provider `sample_cert_provider` (in `samples/common`)
@@ -69,8 +69,8 @@ issued identity. Requires the managed provider (OpenSSL 3.0+) and the Paho
 adapter. Setup, run and troubleshooting: [dps_csr_managed/README.md](dps_csr_managed/README.md).
 
 ### `hub_renew`
-Runtime operational-certificate renewal against a connected Classic hub (not
-available on AEG hubs): builds
+Runtime operational-certificate renewal against a connected MQTTv3 hub (not
+available on MQTTv5 hubs): builds
 a fresh CSR from the managed provider, calls `az_iot_connection_client_send_csr()`,
 and persists the renewed chain. Requires the managed provider and Paho.
 

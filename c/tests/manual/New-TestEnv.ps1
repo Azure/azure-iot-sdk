@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Provisions a local IoT-Hub-Next mock environment for manual telemetry testing.
+    Provisions a local MQTTv5 hub mock environment for manual telemetry testing.
 
 .DESCRIPTION
     1. Checks prerequisites (Docker, PowerShell 7.2+).
@@ -27,7 +27,7 @@
 param(
     [string]$DeviceId = "test-device-01",
     [int]$BrokerPort = 8883,
-    [string]$HubNextRepo = ""
+    [string]$HubMqttV5Repo = ""
 )
 
 Set-StrictMode -Version Latest
@@ -35,15 +35,15 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = $PSScriptRoot
 $CertsDir  = Join-Path $ScriptDir ".certs"
-$ComposeDir = Join-Path $ScriptDir ".env-hub-next"
+$ComposeDir = Join-Path $ScriptDir ".env-mqttv5"
 
 # Resolve az-iot-hub-next repo location (default: sibling directory)
-if (-not $HubNextRepo) {
+if (-not $HubMqttV5Repo) {
     $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
-    $HubNextRepo = Join-Path (Split-Path $RepoRoot -Parent) "az-iot-hub-next"
+    $HubMqttV5Repo = Join-Path (Split-Path $RepoRoot -Parent) "az-iot-hub-next"
 }
-if (-not (Test-Path (Join-Path $HubNextRepo "service\main.c"))) {
-    throw "az-iot-hub-next repo not found at '$HubNextRepo'. Pass -HubNextRepo <path> or clone it as a sibling."
+if (-not (Test-Path (Join-Path $HubMqttV5Repo "service\main.c"))) {
+    throw "az-iot-hub-next repo not found at '$HubMqttV5Repo'. Pass -HubMqttV5Repo <path> or clone it as a sibling."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,7 +410,7 @@ ENTRYPOINT ["mock_hub_service"]
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Host "=== IoT Hub-Next Mock Environment Setup ===" -ForegroundColor Cyan
+Write-Host "=== MQTTv5 Hub Mock Environment Setup ===" -ForegroundColor Cyan
 
 Assert-Prerequisites
 
@@ -425,7 +425,7 @@ New-Pki -OutDir $CertsDir -DevId $DeviceId
 $certsRel = [System.IO.Path]::GetRelativePath($ComposeDir, $CertsDir)
 New-BrokerConfig -Dir $ComposeDir -CertsRel $certsRel -Port $BrokerPort
 
-$serviceSrcDir = Join-Path $HubNextRepo "service"
+$serviceSrcDir = Join-Path $HubMqttV5Repo "service"
 New-ServiceBuildContext -ComposeDir $ComposeDir -ServiceSrcDir $serviceSrcDir
 
 Write-Host "[docker] Starting broker + service worker..."

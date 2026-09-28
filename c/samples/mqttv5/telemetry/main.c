@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* mqttv5/telemetry - sample.
  *
- * Send one telemetry message to an AEG (Hub-Next) hub over MQTT v5. An
+ * Send one telemetry message to an MQTTv5 hub over MQTT v5. An
  * application that must serve either hub generation picks at runtime -- see
  * unified/telemetry.
  *
@@ -15,7 +15,7 @@
  * could not do that: it would have to wait for CONNECTED, read the resolved
  * profile, and only then build the right client.
  *
- * Two adapters are registered, which a Classic-only app would not need: the hub
+ * Two adapters are registered, which an MQTTv3-only app would not need: the hub
  * leg is MQTT v5, but the DPS leg is still v3.1.1. Registering only the v5
  * factory makes provisioning fail with AZ_IOT_ERR_NOT_SUPPORTED before the hub
  * is ever reached.
@@ -73,7 +73,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       ctx->provisioning_faulted = 1;
       if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
       {
-        printf("This device is assigned to a Classic hub. Run the unified telemetry sample "
+        printf("This device is assigned to an MQTTv3 hub. Run the unified telemetry sample "
                "instead.\n");
       }
     }
@@ -181,16 +181,16 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* AEG carries properties as MQTT v5 user properties, not in the topic, so
+    /* MQTTv5 carries properties as MQTT v5 user properties, not in the topic, so
      * the topic stays the fixed ih/<id>/srv/telemetry and nothing is
-     * URL-encoded -- the reserved characters Classic has to escape travel here
+     * URL-encoded -- the reserved characters MQTTv3 has to escape travel here
      * byte for byte. Two properties are added for you: type=telemetry:1, and
      * content-type, which takes $.ct when the message sets it and
      * application/json when it does not.
      *
      * $.ct is the one system property with a native v5 field, so it does not
      * also travel under its own name. Every other one -- $.ce, $.mid, $.cid,
-     * $.uid, $.ctime, $.sub -- is carried verbatim, the same names the Classic
+     * $.uid, $.ctime, $.sub -- is carried verbatim, the same names the MQTTv3
      * client percent-encodes into its topic, so a message means the same thing
      * on either generation.
      *

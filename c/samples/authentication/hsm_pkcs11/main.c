@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hsm_pkcs11 - sample.
  *
- * Connect to whichever hub DPS assigns -- Classic (mqttv3) or AEG (mqttv5) -- with a
+ * Connect to whichever hub DPS assigns -- MQTTv3 or MQTTv5 -- with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
  * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
@@ -264,7 +264,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)
@@ -307,7 +307,7 @@ int main(void)
       {
         init_rc = az_iot_mqttv5_telemetry_client_init(&mqttv5, &connection_client);
       }
-      else if (profile == AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+      else if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
       {
         init_rc = az_iot_mqttv3_telemetry_client_init(&mqttv3, &connection_client);
       }

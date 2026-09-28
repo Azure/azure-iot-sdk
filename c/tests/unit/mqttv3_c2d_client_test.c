@@ -3,10 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* MQTTv3 (IoT Hub Classic, MQTT v3.1.1) C2D client unit tests, driven through the
+/* MQTTv3 (MQTTv3 hub, MQTT v3.1.1) C2D client unit tests, driven through the
  * public API and the in-memory mock_mqtt_iface.
  *
- * Classic delivers cloud-to-device messages on
+ * MQTTv3 delivers cloud-to-device messages on
  * "devices/{device-id}/messages/devicebound/" plus an optional url-encoded
  * property bag, and the device subscribes with the "#" wildcard so those
  * sub-topics still route. See

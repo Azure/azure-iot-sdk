@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic file upload.
+/* MQTTv3 hub file upload.
  *
  * The control plane is two HTTPS REST calls to the hub, performed by the
  * application's HTTP transport hook -- this SDK ships no HTTP client. The SDK
@@ -11,7 +11,7 @@
  * Azure Storage via an app HTTPS PUT to the SAS URI.
  *
  * There is no mqttv5 counterpart: file upload is not carried on the MQTT v5 hub
- * for now. This client pins the Classic profile, so an MQTT v5 connection is
+ * for now. This client pins the MQTTv3 profile, so an MQTT v5 connection is
  * refused at init() rather than at the first upload.
  */
 #include <stdbool.h>
@@ -300,7 +300,7 @@ az_iot_result az_iot_mqttv3_file_upload_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));

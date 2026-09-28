@@ -203,12 +203,12 @@ endif()
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client unit/mqttv5_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv5)
 if(UNIX)
-    # Two AEG direct-method budgets are only observable once a real second has
+    # Two MQTTv5 direct-method budgets are only observable once a real second has
     # passed, so the suite calls nanosleep().
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The AEG design requires the concurrency limit to be configurable. It sizes a
+# The MQTTv5 design requires the concurrency limit to be configurable. It sizes a
 # public struct, so the library and the application must be built against the
 # same value -- hence the mqttv5 sources are compiled into this target rather than
 # linked from az_iot_mqttv5, which carries the default. Running the whole suite
@@ -228,7 +228,7 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The AEG direct-method protobuf codec is hand-rolled, so its wire format is
+# The MQTTv5 direct-method protobuf codec is hand-rolled, so its wire format is
 # pinned here against bytes taken from the .proto rather than from itself.
 az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_direct_method_codec unit/mqttv5_direct_method_codec_test.c)

@@ -5,15 +5,15 @@
 /* SPDX-License-Identifier: MIT */
 /* mqttv5/direct_method_responder - sample.
  *
- * Answer direct methods on an AEG (Hub-Next) hub over MQTT v5, from inside the
+ * Answer direct methods on an MQTTv5 hub over MQTT v5, from inside the
  * handler. unified/direct_method_responder serves either generation and shows
- * the Classic route side by side; it is worth reading both, as this is the
+ * the MQTTv3 route side by side; it is worth reading both, as this is the
  * feature where the two generations differ most.
  *
- * AEG asks before it calls. Every invocation begins with a probe naming the
+ * MQTTv5 asks before it calls. Every invocation begins with a probe naming the
  * method and carrying the caller's response timeout, and only a device that
  * accepts is sent the arguments. Two things follow from that, and they are the
- * whole reason this sample does not look like the Classic one:
+ * whole reason this sample does not look like the MQTTv3 one:
  *
  *   - Methods are DECLARED, with register_method(). A probe for a name this
  *     device never declared is answered METHOD_NOT_FOUND by the SDK and never
@@ -89,7 +89,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       ctx->provisioning_faulted = 1;
       if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
       {
-        printf("This device is assigned to a Classic hub. Run the unified "
+        printf("This device is assigned to an MQTTv3 hub. Run the unified "
                "direct_method_responder sample instead.\n");
       }
     }
@@ -255,7 +255,7 @@ int main(void)
     return 1;
   }
 
-  /* CONNECTED is later here than on Classic: an AEG session is not up at
+  /* CONNECTED is later here than on MQTTv3: an MQTTv5 session is not up at
    * CONNACK, it subscribes and then exchanges a birth message first. */
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {

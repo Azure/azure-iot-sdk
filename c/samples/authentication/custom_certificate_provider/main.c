@@ -121,7 +121,7 @@ int main(void)
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)

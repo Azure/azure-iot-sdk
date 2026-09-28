@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic twin client unit tests, driven through the public API and the
+/* MQTTv3 hub twin client unit tests, driven through the public API and the
  * in-memory mock_mqtt_iface. */
 #include <stdarg.h>
 #include <stdbool.h>
@@ -705,7 +705,7 @@ static void both_subscriptions_use_qos_0(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected_keeping_history(fx);
 
-  /* Classic twin traffic is qos 0 in both directions. Subscribing at qos 1
+  /* MQTTv3 twin traffic is qos 0 in both directions. Subscribing at qos 1
    * would make the hub retain and redeliver, which the client is not built to
    * de-duplicate. */
   const az_iot_mock_call* res = find_subscribe(fx->mock, "$iothub/twin/res/#");
@@ -806,7 +806,7 @@ static void get_publishes_at_qos_0(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  /* Classic twin requests are fire-and-forget; the $rid correlation, not the
+  /* MQTTv3 twin requests are fire-and-forget; the $rid correlation, not the
    * MQTT acknowledgement, is what tells the caller the request landed. */
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);

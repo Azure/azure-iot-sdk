@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Tears down the IoT-Hub-Next mock environment.
+    Tears down the MQTTv5 hub mock environment.
 
 .DESCRIPTION
     1. Stops and removes the Mosquitto container.
@@ -19,9 +19,9 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir  = $PSScriptRoot
 $CertsDir   = Join-Path $ScriptDir ".certs"
-$ComposeDir = Join-Path $ScriptDir ".env-hub-next"
+$ComposeDir = Join-Path $ScriptDir ".env-mqttv5"
 
-Write-Host "=== IoT Hub-Next Mock Environment Teardown ===" -ForegroundColor Cyan
+Write-Host "=== MQTTv5 Hub Mock Environment Teardown ===" -ForegroundColor Cyan
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Docker teardown
