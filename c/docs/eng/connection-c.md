@@ -527,7 +527,7 @@ flowchart TD
     J --> K{credentials response}
     K -->|202 accepted| L["CSR_ACCEPTED callback,<br/>keep waiting"]
     L --> K
-    K -->|200 issued| M["store_issued_certificate<br/>(use_issued_certificates), then<br/>CSR_ISSUED callback with chain + store_status"]
+    K -->|200 issued| M["store_issued_certificate<br/>(provider-made CSR only), then<br/>CSR_ISSUED callback with chain + store_status"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
     M --> O["New certificate is used on<br/>the NEXT connect attempt"]
 ```
@@ -548,9 +548,10 @@ Rules every client must implement. The C client meets all of them; where .NET do
   callback — the application must copy it to use it afterwards.
 - The DPS operational-cert callback fires whether or not the store succeeded, with its result. A
   failed DPS store fails the registration.
-- Hub renewal: with `opts.use_issued_certificates` (default on) the client stores the chain in the
-  provider before `CSR_ISSUED`, reported in `store_status`. If the store fails the session stays up
-  and the previous credential stays in use. Off: the application owns the chain.
+- Hub renewal: whoever owns the key owns the chain. `send_csr(csr = NULL)` takes the CSR from the
+  provider's `get_csr()` and stores the chain with `store_issued_certificate()` before `CSR_ISSUED`,
+  reported in `store_status`; if the store fails the session stays up and the previous credential
+  stays in use. An application-supplied CSR is never stored: the application owns the chain.
 - `store_issued_certificate()` must be all-or-nothing: on failure the provider keeps serving the
   previous credential.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on

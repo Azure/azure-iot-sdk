@@ -3360,7 +3360,6 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
   opts.reconnection_policy = az_iot_reconnection_policy_get_default();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
-  opts.use_issued_certificates = true;
   return opts;
 }
 
@@ -5392,20 +5391,29 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
 }
 
 /**
- * @brief Store a hub-issued chain in the certificate provider when
- * opts.use_issued_certificates is set. Never touches the live session: on
- * failure the previous credential stays in use.
+ * @brief True when @p p can both produce a CSR and store its chain (vtable v2).
+ */
+static bool provider_owns_renewal(const az_iot_certificate_provider* p)
+{
+  return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
+      && p->vtable->get_csr != NULL && p->vtable->release_csr != NULL
+      && p->vtable->store_issued_certificate != NULL;
+}
+
+/**
+ * @brief Store a hub-issued chain in the certificate provider when the CSR came
+ * from it. Never touches the live session: on failure the previous credential
+ * stays in use.
  *
- * @return AZ_IOT_OK if stored, AZ_IOT_ERR_NOT_SUPPORTED if not attempted, else
- * the provider's error.
+ * @return AZ_IOT_OK if stored, AZ_IOT_ERR_NOT_SUPPORTED if the application owns
+ * the chain, else the provider's error.
  */
 static az_iot_result csr_store_issued(
     az_iot_connection_client* c,
     const az_iot_issued_certificate* issued)
 {
   az_iot_certificate_provider* p = c->opts.certificate_provider;
-  if (!c->opts.use_issued_certificates || !p || !p->vtable
-      || p->vtable->version < CERT_PROVIDER_VTABLE_V2 || !p->vtable->store_issued_certificate)
+  if (!c->csr_op.store_issued || !provider_owns_renewal(p))
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -5554,6 +5562,13 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 }
 
+static az_iot_result csr_publish(
+    az_iot_connection_client* client,
+    const az_iot_certificate_signing_request* csr,
+    const char* device_id,
+    const char* request_id,
+    const char* replace);
+
 az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
     const az_iot_certificate_signing_request* csr,
@@ -5562,7 +5577,7 @@ az_iot_result az_iot_connection_client_send_csr(
     az_iot_csr_callback cb,
     void* user_ctx)
 {
-  if (!client || !csr || !csr->csr_base64 || !cb)
+  if (!client || (csr && !csr->csr_base64) || !cb)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -5572,7 +5587,7 @@ az_iot_result az_iot_connection_client_send_csr(
   }
   if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
+    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 renewal path not defined yet */
   }
   if (client->csr_op.in_use)
   {
@@ -5583,6 +5598,59 @@ az_iot_result az_iot_connection_client_send_csr(
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
   }
 
+  const char* device_id = az_iot_connection_client__device_id(client);
+  if (!device_id)
+  {
+    device_id = "";
+  }
+
+  /* No CSR from the application: the provider makes it and will own the chain. */
+  az_iot_certificate_provider* provider = client->opts.certificate_provider;
+  az_iot_certificate_signing_request provider_csr = { 0 };
+  const bool from_provider = (csr == NULL);
+  if (from_provider)
+  {
+    if (!provider_owns_renewal(provider))
+    {
+      AZ_IOT_LOG_ERROR("send_csr: no CSR given and the certificate provider cannot produce and "
+                       "store one");
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    az_iot_result gr = provider->vtable->get_csr(provider, device_id, &provider_csr);
+    if (gr != AZ_IOT_OK || !provider_csr.csr_base64)
+    {
+      AZ_IOT_LOG_ERROR("send_csr: certificate provider get_csr failed");
+      if (gr == AZ_IOT_OK)
+      {
+        provider->vtable->release_csr(provider, &provider_csr);
+      }
+      return (gr != AZ_IOT_OK) ? gr : AZ_IOT_ERR_INTERNAL;
+    }
+    csr = &provider_csr;
+  }
+
+  client->csr_op.store_issued = from_provider;
+  client->csr_op.cb = cb;
+  client->csr_op.user_ctx = user_ctx;
+  az_iot_result r = csr_publish(client, csr, device_id, request_id, replace);
+  if (from_provider)
+  {
+    provider->vtable->release_csr(provider, &provider_csr);
+  }
+  return r;
+}
+
+/**
+ * @brief Validate @p csr, then subscribe (once), build and publish the renewal
+ * request, and open the in-flight slot.
+ */
+static az_iot_result csr_publish(
+    az_iot_connection_client* client,
+    const az_iot_certificate_signing_request* csr,
+    const char* device_id,
+    const char* request_id,
+    const char* replace)
+{
   /* Validate the CSR: base64 and within the 8 KB service cap. */
   size_t csr_len = 0;
   if (!az_iot_cert_util_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
@@ -5626,11 +5694,6 @@ az_iot_result az_iot_connection_client_send_csr(
   }
 
   /* Build the request body into the caller-provided payload buffer. */
-  const char* device_id = az_iot_connection_client__device_id(client);
-  if (!device_id)
-  {
-    device_id = "";
-  }
   char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
   size_t body_len = 0;
   const char* body_parts[]
@@ -5664,8 +5727,6 @@ az_iot_result az_iot_connection_client_send_csr(
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_1;
 
-  client->csr_op.cb = cb;
-  client->csr_op.user_ctx = user_ctx;
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 

@@ -9,11 +9,11 @@
  * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
  * MQTTv3-only, so on an MQTTv5 hub the sample reports that and exits non-zero.
  * End to end:
- *   1. Connect, then produce a fresh CSR from the managed provider and call
- *      az_iot_connection_client_send_csr().
+ *   1. Connect, then call az_iot_connection_client_send_csr() with no CSR: the
+ *      client takes it from the managed provider.
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
- *      the new chain. The client stores it in the provider
- *      (opts.use_issued_certificates, on by default) and reports the outcome.
+ *      the new chain. Because the provider made the CSR, the client stores the
+ *      chain there and reports the outcome.
  *   3. Apply the renewed cert by reconnecting: close + reopen re-establishes the
  *      session with the new operational identity (a new client certificate
  *      requires a fresh TLS handshake). Without this, the next reconnect
@@ -84,7 +84,7 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
           stderr,
           "[hub_renew] renewed chain issued: %zu cert(s)\n",
           evt->issued ? evt->issued->count : (size_t)0);
-      /* The client already stored it in the provider (use_issued_certificates). */
+      /* The provider made the CSR, so the client already stored the chain there. */
       fprintf(stderr, "[hub_renew] stored in provider: status=%d\n", (int)evt->store_status);
       ctx->csr_status = evt->store_status;
       ctx->csr_done = 1;
@@ -187,20 +187,14 @@ int main(void)
   }
   else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* Produce a CSR from the operational key and request renewal. */
-    az_iot_certificate_signing_request csr = { 0 };
-    if (provider.base.vtable->get_csr(&provider.base, config.reg_id, &csr) == AZ_IOT_OK)
+    /* No CSR: the client takes it from the provider, which keeps the key. */
+    if (az_iot_connection_client_send_csr(
+            &connection_client, NULL, NULL, NULL, on_csr_event, &user_ctx)
+        == AZ_IOT_OK)
     {
-      az_iot_result send_rc = az_iot_connection_client_send_csr(
-          &connection_client, &csr, NULL, NULL, on_csr_event, &user_ctx);
-      provider.base.vtable->release_csr(&provider.base, &csr);
-
-      if (send_rc == AZ_IOT_OK)
+      for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
       {
-        for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
-        {
-          (void)az_iot_connection_client_do_work(&connection_client, 50);
-        }
+        (void)az_iot_connection_client_do_work(&connection_client, 50);
       }
     }
   }
