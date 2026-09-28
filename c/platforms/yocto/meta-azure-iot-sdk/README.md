@@ -1,6 +1,6 @@
 # meta-azure-iot-sdk
 
-Yocto layer for the Azure IoT C SDK. Compatible with scarthgap; depends on `core` only.
+Yocto layer for the Azure IoT SDK C library. Compatible with scarthgap; depends on `core` only.
 
 | Recipe | Builds |
 |---|---|
@@ -10,7 +10,7 @@ Yocto layer for the Azure IoT C SDK. Compatible with scarthgap; depends on `core
 ## Use
 
 ```sh
-bitbake-layers add-layer <repo>/c/eng/yocto/meta-azure-iot-sdk
+bitbake-layers add-layer <repo>/c/platforms/yocto/meta-azure-iot-sdk
 bitbake azure-iot-sdk
 ```
 
@@ -19,7 +19,7 @@ Add `azure-iot-sdk` to a consumer's `DEPENDS` and link with
 `find_package(azure-iot-sdk)`. The runtime package is empty; everything is in
 `azure-iot-sdk-dev` and `azure-iot-sdk-staticdev`.
 
-`c/eng/yocto/kas.yml` builds both recipes for `qemux86-64`: `kas build c/eng/yocto/kas.yml`.
+`c/platforms/yocto/kas.yml` builds both recipes for `qemux86-64`: `kas build c/platforms/yocto/kas.yml`.
 
 ## PACKAGECONFIG
 
@@ -35,7 +35,7 @@ A selected component that does not build fails `do_install`.
 
 ## Sources and revisions
 
-- The SDK: `SRCREV_sdk` in `azure-iot-sdk-src.inc`. To bump it, set it to a
+- The library: `SRCREV_sdk` in `azure-iot-sdk-src.inc`. To bump it, set it to a
   commit on `main`.
 - azure-sdk-for-c and Eclipse Paho MQTT C are fetched by bitbake, not by CMake,
   and passed with `FETCHCONTENT_SOURCE_DIR_*`. Their `SRCREV`s in
@@ -51,6 +51,6 @@ A selected component that does not build fails `do_install`.
 
 ## Notes
 
-- Paho's static libraries and headers are installed with the SDK, so
+- Paho's static libraries and headers are installed with the library, so
   `azure-iot-sdk-dev` conflicts with meta-oe's `paho-mqtt-c-dev` in one sysroot.
-- Licenses: MIT (SDK, azure-sdk-for-c) and EPL-2.0 or EDL-1.0 (Paho).
+- Licenses: MIT (this library, azure-sdk-for-c) and EPL-2.0 or EDL-1.0 (Paho).

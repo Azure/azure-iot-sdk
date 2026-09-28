@@ -118,7 +118,7 @@ foreach(_i RANGE 0 ${_last} 2)
     list(FIND _az_iot_pc_descriptions ${AZ_IOT_PC_COMPONENT} _k)
     math(EXPR _k "${_k} + 1")
     list(GET _az_iot_pc_descriptions ${_k} _desc)
-    set(AZ_IOT_PC_DESCRIPTION "Azure IoT C SDK ${_desc}")
+    set(AZ_IOT_PC_DESCRIPTION "Azure IoT SDK C library ${_desc}")
 
     if(_tgt STREQUAL "az_iot_core")
         set(AZ_IOT_PC_REQUIRES "")

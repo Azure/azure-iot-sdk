@@ -1,8 +1,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-SUMMARY = "Azure IoT C SDK pkg-config consumer test"
-DESCRIPTION = "Builds the SDK's installed-package tests (c/tests/install) against \
+SUMMARY = "Azure IoT SDK C library pkg-config consumer test"
+DESCRIPTION = "Builds the library's installed-package tests (c/tests/install) against \
 the sysroot with pkg-config alone, one per installed component."
 SECTION = "devel"
 

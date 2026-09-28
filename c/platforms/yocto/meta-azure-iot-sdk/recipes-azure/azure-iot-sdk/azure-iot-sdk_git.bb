@@ -1,12 +1,12 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-SUMMARY = "Azure IoT C SDK"
-DESCRIPTION = "C99 client SDK for Azure IoT Hub (mqttv3, mqttv5) and DPS: static \
+SUMMARY = "Azure IoT SDK C library"
+DESCRIPTION = "C99 client library for Azure IoT Hub (mqttv3, mqttv5) and DPS: static \
 libraries, headers, CMake package and pkg-config files."
 SECTION = "libs"
 
-# The SDK is MIT. It bundles azure-sdk-for-c (MIT) and Eclipse Paho MQTT C
+# The library is MIT. It bundles azure-sdk-for-c (MIT) and Eclipse Paho MQTT C
 # (EPL-2.0 or EDL-1.0).
 LICENSE = "MIT & (EPL-2.0 | EDL-1.0)"
 LIC_FILES_CHKSUM = " \

@@ -77,7 +77,7 @@ must be on `PKG_CONFIG_PATH`.
 cc app.c $(pkg-config --static --cflags --libs azure-iot-sdk-mqttv3 azure-iot-sdk-adapter_paho)
 ```
 
-Yocto: [eng/yocto/meta-azure-iot-sdk](eng/yocto/meta-azure-iot-sdk/README.md) (scarthgap).
+Yocto: [platforms/yocto/meta-azure-iot-sdk](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap).
 
 [tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
 with CMake and with pkg-config alone ([pkg-config-test.sh](tests/install/pkg-config-test.sh)).

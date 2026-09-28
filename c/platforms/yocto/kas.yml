@@ -1,9 +1,9 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Builds the Azure IoT C SDK recipe and its pkg-config consumer for qemux86-64
-# on Yocto scarthgap (poky):
-#   kas build c/eng/yocto/kas.yml
+# Builds the Azure IoT SDK C library recipe and its pkg-config consumer for
+# qemux86-64 on Yocto scarthgap (poky):
+#   kas build c/platforms/yocto/kas.yml
 #
 # conf/azure-iot-sdk-local.conf in the build directory, if present, is included
 # last; CI uses it to build the checkout instead of the pinned SRCREV.
@@ -20,7 +20,7 @@ target:
 repos:
   azure-iot-sdk:
     layers:
-      c/eng/yocto/meta-azure-iot-sdk:
+      c/platforms/yocto/meta-azure-iot-sdk:
 
   poky:
     url: https://git.yoctoproject.org/poky

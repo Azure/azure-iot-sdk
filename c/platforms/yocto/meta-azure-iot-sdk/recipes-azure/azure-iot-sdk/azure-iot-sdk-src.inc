@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Azure IoT C SDK source, shared by azure-iot-sdk and its pkg-config consumer test.
+# Azure IoT SDK C library source, shared by azure-iot-sdk and its pkg-config consumer test.
 #
 # To build another revision, bump SRCREV_sdk to a commit on main. Both can be
 # overridden from local.conf, e.g. to build a local checkout:

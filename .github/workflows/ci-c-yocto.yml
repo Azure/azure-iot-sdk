@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Builds the Yocto layer in c/eng/yocto (azure-iot-sdk and its pkg-config
+# Builds the Yocto layer in c/platforms/yocto (azure-iot-sdk and its pkg-config
 # consumer) with bitbake for qemux86-64 on scarthgap.
 #
 # A separate workflow from ci-c: a bitbake run takes far longer than the other
@@ -47,7 +47,7 @@ jobs:
               - 'c/src/**'
               - 'c/adapters/**'
               - 'c/tests/install/**'
-              - 'c/eng/yocto/**'
+              - 'c/platforms/yocto/**'
               - 'LICENSE'
               - '.github/workflows/ci-c-yocto.yml'
 
@@ -95,9 +95,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/yocto-cache
-          key: yocto-scarthgap-qemux86-64-${{ hashFiles('c/eng/yocto/kas.yml') }}-${{ github.run_id }}
+          key: yocto-scarthgap-qemux86-64-${{ hashFiles('c/platforms/yocto/kas.yml') }}-${{ github.run_id }}
           restore-keys: |
-            yocto-scarthgap-qemux86-64-${{ hashFiles('c/eng/yocto/kas.yml') }}-
+            yocto-scarthgap-qemux86-64-${{ hashFiles('c/platforms/yocto/kas.yml') }}-
             yocto-scarthgap-qemux86-64-
 
       - name: Build this checkout, not the pinned SRCREV
@@ -110,7 +110,7 @@ jobs:
           cat "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf"
 
       - name: bitbake
-        run: kas build c/eng/yocto/kas.yml
+        run: kas build c/platforms/yocto/kas.yml
 
       - name: Check the packages
         run: |
@@ -149,4 +149,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/yocto-cache
-          key: yocto-scarthgap-qemux86-64-${{ hashFiles('c/eng/yocto/kas.yml') }}-${{ github.run_id }}
+          key: yocto-scarthgap-qemux86-64-${{ hashFiles('c/platforms/yocto/kas.yml') }}-${{ github.run_id }}
