@@ -1606,7 +1606,8 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
 
   /* Persist via the provider (if capable), then always notify the app with the
    * outcome (D4). At least one of the two must exist to take the chain. */
-  bool has_store = p && p->vtable && p->vtable->store_issued_certificate;
+  bool has_store = p && p->vtable && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
+      && p->vtable->store_issued_certificate;
   az_iot_result store_rc = AZ_IOT_ERR_NOT_SUPPORTED;
   if (has_store)
   {
