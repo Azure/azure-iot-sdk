@@ -429,13 +429,19 @@ if(AZ_IOT_WITH_RUST_MQTT)
     target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
 endif()
 
-# Software updates OpenSSL crypto adapter (only when the adapter target was built, i.e.
-# OpenSSL 3.0+ was found). Links OpenSSL only to generate test vectors.
+# Software updates crypto adapters: the shared known-answer contract suite
+# (support/su_crypto_contract.c), once per adapter target that was built.
 if(TARGET az_iot_su_crypto_openssl)
-    find_package(OpenSSL 3.0 QUIET)
-    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl unit/su_crypto_openssl_test.c)
+    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl
+        unit/su_crypto_openssl_test.c support/su_crypto_contract.c)
     target_link_libraries(az_iot_tests_su_crypto_openssl PRIVATE
-        az_iot_su_crypto_openssl OpenSSL::Crypto)
+        az_iot_su_crypto_openssl az_iot_test_support)
+endif()
+if(TARGET az_iot_su_crypto_mbedtls)
+    az_iot_add_cmocka_test(az_iot_tests_su_crypto_mbedtls
+        unit/su_crypto_mbedtls_test.c support/su_crypto_contract.c)
+    target_link_libraries(az_iot_tests_su_crypto_mbedtls PRIVATE
+        az_iot_su_crypto_mbedtls az_iot_test_support)
 endif()
 
 # Managed OpenSSL certificate provider (only when the adapter target was built,

@@ -76,6 +76,15 @@ jobs:
           sudo apt-get install -y ninja-build libssl-dev mosquitto-clients
           python3 -m pip install --upgrade 'gcovr==7.2'
 
+      - name: Build mbedTLS
+        # Commits older than the mbedTLS adapter have no installer and need none.
+        working-directory: c
+        run: |
+          if [ -f eng/install-mbedtls.sh ]; then
+            bash eng/install-mbedtls.sh 4.1.1 "$RUNNER_TEMP/mbedtls"
+            echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/mbedtls" >> "$GITHUB_ENV"
+          fi
+
       - name: Download tracefiles from the nightly e2e runs
         id: fetch
         env:
