@@ -441,6 +441,7 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             // Nothing is going to bring this connection back, so stop anything that is waiting for it.
+            await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
             await MarkUnrecoverablyFaultedAsync(args.Exception);
         }
 

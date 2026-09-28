@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Retry;
 using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
@@ -106,6 +108,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                     ? new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.NoMatchingSubscribers }
                     : null,
                 cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        [Fact]
+        public async Task InitialConnectThrowsWhenPresenceRecoveryRetryIsExhausted()
+        {
+            MockMqttClient mockMqttClient = new(true);
+            mockMqttClient.OnConnectAttempt += async (connect) =>
+                new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
+            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+                new MqttSubscribeAck() { Items = new List<MqttSubscribeAckItem>() };
+
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new NoRetry(),
+            });
+
+            await Assert.ThrowsAsync<DeviceException>(() =>
+                connectionClient.ConnectAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
         }
 
         /// <summary>
