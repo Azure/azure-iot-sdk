@@ -28,7 +28,9 @@
       AZ_IOT_E2E_SU_STORAGE_ACCOUNT   storage the update files are imported from
       AZ_IOT_E2E_SU_STORAGE_CONTAINER container in it
     Optional:
-      AZ_IOT_E2E_SU_ARM_ENDPOINT      default https://management.azure.com
+      AZ_IOT_E2E_SU_ARM_ENDPOINT      ARM endpoint for requests (may be regional);
+                                      default https://management.azure.com. Tokens
+                                      are always for https://management.azure.com/.
 
 .EXAMPLE
     Import-Module ./SuE2E.psm1
@@ -43,6 +45,9 @@ $ErrorActionPreference = 'Stop'
 
 $script:ApiVersion = '2026-11-02-preview'
 $script:AduScope = 'https://api.adu.microsoft.com/'
+# Token audience for Azure Resource Manager. Fixed: a regional ARM endpoint
+# (AZ_IOT_E2E_SU_ARM_ENDPOINT) serves requests but is not a token audience.
+$script:ArmScope = 'https://management.azure.com/'
 
 # Scenario name -> device-suite variable holding its model, and the per-device
 # job result status the service is expected to record once the suite has run.
@@ -240,7 +245,7 @@ function New-SuE2EOnboardingJob {
         [Parameter(Mandatory)][string]$JobName,
         [Parameter(Mandatory)][string]$UpdateResourceId
     )
-    $token = Get-SuE2EToken "$($Config.ARM_ENDPOINT)/"
+    $token = Get-SuE2EToken $script:ArmScope
     $uri = "$(Get-SuE2EJobsUri $Config)/$($JobName)?api-version=$script:ApiVersion"
     $body = @{
         location   = $Config.LOCATION
@@ -274,7 +279,7 @@ function Get-SuE2EDeviceResult {
         [Parameter(Mandatory)][string]$JobName,
         [Parameter(Mandatory)][string]$RegistrationId
     )
-    $token = Get-SuE2EToken "$($Config.ARM_ENDPOINT)/"
+    $token = Get-SuE2EToken $script:ArmScope
     $job = "$(Get-SuE2EJobsUri $Config)/$JobName"
     # E2E-PLACEHOLDER: assumes a Continuous onboarding job carries its runs in
     # runs/, newest by startTime; unmeasured.
@@ -387,7 +392,7 @@ function Remove-SuE2EOffers {
     if (-not (Test-Path $StatePath)) { return }
     $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
-    $armToken = Get-SuE2EToken "$($config.ARM_ENDPOINT)/"
+    $armToken = Get-SuE2EToken $script:ArmScope
     $aduToken = Get-SuE2EToken $script:AduScope
     $firstError = $null
     foreach ($offer in $state.Offers.Values) {
