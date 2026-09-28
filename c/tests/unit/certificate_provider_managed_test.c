@@ -798,6 +798,191 @@ static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
   remove_test_files();
 }
 
+/* Public key a CSR (base64 DER) was made for. Caller frees. */
+static EVP_PKEY* csr_public_key(const char* csr_b64)
+{
+  X509_REQ* req = decode_csr(csr_b64);
+  assert_non_null(req);
+  EVP_PKEY* pk = X509_REQ_get_pubkey(req);
+  assert_non_null(pk);
+  X509_REQ_free(req);
+  return pk;
+}
+
+/* Get a CSR from @p prov and return the key it was made for. Caller frees. */
+static EVP_PKEY* request_csr_key(az_iot_certificate_provider_managed* prov)
+{
+  az_iot_certificate_signing_request csr;
+  memset(&csr, 0, sizeof(csr));
+  assert_int_equal(AZ_IOT_OK, prov->base.vtable->get_csr(&prov->base, "my-device-id", &csr));
+  EVP_PKEY* pk = csr_public_key(csr.csr_base64);
+  prov->base.vtable->release_csr(&prov->base, &csr);
+  return pk;
+}
+
+static bool key_file_is(const char* path, EVP_PKEY* expected)
+{
+  BIO* b = BIO_new_file(path, "rb");
+  assert_non_null(b);
+  EVP_PKEY* k = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
+  BIO_free(b);
+  assert_non_null(k);
+  bool same = EVP_PKEY_eq(k, expected) == 1;
+  EVP_PKEY_free(k);
+  return same;
+}
+
+static az_iot_result store_one(az_iot_certificate_provider_managed* prov, const char* cert_b64)
+{
+  az_span chain[1] = { az_span_create_from_str((char*)(uintptr_t)cert_b64) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  return prov->base.vtable->store_issued_certificate(&prov->base, &issued);
+}
+
+/* Every CSR carries a new key, never the one currently in use. */
+static void managed_each_csr_uses_a_new_key(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  EVP_PKEY* k1 = request_csr_key(&prov);
+  EVP_PKEY* k2 = request_csr_key(&prov);
+  assert_int_not_equal(1, EVP_PKEY_eq(k1, k2));
+  assert_int_not_equal(1, EVP_PKEY_eq(k1, (EVP_PKEY*)prov.operational_key));
+  assert_int_not_equal(1, EVP_PKEY_eq(k2, (EVP_PKEY*)prov.operational_key));
+  /* The key file still holds the current key until a chain arrives. */
+  assert_true(key_file_is(OP_KEY, (EVP_PKEY*)prov.operational_key));
+
+  az_iot_certificate_provider_managed_deinit(&prov);
+  EVP_PKEY_free(k1);
+  EVP_PKEY_free(k2);
+  remove_test_files();
+}
+
+/* A chain for the CSR key makes that key the operational key, on disk and in
+ * memory, and the pair survives a restart. */
+static void managed_a_chain_for_the_csr_key_rotates_the_key(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(old_key);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  char* cert = make_cert_base64(csr_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, cert));
+
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, csr_key));
+  assert_null(prov.pending_key);
+  assert_true(key_file_is(OP_KEY, csr_key));
+  assert_false(key_file_is(OP_KEY, old_key));
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov2.operational_key, csr_key));
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(cert);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(old_key);
+  remove_test_files();
+}
+
+/* A chain for neither key changes nothing, and the pending CSR can still
+ * complete afterwards. */
+static void managed_a_refused_chain_keeps_the_pair_and_the_pending_csr(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  EVP_PKEY* other = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+  assert_non_null(other);
+  char* foreign = make_cert_base64(other, 2);
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, store_one(&prov, foreign));
+  assert_true(key_file_is(OP_KEY, (EVP_PKEY*)prov.operational_key));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, first);
+  assert_int_equal(0, count_temp_files());
+
+  char* renewed = make_cert_base64(csr_key, 3);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, renewed));
+  assert_true(key_file_is(OP_KEY, csr_key));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(on_disk);
+  free(renewed);
+  free(foreign);
+  free(first);
+  EVP_PKEY_free(other);
+  EVP_PKEY_free(csr_key);
+  remove_test_files();
+}
+
+/* The pending key is memory-only: after a restart its chain is refused. */
+static void managed_a_pending_key_does_not_survive_a_restart(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_null(prov2.pending_key);
+  char* cert = make_cert_base64(csr_key, 1);
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, store_one(&prov2, cert));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(cert);
+  EVP_PKEY_free(csr_key);
+  remove_test_files();
+}
+
+/* A chain for the current key is still accepted without rotating, and leaves
+ * the pending CSR in place. */
+static void managed_a_chain_for_the_current_key_does_not_rotate(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  EVP_PKEY* current = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(current);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+
+  char* cert = make_cert_base64(current, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, cert));
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, current));
+  assert_true(key_file_is(OP_KEY, current));
+  assert_non_null(prov.pending_key);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(cert);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(current);
+  remove_test_files();
+}
+
 #if !defined(_WIN32)
 #define LINK_TARGET "az_iot_managed_test_link_target.pem"
 #define LINK_TARGET_KEY "az_iot_managed_test_link_target_key.pem"
@@ -920,6 +1105,11 @@ int main(void)
     cmocka_unit_test(managed_store_refuses_a_chain_with_an_empty_entry),
     cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
     cmocka_unit_test(managed_a_chain_followed_by_other_text_is_refused),
+    cmocka_unit_test(managed_each_csr_uses_a_new_key),
+    cmocka_unit_test(managed_a_chain_for_the_csr_key_rotates_the_key),
+    cmocka_unit_test(managed_a_refused_chain_keeps_the_pair_and_the_pending_csr),
+    cmocka_unit_test(managed_a_pending_key_does_not_survive_a_restart),
+    cmocka_unit_test(managed_a_chain_for_the_current_key_does_not_rotate),
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),

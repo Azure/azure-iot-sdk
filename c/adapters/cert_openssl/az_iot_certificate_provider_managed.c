@@ -149,16 +149,16 @@ static HANDLE create_private_file(const char* path, bool* collided)
 #endif
 
 /**
- * @brief Replace @p path with @p data, all-or-nothing.
+ * @brief Write @p data to a new file next to @p path that only the current
+ * user can access (0600 / owner-only DACL), created exclusively under a unique
+ * name so an existing file or link there is never opened, and flush it.
  *
- * Writes a new file next to @p path that only the current user can access
- * (0600 / owner-only DACL), created exclusively under a unique name so an
- * existing file or link there is never opened, flushes it, then renames it over
- * @p path. The rename replaces a link at @p path rather than following it. On
- * failure @p path is untouched and the temporary file is removed.
+ * @param[out] out_tmp The staged file's path (heap; pass to commit_file() or
+ * discard_file()). NULL on failure, which leaves nothing behind.
  */
-static az_iot_result write_file_private(const char* path, const char* data, size_t len)
+static az_iot_result stage_file(const char* path, const char* data, size_t len, char** out_tmp)
 {
+  *out_tmp = NULL;
   size_t path_len = strlen(path);
 #ifdef _WIN32
   /* "<path>.<8 hex>.tmp" */
@@ -197,7 +197,6 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   }
   ok = ok && FlushFileBuffers(h);
   ok = CloseHandle(h) && ok;
-  ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
   if (!ok)
   {
     (void)DeleteFileA(tmp);
@@ -237,43 +236,97 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   }
   ok = ok && fsync(fd) == 0;
   ok = (close(fd) == 0) && ok;
-  ok = ok && rename(tmp, path) == 0;
   if (!ok)
   {
     (void)unlink(tmp);
   }
 #endif
-  free(tmp);
-  return ok ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+  if (!ok)
+  {
+    free(tmp);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  *out_tmp = tmp;
+  return AZ_IOT_OK;
+}
+
+/** @brief Remove a staged file and free its path. NULL is a no-op. */
+static void discard_file(char* tmp)
+{
+  if (tmp)
+  {
+    (void)remove(tmp);
+    free(tmp);
+  }
 }
 
 /**
- * @brief Write the contents of memory BIO @p mem to @p path (write_file_private),
+ * @brief Rename staged file @p tmp over @p path in one step, replacing a link
+ * at @p path rather than following it. Frees @p tmp; on failure removes it and
+ * leaves @p path untouched.
+ */
+static az_iot_result commit_file(char* tmp, const char* path)
+{
+#ifdef _WIN32
+  bool ok = MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  bool ok = rename(tmp, path) == 0;
+#endif
+  if (!ok)
+  {
+    discard_file(tmp);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  free(tmp);
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Stage the contents of memory BIO @p mem next to @p path (stage_file),
  * then wipe the BIO's buffer.
  */
-static az_iot_result write_bio_private(const char* path, BIO* mem)
+static az_iot_result stage_bio(const char* path, BIO* mem, char** out_tmp)
 {
+  *out_tmp = NULL;
   char* data = NULL;
   long len = BIO_get_mem_data(mem, &data);
   if (len <= 0 || !data)
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  az_iot_result rc = write_file_private(path, data, (size_t)len);
+  az_iot_result rc = stage_file(path, data, (size_t)len, out_tmp);
   OPENSSL_cleanse(data, (size_t)len);
   return rc;
 }
 
-static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
+/** @brief Replace @p path with the contents of @p mem, all-or-nothing. */
+static az_iot_result write_bio_private(const char* path, BIO* mem)
+{
+  char* tmp = NULL;
+  az_iot_result rc = stage_bio(path, mem, &tmp);
+  return (rc == AZ_IOT_OK) ? commit_file(tmp, path) : rc;
+}
+
+/** @brief PEM-encode private @p key into a new memory BIO (NULL on failure). */
+static BIO* key_to_bio(EVP_PKEY* key)
 {
   BIO* mem = BIO_new(BIO_s_mem());
+  if (mem && PEM_write_bio_PrivateKey(mem, key, NULL, NULL, 0, NULL, NULL) != 1)
+  {
+    BIO_free(mem);
+    mem = NULL;
+  }
+  return mem;
+}
+
+static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
+{
+  BIO* mem = key_to_bio(key);
   if (!mem)
   {
-    return AZ_IOT_ERR_OUT_OF_MEMORY;
+    return AZ_IOT_ERR_INTERNAL;
   }
-  az_iot_result rc = (PEM_write_bio_PrivateKey(mem, key, NULL, NULL, 0, NULL, NULL) == 1)
-      ? write_bio_private(path, mem)
-      : AZ_IOT_ERR_INTERNAL;
+  az_iot_result rc = write_bio_private(path, mem);
   BIO_free(mem);
   return rc;
 }
@@ -464,7 +517,13 @@ static az_iot_result managed_get_csr(
 
   out_csr->csr_base64 = NULL;
 
-  EVP_PKEY* key = (EVP_PKEY*)m->operational_key;
+  /* Each CSR gets a new key; it becomes the operational key only once a chain
+   * for it is stored, so the current identity keeps working until then. */
+  EVP_PKEY* key = generate_key(m->key_type);
+  if (!key)
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
   X509_REQ* req = NULL;
   X509_NAME* name = NULL;
   unsigned char* der = NULL;
@@ -532,9 +591,13 @@ static az_iot_result managed_get_csr(
 
   out_csr->csr_base64 = b64;
   b64 = NULL; /* ownership transferred to caller (freed via release_csr) */
+  EVP_PKEY_free((EVP_PKEY*)m->pending_key); /* superseded: its CSR can no longer complete */
+  m->pending_key = key;
+  key = NULL;
   rc = AZ_IOT_OK;
 
 done:
+  EVP_PKEY_free(key);
   if (der)
   {
     OPENSSL_free(der);
@@ -668,9 +731,9 @@ static az_iot_result managed_store(
   }
 
   /* All-or-nothing: build the chain in memory, refuse it unless every entry
-   * parses as a certificate and the leaf certifies the operational key, then
-   * replace the file in one step. A failure leaves the previous certificate in
-   * use. */
+   * parses as a certificate and the leaf certifies a key this provider holds,
+   * then replace the file(s). A failure leaves the previous key and
+   * certificate in use. */
   BIO* mem = BIO_new(BIO_s_mem());
   if (!mem)
   {
@@ -697,21 +760,63 @@ static az_iot_result managed_store(
     written++;
   }
 
+  /* The leaf must certify the pending CSR key (rotate) or the current key. */
+  EVP_PKEY* pending = (EVP_PKEY*)m->pending_key;
+  bool rotate = false;
   if (rc == AZ_IOT_OK)
   {
     char* data = NULL;
     long data_len = BIO_get_mem_data(mem, &data);
     size_t parsed = 0;
-    if (data_len <= 0
-        || !chain_matches_key(data, (size_t)data_len, (EVP_PKEY*)m->operational_key, &parsed)
-        || parsed != written)
+    size_t len = data_len > 0 ? (size_t)data_len : 0;
+    rotate = pending && chain_matches_key(data, len, pending, &parsed) && parsed == written;
+    if (!rotate
+        && (!chain_matches_key(data, len, (EVP_PKEY*)m->operational_key, &parsed)
+            || parsed != written))
     {
       rc = AZ_IOT_ERR_INVALID_ARG;
     }
   }
-  if (rc == AZ_IOT_OK)
+
+  if (rc == AZ_IOT_OK && !rotate)
   {
     rc = write_bio_private(m->operational_cert_path, mem);
+  }
+  else if (rc == AZ_IOT_OK)
+  {
+    /* Stage both files, then swap key before chain. Only a failed final rename
+     * can split the pair; the previous key is then restored so they match. */
+    char* key_tmp = NULL;
+    char* cert_tmp = NULL;
+    BIO* key_mem = key_to_bio(pending);
+    rc = key_mem ? stage_bio(m->operational_key_path, key_mem, &key_tmp) : AZ_IOT_ERR_INTERNAL;
+    BIO_free(key_mem);
+    if (rc == AZ_IOT_OK)
+    {
+      rc = stage_bio(m->operational_cert_path, mem, &cert_tmp);
+    }
+    if (rc == AZ_IOT_OK)
+    {
+      rc = commit_file(key_tmp, m->operational_key_path);
+      key_tmp = NULL;
+      if (rc == AZ_IOT_OK)
+      {
+        rc = commit_file(cert_tmp, m->operational_cert_path);
+        cert_tmp = NULL;
+        if (rc != AZ_IOT_OK)
+        {
+          (void)write_key_file(m->operational_key_path, (EVP_PKEY*)m->operational_key);
+        }
+      }
+    }
+    discard_file(key_tmp);
+    discard_file(cert_tmp);
+    if (rc == AZ_IOT_OK)
+    {
+      EVP_PKEY_free((EVP_PKEY*)m->operational_key);
+      m->operational_key = pending;
+      m->pending_key = NULL;
+    }
   }
   BIO_free(mem);
 
@@ -751,6 +856,7 @@ void az_iot_certificate_provider_managed_deinit(az_iot_certificate_provider_mana
   {
     EVP_PKEY_free((EVP_PKEY*)provider->operational_key);
   }
+  EVP_PKEY_free((EVP_PKEY*)provider->pending_key);
   free(provider->bootstrap_cert_path);
   free(provider->bootstrap_key_path);
   free(provider->trusted_ca_path);

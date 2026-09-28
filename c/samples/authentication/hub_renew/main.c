@@ -187,7 +187,8 @@ int main(void)
   }
   else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* No CSR: the client takes it from the provider, which keeps the key. */
+    /* No CSR: the client takes it from the provider, which makes it over a new key;
+     * storing the issued chain makes that key the operational key. */
     if (az_iot_connection_client_send_csr(
             &connection_client, NULL, NULL, NULL, on_csr_event, &user_ctx)
         == AZ_IOT_OK)

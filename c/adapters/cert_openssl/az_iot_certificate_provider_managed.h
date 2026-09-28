@@ -9,12 +9,15 @@
  *   - authenticates to DPS with a caller-supplied X.509 bootstrap identity;
  *   - owns an operational private key (loaded from disk if present, else
  *     generated on first use and persisted);
- *   - produces PKCS#10 CSRs over that operational key (get_csr);
+ *   - produces each PKCS#10 CSR over a NEW key (get_csr), held in memory only
+ *     until a certificate for it is stored, so every issuance rotates the key;
  *   - persists the DPS/Hub-issued operational certificate chain to disk
  *     (store_issued_certificate) and serves it back on subsequent loads and
  *     process restarts. A store is refused unless every certificate in the
- *     chain parses and the leaf certifies the operational key, and replaces the
- *     file in one step, so a failed store keeps the previous certificate.
+ *     chain parses and the leaf certifies the pending CSR key (which then
+ *     replaces the operational key file) or the current operational key. A
+ *     failed store keeps the previous key and certificate. A pending key does not survive deinit or a
+ *     restart: a chain for it arriving afterwards is refused; request a new CSR.
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
@@ -76,6 +79,7 @@ extern "C"
     char* operational_key_path;
     char* operational_cert_path;
     void* operational_key; /* EVP_PKEY* (opaque) */
+    void* pending_key; /* EVP_PKEY* of the last CSR, awaiting its chain (opaque) */
     int key_type;
     bool has_operational; /* issued cert present on disk */
     bool loaded;
