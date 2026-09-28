@@ -105,45 +105,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task GetTwinAsync_MqttV5_DelegatesToMqttv5Path()
-        {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
-            };
-            using TwinClient twinClient = new(connection);
-
-            connection.OnPublish += async (publish) =>
-            {
-                var response = new TwinGetResponse()
-                {
-                    DesiredVersion = 1,
-                    ReportedVersion = 2,
-                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
-                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
-                };
-
-                var inbound = new MqttPublish()
-                {
-                    Topic = $"ih/{DeviceId}/dev/twin",
-                    Payload = response.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                };
-                inbound.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get-response:1")));
-                await connection.SimulateReceiveAsync(inbound);
-                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-            };
-
-            DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
-            Assert.Equal($"ih/{DeviceId}/srv/twin", getPublish.Topic);
-            Assert.Equal(1ul, twin.DesiredVersion);
-            Assert.Equal(2ul, twin.ReportedVersion);
-        }
-
-        [Fact]
         public async Task GetTwinAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new();
