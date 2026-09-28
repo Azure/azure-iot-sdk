@@ -1018,8 +1018,9 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
         az_iot_mqttv3_file_upload_client_init(&fu2, &conn, NULL), AZ_IOT_ERR_INVALID_ARG);
   }
 
-  /* Asserted through the OTHER generation: a leaked MQTTv3 reference is
-   * invisible to another MQTTv3 client, which is admitted either way. */
+  /* Asserted through the OTHER generation on purpose: another MQTTv3 client is
+   * admitted whether or not a pin leaked, so only an mqttv5 client -- which a
+   * leaked MQTTv3 pin would refuse -- can observe the difference. */
   az_iot_mqttv5_telemetry_client t;
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
   az_iot_mqttv5_telemetry_client_deinit(&t);
