@@ -392,8 +392,10 @@ function Remove-SuE2EOffers {
     if (-not (Test-Path $StatePath)) { return }
     $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
-    $armToken = Get-SuE2EToken $script:ArmScope
-    $aduToken = Get-SuE2EToken $script:AduScope
+    # Fetched on first use inside each item's try, so a token failure costs only
+    # the items that need it.
+    $tokens = @{}
+    $token = { param($scope) if (-not $tokens.ContainsKey($scope)) { $tokens[$scope] = Get-SuE2EToken $scope }; $tokens[$scope] }
     $firstError = $null
     foreach ($offer in $state.Offers.Values) {
         # Each item separately, so one failure does not strand the others.
@@ -407,11 +409,13 @@ function Remove-SuE2EOffers {
                 switch ($kind) {
                     'Job' {
                         # Awaited: the update it references is deleted next.
+                        $armToken = & $token $script:ArmScope
                         $r = Invoke-SuE2ERest -Method Delete -Token $armToken `
                             -Uri "$(Get-SuE2EJobsUri $config)/$($name)?api-version=$script:ApiVersion"
                         Wait-SuE2EOperation -Response $r -Token $armToken -BaseUri $config.ARM_ENDPOINT
                     }
                     'Update' {
+                        $aduToken = & $token $script:AduScope
                         $r = Invoke-SuE2ERest -Method Delete -Token $aduToken `
                             -Uri "https://$($config.ADU_ENDPOINT)/$($name)?api-version=$script:ApiVersion"
                         Wait-SuE2EOperation -Response $r -Token $aduToken -BaseUri "https://$($config.ADU_ENDPOINT)"

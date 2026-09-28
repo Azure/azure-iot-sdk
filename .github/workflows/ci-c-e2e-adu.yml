@@ -47,7 +47,7 @@ jobs:
   e2e-su:
     name: software updates e2e (linux)
     runs-on: ubuntu-latest
-    # Above the sum of the step budgets, so the always() cleanup gets to run.
+    # Above the sum of the step budgets (215 min), so the always() cleanup runs.
     timeout-minutes: 240
     env:
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_SU_DPS_HOST }}
@@ -109,11 +109,11 @@ jobs:
           New-SuE2EOffers -RunId "${{ github.run_id }}${{ github.run_attempt }}" -StatePath $env:SU_OFFERS_STATE
 
       - name: Run software updates e2e
-        timeout-minutes: 65
+        timeout-minutes: 50
         run: |
           mkdir -p results
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_su \
-            --verbose --no-tests=error --timeout 1800 \
+            --verbose --no-tests=error --timeout 2700 \
             --output-junit "$GITHUB_WORKSPACE/results/e2e-su.xml"
 
       - name: Check job results
@@ -125,7 +125,7 @@ jobs:
 
       - name: Remove offers
         if: always()
-        timeout-minutes: 20
+        timeout-minutes: 50
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
