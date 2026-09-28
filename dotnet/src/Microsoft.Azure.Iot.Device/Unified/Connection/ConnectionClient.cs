@@ -106,7 +106,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return;
             }
 
-            //TODO check for previous connack isSessionPresent flag before firing off all these subscriptions?
             MqttSubscribe mqttSubscribe = new();
             var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
@@ -123,7 +122,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect());
+                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }

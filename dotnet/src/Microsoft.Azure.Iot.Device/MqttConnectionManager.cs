@@ -153,12 +153,29 @@ namespace Microsoft.Azure.Iot.Device
             using CancellationTokenSource linkedCancellationToken =
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _reconnectionCancellationToken.Token);
 
-            MqttConnectAck? connectResult = await MaintainConnectionAsync(connect, null, linkedCancellationToken.Token);
+            // Mark the connection as one this layer should keep alive before the first connect attempt begins. The
+            // device presence flow runs fire-and-forget as soon as the broker accepts the CONNECT, so it can fail and
+            // disconnect before this method returns. Setting this here ensures the "Disconnected" callback reconnects
+            // in that case rather than standing down because the initial connect had not yet been marked as desired.
+            _isDesiredConnected = true;
+
+            MqttConnectAck? connectResult;
+            try
+            {
+                connectResult = await MaintainConnectionAsync(connect, null, linkedCancellationToken.Token);
+            }
+            catch
+            {
+                // The initial connect ultimately failed, so this layer is no longer maintaining a connection. Terminal
+                // failures already clear this flag via EndConnectionMaintenanceAsync, but resetting here also covers
+                // cancellation and any other exception that bypasses that path.
+                _isDesiredConnected = false;
+                throw;
+            }
 
             // By design, MaintainConnectionAsync should only return null when called during reconnection.
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
             Debug.Assert(connectResult != null);
-            _isDesiredConnected = true;
 
             return connectResult;
         }

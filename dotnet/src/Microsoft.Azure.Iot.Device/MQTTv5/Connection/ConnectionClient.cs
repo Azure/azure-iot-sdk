@@ -63,28 +63,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning("Received malformed SUBACK. Attempting connection again...");
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                         return;
                     }
 
                     if (subackFirstItem == null)
                     {
                         Trace.TraceWarning($"Received malformed SUBACK on devicebound SUBSCRIBE.");
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                         return;
                     }
 
                     if (subackFirstItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
                     {
                         Trace.TraceWarning("Received SUBACK on devicebound SUBSCRIBE with unsuccessful result code: {0}.", subackFirstItem.ReasonCode);
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                         return;
                     }
                 }
                 catch (Exception e)
                 {
                     Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again...", e);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                    return;
                 }
             }
 
@@ -160,14 +161,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 Trace.TraceWarning("Exception thrown while publishing birth message", e);
                 connection.PublishReceivedAsync -= HandleReceivedBirthAck;
-                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                 return;
             }
 
             if (birthMessagePuback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
-                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
                 Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message with reason code: {0}.", birthMessagePuback.ReasonCode);
+                connection.PublishReceivedAsync -= HandleReceivedBirthAck;
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                return;
             }
 
             BirthAck birthAck;
@@ -178,8 +181,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             catch (TimeoutException)
             {
                 // Did not receive mqtt birth ack message in timely manner (and user has not canceled this function yet)
-                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                connection.PublishReceivedAsync -= HandleReceivedBirthAck;
                 Trace.TraceWarning("Timed out waiting for birth ack message");
+                await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                return;
             }
 
             // Birth ack was received, so stop listening for birth acks.
