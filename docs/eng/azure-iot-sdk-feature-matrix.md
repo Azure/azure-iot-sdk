@@ -1,6 +1,6 @@
 # Azure/azure-iot-sdk — client feature matrix
 
-Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `59b531a`, 2026-09-27. Verified by reading the code, not docs or the public SDKs.
+Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `3cd46fa`, 2026-09-28. Verified by reading the code, not docs or the public SDKs.
 
 **This is not the old public SDK.** It ships two client libraries only — **C** (`/c`, C99, `AZ_IOT_VERSION_STRING "0.0.1"`, status "early bootstrap") and **.NET** (`/dotnet`, `net10.0`, `Microsoft.Azure.Iot.Device` 2.0.0 — renamed from `Microsoft.Azure.Devices.Client` in #226 — published to **GitHub Packages**, not nuget.org). No Java/Node/Python/embedded columns exist.
 
@@ -152,6 +152,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Feature | C | .NET | Notes |
 |---|---|---|---|
 | Language / TFM | C99-strict | **net10.0 only** | No netstandard/net472 multi-targeting |
+| Language-standard conformance | **Yes** | N/A | C builds `-pedantic -Werror` under **c99, c11, c17 and c23** in CI (#282); Paho pinned to C99 (its v1.3.13 `typedef unsigned int bool` breaks C23) |
 | Dependencies | azure-sdk-for-c 1.5.0 (FetchContent, mandatory), Paho | MQTTnet 5.1.0.1559, Google.Protobuf 3.34.1, Google.Protobuf.Tools + Grpc.Tools 2.80.0 (build-only) | `az::core`/`az::iot::hub`/`az::iot::provisioning`; MQTTv5 protocol logic lives in this repo |
 | Dependency acquisition | vcpkg manifest (primary) or CPM.cmake | NuGet | `azure-sdk-for-c` is a git submodule **only** under the ESP32 sample |
 | Build options | 16 CMake options (`cmake/az_iot_options.cmake`) | — | PAHO, RUST_MQTT, KEY_CUSTODY, software-update crypto, cert provider, tests, e2e, conformance, coverage |
@@ -163,21 +164,45 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Unit tests | Yes (39 cmocka files) | Yes (xunit.v3 + Moq, 57 facts) | C added `paho_event_queue_race_test.c`, `connection_dps_payload_test.c` |
+| Unit tests | Yes (40 cmocka files) | Yes (xunit.v3 + Moq, 57 facts) | 42 ctest cases pass on each of the four C standards (#282) |
+| Known-answer crypto vectors | **Yes** | N/A | C software-update adapters: FIPS 180-4 SHA-256, RS256 good/bad, root→SJWK→manifest chain (#276) |
 | MQTT-interface conformance suite | Yes | No | C `tests/conformance/` for BYO adapters (Paho v3 + v5), needs a broker |
 | Integration tests | Yes | Yes | C `reconnect_real_stack_test.c` |
 | E2E against live Azure | Yes | Yes | Resources provisioned per run via OIDC, torn down after; Windows + Linux legs |
 | **MQTTv5 e2e actually executed** | Yes (vs mock Hub-MQTTv5) | **No** | .NET `Setup.cs` skips 5×: 3 "No test infrastructure setup for MQTTv5 client testing yet.", 2 "No MQTTv5 hub to test against yet" |
 | Dedicated software-update / CSR / PKCS#11 e2e | Yes | **Disabled** | C: `ci-c-e2e-adu.yml`, `ci-c-e2e-csr.yml` (Linux only), PKCS#11 on the Linux leg. .NET CSR/cert-mgmt tests exist but are `Skip`-ped (#229) |
+| Software-update e2e vs the real service | **Yes** | N/A | `az_iot_tests_e2e_su_offer` (#279): real offered update, libcurl download, engine hash check; missing env **fails** rather than skips |
 | Fault injection | Partial | **Yes** | .NET covers faults by **unit test** by design — `ConnectionFaultedUnitTests.cs`, 12 facts (identity fault, reprovision, terminal fault, pending-op cancellation). The empty `MqttNetFaultInjectionIntegrationTests.cs` is dead and is being deleted |
 | Sanitizers | Yes | No | valgrind (Linux) + MSVC ASan, plus a **race-detector job** (helgrind/DRD) added with #205 |
 | Style / layering gates | Yes | No | `check-banned-constructs.sh`, `check-layering.sh`, clang-format |
-| Coverage | Yes | Yes | C: gcovr + gate, combined unit+e2e; **72.5 % line / 49.9 % branch**. .NET: XPlat + CodeCoverageSummary |
+| Coverage | Yes | Yes | C: gcovr + gate, combined unit+e2e; **72.5 % line / 49.9 % branch** (recorded baseline). .NET: XPlat + CodeCoverageSummary |
+| Static analysis | **No** | **No** | No clang-tidy, CodeQL, cppcheck or MISRA anywhere in the repo |
 | Fuzzing | No | No | |
 
-## 10. Concrete open gaps (from TODOs and code markers)
+## 10. Cross-cutting client concerns
 
-**C** (`c/docs/TODO.md` + source) — 21 items still unticked, 37 done.
+Areas that decide whether a device client is adoptable, distinct from protocol features. Added 2026-09-28; most were never tracked before, and several are **not implemented at all**, which is the point of listing them.
+
+| Concern | C | .NET | Notes |
+|---|---|---|---|
+| Installable / linkable package | **No** | Yes | C has **no CMake `install()` or `export()` targets and no pkg-config**; consumers must vendor the tree or use FetchContent. `c/vcpkg.json` is a consumer manifest, not a published port |
+| Generated API reference | **No** | **No** | Public C headers are written in Doxygen format but there is **no Doxyfile and no doc build**, so no API reference is produced or published |
+| Static analysis | **No** | **No** | No clang-tidy, CodeQL, cppcheck or MISRA configuration in the repo |
+| Supply chain / SBOM | **No** | **No** | No SBOM and no third-party notices file. Dependencies are version-pinned (azure-sdk-for-c 1.5.0 via FetchContent; Paho pinned), which is the mitigating half |
+| Secret hygiene in memory | **No** | **No** | No zeroization of key material or SAS/CSR buffers on teardown — no `explicit_bzero`/`memset_s` equivalent anywhere |
+| Log redaction guarantees | Partial | Partial | Both log connection metadata; neither documents what must never reach a sink. C logs the DPS username at DEBUG |
+| Measured footprint (ROM/RAM) | **No** | N/A | The C library targets constrained devices and is non-allocating on the hot path, but **no measured size figures are published**, so the claim is unverifiable by a reader |
+| Portable time source | Partial | N/A | `az_iot_time_mono_ms()` is POSIX `clock_gettime(CLOCK_MONOTONIC)` or Win32 `GetTickCount64`, selected by `#if defined(_WIN32)`. **There is no platform hook**, so an RTOS/bare-metal port with neither has to patch `reconnect.c` |
+| Thread-safety contract | Partial | Partial | C is a single-threaded `do_work()` pump with callbacks on the caller's thread, stated in `README.md`/`design.md` but not in a dedicated contract doc or enforced by a test |
+| Reboot persistence / session resumption | **No** | **No** | Neither persists session, twin version or in-flight state across a process restart; every start is a cold start |
+| Backpressure / in-flight bounds | Partial | Partial | C refuses overlapping operations with `AZ_IOT_ERR_BUSY` rather than queuing; no configurable in-flight window |
+| Credential expiry handling | Partial | Partial | CSR renewal exists on both; neither warns an application ahead of client-certificate expiry |
+| Clock-skew tolerance | Partial | Partial | Monotonic time drives backoff; no guidance on wall-clock skew, which affects certificate validity |
+| API deprecation policy | N/A | N/A | Unreleased, `git tag` empty — no policy needed yet, but none is written either |
+
+## 11. Concrete open gaps (from TODOs and code markers)
+
+**C** (`c/docs/TODO.md` + source) — 21 items still unticked, 37 done. See also §10 for cross-cutting gaps (packaging, API docs, static analysis, SBOM, secret zeroization, portable time source).
 - Paho v5: CONNECT user properties, and PUBLISH `response_topic` / `topic_alias`, are accepted by the API but **not serialized** (residual Phase 3).
 - mqttv5 direct-method ready-token sweep still runs only on inbound messages; needs a periodic tick.
 - C2D (mqttv3 only): no strict-settlement state machine; **no e2e against a real MQTTv3 IoT Hub**.
@@ -199,7 +224,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 - `dotnet/README.md` is 0 bytes.
 - Fixed since the last revision: the placeholder `DeviceException("TODO")` / `Exception("todo")` throws are **gone** (#259), and the CD pipeline is green again.
 
-## 11. Net-new vs the old public SDKs
+## 12. Net-new vs the old public SDKs
 
 Present here, no analogue in `azure-iot-sdk-c` / `azure-iot-sdk-csharp`:
 - mqttv5/MQTTv5 clients over MQTT v5 with a presence/birth handshake.
@@ -212,9 +237,9 @@ Present here, no analogue in `azure-iot-sdk-c` / `azure-iot-sdk-csharp`:
 
 Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport, SAS/symmetric-key and TPM auth, connection strings, modules/IoT Edge, service SDK (registry, jobs, query, digital twin, C2D send, feedback/file-upload notification receivers), PnP conventions and digital twin, device streams.
 
-## 12. Caveats on this report
+## 13. Caveats on this report
 
-- Read from a local clone at `59b531a` (2026-09-27); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
+- Read from a local clone at `3cd46fa` (2026-09-28); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
 - Per-version rows for .NET describe the **wire behaviour** of each MQTT version. Because `Unified` implements mqttv3 itself but delegates mqttv5 to nested `MQTTv5` clients, some mqttv5 cells differ depending on whether `MQTTv5` is used directly or through the facade; those cases are flagged in the Notes.
 - **Cut ≠ missing.** C2D and file upload are absent on mqttv5 because the *service* does not offer them there. Both libraries have now **deleted** their mqttv5 C2D/file-upload code rather than shipping clients ahead of the service (#272, #255) — a reversal of the earlier "keep it, it returns after Ignite 2026" position recorded in the previous revision.
 - These libraries are **unreleased** — `git tag` is empty, so there is no shipped ABI and no back-compat constraint on any of the shapes described here.
@@ -228,7 +253,17 @@ Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport,
 - **.NET fault-injection coverage is by unit test, by design** — `ConnectionFaultedUnitTests.cs`, 12 facts. The empty `MqttNetFaultInjectionIntegrationTests.cs` is dead code pending deletion, not a coverage gap.
 - Found while re-auditing on the back of the above: **.NET does expose a DISCONNECT reason code** (`MqttDisconnect.Reason`, enum includes `DisconnectWithWillMessage`=4) — previously recorded as No. It is always sent as `NormalDisconnection`.
 
-## 13. What changed since the 2026-09-23 revision
+## 14. What changed since the 2026-09-27 revision
+
+Rechecked at `3cd46fa` after #275–#282.
+
+- **C builds strict under c99, c11, c17 and c23** in CI, `-pedantic -Werror`, 42/42 ctest on each (#282). Paho is pinned to C99 because v1.3.13 declares `typedef unsigned int bool`, which C23 rejects (fixed upstream in v1.3.15).
+- **Software-update e2e against the real service** with an offered update, real libcurl download and engine hash check (#279); missing environment now fails the suite instead of skipping. Known-answer crypto vectors added for every su crypto adapter (#276).
+- Caller-allocated teardown renamed `_destroy()` → `_deinit()` (#277). Adapter factories still use `_destroy()`, so both spellings are live.
+- Software-update samples: regular-update sample added, ESP32 route fixed (#275).
+- **New §10 "Cross-cutting client concerns"** records adoption-blocking areas the matrix never tracked — several are unimplemented.
+
+## 15. What changed in the 2026-09-27 revision
 
 Rechecked at `59b531a` after #255–#273.
 
