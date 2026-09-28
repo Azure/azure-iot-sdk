@@ -41,6 +41,7 @@
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/plaintext_client.h"
 #include "support/subscription_ack.h"
 
 #define DEV_TOPIC "ih/ut-device/dev/methods"
@@ -229,7 +230,7 @@ static int setup(void** state)
   opts.port = 8883;
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(fx->factory);
@@ -569,7 +570,7 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   opts.port = 8883;
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_direct_method_client dm;
   assert_int_equal(
@@ -594,7 +595,7 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
   opts.port = 8883;
   opts.client_id = long_id;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_direct_method_client dm;
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&dm, &conn), AZ_IOT_OK);

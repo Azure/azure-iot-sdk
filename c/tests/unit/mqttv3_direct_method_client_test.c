@@ -35,6 +35,7 @@
 #include "azure/iot/mqttv3/az_iot_direct_method_client.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/plaintext_client.h"
 #include "support/subscription_ack.h"
 
 /* The reclaim timeout is whole seconds off a monotonic clock with no test seam
@@ -107,7 +108,7 @@ static int setup(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -297,7 +298,7 @@ static void a_request_from_another_client_is_refused(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device-2";
-  assert_int_equal(az_iot_connection_client_init(&conn2, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn2, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory2 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory2);
@@ -859,7 +860,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   opts.port = 8883;
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_direct_method_client dm;
   assert_int_equal(

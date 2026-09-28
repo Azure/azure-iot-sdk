@@ -22,6 +22,7 @@
 #include "azure/iot/mqttv3/az_iot_twin_client.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/plaintext_client.h"
 #include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
@@ -117,7 +118,7 @@ static int setup(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -586,7 +587,7 @@ static void deinitializing_the_connection_does_not_complete_pending_requests(voi
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
@@ -691,7 +692,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   az_iot_connection_client conn;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_twin_client twin;
   assert_int_equal(

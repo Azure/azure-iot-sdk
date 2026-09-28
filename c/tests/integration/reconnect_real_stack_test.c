@@ -12,9 +12,9 @@
  * reconnects automatically in response to real adapter events, not just
  * injected ones.
  *
- * A v3.1.1 connection client with no certificate_provider connects in
- * plaintext (the adapter only enables TLS when the provider supplies material),
- * so it can talk to a local test broker through the proxy.
+ * A v3.1.1 connection client with no certificate_provider, allowed to connect
+ * in plaintext by the test-only hook (az_iot_test_connection_client_init), so
+ * it can talk to a local test broker through the proxy.
  *
  * Whether this runs is decided at build time by AZ_IOT_BUILD_CONFORMANCE_TESTS,
  * the same option that registers the conformance suites, because it needs the
@@ -36,6 +36,7 @@
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "azure/iot/mqttv3/az_iot_c2d_client.h"
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/plaintext_client.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -148,7 +149,7 @@ static void reconnect_after_real_drop(void** state)
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
   opts.reconnection_policy.jitter_pct = 0;
-  assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
 
   state_log log = { 0 };
   (void)az_iot_connection_client_add_state_observer(client, on_state, &log);
@@ -233,7 +234,7 @@ static az_iot_connection_client* start_client_with_c2d(
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
   opts.reconnection_policy.jitter_pct = 0;
-  assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
   (void)az_iot_connection_client_add_state_observer(client, on_state, log);
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();

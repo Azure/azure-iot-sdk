@@ -278,7 +278,15 @@ extern "C"
                            * update, which matches a device on the
                            * compatibility properties it sends with each
                            * update request. */
-    az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+    /**
+     * @brief Source of the TLS client identity. Required.
+     *
+     * Every DPS and hub connection uses TLS with an X.509 identity: open()
+     * refuses a client without one (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a
+     * connect attempt whose load() fails fails with the provider's error
+     * instead of connecting without TLS.
+     */
+    az_iot_certificate_provider* certificate_provider;
 
     /* How the client retries after a failure. See az_iot_reconnection_policy
      * for the fields and the getters that name the usual shapes.
@@ -993,6 +1001,10 @@ extern "C"
     void* reg_payload_cb_ctx;
 
     bool user_close;
+
+    /* Test builds only: connect without a certificate provider, in plaintext.
+     * Set through az_iot_connection_client__allow_plaintext_for_testing(). */
+    bool plaintext_for_testing;
 
     /* Set when the next reconnect attempt must re-provision through DPS rather
      * than reconnect to the cached assignment -- because the hub refused this

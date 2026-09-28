@@ -127,6 +127,16 @@ extern "C"
   /* True when the connection is in CONNECTED state. */
   bool az_iot_connection_client__is_connected(const az_iot_connection_client* client);
 
+  /**
+   * @brief TEST ONLY: let @p client open and connect without a certificate
+   * provider, in plaintext. Call after init(), which clears it.
+   *
+   * Every real DPS or hub connection needs TLS and an X.509 identity, so
+   * without this, open() refuses a client with no provider. Exists for mock
+   * adapters and plaintext test brokers; never call it in a product.
+   */
+  void az_iot_connection_client__allow_plaintext_for_testing(az_iot_connection_client* client);
+
   /* Feature-client seat in the connection-state observer registry.
    *
    * Same signature and same event as the application-facing

@@ -21,6 +21,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/plaintext_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -38,7 +39,7 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
@@ -107,7 +108,7 @@ static void open_without_host_or_dps_is_rejected(void** state)
   opts.client_id = "ut-device";
   /* No host, no dps.id_scope: there is nothing to connect to. */
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
   az_iot_connection_client_deinit(&c);
 }
@@ -119,7 +120,7 @@ static void open_without_client_id_is_rejected(void** state)
   opts.host = "broker.example";
   /* A direct hub connect needs an identity as well as an endpoint. */
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
   az_iot_connection_client_deinit(&c);
 }
@@ -162,7 +163,7 @@ static void open_rejects_factory_of_the_wrong_version(void** state)
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* v5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(v5);
@@ -196,7 +197,7 @@ static void connect_call_for(
     az_iot_mock_call* out_connect)
 {
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, opts), AZ_IOT_OK);
   az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(f);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
@@ -373,7 +374,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   opts.reconnection_policy.jitter_pct = 0;
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -419,7 +420,7 @@ static void reconnection_can_still_be_disabled(void** state)
   opts.client_id = "ut-device";
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -453,7 +454,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
   opts.client_id = "ut-device";
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -728,7 +729,7 @@ static void deinit_while_connected_destroys_the_adapter(void** state)
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
@@ -751,7 +752,7 @@ static void deinit_while_connecting_destroys_the_adapter(void** state)
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
