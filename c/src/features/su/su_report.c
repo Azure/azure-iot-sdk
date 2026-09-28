@@ -196,12 +196,15 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
     report.step_results_count = SU_I(client).step_results_count;
   }
 
-  /* Consumed by on_channel_result(), which may run inside report(). */
+  /* Consumed by on_channel_result(), which may run inside report(). A refused
+   * call restores the previous value: it may belong to an earlier accepted
+   * report still awaiting its verdict. */
+  bool was_in_flight = SU_I(client).terminal_report_in_flight;
   SU_I(client).terminal_report_in_flight = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
   az_iot_result sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &report);
   if (sent != AZ_IOT_OK)
   {
-    SU_I(client).terminal_report_in_flight = false;
+    SU_I(client).terminal_report_in_flight = was_in_flight;
     /* Re-arm so do_work re-offers it. Most callers discard this result -- they
      * are state transitions, not report calls -- so without this a report the
      * channel could not take right now (no session yet, or a retry-after still

@@ -3275,6 +3275,29 @@ static void a_failed_supersede_clear_holds_the_new_workflow(void** state)
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
 }
 
+/* A report refused while an earlier terminal report awaits its verdict does
+ * not stop that verdict from retiring the record. */
+static void a_refused_report_keeps_the_pending_terminal_verdict(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  assert_true(fx->log.have_persist);
+
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  fx->su._internal.device_properties_report_pending = true;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_true(fx->su._internal.device_properties_report_pending);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_false(fx->su._internal.report_owed);
+  assert_false(fx->log.have_persist);
+}
+
 /* A malformed terminal record is ignored: nothing is restored or re-sent. */
 static void a_malformed_terminal_record_is_ignored(void** state)
 {
@@ -4826,6 +4849,8 @@ int main(void)
         advancing_past_a_stored_checkpoint_refreshes_it, setup, teardown),
     cmocka_unit_test_setup_teardown(channel_state_round_trips_through_the_blob, setup, teardown),
     cmocka_unit_test_setup_teardown(a_malformed_terminal_record_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_report_keeps_the_pending_terminal_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_supersede_clear_holds_the_new_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
