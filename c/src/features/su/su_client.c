@@ -2983,6 +2983,16 @@ az_iot_result az_iot_su_client_report_status(
     }
     details_room -= n;
   }
+  /* The overall details travel as a C string, so a NUL would cut them short. */
+  if (az_span_size(result->result_details) > 0
+      && memchr(
+             az_span_ptr(result->result_details),
+             '\0',
+             (size_t)az_span_size(result->result_details))
+          != NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   /* Apply with the caller's spans, check the report, then either roll back or
    * take ownership of the details. */

@@ -4420,6 +4420,9 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   bad.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   bad = ok;
+  bad.result_details = az_span_create((uint8_t*)"a\0b", 3);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  bad = ok;
   bad.outcome = (az_iot_su_outcome)(AZ_IOT_SU_OUTCOME_SKIPPED + 1);
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
 
