@@ -1001,6 +1001,75 @@ static az_iot_result channel_do_work(void* ctx)
   return sr;
 }
 
+/* Persisted layout: u8 agent_len, agent ETag, u8 config_len, config ETag. */
+typedef char az_iot_su_channel_dps_state_fits
+    [(2u + (sizeof(((az_iot_su_channel_dps*)0)->agent_info_etag) - 1u)
+          + (sizeof(((az_iot_su_channel_dps*)0)->service_config_etag) - 1u)
+      <= AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)
+         ? 1
+         : -1];
+
+/** @brief Write one length-prefixed ETag at @p p. @return Bytes written. */
+static size_t put_etag(uint8_t* p, const char* etag)
+{
+  size_t n = strlen(etag);
+  p[0] = (uint8_t)n;
+  memcpy(p + 1, etag, n);
+  return n + 1u;
+}
+
+/** @brief Serialize the cached ETags so a reboot does not force a full agentInfo resend. */
+static az_iot_result channel_save_state(void* ctx, uint8_t* buf, size_t cap, size_t* out_len)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c == NULL || buf == NULL || out_len == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_len = 0;
+  if (c->agent_info_etag[0] == '\0' && c->service_config_etag[0] == '\0')
+  {
+    return AZ_IOT_OK;
+  }
+  if (2u + strlen(c->agent_info_etag) + strlen(c->service_config_etag) > cap)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  size_t n = put_etag(buf, c->agent_info_etag);
+  n += put_etag(buf + n, c->service_config_etag);
+  *out_len = n;
+  return AZ_IOT_OK;
+}
+
+/** @brief Restore ETags written by channel_save_state(); rejects any other shape. */
+static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t len)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c == NULL || buf == NULL || len < 2u)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t a = buf[0];
+  if (a >= sizeof(c->agent_info_etag) || 1u + a + 1u > len)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t s = buf[1u + a];
+  if (s >= sizeof(c->service_config_etag) || 2u + a + s != len)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (memchr(buf + 1, '\0', a) != NULL || memchr(buf + 2u + a, '\0', s) != NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  memcpy(c->agent_info_etag, buf + 1, a);
+  c->agent_info_etag[a] = '\0';
+  memcpy(c->service_config_etag, buf + 2u + a, s);
+  c->service_config_etag[s] = '\0';
+  return AZ_IOT_OK;
+}
+
 /* When the SERVICE asked us to wait until. Distinct from an operation already
  * being outstanding, which also answers BUSY but IS a request going unserved
  * and must stay bounded.
@@ -1038,6 +1107,8 @@ static const az_iot_su_channel_vtable k_channel_vtable = {
   .set_device_properties = channel_set_device_properties,
   .do_work = channel_do_work,
   .cancel_update = channel_cancel_update,
+  .save_state = channel_save_state,
+  .restore_state = channel_restore_state,
 };
 
 az_iot_result az_iot_su_channel_dps_init(

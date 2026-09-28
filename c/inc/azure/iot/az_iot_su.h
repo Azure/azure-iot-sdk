@@ -91,23 +91,31 @@ extern "C"
 #define AZ_IOT_SU_REQUEST_BUFFER_SIZE 4096
 #endif
 
+/** @brief Capacity of the packed applied update id (provider, name, version). */
+#define AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE 192
+
+/** @brief Largest opaque channel state (e.g. ETags) carried in the persisted blob. */
+#define AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE 256
+
 /* In-struct scratch used to (de)serialize the persisted workflow state passed to
  * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
- * (40 bytes) and v3 trailer (24 fixed, 16 per step, 4 + 16 per file URL, 4 CRC).
+ * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then
+ * length-prefixed workflow id, applied update id and channel state, 4 CRC).
  * Derived from the upstream step/file limits, so raising them grows it; a
  * compile-time assertion in su_client.c checks the exact serialized size fits.
  * Lives in the caller-allocated client struct, so no static or heap buffer. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                    \
-  (72u                                                \
-   + 16u                                              \
-       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
+  (76u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                    \
+   + 16u                                                                   \
+       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)                      \
           + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
 #endif
 #define AZ_IOT_SU_PERSIST_BLOB_SIZE (AZ_IOT_SU_REQUEST_BUFFER_SIZE + AZ_IOT_SU_PERSIST_OVERHEAD)
 
 /* Capacities for the copied-out workflow `id` (duplicate detection) and
- * `retryTimestamp` (persisted snapshot only). Deployment ids are GUID-shaped (~36 chars) and retry
+ * `retryTimestamp` (not persisted). Deployment ids are GUID-shaped (~36 chars) and retry
  * timestamps are ISO-8601 (~28 chars); these include generous headroom. An identity that does not
  * fit simply disables de-duplication for that deployment (it is then reprocessed on redelivery), so
  * correctness never depends on the size. */
@@ -228,7 +236,10 @@ extern "C"
     /**
      * Persist workflow state for reboot survival. OPTIONAL — REQUIRED only if a
      * reboot is possible mid-update (i.e. install/apply may return
-     * REBOOT_REQUIRED). Consumed by Phase 5 resume logic.
+     * REBOOT_REQUIRED), or for the terminal report to survive a reboot.
+     *
+     * Written at a reboot requested by install/apply, and when a workflow ends
+     * (carrying its unsent terminal report until the service accepts it).
      *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
      * so a later boot does not resume a workflow that has already ended. Return
@@ -710,12 +721,21 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Earliest az_iot_time_mono_ms() for retrying a failed clear while Idle. */
+      /** Earliest az_iot_time_mono_ms() for retrying a failed checkpoint write while Idle. */
       uint64_t checkpoint_clear_retry_ms;
+      /** The stored checkpoint is the terminal-report record, not a workflow position. */
+      bool checkpoint_terminal;
+      /** The active workflow's terminal report is not yet accepted; kept durable until it is. */
+      bool report_owed;
+      /** The report last handed to the channel carries a terminal outcome. */
+      bool terminal_report_in_flight;
+      /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
+       */
+      bool checkpoint_superseded;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are
-       * kept only for the persisted snapshot. */
+       * not persisted and are otherwise unused. */
       bool active_workflow_valid;
       uint8_t active_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE];
       size_t active_workflow_id_len;
@@ -798,7 +818,7 @@ extern "C"
        * Idle clears the manifest. A successful report carries this, because
        * installedUpdateId means "what is installed now" — not "what this
        * workflow was about". Strings are packed into applied_update_id_buf. */
-      char applied_update_id_buf[192];
+      char applied_update_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       az_iot_su_report_update_id applied_update_id;
       bool applied_update_id_valid;
 
@@ -885,12 +905,14 @@ extern "C"
 
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
-   * startup. If no persisted state exists, this is a no-op. (Phase 5.)
+   * startup, before requesting an update check. If no persisted state exists,
+   * this is a no-op. A record holding an unsent terminal report restores it
+   * (the client stays Idle) and re-sends it from do_work().
    *
-   * @return AZ_IOT_OK if resumed or nothing usable was persisted;
-   *   AZ_IOT_ERR_NOT_SUPPORTED for a record left by an older version that lacks
-   *   download URLs still needed, or any record when persist_state_fn is NULL
-   *   (it could never be cleared); AZ_IOT_ERR_INVALID_ARG for a NULL client or
+   * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
+   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for any
+   *   record when persist_state_fn is NULL (it could never be cleared);
+   *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
    *   AZ_IOT_ERR_DETACHED if the client is detached.
    */
