@@ -82,11 +82,11 @@ static void clients_destroy(sample_state* s, user_context* ctx)
   }
   if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_mqttv5_direct_method_client_destroy(&s->mqttv5);
+    az_iot_mqttv5_direct_method_client_deinit(&s->mqttv5);
   }
   else
   {
-    az_iot_mqttv3_direct_method_client_destroy(&s->mqttv3);
+    az_iot_mqttv3_direct_method_client_deinit(&s->mqttv3);
   }
   s->methods_initialized = 0;
 }
@@ -94,8 +94,8 @@ static void clients_destroy(sample_state* s, user_context* ctx)
 static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s, NULL);
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
 

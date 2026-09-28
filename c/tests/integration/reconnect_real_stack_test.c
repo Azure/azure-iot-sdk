@@ -155,7 +155,7 @@ static void reconnect_after_real_drop(void** state)
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
   assert_non_null(factory);
-  /* The client adopts the factory and frees it from destroy(); do not free it
+  /* The client adopts the factory and frees it from deinit(); do not free it
    * here. */
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
@@ -172,7 +172,7 @@ static void reconnect_after_real_drop(void** state)
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_CONNECTED, 2, 200));
 
   (void)az_iot_connection_client_close(client);
-  az_iot_connection_client_destroy(client);
+  az_iot_connection_client_deinit(client);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -284,8 +284,8 @@ static void refused_subscription_faults_the_real_stack(void** state)
    * policy's five attempts also ends in FAULTED. */
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RECONNECTING), 0);
 
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
-  az_iot_connection_client_destroy(client);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
+  az_iot_connection_client_deinit(client);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -318,8 +318,8 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_CONNECTED), 0);
 
   (void)az_iot_connection_client_close(client);
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
-  az_iot_connection_client_destroy(client);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
+  az_iot_connection_client_deinit(client);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }

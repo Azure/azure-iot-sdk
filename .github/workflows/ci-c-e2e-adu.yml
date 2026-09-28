@@ -1,74 +1,98 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# End-to-end Device Update (ADU) tests for the C SDK.
+# End-to-end software updates tests for the C SDK, against the real service.
 #
-# PARKED -- AWAITING THE ADUv2 e2e SUITE
-# --------------------------------------
-# The suite this workflow ran (az_iot_tests_e2e_su) drove a deployment through a
-# twin desired-property PATCH. That delivery channel has been removed: ADU is now
-# driven through an az_iot_su_channel, so the target no longer builds and the
-# trigger it depended on has no equivalent until the new channel lands.
+# Runs both software updates suites (`ctest -R e2e_su`):
+#   az_iot_tests_e2e_su        the DPS channel, with no update offered
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client
 #
-# The workflow is PARKED rather than deleted, so that the coverage gap between
-# the removal and the rewrite stays visible instead of quietly disappearing from
-# the pipeline list. Automatic triggers (pull_request paths, nightly schedule)
-# are removed so it does not fail on every ADU change; workflow_dispatch is kept
-# so the wiring can still be exercised by hand once the suite is restored.
+# Every test is required: an incomplete environment fails the run.
 #
-# To restore: rewrite the scenarios against the new channel operations, re-enable
-# the CMake target (-DAZ_IOT_BUILD_E2E_SU=ON, see c/tests/e2e/CMakeLists.txt),
-# and put the pull_request/schedule triggers back.
+# Stages (one job, so the device, its offers and their checks share one
+# environment):
+#   1. stage one offer per scenario       (c/tests/e2e/scripts/SuE2E.psm1)
+#   2. run the device suites
+#   3. check what the service recorded for each offer
+#   4. always delete the offers
 #
-# The device fixture and the mocked crypto/payload hooks in the existing test
-# file carry over unchanged -- they are the expensive part and are deliberately
-# kept.
-#
-# Architecture (unchanged, for whoever restores this)
-# ---------------------------------------------------
-# Fully in-process: the ADU scenario runs as a native CTest. Crypto and the
-# platform payload operations are mocked; signature/hash correctness is covered
-# by the unit tests (su_client_test.c and the su_crypto_openssl unit tests).
-#
-# Stages
-# ------
-# Resources are provisioned EXACTLY ONCE by the setup job and shared by both
-# test legs; teardown always() deletes them. The provision/destroy steps are the
-# shared composite actions Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-
-# resources, pinned to a tag.
+# Environment. E2E-PLACEHOLDER: runs against a standing environment described
+# by the repository variables and secrets below, until the shared provisioning
+# action can create one (DPS + ADR namespace + Device Update instance, linked):
+#   vars:    E2E_SU_DPS_HOST, E2E_SU_ID_SCOPE, E2E_SU_REG_ID, E2E_SU_RESOURCE_GROUP,
+#            E2E_SU_LOCATION, E2E_SU_ADR_NAMESPACE, E2E_SU_ADU_ENDPOINT,
+#            E2E_SU_STORAGE_ACCOUNT, E2E_SU_STORAGE_CONTAINER, E2E_SU_ARM_ENDPOINT (optional)
+#   secrets: E2E_SU_DEVICE_CERT_PEM_B64, E2E_SU_DEVICE_KEY_PEM_B64 (X.509 of E2E_SU_REG_ID),
+#            AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID (OIDC; needs ADR job
+#            and Device Update import rights, and blob write on the storage account)
 
 name: ci-c-e2e-adu
 
 on:
   workflow_dispatch:
+  # E2E-PLACEHOLDER: add a schedule (and/or pull_request paths) once the
+  # environment above exists.
 
-# Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
+# One run at a time: every run uses the same device, and two sessions for one
+# device identity disconnect each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write   # required for azure/login OIDC
-
-# Resource group name derived from the RUN, not from a random GUID published as a
-# job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
-# reads `needs.setup.outputs.rg` receives an empty string and silently deletes
-# nothing while the group stays behind. Both setup and teardown compute this name
-# independently, so teardown never depends on setup completing.
-env:
-  E2E_RESOURCE_GROUP: CSDKE2EAdu-${{ github.run_id }}-${{ github.run_attempt }}
+  id-token: write   # azure/login OIDC
 
 jobs:
-  setup:
-    name: setup (provision)
+  e2e-su:
+    name: software updates e2e (linux)
     runs-on: ubuntu-latest
-    # Headroom for the real-ADU account/instance provisioning that the real-ADU
-    # suite will add (slow). The current mocked placeholder provisions only the
-    # base resources and finishes quickly.
-    timeout-minutes: 60
+    # Above the sum of the step budgets (215 min), so the always() cleanup runs.
+    timeout-minutes: 240
+    env:
+      AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_SU_DPS_HOST }}
+      AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_SU_ID_SCOPE }}
+      AZ_IOT_E2E_SU_REG_ID: ${{ vars.E2E_SU_REG_ID }}
+      AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_SU_RESOURCE_GROUP }}
+      AZ_IOT_E2E_SU_LOCATION: ${{ vars.E2E_SU_LOCATION }}
+      AZ_IOT_E2E_SU_ADR_NAMESPACE: ${{ vars.E2E_SU_ADR_NAMESPACE }}
+      AZ_IOT_E2E_SU_ADU_ENDPOINT: ${{ vars.E2E_SU_ADU_ENDPOINT }}
+      AZ_IOT_E2E_SU_STORAGE_ACCOUNT: ${{ vars.E2E_SU_STORAGE_ACCOUNT }}
+      AZ_IOT_E2E_SU_STORAGE_CONTAINER: ${{ vars.E2E_SU_STORAGE_CONTAINER }}
+      AZ_IOT_E2E_SU_ARM_ENDPOINT: ${{ vars.E2E_SU_ARM_ENDPOINT }}
+      SU_OFFERS_STATE: ${{ github.workspace }}/su-offers.json
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          python3 -m pip install --upgrade 'gcovr==7.2'
+
+      # Built instrumented so the run feeds the combined coverage report.
+      - name: Build
+        timeout-minutes: 30
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_BUILD_E2E_SU=ON
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer
+
+      - name: Materialize device credential
+        env:
+          CERT_B64: ${{ secrets.E2E_SU_DEVICE_CERT_PEM_B64 }}
+          KEY_B64: ${{ secrets.E2E_SU_DEVICE_KEY_PEM_B64 }}
+        run: |
+          dir="$RUNNER_TEMP/su-device"
+          mkdir -m 700 -p "$dir"
+          printf '%s' "$CERT_B64" | base64 -d > "$dir/cert.pem"
+          printf '%s' "$KEY_B64" | base64 -d > "$dir/key.pem"
+          chmod 600 "$dir"/*.pem
+          {
+            echo "AZ_IOT_E2E_SU_CERT=$dir/cert.pem"
+            echo "AZ_IOT_E2E_SU_KEY=$dir/key.pem"
+            echo "AZ_IOT_E2E_SU_TRUSTED_CA=/etc/ssl/certs/ca-certificates.crt"
+          } >> "$GITHUB_ENV"
 
       - name: Azure Login via OIDC
         uses: azure/login@v2
@@ -77,187 +101,55 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # `enable-adu: Gen1` is wired through for the future real-ADU suite but is
-      # currently a NO-OP: the shared provisioning script does not yet create a
-      # Device Update account. It is kept so the switch is ready when that lands.
-      - name: Provision resources
-        id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
-        with:
-          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          # The shared action defaults to EastUS; these pipelines run in
-          # eastus2euap, the region this subscription's IoT Hub scale unit is
-          # pinned to -- a hub created anywhere else is rejected with IH400059.
-          # An undefined repository variable arrives as an empty string, which
-          # would otherwise override the action default, so the fallback is here.
-          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          enable-adu: Gen1
-          # Two DPS enrollments so the parallel Linux/Windows test legs can each
-          # claim their own device (see the per-leg device-index selection below)
-          # and never share a device twin.
-          dps-x509-individual-enrollments: '2'
-
-      - name: Upload test config
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-adu-test-config
-          path: test_config/set_test_env_vars.ps1
-          retention-days: 1
-          if-no-files-found: error
-
-  test:
-    name: ${{ matrix.os }}
-    needs: setup
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux builds instrumented so this run feeds the combined coverage
-          # report; see the note in ci-c-e2e.yml.
-          - os: ubuntu-latest
-            preset: linux-gcc-e2e-coverage
-            device-index: 0
-          - os: windows-latest
-            preset: windows-msvc-debug
-            device-index: 1
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up MSVC (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install ninja (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build
-          python3 -m pip install --upgrade 'gcovr==7.2'
-
-      - name: Build ADU e2e test
-        working-directory: c
-        run: |
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e_su
-
-      - name: Download shared test config
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-adu-test-config
-          path: test_config
-
-      - name: Run ADU e2e
+      - name: Stage offers
+        timeout-minutes: 70
         shell: pwsh
         run: |
-          # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
-          . ./test_config/set_test_env_vars.ps1
+          Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
+          New-SuE2EOffers -RunId "${{ github.run_id }}${{ github.run_attempt }}" -StatePath $env:SU_OFFERS_STATE
 
-          # Select this leg's device. Two DPS enrollments are provisioned; the
-          # Linux and Windows legs each claim a DISTINCT one (via matrix
-          # device-index) so they never share a device twin. Fall back to the
-          # unsuffixed index-0 vars if the pinned provisioning action emits a
-          # pre-indexing test config.
-          $idx = '${{ matrix.device-index }}'
-          $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
-          $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
-          $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$idx" -ErrorAction SilentlyContinue).Value
-          if (-not $regId -or -not $certB64 -or -not $keyB64) {
-            Write-Host "Indexed device $idx not available; using the shared index-0 device."
-            $regId   = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
-            $certB64 = $env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE
-            $keyB64  = $env:IOT_DPS_INDIVIDUAL_X509_KEY
-          }
-          Write-Host "e2e device (index $idx): $regId"
+      - name: Run software updates e2e
+        timeout-minutes: 50
+        run: |
+          mkdir -p results
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_su \
+            --verbose --no-tests=error --timeout 2700 \
+            --output-junit "$GITHUB_WORKSPACE/results/e2e-su.xml"
 
-          # Materialize the device X.509 material to files. The in-process test
-          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
-          # CA trust bundle here (no network download).
-          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-adu-" + [Guid]::NewGuid().ToString("N"))
-          New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $certPath = Join-Path $dir "device-cert.pem"
-          $keyPath  = Join-Path $dir "device-key.pem"
-          $caPath   = Join-Path $dir "trusted-ca.pem"
+      - name: Check job results
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
+          Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $env:AZ_IOT_E2E_SU_REG_ID
 
-          [System.IO.File]::WriteAllText($certPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
-          [System.IO.File]::WriteAllText($keyPath,
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
-
-          if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
-            Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
-          }
-          else {
-            # Export the machine + user Root stores as a PEM bundle.
-            $sb = New-Object System.Text.StringBuilder
-            foreach ($loc in @('LocalMachine', 'CurrentUser')) {
-              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
-              $store.Open('ReadOnly')
-              foreach ($c in $store.Certificates) { [void]$sb.AppendLine($c.ExportCertificatePem()) }
-              $store.Close()
-            }
-            [System.IO.File]::WriteAllText($caPath, $sb.ToString())
-          }
-
-          # Map the config's DPS vars onto the names the test consumes.
-          $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
-          $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
-          $env:AZ_IOT_CLIENT_CERT         = $certPath
-          $env:AZ_IOT_CLIENT_KEY          = $keyPath
-          $env:AZ_IOT_TRUSTED_CA          = $caPath
-          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
-
-          New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
-          $cfg = if ($IsWindows) { @('-C', 'Debug') } else { @() }
-          # `-R e2e_su` selects ONLY az_iot_tests_e2e_su (not the fast e2e
-          # suite az_iot_tests_e2e, nor the su_crypto_openssl unit test).
-          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e_su `
-            --verbose --no-tests=error --timeout 900 `
-            --output-junit ./test_config/results/e2e-adu-${{ matrix.os }}.xml
+      - name: Remove offers
+        if: always()
+        timeout-minutes: 50
+        shell: pwsh
+        run: |
+          Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
+          Remove-SuE2EOffers -StatePath $env:SU_OFFERS_STATE
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-adu-results-${{ matrix.os }}
-          path: ./test_config/results/**/*.xml
+          name: e2e-su-results
+          path: results/*.xml
           if-no-files-found: ignore
 
-      - name: Collect coverage (Linux)
-        # Not `if: always()` -- a failed run leaves partial or absent .gcda, and
-        # merging that would understate coverage for an unrelated reason.
-        if: runner.os == 'Linux' && success()
+      - name: Collect coverage
+        # Not `if: always()`: a failed run leaves partial .gcda, which would
+        # understate coverage for an unrelated reason.
+        if: success()
         working-directory: c
         run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-adu.json e2e-adu
 
-      - name: Upload coverage tracefile (Linux)
-        if: runner.os == 'Linux' && success()
+      - name: Upload coverage tracefile
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-trace-e2e-adu
           path: c/coverage/e2e-adu.json
           if-no-files-found: error
-
-  teardown:
-    name: teardown (delete resources)
-    needs: [setup, test]
-    # `always()` also covers cancellation. The group name comes from the workflow
-    # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
-    # down; the destroy action no-ops when the group was never created.
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login via OIDC
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
-        with:
-          resource-group: ${{ env.E2E_RESOURCE_GROUP }}

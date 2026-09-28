@@ -679,7 +679,7 @@ typedef struct az_iot_su_client
 /* --- Lifecycle ----------------------------------------------------------- */
 
 /**
- * Configuration for az_iot_su_client_initialize(). Zero-initialize via
+ * Configuration for az_iot_su_client_init(). Zero-initialize via
  * az_iot_su_client_config_options_default() and set the required fields:
  *   hooks:   platform operations (download/install/apply/...). See §6.
  *   crypto:  pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
@@ -754,7 +754,7 @@ az_iot_result az_iot_su_client_remove_observer(
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
  * the buffer is too small for device_properties.
  */
-az_iot_result az_iot_su_client_initialize(
+az_iot_result az_iot_su_client_init(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
     const az_iot_su_client_config_options* options);
@@ -762,11 +762,11 @@ az_iot_result az_iot_su_client_initialize(
 /**
  * Return Microsoft's compiled-in software updates root public keys (const, static storage).
  * Convenience for the common case; equivalent to passing your own array to
- * az_iot_su_client_initialize(). Pointer and count reference static data.
+ * az_iot_su_client_init(). Pointer and count reference static data.
  */
 const az_iot_su_root_key* az_iot_su_microsoft_root_keys(size_t* out_count);
 
-void az_iot_su_client_destroy(az_iot_su_client* client);
+void az_iot_su_client_deinit(az_iot_su_client* client);
 
 /**
  * Resume a workflow after device reboot. The application MUST call this during startup.
@@ -807,10 +807,10 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
  * timeout_ms bounds the whole wait in WALL-CLOCK terms;
  * AZ_IOT_SU_REQUEST_NO_TIMEOUT (0) means no bound, and
  * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
- * with no policy of its own -- it bounds the retries an unservable check keeps
- * issuing, not the wait. On
- * expiry the request is dropped and OPERATION_ABANDONED is raised with
- * AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
+ * with no policy of its own. The bound covers the retries before the channel
+ * accepts the check AND the wait for its answer after. On expiry the request
+ * is dropped (the channel stops waiting, so a late answer is ignored) and
+ * OPERATION_ABANDONED is raised with AZ_IOT_ERR_TIMEOUT. Per call, not a compile-time constant: a boot-time
  * onboarding probe and a nightly poll do not share a deadline.
  *
  * Time spent obeying a service-requested delay COUNTS against it. Excluding it
@@ -904,7 +904,7 @@ su_opts.root_key_count = root_key_count;
 su_opts.device_properties = &properties;
 su_opts.device_properties_buffer = properties_cache;
 su_opts.device_properties_buffer_size = sizeof(properties_cache);
-az_iot_su_client_initialize(&su, &conn, &su_opts);
+az_iot_su_client_init(&su, &conn, &su_opts);
 /* `properties` and its strings may now be freed/reused; the client holds a deep copy. */
 
 /* Later, when firmware version or a custom property changes at runtime: */
@@ -985,7 +985,7 @@ opts.library_mode = true;          /* hooks may stay NULL */
 opts.crypto = &crypto;
 opts.root_keys = az_iot_su_microsoft_root_keys(&opts.root_key_count);
 /* ... device properties ... */
-az_iot_su_client_initialize(&su, &connection, &opts);
+az_iot_su_client_init(&su, &connection, &opts);
 az_iot_su_client_add_observer(&su, on_su_event, app);
 
 /* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: download event->request->file_urls,
@@ -1162,7 +1162,7 @@ capacity is compile-time configurable:
 #endif
 ```
 
-`az_iot_su_client_initialize` accepts an `az_iot_su_root_key[]` and copies the
+`az_iot_su_client_init` accepts an `az_iot_su_root_key[]` and copies the
 descriptors into the fixed `root_keys[AZ_IOT_SU_MAX_ROOT_KEYS]` array (key bytes
 are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
 keys are supplied than the store can hold.
@@ -1285,7 +1285,7 @@ int main(void)
     su_opts.device_properties = &properties;
     su_opts.device_properties_buffer = properties_cache;
     su_opts.device_properties_buffer_size = sizeof properties_cache;
-    az_iot_su_client_initialize(&su, &conn, &su_opts);
+    az_iot_su_client_init(&su, &conn, &su_opts);
 
     az_iot_connection_client_open(&conn);
     az_iot_su_client_resume(&su);   /* continue if a prior run persisted state */
@@ -1518,7 +1518,7 @@ target_link_libraries(az_iot_su
 - Extend `az_iot_twin_client` with the desired-property subscriber registry
   (public + internal registration, two-pass dispatch, compile-time capacity,
   reentrancy guard); remove `set_desired_callback`.
-- `az_iot_su_client` struct, init/destroy, do_work.
+- `az_iot_su_client` struct, init/deinit, do_work.
 - Device-properties cache (deep-copied struct + `update_device_properties()`),
   startup/reconnect/manual reporting, feature-client state observer registration.
 - State machine (all transitions, cancellation, error handling, multi-step iteration).

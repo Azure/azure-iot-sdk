@@ -255,11 +255,11 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_mqttv5_direct_method_client_destroy(&fx->dm);
-    /* A registered factory is adopted by the client and freed from destroy();
+    az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+    /* A registered factory is adopted by the client and freed from deinit();
      * an unregistered one is still ours. */
     bool adopted = (fx->conn.factory_count > 0);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -575,7 +575,7 @@ static void init_against_a_classic_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv5_direct_method_client_init(&dm, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void a_device_id_too_long_for_the_topics_says_so(void** state)
@@ -615,8 +615,8 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
   assert_true(cap.count >= 1);
   assert_non_null(strstr(cap.all, "AZ_IOT_MQTTV5_DM_TOPIC_MAX"));
 
-  az_iot_mqttv5_direct_method_client_destroy(&dm);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_mqttv5_direct_method_client_deinit(&dm);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void init_does_not_subscribe_a_redundant_methods_filter(void** state)
@@ -1976,10 +1976,10 @@ static void the_sequence_counter_skips_zero_on_wrap(void** state)
   assert_null(find_phase(fx->mock, "result:1"));
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_mqttv5_direct_method_client_destroy(NULL);
+  az_iot_mqttv5_direct_method_client_deinit(NULL);
 }
 
 static void set_probe_handler_rejects_a_null_client(void** state)
@@ -2394,7 +2394,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_from_the_other_generation, setup, teardown),
     cmocka_unit_test_setup_teardown(the_sequence_counter_skips_zero_on_wrap, setup, teardown),
-    cmocka_unit_test(destroy_tolerates_null),
+    cmocka_unit_test(deinit_tolerates_null),
     cmocka_unit_test(set_probe_handler_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(unregister_method_validates_its_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(

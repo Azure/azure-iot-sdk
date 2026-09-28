@@ -73,7 +73,7 @@ extern "C"
       az_iot_mqttv3_direct_method_client* client,
       az_iot_connection_client* conn);
 
-  void az_iot_mqttv3_direct_method_client_destroy(az_iot_mqttv3_direct_method_client* client);
+  void az_iot_mqttv3_direct_method_client_deinit(az_iot_mqttv3_direct_method_client* client);
 
   /* Not AZ_NODISCARD: a configuration setter (fails only on invalid arguments). */
   az_iot_result az_iot_mqttv3_direct_method_client_set_handler(
@@ -118,7 +118,7 @@ extern "C"
    * handing one to a different client is refused rather than resolved against
    * whatever occupies the same slot there.
    *
-   * One case is not detectable: a request held across destroy() *and* a fresh
+   * One case is not detectable: a request held across deinit() *and* a fresh
    * init() of the same client. Teardown zeroes the pool, so the sequence starts
    * over and the new lifetime can reissue the pair the old request names.
    * Detecting it would need identity that outlives the caller's storage, which

@@ -10,8 +10,8 @@
 | [unified/](unified/) | Classic (MQTTv3, MQTT v3.1.1) **or** AEG (MQTTv5, MQTT v5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
 | [mqttv5/](mqttv5/) | AEG only | The device is known to be on an AEG hub. |
 | [authentication/](authentication/) | Either generation | Certificate providers, CSR enrollment, non-extractable keys. See its [README](authentication/README.md). |
-| [su/](su/) | Either generation | Software updates agent. See [su/pc](su/pc/README.md). |
-| [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends) and setup scripts. |
+| [software_update/](software_update/) | Either generation | Software Update agent. See [pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md), [pc/simulated_regular](software_update/pc/simulated_regular/README.md) and [esp32](software_update/esp32/README.md). |
+| [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends). |
 
 There is no MQTTv3-only group: the unified samples cover MQTTv3 hubs. The
 MQTTv3 IoT Hub only features, C2D and file upload, are in `unified/` and report MQTTv5 hubs.
@@ -53,9 +53,6 @@ first.
 
 - A DPS instance, a linked IoT Hub, and an X.509 enrollment for the device.
 - Device certificate, private key and trusted CA as PEM files.
-
-Device setup is done with scripts, not with a sample program.
-[common/scripts](common/scripts/) holds the scripts for the software updates sample.
 
 ## Configuration
 
@@ -109,4 +106,6 @@ Authentication samples land in `<build>/samples/authentication/`.
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/) | Direct methods on AEG, with a probe handler. |
 | [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/) | Deferred direct-method answers on AEG. |
 | [authentication](authentication/) | Certificate providers, CSR enrollment, operational certificates, key custody. |
-| [su](su/) | Software updates agent: manifest verify, download, install, report. |
+| [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/) | Software Update on the onboarding route, for a day-0 device; no IoT Hub needed. Simulated install. |
+| [software_update/pc/simulated_regular](software_update/pc/simulated_regular/) | Software Update on the regular route, polled, for a registered device. Simulated install. |
+| [software_update/esp32](software_update/esp32/) | Software Update with a real OTA install on an ESP32 (ESP-IDF). Onboarding route until registered, regular after. |

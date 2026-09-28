@@ -19,7 +19,7 @@ extern "C"
 
   /* Return az_iot_su_crypto_hooks wired to the mbedTLS backend. The struct is
    * by value, references static function pointers, and carries no allocated state
-   * (user_ctx is NULL). Safe to pass straight to az_iot_su_client_initialize(). */
+   * (user_ctx is NULL). Safe to pass straight to az_iot_su_client_init(). */
   az_iot_su_crypto_hooks az_iot_su_crypto_mbedtls_hooks(void);
 
 #ifdef __cplusplus

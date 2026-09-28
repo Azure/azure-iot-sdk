@@ -1,7 +1,7 @@
 # ESP32-WROOM real software updates (OTA) sample
 
 This sample performs a **genuine over-the-air firmware update** on an ESP32-WROOM
-using Azure software updates. Unlike [`samples/su/pc`](../pc), which simulates
+using Azure software updates. Unlike [`samples/software_update/pc`](../pc), which simulates
 the install with zero-filled payloads and a log-only "install", this sample:
 
 - downloads the real firmware image over HTTPS into the inactive OTA partition,
@@ -18,7 +18,7 @@ component (`components/azure-iot-sdk`).
 ## Layout
 
 ```
-samples/su/esp32/
+samples/software_update/esp32/
 ├── CMakeLists.txt              top-level ESP-IDF project
 ├── partitions.csv             A/B OTA partition table (ota_0 / ota_1 / otadata)
 ├── sdkconfig.defaults          target, flash size, rollback, MQTT v5, mbedTLS
@@ -30,8 +30,8 @@ samples/su/esp32/
     ├── az_iot_mqtt_esp.[ch]    esp-mqtt az_iot_mqtt_iface adapter (v3.1.1 + v5)
     ├── az_iot_cert_embedded.[ch]  in-memory X.509 cert provider
     ├── wifi_connect.[ch]       station-mode Wi-Fi bring-up
-    ├── su_version.h           compiled-in firmware version (rewritten by the script)
-    ├── Kconfig.projbuild       Wi-Fi + DPS menuconfig options
+    ├── su_version.h           compiled-in firmware version (raise it for each update image)
+    ├── Kconfig.projbuild       Wi-Fi, DPS and poll-interval menuconfig options
     └── certs/                  device_cert.pem / device_key.pem / trusted_ca.pem
 ```
 
@@ -51,12 +51,11 @@ samples/su/esp32/
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-- Azure CLI with the `azure-iot` extension, logged in (`az login`).
-- The shared software updates sample environment created by
-  [`samples/common/scripts/Initialize-SuSampleEnvironment.ps1`](../../common/scripts/Initialize-SuSampleEnvironment.ps1).
-  It provisions the IoT Hub, DPS, Device Update account/instance, storage, and a device
-  X.509 certificate, and exports the `AZ_IOT_SU_*` environment variables that
-  the deployment script reuses.
+- A Device Provisioning Service with an X.509 enrollment for the device, linked
+  to an IoT Hub (the device registers and connects to it), and a Device Update
+  instance linked to that DPS.
+- The device certificate and private key as PEM files. The certificate CN must
+  equal the DPS registration id.
 
 > **Native components.** esp-mqtt is pulled from the ESP Component Registry as
 > the managed component `espressif/mqtt` (it left the IDF core tree in v6.0).
@@ -65,42 +64,14 @@ samples/su/esp32/
 > SDK for C is built from the in-repo submodule via the
 > [`components/azure-sdk-for-c`](components/azure-sdk-for-c) component.
 
-## 1. Set up the Azure environment
-
-```powershell
-cd samples/common/scripts
-./Initialize-SuSampleEnvironment.ps1
-```
-
-Note the printed **DPS ID scope** and **registration id (device id)**, and find
-the generated device certificate/key PEMs.
-
-## 2. Configure the device identity + Wi-Fi
-
-Run the configuration script from an ESP-IDF-capable PowerShell. It reuses the
-device certificate, DPS ID scope, and registration id exported by step 1, embeds
-the certificate/key into the firmware, and prompts only for the Wi-Fi SSID and
-password (the two values the init script can't know):
-
-```powershell
-cd samples/common/scripts
-./Set-SuEsp32Config.ps1
-```
-
-You'll be prompted for the **Wi-Fi SSID** and **password**; everything else is
-taken from the `AZ_IOT_*` environment variables. The Wi-Fi credentials and device
-settings are written into the git-ignored `sdkconfig`, so nothing secret is
-committed. Pass `-WifiSsid` / `-WifiPassword` to skip the prompts.
-
-<details>
-<summary>You can also do the sample configuration manually instead.</summary>
+## 1. Configure the device identity + Wi-Fi
 
 Copy the device certificate and key into the embedded `certs/` files (the build
 embeds them into the firmware):
 
 ```powershell
-Copy-Item <path>\su-sim-device-cert.pem samples/su/esp32/main/certs/device_cert.pem
-Copy-Item <path>\su-sim-device-key.pem  samples/su/esp32/main/certs/device_key.pem
+Copy-Item <path>\device-cert.pem samples/software_update/esp32/main/certs/device_cert.pem
+Copy-Item <path>\device-key.pem  samples/software_update/esp32/main/certs/device_key.pem
 ```
 
 `certs/trusted_ca.pem` can stay as the placeholder — the adapter falls back to the
@@ -115,56 +86,55 @@ Then configure Wi-Fi and DPS via menuconfig:
 
 ```powershell
 C:\esp\v6.0\esp-idf\export.bat
-cd samples/su/esp32
+cd samples/software_update/esp32
 idf.py set-target esp32
 idf.py menuconfig   # → "Software Updates ESP32 Sample Configuration"
 ```
 
-Set `SU_WIFI_SSID`, `SU_WIFI_PASSWORD`, `SU_DPS_ID_SCOPE` (the ID scope from
-step 1) and `SU_DPS_REGISTRATION_ID` (must equal the certificate CN / device id).
+Set `SU_WIFI_SSID`, `SU_WIFI_PASSWORD`, `SU_DPS_ID_SCOPE` and
+`SU_DPS_REGISTRATION_ID` (must equal the certificate CN / device id).
+Optionally set `SU_POLL_INTERVAL_S` (seconds between update checks, default 60).
+The values are written into the git-ignored `sdkconfig`, so nothing secret is
+committed.
 
-</details>
-
-## 3. Flash the initial firmware and watch it connect
+## 2. Flash the initial firmware and watch it connect
 
 ```powershell
 idf.py build flash monitor
 ```
 
-The device joins Wi-Fi, provisions through DPS (model id
-`dtmi:azure:iot:deviceUpdateContractModel;2`), reports its device properties
-(manufacturer `Espressif`, model `ESP32-WROOM`, installed version from
-`su_version.h`), and starts pumping the software updates workflow. Leave the monitor running.
+The device joins Wi-Fi and asks for an update on its first provisioning session,
+reporting its device properties (manufacturer `Espressif`, model `ESP32-WROOM`,
+installed version from `su_version.h`). It then registers through DPS and
+connects to its hub. Leave the monitor running.
 
-## 4. Build a new image and deploy it as an update
+Which update-check route it uses depends on whether it has connected to its hub
+before, which it records in NVS (namespace `su_app`, key `registered`):
 
-From an ESP-IDF-capable PowerShell:
+- **Never connected:** the onboarding route
+  (`az_iot_su_client_request_onboarding_update()`), for a device with no device
+  record.
+- **Connected before:** the regular route (`az_iot_su_client_request_update()`),
+  which also sends the installed update id.
 
-```powershell
-cd samples/common/scripts
-./New-SuEsp32Image.ps1
-```
+Once connected it checks on the regular route every `SU_POLL_INTERVAL_S`
+(menuconfig, default 60 s) while no deployment is in flight. A check not
+answered within half the interval (at most 60 s) is abandoned and asked again at
+the next poll. Erasing NVS
+(`idf.py erase-flash`) returns it to the onboarding route.
 
-This script (the real-OTA counterpart of `New-SuSampleDeployment.ps1`):
+## 3. Build a new image and deploy it as an update
 
-1. resolves the next version (auto-bump, or `-UpdateVersion 2.0.0`),
-2. rewrites `main/su_version.h` so the firmware reports that version,
-3. `idf.py build`s the sample to produce `build/su_esp32.bin`,
-4. generates a v5 import manifest with `--compat manufacturer=Espressif
-   model=ESP32-WROOM` referencing the real binary,
-5. stages + imports the update, tags the device into its group, and creates the
-   deployment.
+1. Raise `SU_UPDATE_VERSION` in `main/su_version.h`, so the new firmware reports
+   the new version.
+2. `idf.py build` to produce `build/su_esp32.bin`.
+3. Import it into the Device Update instance linked to the DPS, as update
+   `SU_UPDATE_PROVIDER`/`SU_UPDATE_NAME`/`SU_UPDATE_VERSION` with compatibility
+   `manufacturer=Espressif`, `model=ESP32-WROOM`, and deploy it to the device.
 
-Within a minute or two the running device downloads the image, flashes the
-inactive OTA slot, reboots, marks the new app valid, and reports the new version.
-Track service-side status with the command the script prints at the end.
-
-## 5. Tear down
-
-```powershell
-cd samples/common/scripts
-./Remove-SuSampleEnvironment.ps1
-```
+Once a matching deployment exists, the device picks it up at its next check
+(within `SU_POLL_INTERVAL_S`), downloads the image, flashes the inactive OTA
+slot, reboots, marks the new app valid, and reports the new version.
 
 ## How the real OTA flow works
 

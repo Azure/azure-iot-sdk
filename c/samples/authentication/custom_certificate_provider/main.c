@@ -167,8 +167,8 @@ int main(void)
   }
 
 cleanup:
-  az_iot_connection_client_destroy(&connection_client);
-  sample_cert_provider_destroy(&provider);
+  az_iot_connection_client_deinit(&connection_client);
+  sample_cert_provider_deinit(&provider);
   free(op_key);
   free(op_cert);
   sample_config_release(&config);

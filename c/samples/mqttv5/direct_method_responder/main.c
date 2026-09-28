@@ -62,11 +62,11 @@ static void sample_state_destroy(sample_state* s)
 {
   if (s->methods_initialized)
   {
-    az_iot_mqttv5_direct_method_client_destroy(&s->methods);
+    az_iot_mqttv5_direct_method_client_deinit(&s->methods);
     s->methods_initialized = 0;
   }
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
 

@@ -50,7 +50,7 @@ extern "C"
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
   /* Internal entry point: bind the engine to an explicit channel. The public
-   * az_iot_su_client_initialize() builds the shipping channel and calls this.
+   * az_iot_su_client_init() builds the shipping channel and calls this.
    * Kept internal so the engine can be exercised against a fake channel. */
   az_iot_result az_iot_su_client__initialize_with_channel(
       az_iot_su_client* client,

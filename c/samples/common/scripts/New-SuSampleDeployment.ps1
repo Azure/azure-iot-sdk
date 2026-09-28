@@ -14,7 +14,7 @@
     Registry jobs and runs on the registry namespace. This script cannot deliver
     an update to those samples.
 
-    See samples/su/pc/README.md for the job/run shape the samples are offered
+    See samples/software_update/pc/simulated_onboarding/README.md for the job/run shape the samples are offered
     updates through.
 
     Run this AFTER Initialize-SuSampleEnvironment.ps1, and AFTER an
@@ -61,7 +61,7 @@ delivers updates as Azure Device Registry jobs and runs on the registry
 namespace. An update imported and deployed by this script will not be offered to
 those samples.
 
-See samples/su/pc/README.md.
+See samples/software_update/pc/simulated_onboarding/README.md.
 '@
 
 $payloadPath  = Join-Path $PWD "su-sim-payload.bin"

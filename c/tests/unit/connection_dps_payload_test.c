@@ -172,7 +172,7 @@ static void fixture_destroy(payload_fixture* fx)
   if (fx->conn.client)
   {
     bool adopted = (fx->conn.client->factory_count > 0);
-    az_iot_connection_client_destroy(&fx->conn.client_storage);
+    az_iot_connection_client_deinit(&fx->conn.client_storage);
     if (!adopted && fx->conn.factory)
     {
       az_iot_mock_mqtt_factory_destroy(fx->conn.factory);

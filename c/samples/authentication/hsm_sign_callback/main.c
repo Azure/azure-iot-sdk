@@ -320,6 +320,6 @@ int main(void)
   rc = (provider.sign_calls == 1) ? 0 : 1;
 
 cleanup:
-  az_iot_connection_client_destroy(&connection_client);
+  az_iot_connection_client_deinit(&connection_client);
   return rc;
 }

@@ -148,7 +148,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 ### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)
 - `Azure/azure-sdk-for-c` is **archived** upstream (last push 2026-07-15). There will be no upstream fixes, so this repo owns the dependency and must carry its own patches.
 - This supersedes the "No git submodules" / "pinned FetchContent tag" arrangement as the whole story: the pin still holds, but a patch mechanism is now required alongside it.
-- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/su/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
+- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/software_update/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
 
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).

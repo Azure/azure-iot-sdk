@@ -80,8 +80,8 @@ static int teardown(void** state)
   fixture* test = (fixture*)*state;
   if (test)
   {
-    az_iot_mqttv3_telemetry_client_destroy(&test->telemetry);
-    az_iot_connection_client_destroy(&test->connection);
+    az_iot_mqttv3_telemetry_client_deinit(&test->telemetry);
+    az_iot_connection_client_deinit(&test->connection);
     if (!test->factory_registered)
     {
       az_iot_mock_mqtt_factory_destroy(test->factory);
@@ -186,7 +186,7 @@ static void init_contract(void** state)
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(NULL, dummy), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       az_iot_mqttv3_telemetry_client_init(&test->telemetry, NULL), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_mqttv3_telemetry_client_destroy(NULL);
+  az_iot_mqttv3_telemetry_client_deinit(NULL);
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
   /* Init records the generation this client needs rather than reading a live
@@ -194,7 +194,7 @@ static void init_contract(void** state)
   assert_int_equal(
       az_iot_mqttv3_telemetry_client_init(&test->telemetry, &test->connection), AZ_IOT_OK);
   assert_ptr_equal(test->telemetry._internal.conn, &test->connection);
-  az_iot_mqttv3_telemetry_client_destroy(&test->telemetry);
+  az_iot_mqttv3_telemetry_client_deinit(&test->telemetry);
 }
 
 static void init_rejects_v5_profile(void** state)
@@ -218,8 +218,8 @@ static void lifecycle_is_deterministic(void** state)
   memset(&local, 0xEE, sizeof(local));
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(&local, &test->connection), AZ_IOT_OK);
   assert_ptr_equal(local._internal.conn, &test->connection);
-  az_iot_mqttv3_telemetry_client_destroy(&local);
-  az_iot_mqttv3_telemetry_client_destroy(&local);
+  az_iot_mqttv3_telemetry_client_deinit(&local);
+  az_iot_mqttv3_telemetry_client_deinit(&local);
 
   az_iot_telemetry_message message = { 0 };
   assert_int_equal(

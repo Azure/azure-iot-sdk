@@ -54,11 +54,11 @@ static void sample_state_destroy(sample_state* s)
 {
   if (s->c2d_initialized)
   {
-    az_iot_mqttv3_c2d_client_destroy(&s->c2d);
+    az_iot_mqttv3_c2d_client_deinit(&s->c2d);
     s->c2d_initialized = 0;
   }
-  az_iot_connection_client_destroy(&s->connection_client);
-  az_iot_certificate_provider_pem_destroy(&s->certs);
+  az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
 

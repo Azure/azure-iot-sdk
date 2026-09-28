@@ -204,12 +204,12 @@ void e2e_device_disconnect(e2e_device* dev)
     {
       e2e_device_do_work(dev, 50);
     }
-    az_iot_connection_client_destroy(&dev->conn);
+    az_iot_connection_client_deinit(&dev->conn);
     dev->conn_ok = false;
   }
   if (dev->certs_ok)
   {
-    az_iot_certificate_provider_pem_destroy(&dev->certs);
+    az_iot_certificate_provider_pem_deinit(&dev->certs);
     dev->certs_ok = false;
   }
   free(dev->id_scope);

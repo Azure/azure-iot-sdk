@@ -359,14 +359,14 @@ cleanup:
   {
     if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
     {
-      az_iot_mqttv5_telemetry_client_destroy(&mqttv5);
+      az_iot_mqttv5_telemetry_client_deinit(&mqttv5);
     }
     else
     {
-      az_iot_mqttv3_telemetry_client_destroy(&mqttv3);
+      az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
     }
   }
-  az_iot_connection_client_destroy(&connection_client);
+  az_iot_connection_client_deinit(&connection_client);
   hsm_config_release(&config);
   return rc;
 }

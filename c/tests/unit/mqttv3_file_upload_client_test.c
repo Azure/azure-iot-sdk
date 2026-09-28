@@ -222,7 +222,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_file_upload_client_deinit(&fx->fu);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     free(fx);
   }
   return 0;
@@ -451,7 +451,7 @@ static void init_rejects_unresolved_hub_address(void** state)
   assert_int_equal(
       az_iot_mqttv3_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void init_rejects_missing_device_id(void** state)
@@ -469,7 +469,7 @@ static void init_rejects_missing_device_id(void** state)
   assert_int_equal(
       az_iot_mqttv3_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* An endpoint too long to form a request URL is rejected where the length
@@ -513,7 +513,7 @@ static void oversized_hub_address_is_rejected_at_the_operation(void** state)
   assert_int_equal(g_http.call_count, 0);
 
   az_iot_mqttv3_file_upload_client_deinit(&fu2);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void oversized_device_id_is_rejected_at_the_operation(void** state)
@@ -547,7 +547,7 @@ static void oversized_device_id_is_rejected_at_the_operation(void** state)
   assert_int_equal(g_http.call_count, 0);
 
   az_iot_mqttv3_file_upload_client_deinit(&fu2);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* A failed init must scrub the instance, not leave it half-wired: the operations
@@ -576,14 +576,14 @@ static void failed_init_leaves_client_unusable(void** state)
       AZ_IOT_ERR_NOT_INITIALIZED);
   assert_int_equal(g_http.call_count, 0);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
-static void calls_after_destroy_are_rejected(void** state)
+static void calls_after_deinit_are_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_file_upload_client_deinit(&fx->fu);
@@ -601,7 +601,7 @@ static void calls_after_destroy_are_rejected(void** state)
   /* The fixture teardown destroys again: destroy must be idempotent. */
 }
 
-static void destroy_is_null_safe(void** state)
+static void deinit_is_null_safe(void** state)
 {
   (void)state;
   az_iot_mqttv3_file_upload_client_deinit(NULL);
@@ -609,7 +609,7 @@ static void destroy_is_null_safe(void** state)
 
 /* Destroying twice must be harmless: the second call meets an already-scrubbed
  * instance. The fixture teardown makes it a third. */
-static void destroy_is_idempotent(void** state)
+static void deinit_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_file_upload_client_deinit(&fx->fu);
@@ -667,9 +667,9 @@ static void two_clients_share_one_connection(void** state)
 }
 
 /* Destroying one client must not disturb another sharing the same connection.
- * destroy() unregisters from the connection, so a bug there would take the
+ * deinit() unregisters from the connection, so a bug there would take the
  * survivor down with it -- a different failure than the sharing above. */
-static void destroying_one_client_leaves_the_other_working(void** state)
+static void deinitializing_one_client_leaves_the_other_working(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_file_upload_client fu2;
@@ -941,7 +941,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
       az_iot_mqttv3_file_upload_client_init(&fu2, &conn, &http),
       AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* Refused up front rather than at the first upload: without an HTTP client the
@@ -990,9 +990,9 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
 
   az_iot_mqttv5_telemetry_client t;
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
-  az_iot_mqttv5_telemetry_client_destroy(&t);
+  az_iot_mqttv5_telemetry_client_deinit(&t);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* The pre-pin refusals take no reference to release, so they cannot strand one.
@@ -1022,9 +1022,9 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
    * invisible to another Classic client, which is admitted either way. */
   az_iot_mqttv5_telemetry_client t;
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
-  az_iot_mqttv5_telemetry_client_destroy(&t);
+  az_iot_mqttv5_telemetry_client_deinit(&t);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1654,7 +1654,7 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   assert_true(strlen(g_http.last_url) < AZ_IOT_FILE_UPLOAD_URL_MAX);
 
   az_iot_mqttv3_file_upload_client_deinit(&fu2);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* A SAS response with members the client does not care about, including a
@@ -1737,13 +1737,13 @@ int main(void)
     cmocka_unit_test(failed_init_leaves_client_unusable),
 
     /* lifecycle */
-    cmocka_unit_test_setup_teardown(calls_after_destroy_are_rejected, setup, teardown),
-    cmocka_unit_test(destroy_is_null_safe),
-    cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(calls_after_deinit_are_rejected, setup, teardown),
+    cmocka_unit_test(deinit_is_null_safe),
+    cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),
     cmocka_unit_test_setup_teardown(reinit_after_deinit_succeeds, setup, teardown),
     cmocka_unit_test_setup_teardown(two_clients_share_one_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        destroying_one_client_leaves_the_other_working, setup, teardown),
+        deinitializing_one_client_leaves_the_other_working, setup, teardown),
 
     /* endpoint resolution (per operation, never cached) */
     cmocka_unit_test_setup_teardown(sas_uri_requests_follow_a_hub_reassignment, setup, teardown),

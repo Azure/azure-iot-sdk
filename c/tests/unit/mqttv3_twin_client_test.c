@@ -134,9 +134,9 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_twin_client_deinit(&fx->twin);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     /* A registered factory is adopted by the connection and freed from its
-     * destroy(); an unregistered one is still ours. */
+     * deinit(); an unregistered one is still ours. */
     if (!fx->factory_registered)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -161,7 +161,7 @@ static void open_to_connected(fixture* fx)
 }
 
 /* Start a second session on a client that is already back in IDLE. Deliberately
- * does NOT re-register the factory: registration appends, and destroy() calls
+ * does NOT re-register the factory: registration appends, and deinit() calls
  * every registered entry's destroy hook, so registering the same factory twice
  * frees it twice. */
 static void reopen_to_connected(fixture* fx)
@@ -544,7 +544,7 @@ static void the_pending_pool_is_reusable_after_a_dropped_session(void** state)
   }
 }
 
-static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** state)
+static void a_deinitialized_twin_client_is_not_called_on_a_later_session_end(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -552,7 +552,7 @@ static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** 
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
 
-  /* destroy() must unhook the handler. If it did not, the connection would
+  /* deinit() must unhook the handler. If it did not, the connection would
    * call into a zeroed client -- and, worse, into whatever the application had
    * already freed behind the user context. */
   az_iot_mqttv3_twin_client_deinit(&fx->twin);
@@ -565,7 +565,7 @@ static void a_destroyed_twin_client_is_not_called_on_a_later_session_end(void** 
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroying_the_connection_does_not_complete_pending_requests(void** state)
+static void deinitializing_the_connection_does_not_complete_pending_requests(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -573,12 +573,12 @@ static void destroying_the_connection_does_not_complete_pending_requests(void** 
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
 
-  /* Same rule the QoS-1 acknowledgements follow: on destroy() the application
+  /* Same rule the QoS-1 acknowledgements follow: on deinit() the application
    * is tearing everything down and the context the callback closes over may
    * already be gone, so calling into it would turn cleanup into a
    * use-after-free. */
   az_iot_mqttv3_twin_client_deinit(&fx->twin);
-  az_iot_connection_client_destroy(&fx->conn);
+  az_iot_connection_client_deinit(&fx->conn);
   assert_false(rec.fired);
 
   /* Rebuild what teardown() expects to tear down. */
@@ -697,7 +697,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_twin_client_init(&twin, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void both_subscriptions_use_qos_0(void** state)
@@ -716,13 +716,13 @@ static void both_subscriptions_use_qos_0(void** state)
   assert_int_equal(des->qos, AZ_IOT_MQTT_QOS_0);
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
   az_iot_mqttv3_twin_client_deinit(NULL);
 }
 
-static void destroy_zeroes_the_client(void** state)
+static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -741,7 +741,7 @@ static void destroy_zeroes_the_client(void** state)
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_is_idempotent(void** state)
+static void deinit_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
 
@@ -753,7 +753,7 @@ static void destroy_is_idempotent(void** state)
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_unregisters_both_handlers(void** state)
+static void deinit_unregisters_both_handlers(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -1198,18 +1198,18 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_pending_pool_is_reusable_after_a_dropped_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_destroyed_twin_client_is_not_called_on_a_later_session_end, setup, teardown),
+        a_deinitialized_twin_client_is_not_called_on_a_later_session_end, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        destroying_the_connection_does_not_complete_pending_requests, setup, teardown),
+        deinitializing_the_connection_does_not_complete_pending_requests, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(
         init_against_an_mqtt_v5_connection_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(both_subscriptions_use_qos_0, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_tolerates_null, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_zeroes_the_client, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_unregisters_both_handlers, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_tolerates_null, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_unregisters_both_handlers, setup, teardown),
     cmocka_unit_test_setup_teardown(get_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(get_publishes_an_empty_body, setup, teardown),
     cmocka_unit_test_setup_teardown(get_publishes_at_qos_0, setup, teardown),

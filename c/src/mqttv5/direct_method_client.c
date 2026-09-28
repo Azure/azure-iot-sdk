@@ -309,7 +309,7 @@ static bool has_execution_capacity(const az_iot_mqttv5_direct_method_client* dm)
  * that refuses one is invisible here and the caller simply times out.
  *
  * user_ctx is the phase's `type` string literal and never the client: this can
- * fire after the feature client has been destroyed, and a literal outlives
+ * fire after the feature client has been deinitialized, and a literal outlives
  * everything. */
 static void on_publish_ack(az_iot_result status, void* user_ctx)
 {
@@ -871,7 +871,7 @@ az_iot_result az_iot_mqttv5_direct_method_client_init(
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
   DI(client).rng_state = az_iot_time_mono_ms();
-  /* Seeded rather than started from zero: destroy() zeroes the client, so a
+  /* Seeded rather than started from zero: deinit() zeroes the client, so a
    * fresh init would otherwise reissue the same {slot, seq} a request from the
    * previous lifetime still names. */
   DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
@@ -889,7 +889,7 @@ az_iot_result az_iot_mqttv5_direct_method_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_mqttv5_direct_method_client_destroy(az_iot_mqttv5_direct_method_client* client)
+void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_client* client)
 {
   if (!client)
   {

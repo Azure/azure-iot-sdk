@@ -115,11 +115,11 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
-    /* A registered factory is adopted by the client and freed from destroy();
+    az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
+    /* A registered factory is adopted by the client and freed from deinit();
      * an unregistered one is still ours. */
     bool adopted = (fx->conn.factory_count > 0);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -200,7 +200,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_c2d_client_init(&c2d, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -251,8 +251,8 @@ static void the_topic_is_built_from_the_client_id(void** state)
 
   assert_non_null(find_subscribe(m, "devices/fallback-device/messages/devicebound/#"));
 
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void without_any_device_id_the_connect_attempt_fails(void** state)
@@ -274,8 +274,8 @@ static void without_any_device_id_the_connect_attempt_fails(void** state)
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, f), AZ_IOT_OK);
   assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void** state)
@@ -301,8 +301,8 @@ static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void*
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, f), AZ_IOT_OK);
   assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
-  az_iot_mqttv3_c2d_client_destroy(&c2d);
-  az_iot_connection_client_destroy(&conn);
+  az_iot_mqttv3_c2d_client_deinit(&c2d);
+  az_iot_connection_client_deinit(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -599,7 +599,7 @@ static void a_second_client_for_the_same_identity_fails_the_connect_attempt(void
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_not_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
 
-  az_iot_mqttv3_c2d_client_destroy(&second);
+  az_iot_mqttv3_c2d_client_deinit(&second);
 }
 
 static void a_client_for_a_different_identity_registers_alongside(void** state)
@@ -624,14 +624,14 @@ static void a_client_for_a_different_identity_registers_alongside(void** state)
   az_iot_mqttv3_c2d_client other;
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&other, &other_conn), AZ_IOT_OK);
 
-  az_iot_mqttv3_c2d_client_destroy(&other);
-  az_iot_connection_client_destroy(&other_conn);
+  az_iot_mqttv3_c2d_client_deinit(&other);
+  az_iot_connection_client_deinit(&other_conn);
 
   /* And on this connection, the slot frees up once its holder goes away. */
-  az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
+  az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
   az_iot_mqttv3_c2d_client replacement;
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&replacement, &fx->conn), AZ_IOT_OK);
-  az_iot_mqttv3_c2d_client_destroy(&replacement);
+  az_iot_mqttv3_c2d_client_deinit(&replacement);
 
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
@@ -648,7 +648,7 @@ static void a_replacement_client_takes_over_delivery(void** state)
 
   /* Tearing a client down and standing another one up in its place is the
    * supported way to re-point delivery, now that two cannot coexist. */
-  az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
+  az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 
   message_record second = { 0 };
@@ -691,7 +691,7 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
 /* destroy                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void a_message_after_destroy_reaches_nobody(void** state)
+static void a_message_after_deinit_reaches_nobody(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -699,7 +699,7 @@ static void a_message_after_destroy_reaches_nobody(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
+  az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
   inject(fx, C2D_TOPIC, "too late");
   assert_int_equal(rec.count, 0);
 
@@ -707,19 +707,19 @@ static void a_message_after_destroy_reaches_nobody(void** state)
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_mqttv3_c2d_client_destroy(NULL);
+  az_iot_mqttv3_c2d_client_deinit(NULL);
 }
 
-static void destroy_is_idempotent(void** state)
+static void deinit_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
-  az_iot_mqttv3_c2d_client_destroy(&fx->c2d);
+  az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
+  az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
 
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->c2d, &fx->conn), AZ_IOT_OK);
 }
@@ -766,9 +766,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_replacement_client_takes_over_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_subscription_is_reissued_after_a_reconnect, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_message_after_destroy_reaches_nobody, setup, teardown),
-    cmocka_unit_test(destroy_tolerates_null),
-    cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_message_after_deinit_reaches_nobody, setup, teardown),
+    cmocka_unit_test(deinit_tolerates_null),
+    cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),
   };
   return cmocka_run_group_tests_name("mqttv3_c2d_client", tests, NULL, NULL);
 }

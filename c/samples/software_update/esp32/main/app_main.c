@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* su/esp32 - real Azure software updates over-the-air firmware update on an
+/* software_update/esp32 - real Azure software updates over-the-air firmware update on an
  * ESP32-WROOM, end to end:
  *
  *   Wi-Fi -> DPS provisioning (X.509, esp-mqtt) -> software update check ->
@@ -11,13 +11,20 @@
  *   inactive OTA partition -> per-file SHA-256 check -> set boot partition ->
  *   reboot -> resume the workflow in the new image -> report the new version.
  *
- * Unlike the desktop "su/pc" sample, nothing here is simulated: the payload is
- * a genuine ESP32 app image and install_fn flashes it with the native OTA stack.
+ * Unlike the desktop "software_update/pc" samples, nothing here is simulated: the
+ * payload is a genuine ESP32 app image and install_fn flashes it with the native
+ * OTA stack.
+ *
+ * Route: a device that has never connected to its hub has no device record, so
+ * it asks on the onboarding route; once it has (recorded in NVS), it asks on
+ * the regular route. After connecting it checks every SU_POLL_INTERVAL_S.
  *
  * Configure Wi-Fi + DPS via `idf.py menuconfig` (see Kconfig.projbuild). The
  * device certificate/key (and optionally the CA) are compiled into the firmware
  * from main/certs/ (EMBED_TXTFILES).
  */
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +32,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
@@ -125,6 +133,92 @@ static const char* su_state_name(az_iot_su_state s)
 }
 
 /* ------------------------------------------------------------------------- */
+/* update-check route                                                        */
+/* ------------------------------------------------------------------------- */
+
+/* Separate from the adapter's "su_sample" namespace, which holds the resume blob. */
+#define APP_NVS_NAMESPACE "su_app"
+#define APP_NVS_REGISTERED_KEY "registered"
+
+/**
+ * @brief Whether this device has connected to its hub before, so has a device
+ * record and must use the regular route.
+ */
+static bool app_is_registered(void)
+{
+  nvs_handle_t h;
+  uint8_t v = 0;
+  if (nvs_open(APP_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK)
+  {
+    (void)nvs_get_u8(h, APP_NVS_REGISTERED_KEY, &v);
+    nvs_close(h);
+  }
+  return v != 0;
+}
+
+/** @brief Record that the device has a device record. Logged on failure only. */
+static void app_set_registered(void)
+{
+  nvs_handle_t h;
+  if (nvs_open(APP_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
+  {
+    ESP_LOGW(TAG, "could not record registration; the next boot asks on the onboarding route");
+    return;
+  }
+  if (nvs_set_u8(h, APP_NVS_REGISTERED_KEY, 1) != ESP_OK || nvs_commit(h) != ESP_OK)
+  {
+    ESP_LOGW(TAG, "could not record registration; the next boot asks on the onboarding route");
+  }
+  nvs_close(h);
+}
+
+/**
+ * @brief Ask for an update check on the route this device qualifies for.
+ *
+ * @param su Software updates client.
+ * @param registered Whether the device has a device record (regular route).
+ * @param timeout_ms Request timeout.
+ * @return The request call's result.
+ */
+static az_iot_result app_request_check(az_iot_su_client* su, bool registered, uint32_t timeout_ms)
+{
+  ESP_LOGI(TAG, "checking for updates on the %s route", registered ? "regular" : "onboarding");
+  return registered ? az_iot_su_client_request_update(su, timeout_ms)
+                    : az_iot_su_client_request_onboarding_update(su, timeout_ms);
+}
+
+/* Service-requested delay before the next check, set by on_su_event. */
+static uint32_t g_retry_after_ms;
+
+/** @brief Logs an abandoned operation; the poll loop asks again later. */
+static void on_su_event(const az_iot_su_event* event, void* ctx)
+{
+  (void)ctx;
+  /* `service_error` is the last field read; an older library's shorter event
+   * is ignored rather than read past its end. */
+  if (event->_internal_size
+      < offsetof(az_iot_su_event, service_error) + sizeof(event->service_error))
+  {
+    return;
+  }
+  if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
+  {
+    ESP_LOGW(
+        TAG,
+        "operation %d abandoned: reason=0x%08x code=%d message=\"%s\" trackingId=\"%s\"",
+        (int)event->operation,
+        (unsigned)event->reason,
+        (int)event->service_error.code,
+        event->service_error.message,
+        event->service_error.tracking_id);
+    if (event->operation != AZ_IOT_SU_OP_REPORT_STATUS)
+    {
+      g_retry_after_ms = event->service_error.retry_after_ms;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------- */
 /* app entry                                                                 */
 /* ------------------------------------------------------------------------- */
 
@@ -159,10 +253,6 @@ void app_main(void)
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
-  copts.reconnection_policy.initial_delay_ms = 2000;
-  copts.reconnection_policy.max_delay_ms = 60000;
-  copts.reconnection_policy.max_attempts = 0; /* retry forever */
-  copts.reconnection_policy.jitter_pct = 20;
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -208,9 +298,16 @@ void app_main(void)
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = dp_buffer;
   su_opts.device_properties_buffer_size = sizeof(dp_buffer);
-  if (az_iot_su_client_initialize(&su, &conn, &su_opts) != AZ_IOT_OK)
+  if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
-    ESP_LOGE(TAG, "su_client_initialize failed");
+    ESP_LOGE(TAG, "az_iot_su_client_init failed");
+    esp_restart();
+  }
+
+  /* Registered before resume(), which replays a persisted state to observers. */
+  if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK)
+  {
+    ESP_LOGE(TAG, "su_client_add_observer failed");
     esp_restart();
   }
 
@@ -224,19 +321,32 @@ void app_main(void)
         su_state_name(az_iot_su_client_get_state(&su)));
   }
 
-  /* Nothing is fetched unless the application asks. This device provisions
-   * through DPS on this boot, so it uses the day-0 onboarding route; one that
-   * already has a device record would call az_iot_su_client_request_update().
+  /* Nothing is fetched unless the application asks, and only it knows the
+   * route: onboarding until the device has a device record, regular after.
+   * Asked before open(), so the check runs on the first provisioning session,
+   * whose registration the SDK holds until the check reaches a verdict.
    *
    * The timeout bounds how long the CLIENT keeps reissuing this check before
    * giving up and raising AZ_IOT_SU_EVENT_OPERATION_ABANDONED with
    * AZ_IOT_ERR_TIMEOUT -- otherwise an unservable check is retried on every
    * do_work() for the life of the client. AZ_IOT_SU_REQUEST_NO_TIMEOUT asks
-   * for exactly that, and is the wrong default on a battery-powered device. */
-  if (az_iot_su_client_request_onboarding_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
-      != AZ_IOT_OK)
+   * for exactly that, and is the wrong default on a battery-powered device.
+   * It is bounded to half the poll interval: a new request resets the
+   * deadline, so a longer bound would let an unanswered check outlive every
+   * poll. */
+  const uint32_t request_timeout_ms
+      = ((uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u < AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
+      ? (uint32_t)CONFIG_SU_POLL_INTERVAL_S * 500u
+      : AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
+  const bool registered = app_is_registered();
+  /* Only from Idle: a workflow restored by resume() (e.g. after the OTA
+   * reboot) is finished first, since a check now could deliver a different
+   * workflow, which supersedes it. The check is then asked in the connect loop
+   * below, whose verdict releases the registration hold. */
+  bool check_deferred = (az_iot_su_client_get_state(&su) != AZ_IOT_SU_STATE_IDLE);
+  if (!check_deferred && app_request_check(&su, registered, request_timeout_ms) != AZ_IOT_OK)
   {
-    ESP_LOGE(TAG, "could not request an onboarding update");
+    ESP_LOGE(TAG, "could not request an update check");
     esp_restart();
   }
 
@@ -265,6 +375,14 @@ void app_main(void)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
     (void)az_iot_su_client_do_work(&su);
+    if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
+    {
+      check_deferred = false;
+      if (app_request_check(&su, registered, request_timeout_ms) != AZ_IOT_OK)
+      {
+        ESP_LOGW(TAG, "could not request an update check");
+      }
+    }
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted)
     {
       break;
@@ -280,9 +398,21 @@ void app_main(void)
   /* Connected to IoT Hub: this image works, so cancel any pending rollback. */
   su_esp32_ota_mark_valid();
 
+  /* Registration created the device record: later checks use the regular route. */
+  if (!registered)
+  {
+    app_set_registered();
+  }
+
   ESP_LOGI(
       TAG, "connected; reporting Espressif/ESP32-WROOM installedUpdateId=%s", SU_UPDATE_VERSION);
-  ESP_LOGI(TAG, "waiting for a deployment...");
+  ESP_LOGI(TAG, "checking for updates every %d s", CONFIG_SU_POLL_INTERVAL_S);
+
+  /* Poll on the regular route while no deployment is in flight. Tick
+   * arithmetic is unsigned, so it survives the counter wrapping. */
+  const TickType_t poll_ticks = pdMS_TO_TICKS((uint32_t)CONFIG_SU_POLL_INTERVAL_S * 1000u);
+  TickType_t last_check = xTaskGetTickCount();
+  TickType_t wait_ticks = poll_ticks;
 
   az_iot_su_state prev = az_iot_su_client_get_state(&su);
   for (;;)
@@ -295,6 +425,37 @@ void app_main(void)
     {
       ESP_LOGI(TAG, "Software updates state: %s -> %s", su_state_name(prev), su_state_name(cur));
       prev = cur;
+    }
+
+    /* The service's requested delay, when longer, pushes the next check. */
+    if (g_retry_after_ms > 0)
+    {
+      TickType_t delay = pdMS_TO_TICKS(g_retry_after_ms);
+      TickType_t elapsed = xTaskGetTickCount() - last_check;
+      if (elapsed + delay > wait_ticks)
+      {
+        wait_ticks = elapsed + delay;
+      }
+      g_retry_after_ms = 0;
+    }
+
+    /* FAULTED is settled until close(): no further check could be sent, so
+     * restart rather than poll forever. A workflow in flight finishes first. */
+    if (cur == AZ_IOT_SU_STATE_IDLE
+        && (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted))
+    {
+      ESP_LOGE(TAG, "connection faulted; rebooting");
+      esp_restart();
+    }
+
+    if (cur == AZ_IOT_SU_STATE_IDLE && xTaskGetTickCount() - last_check >= wait_ticks)
+    {
+      last_check = xTaskGetTickCount();
+      wait_ticks = poll_ticks;
+      if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
+      {
+        ESP_LOGW(TAG, "could not request an update check");
+      }
     }
 
     /* install_fn asked for a reboot to boot the freshly flashed image. The

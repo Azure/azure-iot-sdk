@@ -90,7 +90,7 @@ static int teardown(void** state)
      * registered is still owned by the test, so we must destroy it here to
      * avoid leaking it. Check before deinit() clears factory_count. */
     bool factory_adopted = (fx->client->factory_count > 0);
-    az_iot_connection_client_destroy(&fx->client_storage);
+    az_iot_connection_client_deinit(&fx->client_storage);
     if (!factory_adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -162,7 +162,7 @@ static void registering_the_same_factory_twice_does_not_grow_the_registry(void**
   fixture* fx = (fixture*)*state;
 
   /* The duplicate entry was never reachable -- find_factory() returns the
-   * first match for a version -- but destroy() calls every entry's destroy
+   * first match for a version -- but deinit() calls every entry's destroy
    * hook, so it freed the same factory_ctx twice and corrupted the heap. */
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
@@ -208,7 +208,7 @@ static void a_distinct_factory_for_the_same_version_still_registers(void** state
   assert_int_equal(fx->client->factory_count, 2);
 
   /* Both are now adopted by the client, which frees each exactly once from
-   * destroy(); the fixture teardown must not free either. */
+   * deinit(); the fixture teardown must not free either. */
 }
 
 static void open_without_factory_returns_not_supported(void** state)
@@ -1328,7 +1328,7 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   az_iot_connection_client c1;
   assert_int_equal(az_iot_connection_client_init(&c1, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
-  az_iot_connection_client_destroy(&c1);
+  az_iot_connection_client_deinit(&c1);
 
   /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;
    * open() rejects before any hook is invoked). */
@@ -1341,7 +1341,7 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   az_iot_connection_client c2;
   assert_int_equal(az_iot_connection_client_init(&c2, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c2), AZ_IOT_ERR_NOT_SUPPORTED);
-  az_iot_connection_client_destroy(&c2);
+  az_iot_connection_client_deinit(&c2);
 }
 
 /* ---- DPS CSR issuance flow (increment 3) ---- */
@@ -1524,7 +1524,7 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   assert_int_equal(g_dps_op_cert_count, 1);
   assert_int_equal((int)g_dps_op_cert_chain, 2);
 
-  az_iot_connection_client_destroy(&client);
+  az_iot_connection_client_deinit(&client);
 }
 
 /* ---- Runtime Hub-side CSR renewal (increment 4) ---- */
@@ -1605,7 +1605,7 @@ static void open_rejects_operational_cert_without_payload_buffer(void** state)
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  az_iot_connection_client_destroy(&client);
+  az_iot_connection_client_deinit(&client);
 }
 
 static void send_csr_two_phase_delivers_issued_chain(void** state)
@@ -1736,7 +1736,7 @@ static void hub_next_without_v5_factory_is_not_supported(void** state)
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, v3), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
-  az_iot_connection_client_destroy(&c);
+  az_iot_connection_client_deinit(&c);
 }
 
 /* If the birth PUBLISH itself cannot be handed to the adapter the handshake

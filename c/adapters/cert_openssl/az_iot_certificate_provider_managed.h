@@ -82,7 +82,7 @@ extern "C"
 
   /* Release the operational key and heap-owned paths. Does NOT free the struct
    * itself and does NOT delete any files on disk. */
-  void az_iot_certificate_provider_managed_destroy(az_iot_certificate_provider_managed* provider);
+  void az_iot_certificate_provider_managed_deinit(az_iot_certificate_provider_managed* provider);
 
 #ifdef __cplusplus
 }

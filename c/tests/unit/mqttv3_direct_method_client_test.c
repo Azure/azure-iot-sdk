@@ -123,11 +123,11 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
-    /* A registered factory is adopted by the client and freed from destroy();
+    az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+    /* A registered factory is adopted by the client and freed from deinit();
      * an unregistered one is still ours. */
     bool adopted = (fx->conn.factory_count > 0);
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     if (!adopted)
     {
       az_iot_mock_mqtt_factory_destroy(fx->factory);
@@ -346,14 +346,14 @@ static void a_request_from_another_client_is_refused(void** state)
   assert_int_equal(
       az_iot_mqttv3_direct_method_respond(&fx->dm, rec1.request, 200, NULL, 0), AZ_IOT_OK);
 
-  az_iot_mqttv3_direct_method_client_destroy(&dm2);
-  az_iot_connection_client_destroy(&conn2);
+  az_iot_mqttv3_direct_method_client_deinit(&dm2);
+  az_iot_connection_client_deinit(&conn2);
 }
 
 /* A request outliving its client's teardown finds the pool zeroed, so the slot
  * it names is not in use and the answer is refused. This is the guarantee that
  * holds; see the header for the destroy-then-reinit case, which does not. */
-static void a_request_that_outlived_destroy_is_refused(void** state)
+static void a_request_that_outlived_deinit_is_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -366,7 +366,7 @@ static void a_request_that_outlived_destroy_is_refused(void** state)
   az_iot_direct_method_request before = rec.request;
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
-  az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
 
   assert_int_equal(
       az_iot_mqttv3_direct_method_respond(&fx->dm, before, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
@@ -865,7 +865,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_init(&dm, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_destroy(&conn);
+  az_iot_connection_client_deinit(&conn);
 }
 
 static void the_subscription_uses_qos_0(void** state)
@@ -882,7 +882,7 @@ static void the_subscription_uses_qos_0(void** state)
   if (sub == NULL)
   {
     /* The subscribe happened during connect, before calls were cleared. */
-    az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+    az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
     assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
     sub = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   }
@@ -890,20 +890,20 @@ static void the_subscription_uses_qos_0(void** state)
   assert_int_equal(sub->qos, AZ_IOT_MQTT_QOS_0);
 }
 
-static void destroy_tolerates_null(void** state)
+static void deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_mqttv3_direct_method_client_destroy(NULL);
+  az_iot_mqttv3_direct_method_client_deinit(NULL);
 }
 
-static void destroy_zeroes_the_client(void** state)
+static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
 
   /* Uses the fixture's own client rather than a second one: a connection admits
    * exactly one direct-method client, so initialising another against the same
    * connection is refused with ALREADY_INITIALIZED. */
-  az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
 
   /* Zeroed rather than merely flagged: a stale connection pointer left behind
    * is what a later respond() would follow. */
@@ -930,19 +930,19 @@ static void a_second_client_on_the_same_connection_is_refused(void** state)
       az_iot_mqttv3_direct_method_client_init(&second, &fx->conn), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-static void destroy_is_idempotent(void** state)
+static void deinit_is_idempotent(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
   /* The second call runs against a zeroed struct, so it must not follow the
    * now-NULL connection pointer into unregister. */
-  az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
 
   assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 }
 
-static void an_invocation_after_destroy_reaches_nobody(void** state)
+static void an_invocation_after_deinit_reaches_nobody(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -951,7 +951,7 @@ static void an_invocation_after_destroy_reaches_nobody(void** state)
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
 
-  az_iot_mqttv3_direct_method_client_destroy(&fx->dm);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
 
   /* Destroy unregisters the inbound handler, so the dispatch table must no
    * longer own this prefix. If it did, the invocation would land in a callback
@@ -1361,7 +1361,7 @@ int main(void)
     cmocka_unit_test(respond_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(respond_rejects_a_zeroed_request, setup, teardown),
     cmocka_unit_test_setup_teardown(a_request_from_another_client_is_refused, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_request_that_outlived_destroy_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_request_that_outlived_deinit_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_naming_a_slot_out_of_range, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -1393,12 +1393,12 @@ int main(void)
     cmocka_unit_test(init_rejects_a_null_connection),
     cmocka_unit_test(init_against_an_mqtt_v5_connection_is_rejected),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_0, setup, teardown),
-    cmocka_unit_test(destroy_tolerates_null),
-    cmocka_unit_test_setup_teardown(destroy_zeroes_the_client, setup, teardown),
+    cmocka_unit_test(deinit_tolerates_null),
+    cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_on_the_same_connection_is_refused, setup, teardown),
-    cmocka_unit_test_setup_teardown(destroy_is_idempotent, setup, teardown),
-    cmocka_unit_test_setup_teardown(an_invocation_after_destroy_reaches_nobody, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_invocation_after_deinit_reaches_nobody, setup, teardown),
     cmocka_unit_test(set_handler_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(a_later_set_handler_replaces_the_earlier_one, setup, teardown),
     cmocka_unit_test_setup_teardown(an_invocation_with_no_handler_is_dropped, setup, teardown),

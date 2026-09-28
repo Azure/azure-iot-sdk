@@ -32,15 +32,11 @@
  * su_protocol_test.c meanwhile. Add the scenario here when the channel can
  * issue it.
  *
- * The offer path -- a real updateMetadata, its workflowId, and the conflict on
- * re-reporting a terminal result -- is NOT covered, because producing one needs
- * a service-side deployment that is not available yet. Those scenarios belong
- * in this file when it is; the manifest and JWS machinery for them is already
- * written in e2e_su_twin_test.c and carries over unchanged.
+ * The offer path -- a real updateMetadata driven through the engine, and the
+ * conflict on re-reporting a terminal result -- is in e2e_su_offer_test.c.
  *
- * Every scenario skips (passes, loudly) when the environment is not configured,
- * so the suite is safe to run anywhere. It needs an X.509 enrollment in the
- * target DPS: AZ_IOT_E2E_SU_CERT and _KEY are the device certificate and key.
+ * Needs an X.509 enrollment in the target DPS; see e2e_su_env.h. An incomplete
+ * environment fails the suite.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -60,7 +56,7 @@
 
 #include "internal/connection_client_internal.h"
 
-#include "support/test_env.h"
+#include "e2e_su_env.h"
 
 #include "su_channel_internal.h"
 #include "su_protocol_internal.h"
@@ -70,40 +66,7 @@
 
 /* --- environment --------------------------------------------------------- */
 
-typedef struct
-{
-  const char* dps_host;
-  const char* id_scope;
-  const char* cert_path; /* PEM, X.509 client certificate */
-  const char* key_path; /* PEM, its private key */
-  const char* registry_device; /* a registrationId known to the registry */
-  bool present;
-} e2e_env;
-
-static e2e_env g_env;
-
-static void env_load(void)
-{
-  g_env.dps_host = az_iot_test_env("AZ_IOT_E2E_SU_DPS_HOST");
-  g_env.id_scope = az_iot_test_env("AZ_IOT_E2E_SU_ID_SCOPE");
-  g_env.cert_path = az_iot_test_env("AZ_IOT_E2E_SU_CERT");
-  g_env.key_path = az_iot_test_env("AZ_IOT_E2E_SU_KEY");
-  g_env.registry_device = az_iot_test_env("AZ_IOT_E2E_SU_REGISTRY_DEVICE");
-  g_env.present = g_env.dps_host != NULL && g_env.id_scope != NULL && g_env.cert_path != NULL
-      && g_env.key_path != NULL;
-}
-
-/* cmocka has no first-class skip, and failing on an unconfigured machine would
- * make the suite unusable outside the e2e job. Say why, and pass. */
-#define SKIP_WITHOUT_ENV()                                                                  \
-  do                                                                                        \
-  {                                                                                         \
-    if (!g_env.present)                                                                     \
-    {                                                                                       \
-      printf("[  SKIPPED ] set AZ_IOT_E2E_SU_DPS_HOST/_ID_SCOPE/_CERT/_KEY to run this\n"); \
-      return;                                                                               \
-    }                                                                                       \
-  } while (0)
+static e2e_su_env g_env;
 
 /* --- fixture ------------------------------------------------------------- */
 
@@ -111,7 +74,6 @@ typedef struct
 {
   az_iot_connection_client conn;
   az_iot_certificate_provider_pem certs;
-  char registration_id[96];
 
   az_iot_su_channel_dps channel_state;
   az_iot_su_channel channel;
@@ -176,38 +138,15 @@ static void on_result(
   }
 }
 
-/* With X.509 the registrationId is not free to choose: it is the identity bound
- * to the certificate -- the leaf subject for an individual enrollment, and a
- * name the signing CA vouches for in a group. So every scenario uses the one
- * the credential actually carries rather than minting a fresh one per run.
- *
- * The consequence is deliberate and worth stating: runs share a device, so the
- * service keeps device-update state between them. The scenarios below assert
- * only on things that hold either way (an answer arrives, ETags are issued and
- * stored, an unknown workflow is rejected) and not on anything that would
- * depend on a device having no history. */
-static const char* e2e_registration_id(void)
-{
-  const char* id = az_iot_test_env("AZ_IOT_E2E_SU_REG_ID");
-  return id != NULL ? id : "x509-e2e-device";
-}
-
-static void fixture_open(e2e_fixture* fx, const char* registration_id)
+static void fixture_open(e2e_fixture* fx)
 {
   memset(fx, 0, sizeof(*fx));
-  snprintf(fx->registration_id, sizeof(fx->registration_id), "%s", registration_id);
 
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-  pem.client_cert_pem_path = g_env.cert_path;
-  pem.client_key_pem_path = g_env.key_path;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  e2e_su_env_apply(&g_env, &opts, &pem);
   assert_int_equal(az_iot_certificate_provider_pem_init(&fx->certs, &pem), AZ_IOT_OK);
 
-  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = fx->registration_id;
-  opts.dps.id_scope = g_env.id_scope;
-  opts.dps.registration_id = fx->registration_id;
-  opts.dps.global_endpoint = g_env.dps_host;
   opts.certificate_provider = &fx->certs.base;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(
@@ -237,8 +176,8 @@ static void fixture_close(e2e_fixture* fx)
   {
     fx->channel.vtable->close(fx->channel.ctx);
   }
-  az_iot_connection_client_destroy(&fx->conn);
-  az_iot_certificate_provider_pem_destroy(&fx->certs);
+  az_iot_connection_client_deinit(&fx->conn);
+  az_iot_certificate_provider_pem_deinit(&fx->certs);
 }
 
 /* Pump until the predicate holds or the budget runs out. Wall-clock bounded
@@ -287,10 +226,9 @@ static void wait_for_result(e2e_fixture* fx, size_t target)
 static void onboarding_check_runs_before_registration(void** state)
 {
   (void)state;
-  SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  fixture_open(&fx, e2e_registration_id());
+  fixture_open(&fx);
 
   wait_for_hold(&fx);
   assert_int_equal(fx.conn.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
@@ -333,10 +271,9 @@ static void onboarding_check_runs_before_registration(void** state)
 static void the_hold_is_released_and_registration_is_answered(void** state)
 {
   (void)state;
-  SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  fixture_open(&fx, e2e_registration_id());
+  fixture_open(&fx);
 
   wait_for_hold(&fx);
   assert_int_equal(
@@ -394,10 +331,9 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
 static void etags_are_issued_stored_and_survive_the_session(void** state)
 {
   (void)state;
-  SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  fixture_open(&fx, e2e_registration_id());
+  fixture_open(&fx);
 
   wait_for_hold(&fx);
   assert_int_equal(
@@ -453,10 +389,9 @@ static void etags_are_issued_stored_and_survive_the_session(void** state)
 static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
 {
   (void)state;
-  SKIP_WITHOUT_ENV();
 
   e2e_fixture fx;
-  fixture_open(&fx, e2e_registration_id());
+  fixture_open(&fx);
 
   wait_for_hold(&fx);
 
@@ -480,19 +415,20 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
   fixture_close(&fx);
 }
 
+/* An incomplete environment fails every scenario rather than skipping them. */
+static int group_setup(void** state)
+{
+  (void)state;
+  return e2e_su_env_load(&g_env);
+}
+
 int main(void)
 {
-  env_load();
-  if (!g_env.present)
-  {
-    printf("Software updates e2e: no environment configured; every scenario will skip.\n");
-  }
-
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(onboarding_check_runs_before_registration),
     cmocka_unit_test(the_hold_is_released_and_registration_is_answered),
     cmocka_unit_test(etags_are_issued_stored_and_survive_the_session),
     cmocka_unit_test(an_unknown_workflow_report_is_not_treated_as_delivered),
   };
-  return cmocka_run_group_tests(tests, NULL, NULL);
+  return cmocka_run_group_tests(tests, group_setup, NULL);
 }
