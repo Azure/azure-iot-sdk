@@ -160,11 +160,31 @@ jobs:
           CLANG_FORMAT: clang-format-18
         run: bash eng/code-style.sh check
 
-  c99-strict:
-    name: c99-strict (gcc -pedantic)
+  # C99 is the language baseline. The later standards guard forward
+  # compatibility: C23 makes bool, true, false, static_assert, alignas,
+  # alignof, thread_local, nullptr and typeof keywords, and GCC 15 defaults to
+  # gnu23. The c99 leg keeps the check name of the former c99-strict job.
+  c-standards:
+    name: ${{ matrix.std }}-strict (gcc -pedantic)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - std: c99
+            cmake_std: '99'
+          - std: c11
+            cmake_std: '11'
+          - std: c17
+            cmake_std: '17'
+          - std: c23
+            cmake_std: '23'
+    env:
+      # Pinned for every leg so only the standard varies. GCC 14 is the first
+      # release that accepts -std=c23.
+      CC: gcc-14
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -181,18 +201,46 @@ jobs:
           --health-start-period=5s
     steps:
       - uses: actions/checkout@v4
-      - name: Install ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-      - name: Configure (C99 strict)
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-14
+      - name: Configure (${{ matrix.std }} strict)
+        # CMAKE_C_STANDARD sets the standard of first-party targets, which
+        # would otherwise override the -std in CMAKE_C_FLAGS; the flag covers
+        # FetchContent dependencies that do not set one.
         run: >
-          cmake -S . -B build/c99-strict -G Ninja
-          -DCMAKE_C_COMPILER=gcc
+          cmake -S . -B build/${{ matrix.std }}-strict -G Ninja
+          -DCMAKE_C_COMPILER=${{ env.CC }}
+          -DCMAKE_C_STANDARD=${{ matrix.cmake_std }}
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
-          -DCMAKE_C_FLAGS="-std=c99 -pedantic -Wall -Wextra -Werror"
+          -DCMAKE_C_FLAGS="-std=${{ matrix.std }} -pedantic -Wall -Wextra -Werror"
+      - name: Verify the requested standard is in effect
+        # Fails if any first-party object would build under another standard,
+        # e.g. a hard-coded C99. The last -std= on a compile line wins. _deps/
+        # is excluded: azure-sdk-for-c pins its own C_STANDARD 99. CMake spells
+        # C23 as -std=c2x or -std=c23 depending on its version.
+        working-directory: c/build/${{ matrix.std }}-strict
+        run: |
+          want='^-std=${{ matrix.std }}$'
+          [ '${{ matrix.std }}' = c23 ] && want='^-std=c(23|2x)$'
+          awk -v want="$want" '
+            /^build [^:]*\.o: C_COMPILER__/ { obj = $2; sub(/:$/, "", obj); next }
+            obj != "" && /^ *FLAGS = / {
+              std = "none"; n = split($0, a, " ")
+              for (i = 1; i <= n; i++) if (a[i] ~ /^-std=/) std = a[i]
+              if (obj !~ /^_deps\//) {
+                checked++
+                if (std !~ want) { print "::error::" obj " builds with " std; bad = 1 }
+              }
+              obj = ""
+            }
+            END {
+              print checked + 0 " first-party objects checked"
+              exit (bad || !checked)
+            }' build.ninja
       - name: Build
-        run: cmake --build build/c99-strict
+        run: cmake --build build/${{ matrix.std }}-strict
       - name: Test
         env:
           AZ_IOT_MQTT_BROKER_HOST: localhost

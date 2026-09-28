@@ -9,7 +9,11 @@ project(azure-iot-sdk
     LANGUAGES C
 )
 
-set(CMAKE_C_STANDARD 99)
+# C99 is the baseline. Overridable (-DCMAKE_C_STANDARD=11|17|23) so CI can
+# check forward compatibility with later standards.
+if(NOT DEFINED CMAKE_C_STANDARD)
+    set(CMAKE_C_STANDARD 99)
+endif()
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
