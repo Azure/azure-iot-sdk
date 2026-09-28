@@ -60,7 +60,7 @@ extern "C"
       const sample_cert_provider_options* opts);
 
   /* Release heap-owned paths. Does NOT delete files on disk. */
-  void sample_cert_provider_destroy(sample_cert_provider* provider);
+  void sample_cert_provider_deinit(sample_cert_provider* provider);
 
 #ifdef __cplusplus
 }

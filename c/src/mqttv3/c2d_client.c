@@ -232,7 +232,7 @@ az_iot_result az_iot_mqttv3_c2d_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_mqttv3_c2d_client_destroy(az_iot_mqttv3_c2d_client* client)
+void az_iot_mqttv3_c2d_client_deinit(az_iot_mqttv3_c2d_client* client)
 {
   if (!client)
   {

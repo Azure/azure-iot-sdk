@@ -96,11 +96,11 @@ static void telemetry_destroy(sample_state* state)
   }
   if (state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    az_iot_mqttv5_telemetry_client_destroy(&state->mqttv5);
+    az_iot_mqttv5_telemetry_client_deinit(&state->mqttv5);
   }
   else
   {
-    az_iot_mqttv3_telemetry_client_destroy(&state->mqttv3);
+    az_iot_mqttv3_telemetry_client_deinit(&state->mqttv3);
   }
   state->telemetry_initialized = 0;
 }
@@ -133,8 +133,8 @@ static az_iot_result telemetry_build(sample_state* state, az_iot_connection_prof
 static void sample_state_destroy(sample_state* state)
 {
   telemetry_destroy(state);
-  az_iot_connection_client_destroy(&state->connection_client);
-  az_iot_certificate_provider_pem_destroy(&state->certs);
+  az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
   free(state->proxy_host);
   free(state->proxy_port);

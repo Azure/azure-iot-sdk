@@ -174,7 +174,7 @@ static void test_load_returns_file_contents(void** state)
   assert_string_equal(k_cert_pem, mat2.client_cert_pem);
   mgr.base.vtable->release(&mgr.base, &mat2);
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
 static void test_load_without_optional_fields(void** state)
@@ -195,12 +195,12 @@ static void test_load_without_optional_fields(void** state)
   assert_non_null(mat.client_cert_pem);
   assert_non_null(mat.client_key_pem);
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
 /* Loading through the vtable after the provider is gone. Keeping the pointer is
  * how a caller that cached the vtable would reach a destroyed provider. */
-static void test_load_after_destroy_is_refused(void** state)
+static void test_load_after_deinit_is_refused(void** state)
 {
   fixture* f = *state;
   az_iot_certificate_provider_pem_options opts = {
@@ -212,7 +212,7 @@ static void test_load_after_destroy_is_refused(void** state)
   const az_iot_certificate_provider_vtable* vt = mgr.base.vtable;
   assert_non_null(vt);
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 
   /* Refused rather than handing back the freed buffers the material used to
    * point at. */
@@ -238,7 +238,7 @@ static void test_load_rejects_null_arguments(void** state)
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, NULL));
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
 /* This provider is a static file loader: it holds one identity and hands it
@@ -264,16 +264,16 @@ static void test_load_of_an_operational_credential_returns_the_static_material(v
   assert_string_equal(boot.client_cert_pem, oper.client_cert_pem);
   assert_string_equal(boot.client_key_pem, oper.client_key_pem);
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
-static void test_destroy_tolerates_null(void** state)
+static void test_deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_certificate_provider_pem_destroy(NULL);
+  az_iot_certificate_provider_pem_deinit(NULL);
 }
 
-static void test_destroy_is_idempotent(void** state)
+static void test_deinit_is_idempotent(void** state)
 {
   fixture* f = *state;
   az_iot_certificate_provider_pem_options opts = {
@@ -285,10 +285,10 @@ static void test_destroy_is_idempotent(void** state)
   az_iot_certificate_provider_pem mgr;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
 
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
   /* The struct is zeroed by the first call, so the second must not free the
    * same buffers again. */
-  az_iot_certificate_provider_pem_destroy(&mgr);
+  az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
 /* The vtable's deinit is what a generic owner of an az_iot_certificate_provider
@@ -349,15 +349,14 @@ int main(void)
     cmocka_unit_test(test_create_fails_on_missing_file),
     cmocka_unit_test_setup_teardown(test_load_returns_file_contents, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(test_load_without_optional_fields, setup_files, teardown_files),
-    cmocka_unit_test_setup_teardown(
-        test_load_after_destroy_is_refused, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(test_load_after_deinit_is_refused, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(test_load_rejects_null_arguments, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(
         test_load_of_an_operational_credential_returns_the_static_material,
         setup_files,
         teardown_files),
-    cmocka_unit_test(test_destroy_tolerates_null),
-    cmocka_unit_test_setup_teardown(test_destroy_is_idempotent, setup_files, teardown_files),
+    cmocka_unit_test(test_deinit_tolerates_null),
+    cmocka_unit_test_setup_teardown(test_deinit_is_idempotent, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(
         test_deinit_through_the_vtable_destroys_the_provider, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(

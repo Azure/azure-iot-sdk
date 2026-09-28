@@ -9,7 +9,7 @@
     'az iot du ...', i.e. the IoT-Hub-based Device Update model. The software updates samples
     in this repository implement the DPS-fronted model, whose deployments are
     Azure Device Registry jobs and runs; this script does not touch those.
-    See samples/su/pc/README.md.
+    See samples/software_update/pc/simulated_onboarding/README.md.
 
     By default deletes the entire resource group created by
     Initialize-SuSampleEnvironment.ps1 (the simplest, complete cleanup).
@@ -45,7 +45,7 @@ this repository implement the DPS-fronted model, whose deployments are Azure
 Device Registry jobs and runs; this script does not remove those. Deleting the
 resource group removes everything it contains either way.
 
-See samples/su/pc/README.md.
+See samples/software_update/pc/simulated_onboarding/README.md.
 '@
 
 if ($DeploymentOnly) {

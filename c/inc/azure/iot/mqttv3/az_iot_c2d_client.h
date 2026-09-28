@@ -42,7 +42,7 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_mqttv3_c2d_client_init(az_iot_mqttv3_c2d_client* client, az_iot_connection_client* conn);
 
-  void az_iot_mqttv3_c2d_client_destroy(az_iot_mqttv3_c2d_client* client);
+  void az_iot_mqttv3_c2d_client_deinit(az_iot_mqttv3_c2d_client* client);
 
   /** NULL @p cb pauses delivery without tearing the subscription down. */
   az_iot_result az_iot_mqttv3_c2d_client_set_handler(

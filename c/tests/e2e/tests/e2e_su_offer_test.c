@@ -562,6 +562,12 @@ static az_iot_result spy_do_work(void* ctx)
   return s->inner.vtable->do_work != NULL ? s->inner.vtable->do_work(s->inner.ctx) : AZ_IOT_OK;
 }
 
+static void spy_cancel_update(void* ctx, az_iot_su_operation op)
+{
+  spy_channel* s = (spy_channel*)ctx;
+  s->inner.vtable->cancel_update(s->inner.ctx, op);
+}
+
 static const az_iot_su_channel_vtable k_spy_vtable = {
   .open = spy_open,
   .close = spy_close,
@@ -569,6 +575,7 @@ static const az_iot_su_channel_vtable k_spy_vtable = {
   .report = spy_report_fn,
   .set_device_properties = spy_set_device_properties,
   .do_work = spy_do_work,
+  .cancel_update = spy_cancel_update,
 };
 
 /* --- fixture ------------------------------------------------------------- */
@@ -724,17 +731,17 @@ static void fixture_close(fixture* fx)
 {
   if (fx->have_su)
   {
-    az_iot_su_client_destroy(&fx->su);
+    az_iot_su_client_deinit(&fx->su);
     fx->have_su = false;
   }
   if (fx->have_conn)
   {
-    az_iot_connection_client_destroy(&fx->conn);
+    az_iot_connection_client_deinit(&fx->conn);
     fx->have_conn = false;
   }
   if (fx->have_certs)
   {
-    az_iot_certificate_provider_pem_destroy(&fx->certs);
+    az_iot_certificate_provider_pem_deinit(&fx->certs);
     fx->have_certs = false;
   }
   if (!fx->have_dir)

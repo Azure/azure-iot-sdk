@@ -83,7 +83,7 @@ extern "C"
      * boundary: a profile this SDK has never heard of still reports UNKNOWN
      * *and* the text the service sent. For absent/null it is the resolved
      * contract default ("classic"), or the exact development override value.
-     * Points into the connection client and stays valid until destroy().
+     * Points into the connection client and stays valid until deinit().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
      * only when connection_profile_raw_truncated is false. Callers that report
@@ -704,7 +704,7 @@ extern "C"
    * longer arrive. Registered through the internal header; applications use
    * az_iot_connection_client_add_state_observer() instead.
    *
-   * Deliberately NOT invoked from destroy(), for the same reason pending QoS-1
+   * Deliberately NOT invoked from deinit(), for the same reason pending QoS-1
    * acknowledgements are not completed there: the application is tearing the
    * client down and the context the callback closes over may already be gone. */
   typedef void (*az_iot_session_end_callback)(void* user_ctx);
@@ -1040,7 +1040,7 @@ extern "C"
     {
       char topic_filter[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
       az_iot_mqtt_qos qos;
-      /* The feature client that registered this filter, so its destroy() can
+      /* The feature client that registered this filter, so its deinit() can
        * withdraw exactly its own entries without rebuilding the strings. */
       const void* owner;
       /* The generation this filter was built for. A reconnect that resolves a
@@ -1315,7 +1315,7 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_connection_client_options* opts);
 
-  void az_iot_connection_client_destroy(az_iot_connection_client* client);
+  void az_iot_connection_client_deinit(az_iot_connection_client* client);
 
   /* Register an MQTT factory in the client's adapter registry. The client may hold
    * multiple factories; at session-open time it picks the one whose
@@ -1413,7 +1413,7 @@ extern "C"
    * the transport reports the session gone, so keep calling do_work().
    *
    * The client's configuration and its attached feature clients survive, so
-   * close() + open() is the ordinary way to retry after a fault; destroy() is
+   * close() + open() is the ordinary way to retry after a fault; deinit() is
    * only needed when the client itself is going away.
    *
    * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
@@ -1455,7 +1455,7 @@ extern "C"
    * host supplied in options for a direct-hub connection, or the DPS-assigned hub
    * once provisioning completes. Returns NULL when no host has been established
    * yet (e.g. a DPS-only client that has not finished provisioning). The returned
-   * pointer is owned by the client and stays valid until destroy(). Useful for
+   * pointer is owned by the client and stays valid until deinit(). Useful for
    * protocol-independent, HTTPS-only features such as file upload that must reach
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
