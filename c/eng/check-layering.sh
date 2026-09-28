@@ -94,19 +94,23 @@ if [ -n "${destroy_hits}" ]; then
     echo
 fi
 
-# Generation vocabulary, over every tracked text file under these trees -- not
-# just C sources, because the PowerShell test-env scripts, CMake, docs, JSON and
-# .gitignore carry the same names. gen1/gen2/aeg/classic are matched anywhere,
-# including inside an identifier, since none of them has a legitimate use here.
-# `next` is an ordinary English word, so only the forms that pair it with a
-# generation word are banned.
+# Generation vocabulary, over every tracked text file under the trees listed
+# below -- not just C sources, because the PowerShell test-env scripts, CMake,
+# READMEs, JSON and .gitignore carry the same names. gen1/gen2/aeg/classic are
+# matched anywhere, including inside an identifier, since none of them has a
+# legitimate use here. `next` is an ordinary English word, so only the forms
+# that pair it with a generation word are banned -- with the separator optional,
+# so hub_next, hub-next, next_hub and HubNext all match.
+#
+# c/docs is deliberately NOT scanned: it records decisions, external RFC paths
+# and past defects that legitimately name the old vocabulary.
 #
 # Two exemptions, both blanked per-occurrence rather than per-line, so a line
 # carrying an exempt string AND a banned name is still reported:
 #   - the DPS `connectionProfile` wire value, the literal string classic, quoted
 #     or backticked;
 #   - az-iot-hub-next, the name of a separate external repository.
-banned_re='gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[- ]next|next[- ]hub|iothub[a-z]*-?next'
+banned_re='gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[-_ ]?next|next[-_ ]?hub|iothub[a-z]*-?next'
 banned_hits="$(git -C "${root_dir}/.." ls-files \
         'c/inc/*' 'c/src/*' 'c/adapters/*' 'c/tests/*' 'c/samples/*' 2>/dev/null \
     | grep -vE '\.(pem|der|crt|key|png|jpg|bin)$' \
