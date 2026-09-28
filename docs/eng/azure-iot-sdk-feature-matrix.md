@@ -77,10 +77,10 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | CSR at DPS enrollment | Yes | **Yes** | Both send it. .NET fixed in #202 (`AbstractConnectionClient.cs:621`), was previously dead code |
 | CSR renewal against the hub | Yes | Yes | C `az_iot_connection_client_send_csr()`/`_cancel_csr()`; .NET `SendCertificateSigningRequestAsync` — **MQTTv5 throws `NotImplementedException`** |
 | Issued-cert callback / persistence | Yes | Yes | C `store_issued_certificate`; .NET swaps the auth provider and reconnects |
-| Credential rotation without app restart | Yes | Yes | .NET file-upload `HttpClient` vs rotated cert is an open TODO |
-| Non-extractable keys (PKCS#11 / HSM / TPM URI) | Yes | No — **in progress** | C `client_key_uri` + `crypto_engine_id`, `az_iot_paho_key_custody.c`, Linux e2e leg. .NET: SoftHSM support in draft PR #236 |
-| Custom signing callback | Partial | No | C vtable `sign` hook exists but **Paho refuses it** — needs a BYO adapter |
-| Trust bundle / custom CA | Partial | No — **in progress** | C single CA path/PEM, no rotation API. .NET `RemoteCertificateValidationCallback` lands with draft PR #236 |
+| Credential rotation without app restart | Yes | Yes | C reissues via CSR; .NET swaps the auth provider and reconnects, and `LocalCertificateSelectionCallback` can pick the new cert per handshake (#236) |
+| Non-extractable keys (PKCS#11 / HSM / TPM URI) | Yes | **Yes** | C `client_key_uri` + `crypto_engine_id`, `az_iot_paho_key_custody.c`, Linux e2e leg. .NET via `LocalCertificateSelectionCallback` + an HSM-backed `X509Certificate2`, SoftHSM-tested (#236, merged 2026-09-26) |
+| Custom signing callback | Partial | No | C vtable `sign` hook with a `samples/authentication/hsm_sign_callback` sample, but **Paho refuses a sign()-only credential** (`AZ_IOT_ERR_NOT_SUPPORTED`) — it needs a BYO/mbedTLS/BearSSL adapter |
+| Trust bundle / custom CA | Partial | **Yes** | C single CA path/PEM, no rotation API. .NET `RemoteCertificateValidationCallback` on `X509AuthenticationProvider` supports pinning and private roots (#236) |
 
 ## 4. Device features
 
@@ -94,11 +94,11 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | C2D receive | Yes | **N/A** | **No** | **N/A** | Service supports C2D on mqttv3 only. C mqttv5 C2D client was **removed** (#272); .NET dropped C2D from the unified API (#255) |
 | C2D settlement (accept/reject/abandon) | No | N/A | N/A | N/A | C: "design C2D strict-settlement state machine" still open (mqttv3 only) |
 | Direct methods | Yes | Yes | Yes | Yes | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake |
-| Slow / async method responses | Yes | Yes | Partial | Partial | C has dedicated `direct_method_slow_responder_gen1/mqttv5` samples |
+| Slow / async method responses | Yes | Yes | Partial | Partial | C has a `direct_method_slow_responder` sample under both `samples/unified/` and `samples/mqttv5/` (#260) |
 | Twin get | Yes | Yes | Yes | Yes | .NET mqttv5 supports selective/ETag (`getReported`, `ifNotMatch`) |
 | Reported-properties patch | Yes | Yes | Yes | Yes | |
 | Desired-properties patch events | Yes | Yes | Yes | Yes | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240) |
-| Twin push (MQTTv5 birth-driven) | No | No | No | Yes | C options default false and the dispatch is not consumed; .NET has `TwinPushReceived`/`TwinPushOptions` |
+| Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | Yes | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions` |
 | MQTTv5 presence / birth handshake | N/A | Yes | N/A | Yes | `common/Protos/presence.proto`; C `presence_encode_birth()` |
 | File upload (SAS URI + notify) | Yes | **N/A** | **No** | **N/A** | Not offered on mqttv5. C mqttv3 has it (app supplies the HTTP hook); .NET **removed** file upload from the unified API (#255) |
 | Device update (software updates) | Partial | Partial | **No** | **No** | C only: `az_iot_su.h`, su-over-DPS (renamed from ADU in #270). **.NET has no software-update code at all** |
@@ -132,7 +132,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Model ID on connect | Partial | No | C uses `opts.model_id` for the **MQTTv3 username only**; mqttv5 path unverified. .NET does not set it |
+| Model ID on connect | Partial | No | C sets `opts.model_id` **only on the mqttv3 username** — `connection_client.c:3080` excludes the mqttv5 role, so it is never announced there. .NET does not set it |
 | Model ID via DPS payload | No | Partial | .NET references a `ModelIdPayload` type that is not in the repo |
 | Components | Partial | No | C exposes only the `$.sub` component-name property; no component APIs |
 | Digital twin / PnP conventions | No | No | |
@@ -249,7 +249,7 @@ Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport,
 ### Corrections from Tim (owner of `dotnet/`), 2026-09-23
 
 - **Subscription-ack gating is Yes for .NET, both MQTT versions** — this matrix previously said No. Verified: `Unified/Connection/ConnectionClient.cs:116-133` and `MQTTv5/Connection/ConnectionClient.cs:61-88` both check SUBACK reason codes and reconnect on refusal. The remaining difference is policy, not capability: C lets you choose the failure scope, .NET always disconnects and reconnects.
-- **Non-extractable keys and trust bundle / custom CA are in progress**, not simply absent — draft PR #236 adds SoftHSM-backed keys and a `RemoteCertificateValidationCallback`. Still No on `main`.
+- **Non-extractable keys and trust bundle / custom CA** — **#236 merged 2026-09-26**, so both are now Yes for .NET. An earlier revision of this matrix recorded #236 as an open draft and carried that forward; corrected 2026-09-28.
 - **.NET fault-injection coverage is by unit test, by design** — `ConnectionFaultedUnitTests.cs`, 12 facts. The empty `MqttNetFaultInjectionIntegrationTests.cs` is dead code pending deletion, not a coverage gap.
 - Found while re-auditing on the back of the above: **.NET does expose a DISCONNECT reason code** (`MqttDisconnect.Reason`, enum includes `DisconnectWithWillMessage`=4) — previously recorded as No. It is always sent as `NormalDisconnection`.
 
@@ -262,6 +262,8 @@ Rechecked at `3cd46fa` after #275–#282.
 - Caller-allocated teardown renamed `_destroy()` → `_deinit()` (#277). Adapter factories still use `_destroy()`, so both spellings are live.
 - Software-update samples: regular-update sample added, ESP32 route fixed (#275).
 - **New §10 "Cross-cutting client concerns"** records adoption-blocking areas the matrix never tracked — several are unimplemented.
+
+**Full re-verification pass, 2026-09-28.** Every pre-existing row was re-checked against `3cd46fa` rather than carried forward. That found four errors that had survived earlier revisions: #236 had **merged** on 2026-09-26 while this matrix still called it an open draft (so .NET non-extractable keys and trust bundle / custom CA were wrongly No); C mqttv5 **does** consume twin push (`on_twin_push()`); `model_id` on the mqttv5 path is now settled as **not announced** rather than "unverified"; and a credential-rotation note still referred to .NET file upload, which #255 removed.
 
 ## 15. What changed in the 2026-09-27 revision
 
