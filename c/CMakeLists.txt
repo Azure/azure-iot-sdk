@@ -134,3 +134,5 @@ endif()
 
 # Declared last so it sees every instrumented target.
 az_iot_add_coverage_target()
+
+include(az_iot_install)

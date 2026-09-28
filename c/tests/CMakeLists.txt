@@ -43,6 +43,8 @@ FetchContent_Declare(
     PATCH_COMMAND  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patch_cmocka_symlink.cmake
 )
 FetchContent_MakeAvailable(cmocka)
+# Test-only: keep cmocka's install rules out of the SDK's install.
+set_property(DIRECTORY "${cmocka_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL TRUE)
 
 # Restore settings.
 set(CMAKE_WARN_DEPRECATED ${_sdk_save_warn_deprecated} CACHE BOOL "" FORCE)

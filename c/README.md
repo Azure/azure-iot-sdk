@@ -44,6 +44,33 @@ Run a sample binary:
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
+## Install and consume
+
+A top-level build installs static libraries, headers and the `azure-iot-sdk`
+CMake package (`-DAZ_IOT_INSTALL=OFF` disables it):
+
+```sh
+cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<prefix>
+cmake --build build/release
+cmake --install build/release
+```
+
+```cmake
+find_package(azure-iot-sdk CONFIG REQUIRED COMPONENTS mqttv3 adapter_paho)
+target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
+```
+
+- Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
+  `adapter_rust_mqtt`, `su_crypto_openssl`, `su_crypto_mbedtls`,
+  `certificate_provider_managed`).
+- azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
+  Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
+- OpenSSL, and mbedTLS for `su_crypto_mbedtls`, must be findable by the consumer.
+- MSVC: the libraries use the static CRT; set
+  `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
+
+[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package.
+
 ## Project layout
 
 ```
