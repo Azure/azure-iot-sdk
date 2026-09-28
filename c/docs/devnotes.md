@@ -111,10 +111,10 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - TLS is **not** enabled in the adapter yet (`PAHO_WITH_SSL=OFF`); X.509 plumbing arrives together with `certificate_provider` wiring in a later phase.
 
 ### Build, toolchain, CI
-- Language: **C99 strict** (`-std=c99 -pedantic`, `CMAKE_C_EXTENSIONS OFF`, warnings-as-errors on by default).
+- Language: **C99 strict** (`-std=c99 -pedantic`, `CMAKE_C_EXTENSIONS OFF`, warnings-as-errors on by default). `-DCMAKE_C_STANDARD=11|17|23` overrides it for first-party code; Paho and azure-sdk-for-c stay on C99.
 - CMake **≥ 3.21**, driven by `CMakePresets.json`. Presets split into `base` + `linux-base` so Windows is not impacted by Linux-only options (e.g. `CMAKE_EXPORT_COMPILE_COMMANDS` symlinking).
 - Linux portability: define `_DEFAULT_SOURCE` / `_POSIX_C_SOURCE=200809L` where needed for `azure-sdk-for-c`'s POSIX platform impl; include upstream headers as `SYSTEM` to avoid `-Werror=strict-prototypes` failures on legacy `func()` declarations.
-- CI matrix (GitHub Actions): Linux GCC, Linux Clang, Windows MSVC, plus a dedicated **C99-strict** job.
+- CI matrix (GitHub Actions): Linux GCC, Linux Clang, Windows MSVC, plus **c99/c11/c17/c23-strict** jobs (GCC 14, `-pedantic -Werror`) guarding forward compatibility.
 - CI awareness: must compile cleanly across all `#if` variants before pushing — do not rely on CI to catch ordering / forward-declaration mistakes.
 
 ### Testing

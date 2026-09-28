@@ -83,6 +83,18 @@ if(NOT MSVC)
     endforeach()
 endif()
 
+# Paho < v1.3.15 is not C23-clean (MQTTPacket.h: `typedef unsigned int bool;`).
+# Pin its sources to C99 so a CMAKE_C_STANDARD override applies to first-party
+# code only, as azure-sdk-for-c already does for itself.
+foreach(_pt IN ITEMS
+    paho-mqtt3a-static paho-mqtt3as-static
+    paho-mqtt3c-static paho-mqtt3cs-static
+    common_obj_static common_ssl_obj_static)
+    if(TARGET ${_pt})
+        set_target_properties(${_pt} PROPERTIES C_STANDARD 99)
+    endif()
+endforeach()
+
 # Restore deprecation warning setting.
 set(CMAKE_WARN_DEPRECATED ${_sdk_save_warn_deprecated} CACHE BOOL "" FORCE)
 unset(_sdk_save_warn_deprecated)
