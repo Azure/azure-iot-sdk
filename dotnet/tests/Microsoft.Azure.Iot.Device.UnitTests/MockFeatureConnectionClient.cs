@@ -18,8 +18,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// with <see cref="SimulateReceiveAsync"/>.
     /// </remarks>
     internal sealed class MockFeatureConnectionClient
-        : global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient,
-          global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient
+        : global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
