@@ -30,7 +30,7 @@ cd "${repo_root}"
 
 # Kept explicit rather than scanning the repo, so that vendored code under
 # c/tests/deps and anything fetched into c/build is never touched.
-paths=(c/src c/inc c/adapters c/samples c/tests/unit c/tests/e2e c/tests/conformance c/tests/integration c/tests/support)
+paths=(c/src c/inc c/adapters c/samples c/tests/unit c/tests/e2e c/tests/conformance c/tests/integration c/tests/support c/tests/install)
 
 clang_format="${CLANG_FORMAT:-clang-format}"
 if ! command -v "${clang_format}" >/dev/null 2>&1; then
