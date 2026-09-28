@@ -39,7 +39,9 @@ static EVP_PKEY* rsa_pubkey_from_raw(
 
   n = BN_bin2bn(modulus, (int)modulus_len, NULL);
   e = BN_bin2bn(exponent, (int)exponent_len, NULL);
-  if (n == NULL || e == NULL)
+  /* A valid RSA public exponent is odd and at least 3 (RFC 8017 3.1); OpenSSL does not
+   * check this on import or verify, and with e = 1 any encoded message verifies. */
+  if (n == NULL || e == NULL || !BN_is_odd(e) || BN_is_one(e))
   {
     goto cleanup;
   }

@@ -48,6 +48,14 @@
         "comment": "Shipped (AZ_IOT_WITH_SU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
     },
     {
+        "name": "adapter-su-crypto-mbedtls",
+        "prefix": "adapters/su/crypto_mbedtls/",
+        "line": 80,
+        "branch": 70,
+        "function": 95,
+        "comment": "Shipped (AZ_IOT_WITH_SU_CRYPTO_MBEDTLS default ON, requires mbedTLS 3.6 LTS or 4.1+; CI builds 4.1.1). Measured 84.6/78.6/100.0 on unit with gcovr 5.2; branch floor kept 5 points lower until confirmed on the CI gcovr."
+    },
+    {
         "name": "adapter-cert-managed",
         "prefix": "adapters/cert_openssl/",
         "line": 75,

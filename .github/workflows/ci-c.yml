@@ -387,6 +387,42 @@ jobs:
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
 
   # ---------------------------------------------------------------------------
+  # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch
+  # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
+  # pinned release. The known-answer suite also runs under valgrind.
+  # ---------------------------------------------------------------------------
+  su-crypto-mbedtls:
+    name: su crypto / mbedTLS ${{ matrix.mbedtls }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mbedtls: [ '3.6.7', '4.1.1', '4.2.0' ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev valgrind
+      - name: Build mbedTLS ${{ matrix.mbedtls }}
+        run: bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$RUNNER_TEMP/mbedtls"
+      - name: Configure
+        run: >
+          cmake -S . -B build/su-mbedtls -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_BUILD_SAMPLES=OFF
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
+      - name: Build
+        run: cmake --build build/su-mbedtls --target az_iot_tests_su_crypto_mbedtls az_iot_tests_su_crypto_openssl
+      - name: Test
+        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_su_crypto_' --no-tests=error
+      - name: Test under valgrind
+        run: >
+          valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
+          --track-origins=yes --errors-for-leak-kinds=definite,possible
+          build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
+
+  # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
   # Report-only, deliberately. The per-component floors in
@@ -411,7 +447,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '44'
+      EXPECTED_TESTS: '45'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -436,6 +472,12 @@ jobs:
           sudo apt-get install -y ninja-build libssl-dev mosquitto-clients \
                                   softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2' 'diff-cover==9.2.0'
+
+      # The mbedTLS crypto adapter is shipped; without it the suite count below fails.
+      - name: Build mbedTLS
+        run: |
+          bash eng/install-mbedtls.sh 4.1.1 "$RUNNER_TEMP/mbedtls"
+          echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/mbedtls" >> "$GITHUB_ENV"
 
       # The non-extractable-key custody suite drives a REAL PKCS#11 token. It is
       # built only when one is going to be supplied and fails when it is not, so
