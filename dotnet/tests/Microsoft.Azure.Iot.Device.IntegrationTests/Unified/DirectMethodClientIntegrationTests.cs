@@ -11,16 +11,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     public class DirectMethodClientIntegrationTests
     {
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task TestDirectMethods()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task TestDirectMethods(bool testAgainstClassicHub)
         {
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
-            ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
+            ServiceClient serviceClient = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubServiceClient()
+                : Setup.GetMQTTv5IotHubServiceClient();
             var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName, TimeSpan.FromSeconds(expectedResponseTimeout));
             SimpleDirectMethodPayload expectedRequestPayload = new()
             {

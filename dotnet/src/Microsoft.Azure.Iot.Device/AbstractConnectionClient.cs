@@ -3,7 +3,9 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
