@@ -64,6 +64,10 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
 # the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
 option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
+# Install rules and the azure-iot-sdk CMake package (find_package). On by default
+# only for a top-level build, so a parent project that adds this tree with
+# add_subdirectory() or FetchContent does not install it as a side effect.
+option(AZ_IOT_INSTALL          "Generate install rules and the azure-iot-sdk CMake package" ${PROJECT_IS_TOP_LEVEL})
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)

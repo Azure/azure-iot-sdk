@@ -13,11 +13,12 @@ add_library(az_iot_adapter_rust_mqtt STATIC
 )
 add_library(azure::iot::adapter_rust_mqtt ALIAS az_iot_adapter_rust_mqtt)
 
+# az_iot_mqtt_rust_ffi.h is the interop contract the Rust side implements, so
+# it is public.
 target_include_directories(az_iot_adapter_rust_mqtt
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/inc
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 target_link_libraries(az_iot_adapter_rust_mqtt
     PUBLIC

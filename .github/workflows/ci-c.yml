@@ -471,6 +471,105 @@ jobs:
           build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
 
   # ---------------------------------------------------------------------------
+  # The installed package (cmake --install, find_package(azure-iot-sdk)).
+  #
+  # A Release build with every shipped adapter is unit-tested and installed.
+  # c/tests/install then builds and runs against the install prefix alone: the
+  # build tree is deleted first, and the prefix must hold no path back into the
+  # checkout. Each adapter is a REQUIRED component there, so one dropping out of
+  # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # ---------------------------------------------------------------------------
+  install:
+    name: install / ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-gcc
+            mbedtls: '3.6.7'
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+          - os: windows-latest
+            name: windows-msvc
+            mbedtls: ''
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+
+      - name: Set paths
+        # Forward slashes on Windows: these values end up in CMake files.
+        run: |
+          tmp="$(cygpath -m "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")"
+          mbedtls=""
+          if [ -n "${{ matrix.mbedtls }}" ]; then mbedtls="$tmp/mbedtls"; fi
+          {
+            echo "AZ_IOT_PREFIX=$tmp/az-iot-sdk"
+            echo "AZ_IOT_CONSUMER=$tmp/install-test"
+            echo "AZ_IOT_MBEDTLS=$mbedtls"
+          } >> "$GITHUB_ENV"
+
+      - name: Build mbedTLS ${{ matrix.mbedtls }}
+        if: matrix.mbedtls != ''
+        run: bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$AZ_IOT_MBEDTLS"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build/install -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX="$AZ_IOT_PREFIX"
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS"
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_BUILD_SAMPLES=OFF
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/install
+      - name: Unit tests
+        run: ctest --test-dir build/install --output-on-failure --no-tests=error
+
+      - name: Install
+        run: cmake --install build/install
+      - name: Check the installed tree
+        run: |
+          test -f "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
+          # Test-only dependencies do not ship.
+          if find "$AZ_IOT_PREFIX" -iname '*cmocka*' | grep .; then
+            echo "::error::cmocka was installed"
+            exit 1
+          fi
+          ws="$(cygpath -m "$GITHUB_WORKSPACE" 2>/dev/null || echo "$GITHUB_WORKSPACE")"
+          if grep -rIil -F "$ws" "$AZ_IOT_PREFIX"; then
+            echo "::error::installed files reference the checkout ($ws)"
+            exit 1
+          fi
+          rm -rf build/install
+
+      - name: Configure the consumer
+        run: >
+          cmake -S tests/install -B "$AZ_IOT_CONSUMER" -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS"
+          -DAZ_IOT_EXPECTED_COMPONENTS="${{ matrix.components }}"
+      - name: Build the consumer
+        run: cmake --build "$AZ_IOT_CONSUMER"
+      - name: Test the consumer
+        run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
+
+  # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
   # Report-only, deliberately. The per-component floors in
