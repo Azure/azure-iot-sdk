@@ -16,14 +16,19 @@
  *     process restarts. A store is refused unless every certificate in the
  *     chain parses and the leaf certifies the pending CSR key (which then
  *     replaces the operational key file) or the current operational key. A
- *     failed store keeps the previous key and certificate. A pending key does
- *     not survive deinit or a restart: a chain for it arriving afterwards is
- *     refused; request a new CSR.
+ *     failed store keeps the previous key and certificate, except when the new
+ *     chain is already in place and the key rename then fails and the previous
+ *     chain cannot be put back, or the process stops between those renames:
+ *     the operational identity is then no longer served (load() reports
+ *     NOT_FOUND, also after a restart) rather than a mismatched pair. A
+ *     pending key does not survive deinit or a restart: a chain for it
+ *     arriving afterwards is refused; request a new CSR.
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
- * next to the destination, then renamed over it. The private key is stored
- * unencrypted: protect the directory accordingly.
+ * ("<path>.aziot-...") next to the destination, then renamed over it. init()
+ * deletes such temporary files a stopped process left behind. The private key
+ * is stored unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
  * with a TPM/HSM/secure element should implement their own provider with a

@@ -15,6 +15,7 @@
 
 #include "az_iot_certificate_provider_managed.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +30,7 @@
 #include <windows.h>
 #include <sddl.h>
 #else
+#include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -68,6 +70,11 @@
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
 
+/* Marks this provider's temporary files, so init() can find leftovers
+ * without touching anything else next to the key or chain. */
+#define MANAGED_TMP_TAG ".aziot-"
+#define MANAGED_TMP_TAG_LEN (sizeof(MANAGED_TMP_TAG) - 1)
+
 #ifdef _WIN32
 /* Owner-only DACL for written files: full access for the owner and SYSTEM,
  * protected from inheriting the directory's ACEs. */
@@ -76,7 +83,7 @@
 #define MANAGED_TMP_ATTEMPTS 16
 #else
 /* mkstemp() template appended to the destination path. */
-#define MANAGED_TMP_TEMPLATE ".XXXXXX"
+#define MANAGED_TMP_TEMPLATE MANAGED_TMP_TAG "XXXXXX"
 #endif
 
 /* --------------------------------------------------------------------------
@@ -161,8 +168,9 @@ static az_iot_result stage_file(const char* path, const char* data, size_t len, 
   *out_tmp = NULL;
   size_t path_len = strlen(path);
 #ifdef _WIN32
-  /* "<path>.<8 hex>.tmp" */
-  char* tmp = (char*)malloc(path_len + 14);
+  /* "<path>.aziot-<8 hex>.tmp" */
+  size_t tmp_size = path_len + MANAGED_TMP_TAG_LEN + 13;
+  char* tmp = (char*)malloc(tmp_size);
   if (!tmp)
   {
     return AZ_IOT_ERR_OUT_OF_MEMORY;
@@ -173,7 +181,7 @@ static az_iot_result stage_file(const char* path, const char* data, size_t len, 
   for (int i = 0; i < MANAGED_TMP_ATTEMPTS && h == INVALID_HANDLE_VALUE; ++i)
   {
     seed = seed * 1103515245UL + 12345UL;
-    (void)snprintf(tmp, path_len + 14, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    (void)snprintf(tmp, tmp_size, "%s" MANAGED_TMP_TAG "%08lx.tmp", path, seed & 0xFFFFFFFFUL);
     bool collided = false;
     h = create_private_file(tmp, &collided);
     if (h == INVALID_HANDLE_VALUE && !collided)
@@ -331,6 +339,138 @@ static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
   az_iot_result rc = stage_bio(path, mem, out_tmp);
   BIO_free(mem);
   return rc;
+}
+
+/**
+ * @brief Stage a copy of the file at @p path next to it (stage_bio). A missing
+ * or empty file is not an error: *out_tmp is then NULL.
+ */
+static az_iot_result stage_copy(const char* path, char** out_tmp)
+{
+  *out_tmp = NULL;
+  BIO* in = BIO_new_file(path, "rb");
+  if (!in)
+  {
+    ERR_clear_error();
+    return AZ_IOT_OK;
+  }
+  BIO* mem = BIO_new(BIO_s_mem());
+  az_iot_result rc = mem ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
+  char buf[1024];
+  int n = 0;
+  while (rc == AZ_IOT_OK && (n = BIO_read(in, buf, (int)sizeof(buf))) > 0)
+  {
+    if (BIO_write(mem, buf, n) != n)
+    {
+      rc = AZ_IOT_ERR_INTERNAL;
+    }
+  }
+  BIO_free(in);
+  ERR_clear_error();
+  if (rc == AZ_IOT_OK && BIO_pending(mem) > 0)
+  {
+    rc = stage_bio(path, mem, out_tmp);
+  }
+  BIO_free(mem);
+  return rc;
+}
+
+/**
+ * @brief Remove temporary files stage_file() left next to @p path when a
+ * process stopped between staging and committing: "<path>.aziot-XXXXXX" (6
+ * alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp" on Windows. Best effort.
+ */
+static void remove_stale_temps(const char* path)
+{
+  const char* slash = strrchr(path, '/');
+#ifdef _WIN32
+  const char* bslash = strrchr(path, '\\');
+  if (!slash || (bslash && bslash > slash))
+  {
+    slash = bslash;
+  }
+#endif
+  size_t dir_len = slash ? (size_t)(slash - path) + 1 : 0;
+  const char* base = path + dir_len;
+  size_t base_len = strlen(base);
+#ifdef _WIN32
+  size_t pattern_size = strlen(path) + MANAGED_TMP_TAG_LEN + 6;
+  char* pattern = (char*)malloc(pattern_size);
+  if (!pattern)
+  {
+    return;
+  }
+  (void)snprintf(pattern, pattern_size, "%s" MANAGED_TMP_TAG "*.tmp", path);
+  WIN32_FIND_DATAA fd;
+  HANDLE h = FindFirstFileA(pattern, &fd);
+  free(pattern);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    return;
+  }
+  char* stale = (char*)malloc(dir_len + MAX_PATH + 1);
+  do
+  {
+    const char* name = fd.cFileName;
+    size_t hex_at = base_len + MANAGED_TMP_TAG_LEN;
+    bool match = stale && strlen(name) == hex_at + 12 && _strnicmp(name, base, base_len) == 0
+        && _strnicmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0
+        && _stricmp(name + hex_at + 8, ".tmp") == 0;
+    for (size_t i = 0; match && i < 8; ++i)
+    {
+      match = isxdigit((unsigned char)name[hex_at + i]) != 0;
+    }
+    if (match)
+    {
+      memcpy(stale, path, dir_len);
+      memcpy(stale + dir_len, name, strlen(name) + 1);
+      (void)DeleteFileA(stale);
+    }
+  } while (FindNextFileA(h, &fd));
+  FindClose(h);
+  free(stale);
+#else
+  char* dir = (char*)malloc(dir_len + 2);
+  size_t name_len = base_len + MANAGED_TMP_TAG_LEN + 6;
+  char* stale = (char*)malloc(dir_len + name_len + 1);
+  DIR* d = NULL;
+  if (dir && stale)
+  {
+    if (dir_len > 0)
+    {
+      memcpy(dir, path, dir_len);
+      dir[dir_len] = '\0';
+    }
+    else
+    {
+      memcpy(dir, ".", 2);
+    }
+    d = opendir(dir);
+  }
+  struct dirent* e = NULL;
+  while (d && (e = readdir(d)) != NULL)
+  {
+    const char* name = e->d_name;
+    bool match = strlen(name) == name_len && strncmp(name, base, base_len) == 0
+        && strncmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+    for (size_t i = base_len + MANAGED_TMP_TAG_LEN; match && i < name_len; ++i)
+    {
+      match = isalnum((unsigned char)name[i]) != 0;
+    }
+    if (match)
+    {
+      memcpy(stale, path, dir_len);
+      memcpy(stale + dir_len, name, name_len + 1);
+      (void)unlink(stale);
+    }
+  }
+  if (d)
+  {
+    closedir(d);
+  }
+  free(dir);
+  free(stale);
+#endif
 }
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
@@ -798,12 +938,11 @@ static az_iot_result managed_store(
   }
   else if (rc == AZ_IOT_OK)
   {
-    /* Stage the new key, the new chain and a copy of the current key, then
-     * rename key before chain. If the chain rename fails, the copy is renamed
-     * back so the pair on disk still matches. If that fails too, the new key
-     * stays on disk with the old chain: adopt the new key in memory and stop
-     * serving the operational identity, so load() never returns a pair that
-     * cannot match. */
+    /* Stage the new key, the new chain and a copy of the current chain (public
+     * data: no private key is ever copied). Rename the chain first, then the
+     * key. If the key rename fails, put the previous chain back, or remove the
+     * new one when there was none. If that fails too, stop serving the
+     * operational identity: the chain on disk no longer matches the key. */
     char* key_tmp = NULL;
     char* cert_tmp = NULL;
     char* backup_tmp = NULL;
@@ -814,26 +953,24 @@ static az_iot_result managed_store(
     }
     if (rc == AZ_IOT_OK)
     {
-      rc = stage_key(m->operational_key_path, (EVP_PKEY*)m->operational_key, &backup_tmp);
-    }
-    if (rc == AZ_IOT_OK)
-    {
-      rc = commit_file(key_tmp, m->operational_key_path);
-      key_tmp = NULL;
+      rc = stage_copy(m->operational_cert_path, &backup_tmp);
     }
     if (rc == AZ_IOT_OK)
     {
       rc = commit_file(cert_tmp, m->operational_cert_path);
       cert_tmp = NULL;
+    }
+    if (rc == AZ_IOT_OK)
+    {
+      rc = commit_file(key_tmp, m->operational_key_path);
+      key_tmp = NULL;
       if (rc != AZ_IOT_OK)
       {
-        az_iot_result restored = commit_file(backup_tmp, m->operational_key_path);
+        bool restored = backup_tmp ? commit_file(backup_tmp, m->operational_cert_path) == AZ_IOT_OK
+                                   : remove(m->operational_cert_path) == 0;
         backup_tmp = NULL;
-        if (restored != AZ_IOT_OK)
+        if (!restored)
         {
-          EVP_PKEY_free((EVP_PKEY*)m->operational_key);
-          m->operational_key = pending;
-          m->pending_key = NULL;
           m->has_operational = false;
         }
       }
@@ -934,6 +1071,10 @@ az_iot_result az_iot_certificate_provider_managed_init(
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
+
+  /* Files a stopped process left staged next to the key and chain. */
+  remove_stale_temps(provider->operational_key_path);
+  remove_stale_temps(provider->operational_cert_path);
 
   /* Operational key: load if present on disk, else generate and persist. */
   EVP_PKEY* key = load_key_file(provider->operational_key_path);
