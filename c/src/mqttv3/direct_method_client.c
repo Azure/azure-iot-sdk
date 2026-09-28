@@ -250,7 +250,7 @@ az_iot_result az_iot_mqttv3_direct_method_client_init(
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
   DI(client).response_timeout_seconds = AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS;
-  /* Seeded rather than started from zero: destroy() zeroes the client, so a
+  /* Seeded rather than started from zero: deinit() zeroes the client, so a
    * fresh init would otherwise reissue the same {slot, seq} a request from the
    * previous lifetime still names. */
   DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
@@ -281,7 +281,7 @@ az_iot_result az_iot_mqttv3_direct_method_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_mqttv3_direct_method_client_destroy(az_iot_mqttv3_direct_method_client* client)
+void az_iot_mqttv3_direct_method_client_deinit(az_iot_mqttv3_direct_method_client* client)
 {
   if (!client)
   {

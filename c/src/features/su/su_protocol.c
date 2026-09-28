@@ -583,14 +583,12 @@ static az_iot_result write_report_request(az_json_writer* jw, const az_iot_su_re
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* A triple must be complete or absent. Passing a NULL member through to the
-   * writer would trip an upstream precondition rather than returning an error
-   * to the caller. */
-  if (report->installed_update_id != NULL
-      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
-          || report->installed_update_id->version == NULL))
+  /* A triple must be complete and nonempty, or absent: the same rule as on a
+   * fetch. */
+  az_iot_result id_valid = az_iot_su__validate_installed_update_id(report->installed_update_id);
+  if (id_valid != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return id_valid;
   }
   /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
    * failure, and a real origin when it is. Catching it here keeps an invalid

@@ -111,7 +111,7 @@ static void pem_release(az_iot_certificate_provider* self, az_iot_certificate_ma
 
 static void pem_deinit_vtable(az_iot_certificate_provider* self)
 {
-  az_iot_certificate_provider_pem_destroy((az_iot_certificate_provider_pem*)self);
+  az_iot_certificate_provider_pem_deinit((az_iot_certificate_provider_pem*)self);
 }
 
 static const az_iot_certificate_provider_vtable s_pem_vtable = {
@@ -137,7 +137,7 @@ static char* dup_str(const char* s)
   return out;
 }
 
-void az_iot_certificate_provider_pem_destroy(az_iot_certificate_provider_pem* provider)
+void az_iot_certificate_provider_pem_deinit(az_iot_certificate_provider_pem* provider)
 {
   if (!provider)
   {
@@ -182,7 +182,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client cert file");
-    az_iot_certificate_provider_pem_destroy(provider);
+    az_iot_certificate_provider_pem_deinit(provider);
     return r;
   }
 
@@ -190,7 +190,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("certificate_provider_pem_init: failed to read client key file");
-    az_iot_certificate_provider_pem_destroy(provider);
+    az_iot_certificate_provider_pem_deinit(provider);
     return r;
   }
 
@@ -199,7 +199,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     r = read_file_content(opts->trusted_ca_pem_path, &provider->trusted_ca);
     if (r != AZ_IOT_OK)
     {
-      az_iot_certificate_provider_pem_destroy(provider);
+      az_iot_certificate_provider_pem_deinit(provider);
       return r;
     }
   }
@@ -209,7 +209,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     provider->key_password = dup_str(opts->client_key_password);
     if (!provider->key_password)
     {
-      az_iot_certificate_provider_pem_destroy(provider);
+      az_iot_certificate_provider_pem_deinit(provider);
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
@@ -218,7 +218,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
   provider->key_path = dup_str(opts->client_key_pem_path);
   if (!provider->cert_path || !provider->key_path)
   {
-    az_iot_certificate_provider_pem_destroy(provider);
+    az_iot_certificate_provider_pem_deinit(provider);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   if (is_nonempty_cstr(opts->trusted_ca_pem_path))
@@ -226,7 +226,7 @@ az_iot_result az_iot_certificate_provider_pem_init(
     provider->ca_path = dup_str(opts->trusted_ca_pem_path);
     if (!provider->ca_path)
     {
-      az_iot_certificate_provider_pem_destroy(provider);
+      az_iot_certificate_provider_pem_deinit(provider);
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }

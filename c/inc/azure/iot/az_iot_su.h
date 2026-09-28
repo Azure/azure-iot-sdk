@@ -346,7 +346,7 @@ extern "C"
    * also goes on status reports that have no applied update to report, so
    * replacing it can change a pending status report.
    *
-   * Caller-owned. az_iot_su_client_initialize() and
+   * Caller-owned. az_iot_su_client_init() and
    * az_iot_su_client_update_device_properties() deep-copy them; the caller may
    * then change or free them.
    *
@@ -390,10 +390,10 @@ extern "C"
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
- * One minute. The cost of an unserved check is the retries it keeps issuing,
- * so the default bounds that rather than the wait: a check that has not been
- * accepted in a minute is told to the application, which can ask again when it
- * chooses instead of the client retrying silently on every do_work().
+ * One minute. A check not answered within it -- still being retried, or sent
+ * and awaiting its response -- is abandoned and told to the application, which
+ * can ask again when it chooses instead of the client waiting or retrying
+ * silently.
  *
  * Only a default. The bound is a per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
@@ -778,6 +778,11 @@ extern "C"
        * must re-issue the route that was actually requested. */
       uint8_t pending_fetch;
 
+      /* Which fetch the channel has accepted and not yet answered, with the
+       * same encoding. Its deadline is pending_fetch_deadline_ms: the timeout
+       * bounds the whole wait, not only the part before the channel accepts. */
+      uint8_t fetch_in_flight;
+
       /* When the pending fetch stops being retried, as a monotonic instant.
        *
        * WALL-CLOCK, and honoured absolutely: the caller asked for an answer
@@ -785,6 +790,9 @@ extern "C"
        * wait. Time spent obeying a service-requested delay is NOT excluded --
        * excluding it would silently move the deadline the caller set and take
        * away its ability to plan.
+       *
+       * Covers the fetch whether it is queued (pending_fetch) or accepted and
+       * awaiting its answer (fetch_in_flight).
        *
        * 0 means NO DEADLINE IS ARMED -- either nothing is pending, or the
        * caller passed timeout_ms = 0, which deliberately leaves a queued
@@ -844,7 +852,7 @@ extern "C"
   /* --- Lifecycle ----------------------------------------------------------- */
 
   /**
-   * Configuration for az_iot_su_client_initialize(). Obtain a zero-initialized
+   * Configuration for az_iot_su_client_init(). Obtain a zero-initialized
    * instance from az_iot_su_client_config_options_default() and set the required
    * fields before calling initialize.
    */
@@ -879,7 +887,7 @@ extern "C"
    *
    * Set hooks (unless library_mode), crypto, root_keys, root_key_count,
    * device_properties, device_properties_buffer and device_properties_buffer_size
-   * before az_iot_su_client_initialize().
+   * before az_iot_su_client_init().
    *
    * @return Zero-initialized options.
    */
@@ -902,7 +910,7 @@ extern "C"
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
    */
-  AZ_NODISCARD az_iot_result az_iot_su_client_initialize(
+  AZ_NODISCARD az_iot_result az_iot_su_client_init(
       az_iot_su_client* client,
       az_iot_connection_client* connection,
       const az_iot_su_client_config_options* options);
@@ -910,11 +918,11 @@ extern "C"
   /**
    * Return Microsoft's compiled-in software updates root public keys (const, static storage).
    * Convenience for the common case; equivalent to passing your own array to
-   * az_iot_su_client_initialize().
+   * az_iot_su_client_init().
    */
   const az_iot_su_root_key* az_iot_su_microsoft_root_keys(size_t* out_count);
 
-  void az_iot_su_client_destroy(az_iot_su_client* client);
+  void az_iot_su_client_deinit(az_iot_su_client* client);
 
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
@@ -951,8 +959,8 @@ extern "C"
    * Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback shared
    * by two owners is two subscriptions and is delivered twice.
    *
-   * An observer MUST NOT add an observer, and MUST NOT destroy the client --
-   * both mutate the array being walked, and destroying it frees the array
+   * An observer MUST NOT add an observer, and MUST NOT deinit the client --
+   * both mutate the array being walked, and deinit frees the array
    * itself. Adding answers AZ_IOT_ERR_BUSY during a dispatch. REMOVING is
    * permitted and must be: an owner torn down in reaction to an event has to
    * give its seat back before its storage goes away. Calling

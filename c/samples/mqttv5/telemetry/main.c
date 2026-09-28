@@ -44,11 +44,11 @@ static void sample_state_destroy(sample_state* state)
 {
   if (state->telemetry_initialized)
   {
-    az_iot_mqttv5_telemetry_client_destroy(&state->telemetry);
+    az_iot_mqttv5_telemetry_client_deinit(&state->telemetry);
     state->telemetry_initialized = 0;
   }
-  az_iot_connection_client_destroy(&state->connection_client);
-  az_iot_certificate_provider_pem_destroy(&state->certs);
+  az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
 

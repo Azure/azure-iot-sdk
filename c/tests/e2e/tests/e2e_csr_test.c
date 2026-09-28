@@ -198,9 +198,9 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
 
-  az_iot_mqttv3_telemetry_client_destroy(&telemetry);
-  az_iot_connection_client_destroy(&conn);
-  az_iot_certificate_provider_managed_destroy(&provider);
+  az_iot_mqttv3_telemetry_client_deinit(&telemetry);
+  az_iot_connection_client_deinit(&conn);
+  az_iot_certificate_provider_managed_deinit(&provider);
 
   remove(op_key);
   remove(op_cert);

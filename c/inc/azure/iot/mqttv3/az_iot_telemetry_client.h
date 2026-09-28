@@ -32,7 +32,7 @@ extern "C"
       az_iot_mqttv3_telemetry_client* client,
       az_iot_connection_client* conn);
 
-  void az_iot_mqttv3_telemetry_client_destroy(az_iot_mqttv3_telemetry_client* client);
+  void az_iot_mqttv3_telemetry_client_deinit(az_iot_mqttv3_telemetry_client* client);
 
   AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
       az_iot_mqttv3_telemetry_client* client,

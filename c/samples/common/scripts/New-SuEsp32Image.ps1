@@ -12,7 +12,7 @@
     this repository implement the DPS-fronted model, which has no accounts and
     delivers updates as Azure Device Registry jobs and runs. An update deployed
     by this script will not be offered to those samples. The image build steps
-    are unaffected. See samples/su/pc/README.md.
+    are unaffected. See samples/software_update/pc/simulated_onboarding/README.md.
 
     The ESP32 counterpart of New-SuSampleDeployment.ps1. Where that script ships
     a zero-filled simulated payload, this one BUILDS a genuine ESP32 app image
@@ -71,11 +71,11 @@ the DPS-fronted model, which delivers updates as Azure Device Registry jobs and
 runs. An update deployed by this script will not be offered to those samples.
 The firmware image build is unaffected.
 
-See samples/su/pc/README.md.
+See samples/software_update/pc/simulated_onboarding/README.md.
 '@
 
-# Locate the ESP32 project (../../su/esp32 relative to this script).
-$projectDir   = (Resolve-Path (Join-Path $PSScriptRoot "..\..\su\esp32")).Path
+# Locate the ESP32 project (../../software_update/esp32 relative to this script).
+$projectDir   = (Resolve-Path (Join-Path $PSScriptRoot "..\..\software_update\esp32")).Path
 $versionHdr   = Join-Path $projectDir "main\su_version.h"
 $firmwareBin  = Join-Path $projectDir "build\su_esp32.bin"
 $manifestPath = Join-Path $PWD "su-esp32-manifest.importmanifest.json"

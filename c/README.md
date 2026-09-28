@@ -206,10 +206,10 @@ int main(void)
   }
 
   az_iot_connection_client_close(&conn);
-  az_iot_mqttv3_telemetry_client_destroy(&mqttv3_tel);
-  az_iot_mqttv5_telemetry_client_destroy(&mqttv5_tel);
-  az_iot_connection_client_destroy(&conn);
-  az_iot_certificate_provider_pem_destroy(&certs);
+  az_iot_mqttv3_telemetry_client_deinit(&mqttv3_tel);
+  az_iot_mqttv5_telemetry_client_deinit(&mqttv5_tel);
+  az_iot_connection_client_deinit(&conn);
+  az_iot_certificate_provider_pem_deinit(&certs);
   return rc;
 }
 ```
