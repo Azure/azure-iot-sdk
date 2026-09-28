@@ -402,11 +402,12 @@ The byte layout is documented next to the serializer in
    terminal record; it clears it (a zero-length `persist_state_fn` write) once
    the report is final and when a new workflow supersedes it, so a later boot
    does not replay a finished workflow. If the terminal record cannot be
-   written, the stale blob is cleared instead. A failed write is retried from
-   `do_work()` while Idle, at most once a second, and at the next such
-   transition. A failed checkpoint write before a requested reboot holds the
-   workflow at that boundary (`INSTALL_COMPLETE`, or the next step's
-   `DOWNLOAD_STARTED`), retrying the write, until it lands. Moving past a step
+   written, the stale blob is cleared instead. Every failed write is retried
+   from `do_work()` at most once a second, and at the next such transition. A
+   failed checkpoint write before a requested reboot holds the workflow at that
+   boundary (`INSTALL_COMPLETE`, or the next step's `DOWNLOAD_STARTED`) until
+   it lands. There is no retry limit and no event: the application sees
+   failures through its own `persist_state_fn` return values. Moving past a step
    whose checkpoint is stored refreshes it to the next step. If the clear on
    supersede fails, the new workflow waits until the old record is retired.
 

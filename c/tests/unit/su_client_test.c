@@ -2966,15 +2966,25 @@ static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   }
 
-  /* Still failing: parked at INSTALL_COMPLETE, retrying, no Apply. */
+  /* Still failing: parked at INSTALL_COMPLETE, retrying, no Apply. Retries
+   * are spaced: ticks before the retry time write nothing. */
   while (fx->log.persist_failures > 0)
   {
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
     assert_true(fx->su._internal.checkpoint_pending);
     assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+    int calls = fx->log.persist_calls;
+    for (int i = 0; i < 5; ++i)
+    {
+      assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    }
+    assert_int_equal(fx->log.persist_calls, calls);
+    fx->su._internal.checkpoint_clear_retry_ms = 0;
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->log.persist_calls, calls + 1);
   }
   assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+  fx->su._internal.checkpoint_clear_retry_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* this write succeeds */
   assert_true(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_pending);
@@ -3367,6 +3377,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
 
   fx->chan.report_result = AZ_IOT_ERR_BUSY;
   fx->su._internal.device_properties_report_pending = true;
+  fx->su._internal.checkpoint_clear_retry_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(fx->su._internal.device_properties_report_pending);
   assert_true(fx->log.have_persist);

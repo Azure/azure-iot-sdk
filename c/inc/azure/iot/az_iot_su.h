@@ -243,8 +243,9 @@ extern "C"
      *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
      * so a later boot does not resume a workflow that has already ended. Return
-     * non-zero to keep it; the client retries from do_work() while Idle, at most
-     * once a second, and at the next terminal transition.
+     * non-zero on failure; the client retries from do_work() at most once a
+     * second, without limit, holding the workflow at a reboot boundary until
+     * the write lands.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
@@ -721,7 +722,7 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Earliest az_iot_time_mono_ms() for retrying a failed checkpoint write while Idle. */
+      /** Earliest az_iot_time_mono_ms() for retrying any failed checkpoint write. */
       uint64_t checkpoint_clear_retry_ms;
       /** The stored checkpoint is the terminal-report record, not a workflow position. */
       bool checkpoint_terminal;

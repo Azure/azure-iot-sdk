@@ -768,7 +768,7 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&SU_I(client).crypto, file, su_read_file_adapter, &a);
 }
 
-/** @brief Minimum spacing, in milliseconds, of Idle retries of a failed checkpoint write. */
+/** @brief Minimum spacing, in milliseconds, of retries of a failed checkpoint write. */
 #define AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS 1000u
 
 static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
@@ -836,11 +836,7 @@ static void sync_checkpoint(az_iot_su_client* client)
   {
     /* Not representable (e.g. no workflow id kept): the report stays in memory only. */
     SU_I(client).report_owed = false;
-    return;
   }
-  AZ_IOT_LOG_ERROR("su: failed to persist the terminal report; will retry");
-  SU_I(client).checkpoint_clear_retry_ms
-      = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
 }
 
 /** @brief Whether storage differs from what sync_checkpoint() would leave there. */
@@ -2159,6 +2155,9 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal)
   wr_u32le(&blob[p], su_crc32(blob, p));
   if (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) != 0)
   {
+    SU_I(client).checkpoint_clear_retry_ms
+        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
+    AZ_IOT_LOG_ERROR("su: failed to persist the checkpoint; will retry");
     return AZ_IOT_ERR_INTERNAL;
   }
   SU_I(client).checkpoint_stored = true;
@@ -2611,7 +2610,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   }
 
   /* Retry failed checkpoint writes ahead of anything that needs the network,
-   * so storage recovery does not wait on connectivity. */
+   * so storage recovery does not wait on connectivity. Every retry shares the
+   * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS spacing to spare flash endurance. */
   if (SU_I(client).checkpoint_superseded
       && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
   {
@@ -2620,6 +2620,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   bool running
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
   if (SU_I(client).checkpoint_pending && running
+      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms
       && su_persist(client, false) != AZ_IOT_ERR_INTERNAL)
   {
     SU_I(client).checkpoint_pending = false;
