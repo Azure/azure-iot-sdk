@@ -829,8 +829,6 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
-/* Cached ETags never make a validated property set unsendable: properties are
- * sized without them, and a request they would overflow is sent without them. */
 /* ETags survive a reboot through save_state()/restore_state(), at their
  * largest size too. */
 static void etags_round_trip_through_saved_state(void** state)
@@ -905,6 +903,8 @@ static void malformed_saved_state_is_refused(void** state)
   }
 }
 
+/* Cached ETags never make a validated property set unsendable: properties are
+ * sized without them, and a request they would overflow is sent without them. */
 static void oversized_cached_etags_are_dropped_from_the_request(void** state)
 {
   fixture* fx = (fixture*)*state;
