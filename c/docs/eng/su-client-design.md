@@ -419,9 +419,11 @@ The byte layout is documented next to the serializer in
    limit of 1, the first event already carries `persist_retrying` false):
    - a held reboot boundary fails the workflow: `restore_fn` rolls it back and
      it is reported FAILED with facility `0x8` on the step. With no
-     `restore_fn`, or a failed restore, the overall extended result carries
-     facility `0x7` (sub-code 0: no `restore_fn`): nothing was undone, and the
-     device may still boot the installed update;
+     `restore_fn`, the overall extended result is facility `0x7` sub-code 0:
+     nothing was undone. When a restore fails, it carries facility `0x7` with
+     that hook's return value; earlier steps are still restored, so the
+     rollback may be partial. Either way the device may still boot the
+     installed update;
    - an unsent terminal report is no longer stored (it is still sent);
    - a held new workflow proceeds.
 
