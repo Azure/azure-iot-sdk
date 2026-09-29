@@ -139,6 +139,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 26 | Install, apply, recovery | ✅ | — | — | — | — | done | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
 | 27 | Install, apply, recovery | ✅ | — | — | — | — | done | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
 | 28 | Install, apply, recovery | ✅ | — | — | — | — | done | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
+| 29 | Install, apply, recovery | ✅ | — | — | — | — | done | **Reboot coordination + resume** — persist-before-reboot (install- and apply-requested) + `resume()`; the blob carries the unsent terminal report, applied update id and ETags. [→](#e-install-apply-recovery) |
 | 31 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/su/`. [→](#f-platform-and-crypto-adapters) |
 | 32 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_mbedtls` adapter** — factored into `adapters/su/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
 | 35 | Platform and crypto adapters | ✅ | — | — | — | — | done | **ESP32 platform adapter** — factored into `adapters/su/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
@@ -153,7 +154,6 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
-| 29 | Install, apply, recovery | ✅→🔜 | P0 | M | — | 2 | 9/28 | **Reboot coordination + resume** — persist-before-reboot + `resume()`; blob must additionally carry the unsent software updates report + ETags. [→](#e-install-apply-recovery) |
 | 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
 | 59 | Testing and conformance | 🟡 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su_offer` drives offered updates through the whole client (real crypto, download and report). Four scenarios pass against the service; three need their own staged offers, and `ci-c-e2e-adu` needs its environment. [→](#k-testing-and-conformance) |
@@ -435,20 +435,20 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
 ## E. Install, apply, recovery
 
 - **Install/Apply, Backup/Restore, partial rollback, reboot/resume (✅).** Persist-before-
-  reboot uses a versioned, CRC-checked, little-endian blob (`ADU1`, blob **v3**; v2 still
-  read) carrying `retryTimestamp` and a manifest CRC (kept for format compatibility, unused
-  for duplicate detection), the overall result, each step's result, and the download URLs
-  so a resume before the last step can fetch later steps' files; `resume()` re-enters at the
-  persisted phase boundary (`INSTALL_COMPLETE` → Apply). A failed checkpoint write holds
-  Apply and is retried; the blob is cleared (zero-length write) once the workflow returns to
-  Idle or is superseded. *Caveats:* the only persist point today is the install-requested
-  reboot; post-reboot rollback assumes the platform retained per-step backups across the
-  reboot.
-- **Persistence must grow for software updates (🔜).** software updates makes reporting a **durable write**, so the
-  blob gains a **blob v4**: the unsent `reportUpdateStatus` payload (keyed by
-  `workflowId`), `installedUpdateId`, and the `agentInfoEtag` / `serviceConfigEtag` pair, so a
-  device that reboots mid-install still reports its result afterwards and does not resend a full
-  `agentInfo` needlessly. `retryTimestamp` leaves the blob with the twin channel.
+  reboot uses a versioned, CRC-checked, little-endian blob (`SUCP`, format 1) carrying the
+  overall result, each step's result, and the download URLs so a
+  resume before the last step can fetch later steps' files; `resume()` re-enters at the
+  persisted phase boundary (`INSTALL_COMPLETE` → Apply after an install-requested reboot,
+  the next step's Download after an apply-requested one). A failed checkpoint write holds
+  the workflow at that boundary and is retried. *Caveat:* post-reboot rollback assumes the
+  platform retained per-step backups across the reboot.
+- **Durable terminal report (✅).** When a workflow ends, the blob stores a terminal record
+  (the unsent report keyed by `workflowId`, the applied `installedUpdateId`, and the
+  channel's `agentInfoEtag` / `serviceConfigEtag`) before the report is sent. It is retired
+  once the report is accepted, already recorded, or refused by the service, and kept when it
+  was abandoned for want of a session, so a reboot re-sends it. A new `workflowId` replaces
+  it. `retryTimestamp` and the manifest CRC are not persisted. *Caveat:* ETags survive only
+  while a record is stored; the blob is cleared once the workflow is done.
 - **Health-check / auto-rollback after reboot (🟡 → core).** Today only the ESP32
   A/B sample confirms/marks-valid the new image; core does not re-run `is_installed_fn` on
   resume. **To do:** add an optional post-reboot confirm step in core with an auto-rollback
