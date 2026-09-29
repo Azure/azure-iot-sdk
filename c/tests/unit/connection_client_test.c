@@ -1325,10 +1325,11 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
 
-  /* Case 1: no certificate_provider at all. */
+  /* Case 1: no certificate_provider at all: refused as missing, before the CSR
+   * capability is considered. */
   az_iot_connection_client c1;
-  assert_int_equal(az_iot_test_connection_client_init(&c1, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(az_iot_connection_client_init(&c1, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
   az_iot_connection_client_deinit(&c1);
 
   /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;

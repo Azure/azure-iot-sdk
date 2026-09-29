@@ -1983,8 +1983,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
 
   /* TLS from certificate_provider. DPS uses the bootstrap identity; the
    * operational cert (if any) is issued during this exchange. No provider, or
-   * no bootstrap identity, fails the attempt rather than connecting in
-   * plaintext. */
+   * a failed load(), fails the attempt rather than connecting in plaintext. */
   if (!c->opts.certificate_provider)
   {
     AZ_IOT_LOG_ERROR("dps: no certificate provider; refusing to connect without TLS");
@@ -3131,7 +3130,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   /* TLS from certificate_provider. Prefer the issued OPERATIONAL identity (from
    * this DPS session, or persisted by the provider on a prior run, or supplied
    * for a direct hub connection); fall back to the BOOTSTRAP identity when the
-   * provider has no operational cert yet. No provider, or neither identity,
+   * provider has no operational cert yet. No provider, or a failed load(),
    * fails the attempt rather than connecting in plaintext. */
   if (!c->opts.certificate_provider)
   {
@@ -3770,6 +3769,16 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     }
   }
 
+  /* Every DPS and hub connection uses TLS, from the certificate provider.
+   * Checked first, so a missing provider is reported as such rather than as a
+   * missing capability below. */
+  if (!client->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
+                     "hub connection uses TLS");
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
+
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
    * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
@@ -3827,12 +3836,6 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * adapter: the operational identity when it holds one, the bootstrap identity
    * otherwise. A provider that can supply neither yet is not rejected -- it may
    * become able to by the time the connect attempt runs. */
-  if (!client->opts.certificate_provider)
-  {
-    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
-                     "hub connection uses TLS");
-    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
-  }
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
     if (p->vtable == NULL || p->vtable->load == NULL)
