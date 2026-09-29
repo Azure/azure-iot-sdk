@@ -1529,8 +1529,10 @@ target_link_libraries(az_iot_su
 
 ## 11. Implementation Phases
 
-> **Phases 0–7 are as-built history** (0–6 for the twin-channel-era client). Phase 8 is implemented
-> except the root-key-package download: `rootKeyDownloadUrl` is parsed but not fetched.
+> **Phases 0–7 are as-built history** (0–6 for the twin-channel-era client). Phase 8 is partly
+> implemented. Not done: the root-key-package download (`rootKeyDownloadUrl` is parsed, not
+> fetched); an SDK-driven bootstrap re-check and operational polling loop (the application requests
+> each check); the software updates conformance suite.
 
 ### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
 
@@ -1983,7 +1985,7 @@ Software updates touch points that rely on it:
 - [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) — decision of record for cutting Device Update for IoT Hub, and where the software updates bootstrap/operational checks sit in the connection lifecycle
 - [client-separation.md §8](client-separation.md#8-device-update) — the `su_core` / `az_iot_su_channel` seam relative to the client split
 - [su-spec.md](su-spec.md) — **Software updates (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
-- **Software updates via DPS** (DRAFT, api-version `2026-11-02-preview`) — software updates' device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → Device Update); there is **no dedicated Device Update endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [su-spec.md](su-spec.md). Owner: software updates protocol/API team (Darko Aleksic); integration contact: Leo
+- **Software updates via DPS** (DRAFT, api-version `2026-11-02-preview`) — software updates' device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → Device Update); there is **no dedicated Device Update endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [su-spec.md](su-spec.md).
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
 - [software updates reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
