@@ -410,8 +410,10 @@ The byte layout is documented next to the serializer in
    it to the next step.
 6. **Write failures.** A failed `persist_state_fn` write raises
    `AZ_IOT_SU_EVENT_PERSIST_FAILED` (first failure, `persist_retrying` true) and
-   is retried from `do_work()` after 1 s, 2 s, 4 s, … (at most 60 s). A success
-   raises `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`. After
+   is retried from `do_work()` after 1 s, 2 s, 4 s, … (at most 60 s). A tracked
+   success raises `AZ_IOT_SU_EVENT_PERSIST_RECOVERED` and resets the count; the
+   best-effort erase of a stale record after a failed terminal-record write is
+   not tracked (no event, no count). After
    `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` (default 5) consecutive failures the event
    is raised again with `persist_retrying` false and retries stop (with a
    limit of 1, the first event already carries `persist_retrying` false):
@@ -423,7 +425,7 @@ The byte layout is documented next to the serializer in
    - an unsent terminal report is no longer stored (it is still sent);
    - a held new workflow proceeds.
 
-   A write needed later is still attempted once; a success resets the count.
+   A write needed later is still attempted once; a tracked success resets the count.
    While a workflow is held at a reboot boundary, a new `workflowId` is ignored
    (the service offers it again on a later check) and a cancel waits, so the
    installed step is never abandoned without a rollback.

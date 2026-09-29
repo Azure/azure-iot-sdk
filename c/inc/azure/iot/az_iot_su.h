@@ -142,7 +142,8 @@ extern "C"
  *   result carries AZ_IOT_SU_FACILITY_RESTORE (sub-code 0: no restore_fn);
  * - an unsent terminal report is no longer stored (it is still sent);
  * - a new workflow waiting on the previous record's retirement proceeds.
- * A later write is still attempted once when needed; a success resets the count.
+ * A later write is still attempted once when needed; a tracked success resets
+ * the count (the best-effort erase of a stale record does not).
  * While a workflow is held at a reboot boundary, a new workflow is ignored (the
  * service offers it again) and a cancel waits.
  */
@@ -636,8 +637,10 @@ extern "C"
      * do not reboot the device. */
     AZ_IOT_SU_EVENT_PERSIST_FAILED,
 
-    /* A persist_state_fn write succeeded after AZ_IOT_SU_EVENT_PERSIST_FAILED.
-     * Carries `state` and `persist_attempts` (the failures that preceded it). */
+    /* A tracked persist_state_fn write succeeded after
+     * AZ_IOT_SU_EVENT_PERSIST_FAILED. Carries `state` and `persist_attempts`
+     * (the failures that preceded it). The best-effort erase of a stale record
+     * after a failed terminal-record write is not tracked and never raises it. */
     AZ_IOT_SU_EVENT_PERSIST_RECOVERED
   } az_iot_su_event_kind;
 
