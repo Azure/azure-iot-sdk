@@ -719,8 +719,12 @@ namespace Microsoft.Azure.Iot.Device
 
                 RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(provisioningFlowCancellation.Token);
 
-                string operationId = registrationStatus.OperationId
-                    ?? throw new InvalidOperationException("The registration response carried no operation id.");
+                string? operationId = registrationStatus.OperationId;
+                if (string.IsNullOrWhiteSpace(operationId))
+                {
+                    throw new InvalidOperationException("The registration response carried no operation id.");
+                }
+
                 DeviceRegistrationResult registrationResult = await PollUntilProvisioningFinishesAsync(
                     operationId,
                     provisioningFlowCancellation.Token);
