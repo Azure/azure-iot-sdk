@@ -5,7 +5,6 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 > **Status: Software updates is implemented; the Device Update for IoT Hub device-twin channel has been removed.**
 > Delivery and reporting go through the `az_iot_su_channel` vtable. The only channel is software updates,
 > over the device's DPS connection ([su-spec.md](su-spec.md)). See
-> [su-client-plan.md](su-client-plan.md#what-device-update-for-iot-hub-is-cut-means) for what the cut removed and
 > [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) for the decision of
 > record. Phases 0–6 (§11) are as-built history.
 
@@ -23,7 +22,7 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
 - The software updates client MUST report update state and results to the cloud. The wire shape is channel-specific: `ReportDeviceUpdateStatus` for software updates (see [su-spec.md](su-spec.md)). The engine emits a structured result; the channel serializes it.
 - The software updates client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
-- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own software updates agent and state machine on top of the SDK's vetted trust code. (See §5.3 and [su-client-plan.md](su-client-plan.md) — Library / agent-core mode.)
+- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own software updates agent and state machine on top of the SDK's vetted trust code. (See §5.3.)
 
 ### Non-Goals (for this phase)
 
@@ -904,7 +903,7 @@ az_iot_result az_iot_su_client_update_device_properties(
 > and the channel's escaped request before committing either cache. Failure preserves
 > the previous accepted properties. The specified 1-5 compatibility KVP limit includes
 > supplied manufacturer/model keys, not `agentProfile`; an installed ID must be absent
-> or a complete nonempty triple. See the [current contract and limits](su-client-plan.md#b-core-update-workflow).
+> or a complete nonempty triple.
 > The managed upstream-shaped view/serialized-ID cache described below has been removed;
 > the standalone legacy formatter is retained. The twin re-report/reconnect sequence
 > below is historical and is not proof of runtime software updates fetch scheduling.
@@ -980,9 +979,7 @@ sequenceDiagram
 
 ### 5.3 Agent Core-Library API (parse-only / BYO state machine)
 
-> Rationale and gap analysis: see
-> [su-client-plan.md](su-client-plan.md) — Library / agent-core mode. This API
-> lets a consumer build their **own** software updates agent (in the spirit of
+> This API lets a consumer build their **own** software updates agent (in the spirit of
 > [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update))
 > on top of our vetted parse + trust + report code, without adopting our state
 > machine or any transport.
@@ -1051,8 +1048,7 @@ az_iot_result az_iot_su_build_report(
 integrity, and report formatting only. Step/content-handler dispatch (switch on
 the manifest `handler` string), component enumeration, delta/`relatedFiles`
 download handlers, diagnostics/log upload, and privilege separation
-(`adu-shell`) remain the agent author's responsibility — see
-[su-client-plan.md](su-client-plan.md) — see "Out of scope" for the consumer/core boundary.
+(`adu-shell`) remain the agent author's responsibility.
 
 ---
 
@@ -1534,7 +1530,7 @@ target_link_libraries(az_iot_su
 ## 11. Implementation Phases
 
 > **Phases 0–6 are as-built history for the twin-channel-era client.** The forward plan is Phases 7–8
-> below, sequenced in [su-client-plan.md](su-client-plan.md#priority--sequencing).
+> below.
 
 ### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
 
@@ -1649,7 +1645,7 @@ target_link_libraries(az_iot_su
 - Re-point the engine unit tests at `su_core` + a fake channel; delete the twin wire-shape tests.
 
 **Dependencies:** Phases 1–5. **This is a public header break, taken deliberately and without a
-deprecation window** — see [su-client-plan.md](su-client-plan.md#what-device-update-for-iot-hub-is-cut-means).
+deprecation window**.
 
 ### Phase 8: Software updates channel (DPS-fronted)
 
@@ -1984,7 +1980,6 @@ Software updates touch points that rely on it:
 
 ## 17. References
 
-- [su-client-plan.md](su-client-plan.md) — software updates status, cost & feature manual (supersedes the old feature-coverage matrix); the source for what the Device Update for IoT Hub cut removes and keeps
 - [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) — decision of record for cutting Device Update for IoT Hub, and where the software updates bootstrap/operational checks sit in the connection lifecycle
 - [client-separation.md §8](client-separation.md#8-device-update) — the `su_core` / `az_iot_su_channel` seam relative to the client split
 - [su-spec.md](su-spec.md) — **Software updates (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
@@ -1996,6 +1991,3 @@ Software updates touch points that rely on it:
 - [The Update Framework (TUF)](https://theupdateframework.io/) — key rotation and trust model reference
 - [azure-sdk-for-c `az_iot_su_client`](https://github.com/Azure/azure-sdk-for-c) — parsing/formatting dependency
 - [azure-iot-sdk SDK design](../design.md) — this project's overall architecture
-- [Software updates July/2026 Bugbash instructions](https://loop.cloud.microsoft/p/eyJ1IjoiaHR0cHM6Ly9taWNyb3NvZnQuc2hhcmVwb2ludC5jb20vY29udGVudHN0b3JhZ2UvQ1NQX2Q2NWIzMjg5LTA5MjktNGYzNy1hMTE4LTU0NzVhM2Y2ZjgxZT9uYXY9Y3owbE1rWmpiMjUwWlc1MGMzUnZjbUZuWlNVeVJrTlRVRjlrTmpWaU16STRPUzB3T1RJNUxUUm1NemN0WVRFeE9DMDFORGMxWVRObU5tWTRNV1VtWkQxaUpUSXhhVlJLWWpGcGEwcE9NQzFvUjBaU01XOWZZalJJY1VacVEwVmFaekpyUmsxeVZHOXVhSG96TW5WVE5HMTZUVlV0ZVZwWlJWTTJlQzAxTW14SWJuaGtOU1ptUFRBeFdVOHpSa2hQVmxCVVZWUldTa1ZJVFVSU1FrcElSMEkxVVVOS1ZFeE9TbEVtWXowbE1rWW1ZVDFNYjI5d1FYQndKbkE5SlRRd1pteDFhV1I0SlRKR2JHOXZjQzF3WVdkbExXTnZiblJoYVc1bGNnPT0ifQ%3D%3D?ct=1784232366230&&LOF=1) (Look for "software updates Integration")
-  - [Readme](https://dev.azure.com/msazure/One/_git/azure-iot-adu-tools?path=/demos/bug-bash-scripts/README.md)
-  - [Bug Bash Scripts](https://dev.azure.com/msazure/One/_git/azure-iot-adu-tools?path=/demos/bug-bash-scripts)

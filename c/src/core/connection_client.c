@@ -2468,7 +2468,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  *
  * Waiting for the SUBACK rather than merely re-ordering the loop also covers
  * the case where the broker REFUSES a filter, which no amount of local ordering
- * would catch. See AB#39366084. */
+ * would catch. */
 static void announce_connected(az_iot_connection_client* c)
 {
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);

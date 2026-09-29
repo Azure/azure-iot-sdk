@@ -182,8 +182,6 @@ Work items:
       `AZ_IOT_SU_MAX_ROOT_KEYS`), honoring disabled/revoked entries.
 - [ ] Unit tests: valid package applies; package with too-few valid signatures rejected;
       package signed by an untrusted/disabled key rejected; downgrade/replay rejected.
-- [ ] Update `docs/eng/su-client-plan.md` (§ "Root Key Package runtime rotation",
-      currently 🔜 Deferred) once implemented.
 
 **Dependencies:** Option A anchor keys (done). Needs the software updates channel for the package URL.
 Distinct from software updates Day-0 recovery.

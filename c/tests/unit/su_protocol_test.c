@@ -1224,7 +1224,7 @@ static void live_no_update_response_parses(void** state)
 {
   (void)state;
   const char* live = "{\"serviceConfiguration\":{\"rootKeyDownloadUrl\":\"http://defaultv3--adu-"
-                     "ewertons09092100.b.nlu.dl.adu.microsoft.com/westus2/rootkeypackages/"
+                     "contosoaccount01.b.nlu.dl.adu.microsoft.com/westus2/rootkeypackages/"
                      "rootkeypackage-2.json\"},\"serviceConfigEtag\":\"0532baf1108f1cd8\","
                      "\"agentInfoEtag\":\"b8aef25be073c748\"}";
 
