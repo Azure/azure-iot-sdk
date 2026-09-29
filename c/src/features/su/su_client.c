@@ -818,7 +818,8 @@ static void raise_persist(az_iot_su_client* client, bool failed, uint32_t attemp
 static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t len)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
-  if (h->persist_state_fn(blob, len, h->user_ctx) == 0)
+  int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
+  if (rc == 0)
   {
     uint32_t failed = SU_I(client).persist_failures;
     SU_I(client).persist_failures = 0;
@@ -829,6 +830,7 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
     return true;
   }
 
+  SU_I(client).persist_last_error = rc;
   uint32_t n = SU_I(client).persist_failures;
   if (n < UINT32_MAX)
   {
@@ -2643,7 +2645,7 @@ static void fail_on_persist(az_iot_su_client* client)
   bool installed = SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED;
   SU_I(client).checkpoint_pending = false;
-  result_step_failure(client, step, AZ_IOT_SU_FACILITY_PERSIST, 0);
+  result_step_failure(client, step, AZ_IOT_SU_FACILITY_PERSIST, SU_I(client).persist_last_error);
   begin_rollback(client, installed ? step + 1u : step);
   (void)az_iot_su__report_state(client);
 }

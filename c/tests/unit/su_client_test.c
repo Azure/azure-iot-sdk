@@ -220,6 +220,7 @@ typedef struct
 
   /* Persistence / resume. */
   int persist_failures; /* this many persist calls fail before one succeeds */
+  int32_t persist_error; /* what a failing persist call returns; 0 means 1 */
   int persist_calls;
   uint8_t persist_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE];
   size_t persist_len;
@@ -423,7 +424,7 @@ static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
   if (l->persist_failures > 0)
   {
     l->persist_failures--;
-    return 1;
+    return (l->persist_error != 0) ? l->persist_error : 1;
   }
   if (len == 0)
   {
@@ -3548,6 +3549,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
   fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
   fx->log.persist_failures = 1000;
+  fx->log.persist_error = 0x2A;
   inject_patch(fx, signed_patch());
   for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
   {
@@ -3568,7 +3570,8 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   pump(fx, 10);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
-  assert_int_equal(fx->chan.last_extended[0], '8');
+  assert_string_equal(fx->chan.last_extended, "8000002a");
+  assert_int_equal(fx->chan.last_step_results[0].extended_result_code, (int32_t)0x8000002Au);
 
   /* Given up: no more retries. */
   int calls = fx->log.persist_calls;

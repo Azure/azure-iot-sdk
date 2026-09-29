@@ -247,7 +247,7 @@ defines a structured layout:
 | `0x5` | Install | `install_fn` failed |
 | `0x6` | Apply | `apply_fn` failed |
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
-| `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`) |
+| `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK

@@ -761,6 +761,8 @@ extern "C"
       uint64_t persist_retry_ms;
       /** Consecutive failed persist_state_fn writes; 0 after any success. */
       uint32_t persist_failures;
+      /** Return value of the last failed persist_state_fn write. */
+      int32_t persist_last_error;
       /** The stored checkpoint is the terminal-report record, not a workflow position. */
       bool checkpoint_terminal;
       /** The active workflow's terminal report is not yet accepted; kept durable until it is. */
