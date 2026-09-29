@@ -727,6 +727,7 @@ typedef struct
 
   int persist_failed_count;
   int persist_recovered_count;
+  int persist_calls_at_give_up;
   uint32_t last_persist_attempts;
   bool last_persist_retrying;
   az_iot_result last_persist_reason;
@@ -772,6 +773,10 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     }
     fx->last_persist_attempts = event->persist_attempts;
     fx->last_persist_retrying = event->persist_retrying;
+    if (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED && !event->persist_retrying)
+    {
+      fx->persist_calls_at_give_up = fx->log.persist_calls;
+    }
     fx->last_persist_reason = event->reason;
     assert_non_null(event->service_error.message);
     assert_non_null(event->service_error.tracking_id);
@@ -3540,13 +3545,15 @@ static void persist_retry_delay_is_capped(void** state)
 
 /* A reboot checkpoint that never lands fails the workflow after
  * AZ_IOT_SU_PERSIST_MAX_ATTEMPTS: rolled back, reported FAILED with the
- * persist facility, and nothing more is retried. A later write is still tried
- * once, and its success reports recovery. */
+ * persist facility, and nothing more is retried: the terminal record gets one
+ * attempt, even with its report still owed. A later write is still tried once,
+ * and its success reports recovery. */
 static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
   fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
   fx->log.persist_failures = 1000;
   fx->log.persist_error = 0x2A;
@@ -3571,6 +3578,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_string_equal(fx->chan.last_extended, "8000002a");
+  assert_int_equal(fx->log.persist_calls, fx->persist_calls_at_give_up + 1);
   assert_int_equal(fx->chan.last_step_results[0].extended_result_code, (int32_t)0x8000002Au);
 
   /* Given up: no more retries. */

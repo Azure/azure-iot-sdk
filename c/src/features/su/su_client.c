@@ -901,7 +901,12 @@ static void sync_checkpoint(az_iot_su_client* client)
   {
     return;
   }
+  if (SU_I(client).terminal_write_failed && !persist_retry_due(client))
+  {
+    return;
+  }
   az_iot_result pr = su_persist(client, true);
+  SU_I(client).terminal_write_failed = (pr == AZ_IOT_ERR_INTERNAL);
   if (pr == AZ_IOT_OK)
   {
     return;
@@ -931,6 +936,7 @@ static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
   SU_I(client).pending_outcome = outcome;
   SU_I(client).report_owed = true;
   SU_I(client).checkpoint_terminal = false;
+  SU_I(client).terminal_write_failed = false;
 }
 
 /* Reset the workflow back to Idle, clearing the parsed request. */
