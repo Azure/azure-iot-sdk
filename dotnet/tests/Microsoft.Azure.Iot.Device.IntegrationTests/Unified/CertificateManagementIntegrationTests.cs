@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     public class CertificateManagementIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled CI infrastructure temporarily")]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
@@ -93,6 +93,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
             await connectionClient.DisconnectAsync(cts.Token);
+            await connectionClient.ConnectAsync(cts.Token);
 
             Assert.NotNull(hubCsrResponse.Certificates);
             Assert.NotEmpty(hubCsrResponse.Certificates);

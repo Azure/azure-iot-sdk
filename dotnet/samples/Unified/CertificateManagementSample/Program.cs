@@ -4,7 +4,9 @@
 using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
+using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using SetupSampleDevice;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -66,5 +68,14 @@ internal class Program
         // At this point, the certificate signing request has completed and the connection client has already swapped the underlying authentication provider to use
         // the newly signed certificates. The next time that the connection client needs to reconnect to IoT hub, it will use these new certificates. No further action
         // is needed from the application layer for this to take effect.
+        //
+        // However, for the sake of demonstrating/testing the full end-to-end flow, this sample will close the connection to IoT Hub and re-open it with the new certificates
+        await connectionClient.DisconnectAsync();
+        await connectionClient.ConnectAsync();
+
+        // Use the newly opened connection powered by the new certificates to publish some telemetry
+        TelemetryClient telemetryClient = new(connectionClient);
+        await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("Hello world!") });
+        telemetryClient.Dispose(false);
     }
 }

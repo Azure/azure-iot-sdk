@@ -211,7 +211,7 @@ namespace Microsoft.Azure.Iot.Device
                 CurrentConnectionContext.AuthenticationProvider = authentication;
             }
 
-            await ConnectAsync(CurrentConnectionContext, cancellationToken);
+            await ConnectAsync(cancellationToken);
 
             return CurrentConnectionContext;
         }
@@ -301,6 +301,8 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            CurrentConnectionContext = connectionContext;
+
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
             Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
@@ -308,8 +310,6 @@ namespace Microsoft.Azure.Iot.Device
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
-
-            CurrentConnectionContext = connectionContext;
 
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;
@@ -366,6 +366,23 @@ namespace Microsoft.Azure.Iot.Device
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
             }
+        }
+
+        /// <summary>
+        /// Re-connect to IoT Hub directly using the last known connection details if this device has already been provisioned once.
+        /// </summary>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <remarks>
+        /// Generally speaking, users should use <see cref="ProvisionAndConnectAsync(ProvisioningSettings, X509AuthenticationProvider, CancellationToken)"/> instead.
+        /// </remarks>
+        public async Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            if (CurrentConnectionContext == null)
+            {
+                throw new InvalidOperationException("Must provision the device prior to using this method");
+            }
+
+            await ConnectAsync(CurrentConnectionContext, cancellationToken);
         }
 
         /// <summary>
