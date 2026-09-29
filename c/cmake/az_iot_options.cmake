@@ -71,6 +71,8 @@ option(AZ_IOT_INSTALL          "Generate install rules and the azure-iot-sdk CMa
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
+# GCC/Clang compiler and linker hardening; see cmake/az_iot_hardening.cmake.
+option(AZ_IOT_HARDENING        "Harden GCC/Clang builds (stack protector, FORTIFY, PIE, RELRO)" ON)
 # Code coverage (gcov/gcovr) for first-party targets. Off by default: it forces
 # -O0-style instrumentation and roughly doubles test wall time, so it gets its
 # own build tree (the linux-gcc-coverage preset) rather than riding along with

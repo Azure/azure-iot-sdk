@@ -470,6 +470,36 @@ jobs:
           --track-origins=yes --errors-for-leak-kinds=definite,possible
           build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
 
+  # Optimized build (so _FORTIFY_SOURCE is active) checked by
+  # eng/check-hardening.sh, then the unit tests run against it.
+  hardening-linux:
+    name: linux-gcc / hardening (RelWithDebInfo)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build/hardening -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=gcc
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/hardening
+      - name: Check binaries
+        run: bash eng/check-hardening.sh build/hardening
+      - name: Unit tests
+        run: ctest --test-dir build/hardening --output-on-failure
+
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
   #

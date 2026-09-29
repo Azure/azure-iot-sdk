@@ -35,6 +35,8 @@ endif()
 include(az_iot_options)
 include(compiler_warnings)
 include(az_iot_coverage)
+# Before any dependency is fetched, so dependencies are hardened too.
+include(az_iot_hardening)
 
 # azure-sdk-for-c is a mandatory dependency.
 #   az::core                 — spans, JSON, log, contexts, result codes.

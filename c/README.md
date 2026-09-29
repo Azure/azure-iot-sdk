@@ -44,6 +44,12 @@ Run a sample binary:
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
+GCC and Clang builds are hardened by default (stack protector, stack clash
+protection, CET, `_FORTIFY_SOURCE=2` in optimized builds, PIE, full RELRO,
+non-executable stack); see [cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake).
+`-DAZ_IOT_HARDENING=OFF` disables it. `eng/check-hardening.sh <build-dir>`
+verifies the resulting binaries.
+
 ## Install and consume
 
 A top-level build installs static libraries, headers and the `azure-iot-sdk`
