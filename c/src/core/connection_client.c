@@ -1604,30 +1604,18 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   issued.certificates = certs;
   issued.count = count;
 
-  /* Persist via the provider (if capable), then always notify the app with the
-   * outcome (D4). At least one of the two must exist to take the chain. */
-  bool has_store = p && p->vtable && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
-      && p->vtable->store_issued_certificate;
-  az_iot_result store_rc = AZ_IOT_ERR_NOT_SUPPORTED;
-  if (has_store)
+  /* Store in the provider (open() guarantees it can), then notify the app with
+   * the outcome (D4). A failed store fails the registration. */
+  az_iot_result store_rc = p->vtable->store_issued_certificate(p, &issued);
+  if (store_rc != AZ_IOT_OK)
   {
-    store_rc = p->vtable->store_issued_certificate(p, &issued);
-    if (store_rc != AZ_IOT_OK)
-    {
-      AZ_IOT_LOG_ERRORF("dps: storing the issued certificate failed (%d)", (int)store_rc);
-    }
+    AZ_IOT_LOG_ERRORF("dps: storing the issued certificate failed (%d)", (int)store_rc);
   }
-  /* Captured first: the callback may unregister itself. */
-  az_iot_operational_cert_callback cb = c->op_cert_cb;
-  if (cb)
+  if (c->op_cert_cb)
   {
-    cb(&issued, store_rc, c->op_cert_cb_ctx);
+    c->op_cert_cb(&issued, store_rc, c->op_cert_cb_ctx);
   }
-  if (has_store)
-  {
-    return store_rc;
-  }
-  return cb ? AZ_IOT_OK : AZ_IOT_ERR_NOT_SUPPORTED;
+  return store_rc;
 }
 
 static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
@@ -3762,15 +3750,17 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   }
 
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
-   * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
+   * that makes the CSR and stores the issued chain: the chain is never kept by
+   * the client. Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
     if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2
-        || p->vtable->get_csr == NULL)
+        || p->vtable->get_csr == NULL || p->vtable->release_csr == NULL
+        || p->vtable->store_issued_certificate == NULL)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider "
-                       "does not support CSR enrollment");
+      AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate requires a "
+                       "provider with get_csr, release_csr and store_issued_certificate");
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     if (az_span_size(client->opts.csr_payload_buffer) <= 0)

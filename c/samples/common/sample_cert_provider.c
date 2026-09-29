@@ -8,10 +8,14 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS /* this sample uses fopen for cert persistence */
 #endif
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L /* mkstemp, fdopen, fchmod */
+#endif
 
 #include "sample_cert_provider.h"
 #include "sample_csr_backend.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,16 +24,89 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 /* PEM framing written around each base64 DER certificate the service issues. */
 #define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
 #define PEM_CERT_END "\n-----END CERTIFICATE-----\n"
 
-/* Suffix of the temporary file a new chain is written to before it replaces
- * the operational cert file. */
-#define SAMPLE_TMP_SUFFIX ".tmp"
+/* Room for the unique suffix appended to the destination path for the
+ * temporary file: ".XXXXXX" (POSIX) or ".<8 hex>.tmp" (Windows), plus NUL. */
+#define SAMPLE_TMP_SUFFIX_MAX 16
+
+/* Create a new, uniquely named file next to @p path for writing, failing
+ * rather than opening anything already there (a file or a link). Returns the
+ * stream and its path in *out_tmp (heap), or NULL. */
+static FILE* sample_create_unique(const char* path, char** out_tmp)
+{
+  size_t cap = strlen(path) + SAMPLE_TMP_SUFFIX_MAX;
+  char* tmp = (char*)malloc(cap);
+  FILE* f = NULL;
+  *out_tmp = NULL;
+  if (!tmp)
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  unsigned long seed = GetTickCount() ^ ((unsigned long)GetCurrentProcessId() << 16);
+  for (int i = 0; i < 16 && !f; ++i)
+  {
+    seed = seed * 1103515245UL + 12345UL;
+    (void)snprintf(tmp, cap, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    HANDLE h = CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+      if (GetLastError() != ERROR_FILE_EXISTS)
+      {
+        break;
+      }
+      continue;
+    }
+    int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY);
+    if (fd < 0)
+    {
+      CloseHandle(h);
+      (void)DeleteFileA(tmp);
+      break;
+    }
+    f = _fdopen(fd, "wb");
+    if (!f)
+    {
+      _close(fd);
+      (void)DeleteFileA(tmp);
+      break;
+    }
+  }
+#else
+  (void)snprintf(tmp, cap, "%s.XXXXXX", path);
+  int fd = mkstemp(tmp); /* O_CREAT|O_EXCL */
+  if (fd >= 0)
+  {
+    if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+    {
+      f = fdopen(fd, "wb");
+    }
+    if (!f)
+    {
+      (void)close(fd);
+      (void)unlink(tmp);
+    }
+  }
+#endif
+  if (!f)
+  {
+    free(tmp);
+    return NULL;
+  }
+  *out_tmp = tmp;
+  return f;
+}
 
 /* Replace @p to with @p from in one step. Returns nonzero on success. */
 static int sample_replace_file(const char* from, const char* to)
@@ -153,23 +230,14 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* All-or-nothing: write a temporary file next to the destination, then
-   * replace the destination with it, so a failure keeps the previous chain.
-   * A production provider should also create it owner-only under a unique
-   * name (see the managed provider). */
-  size_t path_len = strlen(p->operational_cert_path);
-  char* tmp = (char*)malloc(path_len + sizeof(SAMPLE_TMP_SUFFIX));
-  if (!tmp)
-  {
-    return AZ_IOT_ERR_OUT_OF_MEMORY;
-  }
-  memcpy(tmp, p->operational_cert_path, path_len);
-  memcpy(tmp + path_len, SAMPLE_TMP_SUFFIX, sizeof(SAMPLE_TMP_SUFFIX));
-
-  FILE* f = fopen(tmp, "wb");
+  /* All-or-nothing: write a new, uniquely named file next to the destination,
+   * then replace the destination with it, so a failure keeps the previous
+   * chain. A production provider should also restrict its ACL on Windows
+   * (see the managed provider). */
+  char* tmp = NULL;
+  FILE* f = sample_create_unique(p->operational_cert_path, &tmp);
   if (!f)
   {
-    free(tmp);
     return AZ_IOT_ERR_INTERNAL;
   }
 

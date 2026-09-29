@@ -23,6 +23,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <aclapi.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -798,6 +799,84 @@ static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
   remove_test_files();
 }
 
+#if defined(_WIN32)
+/* True when @p path has a protected DACL (nothing inherited) granting full
+ * access to exactly Owner Rights and SYSTEM, and nothing else. */
+static bool has_owner_only_dacl(const char* path)
+{
+  PACL dacl = NULL;
+  PSECURITY_DESCRIPTOR sd = NULL;
+  if (GetNamedSecurityInfoA(
+          path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd)
+      != ERROR_SUCCESS)
+  {
+    return false;
+  }
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  ACL_SIZE_INFORMATION info;
+  bool ok = dacl != NULL && GetSecurityDescriptorControl(sd, &control, &revision)
+      && (control & SE_DACL_PROTECTED) != 0
+      && GetAclInformation(dacl, &info, (DWORD)sizeof(info), AclSizeInformation)
+      && info.AceCount == 2;
+
+  BYTE owner_rights[SECURITY_MAX_SID_SIZE];
+  BYTE system[SECURITY_MAX_SID_SIZE];
+  DWORD n1 = (DWORD)sizeof(owner_rights);
+  DWORD n2 = (DWORD)sizeof(system);
+  ok = ok && CreateWellKnownSid(WinCreatorOwnerRightsSid, NULL, owner_rights, &n1)
+      && CreateWellKnownSid(WinLocalSystemSid, NULL, system, &n2);
+  bool saw_owner = false;
+  bool saw_system = false;
+  for (DWORD i = 0; ok && i < info.AceCount; ++i)
+  {
+    ACCESS_ALLOWED_ACE* ace = NULL;
+    ok = GetAce(dacl, i, (LPVOID*)&ace) && ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE
+        && (ace->Mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS;
+    PSID sid = ok ? (PSID)&ace->SidStart : NULL;
+    if (ok && EqualSid(sid, owner_rights))
+    {
+      saw_owner = true;
+    }
+    else if (ok && EqualSid(sid, system))
+    {
+      saw_system = true;
+    }
+    else
+    {
+      ok = false;
+    }
+  }
+  LocalFree(sd);
+  return ok && saw_owner && saw_system;
+}
+
+/* The key and chain carry an owner-only DACL, and reload after a restart. */
+static void managed_written_files_have_an_owner_only_dacl(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_true(has_owner_only_dacl(OP_KEY));
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  assert_true(has_owner_only_dacl(OP_CERT));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+  free(good);
+  remove_test_files();
+}
+#endif
+
 #if !defined(_WIN32)
 #define LINK_TARGET "az_iot_managed_test_link_target.pem"
 #define LINK_TARGET_KEY "az_iot_managed_test_link_target_key.pem"
@@ -920,6 +999,9 @@ int main(void)
     cmocka_unit_test(managed_store_refuses_a_chain_with_an_empty_entry),
     cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
     cmocka_unit_test(managed_a_chain_followed_by_other_text_is_refused),
+#if defined(_WIN32)
+    cmocka_unit_test(managed_written_files_have_an_owner_only_dacl),
+#endif
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
