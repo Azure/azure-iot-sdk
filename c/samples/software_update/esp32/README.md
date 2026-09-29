@@ -206,7 +206,7 @@ revision. For production, layer these opt-in overlays on top of
 |---|---|
 | Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0 |
 | Flash encryption | Release mode |
-| NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
+| NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32, and every chip in the rehearsal); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
 | Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0xD000, for the larger bootloader; same A/B app slots |
 
 > **Irreversible.** The first boot of such an image burns eFuses. Download mode,
@@ -241,6 +241,8 @@ revision. For production, layer these opt-in overlays on top of
    [Build and flash](#build-and-flash) can silently build without them.
    `set-target` creates `sdkconfig.production` from the overlays; enter the
    [settings](#settings) again, then check the profile is active before flashing.
+   Erase the flash before the first flash of a profile: the partition table moves,
+   and leftover data in the new NVS range can make `nvs_flash_init()` fail.
 
    ```sh
    SECURE=(-B build-secure -D SDKCONFIG=sdkconfig.production \
@@ -248,7 +250,8 @@ revision. For production, layer these opt-in overlays on top of
    idf.py "${SECURE[@]}" set-target esp32
    idf.py "${SECURE[@]}" menuconfig
    grep -E '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
-   idf.py "${SECURE[@]}" build flash monitor
+   idf.py "${SECURE[@]}" -p <PORT> erase-flash
+   idf.py "${SECURE[@]}" -p <PORT> build flash monitor
    ```
 
    PowerShell:
@@ -259,12 +262,15 @@ revision. For production, layer these opt-in overlays on top of
    idf.py @secure set-target esp32
    idf.py @secure menuconfig
    Select-String '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
-   idf.py @secure build flash monitor
+   idf.py @secure -p <PORT> erase-flash
+   idf.py @secure -p <PORT> build flash monitor
    ```
 
    To switch overlays, for example from the rehearsal to the real profile, delete
-   `build-secure` and `sdkconfig.production` and repeat this step. Both are
-   git-ignored.
+   `build-secure` and `sdkconfig.production` and repeat this step, including the
+   erase. Both are git-ignored. Do not erase a device the real profile has booted
+   on: Secure Boot and flash encryption stay enabled in eFuse, so it would no
+   longer boot, and serial flashing is restricted.
 
    The rehearsal writes eFuse changes to the `efuse_em` partition instead of the
    chip, and does not protect flash contents. Never ship it.
