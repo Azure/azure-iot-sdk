@@ -21,8 +21,10 @@ db="${build_dir}/compile_commands.json"
 [ -f "${db}" ] || { echo "${db} not found" 1>&2; exit 1; }
 command -v "${tidy}" >/dev/null || { echo "${tidy} not found" 1>&2; exit 1; }
 
-mapfile -t files < <(jq -r '.[].file' "${db}" \
-    | grep -E "^${root_dir}/(src|adapters|samples)/" | sort -u)
+# Literal prefix match: the checkout path may contain regex metacharacters.
+mapfile -t files < <(jq -r --arg root "${root_dir}/" \
+    '.[].file | select(startswith($root + "src/") or startswith($root + "adapters/") or startswith($root + "samples/"))' \
+    "${db}" | sort -u)
 [ "${#files[@]}" -gt 0 ] || { echo "no first-party sources in ${db}" 1>&2; exit 1; }
 
 echo "$("${tidy}" --version | grep -m1 -i version)"
