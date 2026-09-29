@@ -3836,7 +3836,7 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
   if (!client->opts.certificate_provider && !client->plaintext_for_testing)
   {
     AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
-                     "hub connection uses TLS with an X.509 identity");
+                     "hub connection uses TLS");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
   if (client->opts.certificate_provider)

@@ -14,7 +14,7 @@
  * @brief az_iot_connection_client_init(), then, on success, allow the client to
  * connect without a certificate provider (plaintext). Test code only.
  */
-az_iot_result az_iot_test_connection_client_init(
+AZ_NODISCARD az_iot_result az_iot_test_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts);
 

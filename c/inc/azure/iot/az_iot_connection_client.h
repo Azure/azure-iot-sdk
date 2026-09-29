@@ -279,12 +279,13 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     /**
-     * @brief Source of the TLS client identity. Required.
+     * @brief Source of the TLS material: trust anchors and, if any, the client
+     * identity. Required.
      *
-     * Every DPS and hub connection uses TLS with an X.509 identity: open()
-     * refuses a client without one (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a
-     * connect attempt whose load() fails fails with the provider's error
-     * instead of connecting without TLS.
+     * Every DPS and hub connection uses TLS: open() refuses a client without a
+     * provider (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a connect attempt whose
+     * load() fails fails with the provider's error instead of connecting
+     * without TLS.
      */
     az_iot_certificate_provider* certificate_provider;
 
