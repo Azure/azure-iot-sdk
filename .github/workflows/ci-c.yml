@@ -480,6 +480,7 @@ jobs:
   # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
+  # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -491,10 +492,22 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-gcc
+            shared: 'OFF'
+            mbedtls: '3.6.7'
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+          - os: ubuntu-latest
+            name: linux-gcc-shared
+            shared: 'ON'
             mbedtls: '3.6.7'
             components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
+            shared: 'OFF'
+            mbedtls: ''
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+          - os: windows-latest
+            name: windows-msvc-shared
+            shared: 'ON'
             mbedtls: ''
             components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
@@ -539,6 +552,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
         run: cmake --build build/install
       - name: Unit tests
@@ -574,8 +588,45 @@ jobs:
           -DAZ_IOT_EXPECTED_COMPONENTS="${{ matrix.components }}"
       - name: Build the consumer
         run: cmake --build "$AZ_IOT_CONSUMER"
+      - name: Put the installed DLLs on PATH (Windows, shared)
+        if: runner.os == 'Windows' && matrix.shared == 'ON'
+        run: cygpath -w "$AZ_IOT_PREFIX/bin" >> "$GITHUB_PATH"
       - name: Test the consumer
         run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
+      - name: Check the exact-version binding (shared)
+        # No ABI guarantee: a consumer must bind to this exact release, and on
+        # Linux must fail to load when only another release is present.
+        if: matrix.shared == 'ON'
+        run: |
+          ver=$(sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)")$/\1/p' \
+            "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config-version.cmake")
+          test -n "$ver"
+          exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            deps=$(dumpbin -nologo -dependents "$exe.exe")
+            want="az_iot_core-$ver.dll az_iot_mqttv5-$ver.dll"
+          else
+            deps=$(readelf -d "$exe")
+            want="[libaz_iot_core.so.$ver] [libaz_iot_mqttv5.so.$ver]"
+          fi
+          for w in $want; do
+            if ! grep -qiF -- "$w" <<< "$deps"; then
+              echo "::error::$exe does not depend on $w"
+              echo "$deps"
+              exit 1
+            fi
+          done
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            libs=("$AZ_IOT_PREFIX"/lib/libaz_iot_*.so."$ver")
+            for f in "${libs[@]}"; do mv "$f" "${f%"$ver"}9.9.9"; done
+            status=0
+            "$exe" > /dev/null 2>&1 || status=$?
+            for f in "${libs[@]}"; do mv "${f%"$ver"}9.9.9" "$f"; done
+            if [ "$status" -eq 0 ]; then
+              echo "::error::$exe ran with only a different release installed"
+              exit 1
+            fi
+          fi
 
       # No CMake: the .pc files alone must give a working compile and link line.
       # MSVC builds install no .pc files.
@@ -583,6 +634,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           export PKG_CONFIG_PATH="$AZ_IOT_PREFIX/lib/pkgconfig:$AZ_IOT_MBEDTLS/lib/pkgconfig"
+          # pkg-config sets no runtime search path for the shared libraries.
+          if [ "${{ matrix.shared }}" = "ON" ]; then
+            export LD_LIBRARY_PATH="$AZ_IOT_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
           IFS=';' read -ra comps <<< "${{ matrix.components }}"
           bash tests/install/pkg-config-test.sh --run "$RUNNER_TEMP/pkg-config-test" "${comps[@]}"
 
@@ -611,7 +666,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '45'
+      EXPECTED_TESTS: '46'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

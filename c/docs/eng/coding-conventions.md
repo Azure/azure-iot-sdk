@@ -117,8 +117,12 @@ cause, while a shortened topic is a correctness bug.
 caller-provided (`az_span` or a sized array) or live inside the caller-allocated
 client struct.
 
-Two documented exceptions remain, both waived in-file: the reference filesystem
-PEM loader, and the Windows `_dupenv_s` used by the dev-only mock bypass.
+One documented exception remains, waived in-file: the reference filesystem PEM
+loader.
+
+Read environment variables with `az_iot_env_read()` (`internal/env.h`), never
+`getenv`: on Windows, a shared build with the static CRT gives each DLL its own
+copy of the environment.
 
 ## 5. Follow azure-sdk-for-c naming and shapes
 

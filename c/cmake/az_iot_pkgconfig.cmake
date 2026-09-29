@@ -5,8 +5,8 @@
 #
 #   cc app.c $(pkg-config --static --cflags --libs azure-iot-sdk-mqttv3 azure-iot-sdk-adapter_paho)
 #
-# The libraries are static, so --static is required whenever an adapter is
-# used. Libs lists this package's own libraries (first-party and the bundled
+# Adapters are always static, so --static is required whenever one is used.
+# Libs lists this package's own libraries (first-party and the bundled
 # azure-sdk-for-c ones); Requires.private and Libs.private list third-party ones.
 #
 # prefix= is the absolute install prefix, written at install time so that
