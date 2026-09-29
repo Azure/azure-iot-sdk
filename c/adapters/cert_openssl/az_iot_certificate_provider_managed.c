@@ -68,8 +68,8 @@
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
 
-/* Largest chain file init() reads back. An issued chain is a few certificates
- * of a few KB each; anything larger is refused rather than buffered. */
+/* Largest chain file stored or read back. An issued chain is a few
+ * certificates of a few KB each; anything larger is refused. */
 #define MANAGED_MAX_CHAIN_BYTES (64u * 1024u)
 
 #ifdef _WIN32
@@ -709,7 +709,7 @@ static az_iot_result managed_store(
     char* data = NULL;
     long data_len = BIO_get_mem_data(mem, &data);
     size_t parsed = 0;
-    if (data_len <= 0
+    if (data_len <= 0 || (size_t)data_len > MANAGED_MAX_CHAIN_BYTES
         || !chain_matches_key(data, (size_t)data_len, (EVP_PKEY*)m->operational_key, &parsed)
         || parsed != written)
     {

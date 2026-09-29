@@ -809,6 +809,42 @@ static void managed_an_oversized_persisted_chain_is_not_used(void** state)
   remove_test_files();
 }
 
+/* A chain larger than init() reads back is refused at store, keeping the
+ * previous one, so a successful store is always usable after a restart. */
+static void managed_store_refuses_an_oversized_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span one[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = one, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+
+  /* Every entry is a valid certificate; only the total size is over. */
+  size_t count = (64u * 1024u) / strlen(good) + 1u;
+  az_span* many = malloc(count * sizeof(az_span));
+  assert_non_null(many);
+  for (size_t i = 0; i < count; ++i)
+  {
+    many[i] = one[0];
+  }
+  az_iot_issued_certificate big = { .certificates = many, .count = count };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &big));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  assert_true(prov.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(on_disk);
+  free(many);
+  free(good);
+  remove_test_files();
+}
+
 /* A chain on disk that no longer matches the key (the key was replaced) is not
  * served as the operational identity after a restart. */
 static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
@@ -1058,6 +1094,7 @@ int main(void)
     cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
     cmocka_unit_test(managed_a_chain_followed_by_other_text_is_refused),
     cmocka_unit_test(managed_an_oversized_persisted_chain_is_not_used),
+    cmocka_unit_test(managed_store_refuses_an_oversized_chain),
 #if defined(_WIN32)
     cmocka_unit_test(managed_written_files_have_an_owner_only_dacl),
 #endif

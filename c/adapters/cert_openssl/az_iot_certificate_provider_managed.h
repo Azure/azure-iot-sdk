@@ -13,8 +13,9 @@
  *   - persists the DPS/Hub-issued operational certificate chain to disk
  *     (store_issued_certificate) and serves it back on subsequent loads and
  *     process restarts. A store is refused unless every certificate in the
- *     chain parses and the leaf certifies the operational key, and replaces the
- *     file in one step, so a failed store keeps the previous certificate.
+ *     chain parses, the leaf certifies the operational key and the PEM chain
+ *     is at most 64 KiB; it replaces the file in one step, so a failed store
+ *     keeps the previous certificate.
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
