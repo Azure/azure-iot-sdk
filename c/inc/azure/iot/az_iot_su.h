@@ -141,6 +141,7 @@ extern "C"
  * - an unsent terminal report is no longer stored (it is still sent);
  * - a new workflow waiting on the previous record's retirement proceeds.
  * A later write is still attempted once when needed; a success resets the count.
+ * A new workflow that supersedes one held at a reboot boundary rolls it back first.
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
@@ -757,6 +758,8 @@ extern "C"
       uint64_t persist_retry_ms;
       /** Consecutive failed persist_state_fn writes; 0 after any success. */
       uint32_t persist_failures;
+      /** AZ_IOT_SU_PERSIST_MAX_ATTEMPTS, copied at initialization. */
+      uint32_t persist_max_attempts;
       /** Return value of the last failed persist_state_fn write. */
       int32_t persist_last_error;
       /** The terminal record's write failed; further attempts wait for persist_retry_ms. */

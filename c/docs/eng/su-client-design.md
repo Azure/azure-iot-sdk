@@ -421,6 +421,9 @@ The byte layout is documented next to the serializer in
    - a held new workflow proceeds.
 
    A write needed later is still attempted once; a success resets the count.
+   A new `workflowId` that arrives while a workflow is held at a reboot
+   boundary rolls that workflow back (`restore_fn`) before replacing it, so a
+   later reboot cannot activate the superseded update.
    While a failure is outstanding the application MUST NOT reboot for
    `REBOOT_REQUIRED`: nothing would resume.
 
