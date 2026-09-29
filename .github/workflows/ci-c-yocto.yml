@@ -2,17 +2,15 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Builds the Yocto layer in c/platforms/yocto (azure-iot-sdk and its pkg-config
-# consumer) with bitbake for qemux86-64 on scarthgap.
+# consumer) with bitbake for qemux86-64 on scarthgap, on every trigger.
 #
-# A full bitbake without shared state builds the whole cross toolchain first
-# (about 900 tasks, about an hour). So the shared state (SSTATE_DIR) is cached, one
-# entry per kas.yml, and pull requests are capped at 20 minutes:
-# - Pull request, cache present: full bitbake. Only this layer's recipes build.
-# - Pull request, no cache (e.g. kas.yml changed): bitbake parse, fetch and
-#   unpack, then a host build of the unpacked source with the recipe's CMake
-#   arguments, offline, and the pkg-config consumer against it.
-# - Push to main or dev/c, schedule, manual: full bitbake; saves the cache
-#   when there was none. The schedule keeps the entry from expiring (7 days).
+# Shared state (SSTATE_DIR) is cached per poky commit. Without it bitbake builds
+# the cross toolchain first (about 45 minutes); with it, only this layer's
+# recipes build. Every run restores the newest entry it can see (its own
+# branch or pull request, then main) and saves a new one when it built
+# anything besides this layer's recipes, also when cancelled or timed out, so
+# the next run continues from there. Pull requests see main's entries.
+# The schedule keeps main's entry from expiring (7 days unused).
 #
 # A separate workflow from ci-c so ci-c's checks keep their duration.
 # The same `changes` pattern as ci-c: no workflow-level `paths:`, so the job
@@ -67,8 +65,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.yocto == 'true') }}
     # Pinned: scarthgap's supported hosts include Ubuntu 24.04.
     runs-on: ubuntu-24.04
-    # A cold full build (no cache) runs only outside pull requests.
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 20 || 360 }}
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -79,33 +76,23 @@ jobs:
 
       - name: Set paths
         run: |
+          poky="$(sed -n '/^  poky:/,/^ *commit:/s/^ *commit: *//p' c/platforms/yocto/kas.yml)"
+          [[ "$poky" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no poky commit in kas.yml"; exit 1; }
           {
             echo "KAS_WORK_DIR=$RUNNER_TEMP/yocto"
             echo "DL_DIR=$RUNNER_TEMP/yocto-downloads"
             echo "SSTATE_DIR=$RUNNER_TEMP/yocto-sstate"
-            echo "SSTATE_CACHE_KEY=yocto-scarthgap-qemux86-64-sstate-${{ hashFiles('c/platforms/yocto/kas.yml') }}"
+            echo "SSTATE_CACHE_PREFIX=yocto-sstate-scarthgap-qemux86-64-$poky-"
           } >> "$GITHUB_ENV"
 
       - name: Restore sstate
-        id: restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/yocto-sstate
-          key: ${{ env.SSTATE_CACHE_KEY }}
-
-      - name: Select the build
-        id: mode
-        run: |
-          if [ "${{ github.event_name }}" != pull_request ] || [ "${{ steps.restore.outputs.cache-hit }}" = true ]; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-            echo "Full bitbake (sstate cache hit: ${{ steps.restore.outputs.cache-hit || 'false' }})."
-          else
-            echo "full=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No sstate cache for this kas.yml: parse, fetch and host build only. The full bitbake runs on main."
-          fi
+          key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ env.SSTATE_CACHE_PREFIX }}
 
       - name: Free disk space
-        if: steps.mode.outputs.full == 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
@@ -116,8 +103,7 @@ jobs:
           sudo apt-get install -y gawk wget git diffstat unzip texinfo gcc build-essential \
                                   chrpath socat cpio python3 python3-pip python3-pexpect \
                                   xz-utils debianutils iputils-ping python3-git python3-jinja2 \
-                                  python3-subunit python3-websockets zstd lz4 file locales libacl1 \
-                                  cmake ninja-build libssl-dev pkg-config
+                                  python3-subunit python3-websockets zstd lz4 file locales libacl1
           sudo locale-gen en_US.UTF-8
           # bitbake runs tasks in user namespaces, which AppArmor restricts on Ubuntu 24.04.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -125,19 +111,23 @@ jobs:
 
       - name: Build this checkout, not the pinned SRCREV
         run: |
-          mkdir -p "$KAS_WORK_DIR/build/conf"
+          mkdir -p "$KAS_WORK_DIR/build/conf" "$SSTATE_DIR"
           cat > "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf" <<EOT
           AZ_IOT_SDK_GIT_URI = "git://$GITHUB_WORKSPACE;protocol=file;nobranch=1"
           SRCREV_sdk = "$(git rev-parse HEAD)"
           EOT
           cat "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf"
+          # Objects of other recipes, to tell whether this run adds any.
+          find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l > "$RUNNER_TEMP/sstate-before"
+          echo "sstate objects restored: $(cat "$RUNNER_TEMP/sstate-before")"
 
       - name: bitbake
-        if: steps.mode.outputs.full == 'true'
+        id: bitbake
+        # Leaves time to save what was built.
+        timeout-minutes: 100
         run: kas build c/platforms/yocto/kas.yml
 
       - name: Check the packages
-        if: steps.mode.outputs.full == 'true'
         run: |
           work=("$KAS_WORK_DIR"/build/tmp/work/*/azure-iot-sdk/*/packages-split)
           test "${#work[@]}" -eq 1 && test -d "${work[0]}"
@@ -153,7 +143,6 @@ jobs:
           test -f "$pkgs/azure-iot-sdk-staticdev/usr/lib/libpaho-mqtt3as.a"
 
       - name: Run the pkg-config consumer
-        if: steps.mode.outputs.full == 'true'
         # qemux86-64 binaries run on the x86-64 runner with the recipe
         # sysroot's own loader and libraries.
         run: |
@@ -168,46 +157,19 @@ jobs:
             "$sysroot/lib/ld-linux-x86-64.so.2" --library-path "$sysroot/lib:$sysroot/usr/lib" "$b"
           done
 
-      - name: bitbake parse, fetch and unpack
-        if: steps.mode.outputs.full != 'true'
+      - name: New sstate to save?
+        id: sstate
+        if: always() && steps.bitbake.outcome != 'skipped'
         run: |
-          kas shell c/platforms/yocto/kas.yml -c "
-            bitbake azure-iot-sdk azure-iot-sdk-pkgconfig-test -c unpack &&
-            bitbake-getvar -q -r azure-iot-sdk --value S > '$RUNNER_TEMP/recipe-S' &&
-            bitbake-getvar -q -r azure-iot-sdk --value EXTRA_OECMAKE > '$RUNNER_TEMP/recipe-EXTRA_OECMAKE' &&
-            bitbake-getvar -q -r azure-iot-sdk --value PACKAGECONFIG_CONFARGS > '$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS'"
-          cat "$RUNNER_TEMP/recipe-S" "$RUNNER_TEMP/recipe-EXTRA_OECMAKE" "$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS"
+          before="$(cat "$RUNNER_TEMP/sstate-before")"
+          after="$(find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l)"
+          echo "sstate objects of other recipes: $before restored, $after now"
+          echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - name: Host build of the unpacked recipe source
-        if: steps.mode.outputs.full != 'true'
-        env:
-          # As the recipe exports.
-          AZURE_SDK_DISABLE_AUTO_VCPKG: "1"
-        run: |
-          src="$(cat "$RUNNER_TEMP/recipe-S")"
-          # The CMake arguments bitbake passes: EXTRA_OECMAKE and the PACKAGECONFIG switches.
-          read -ra args < "$RUNNER_TEMP/recipe-EXTRA_OECMAKE"
-          read -ra pkgconfig_args < "$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS"
-          prefix="$RUNNER_TEMP/recipe-prefix"
-          cmake -S "$src" -B "$RUNNER_TEMP/recipe-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$prefix" -DFETCHCONTENT_FULLY_DISCONNECTED=ON "${args[@]}" "${pkgconfig_args[@]}"
-          cmake --build "$RUNNER_TEMP/recipe-build"
-          cmake --install "$RUNNER_TEMP/recipe-build"
-          pcdir="$(dirname "$(find "$prefix" -name azure-iot-sdk-core.pc)")"
-          comps=()
-          for pc in "$pcdir"/azure-iot-sdk-*.pc; do
-            c="${pc##*/azure-iot-sdk-}"
-            comps+=("${c%.pc}")
-          done
-          echo "components: ${comps[*]}"
-          test "${#comps[@]}" -eq 6
-          PKG_CONFIG_PATH="$pcdir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" bash "$src/tests/install/pkg-config-test.sh" --run \
-            "$RUNNER_TEMP/recipe-pkg-config-test" "${comps[@]}"
-
-      # One immutable entry per kas.yml; pull requests only restore it.
+      # Also after a failure, cancellation or timeout: the next run continues.
       - name: Save sstate
-        if: success() && steps.mode.outputs.full == 'true' && steps.restore.outputs.cache-hit != 'true'
+        if: always() && steps.sstate.outputs.save == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/yocto-sstate
-          key: ${{ env.SSTATE_CACHE_KEY }}
+          key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
