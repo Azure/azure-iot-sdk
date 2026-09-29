@@ -26,4 +26,12 @@
     <ProjectReference Include="..\..\src\Microsoft.Azure.Iot.Device\Microsoft.Azure.Iot.Device.csproj" />
   </ItemGroup>
 
+  <!-- Add strong name signing properties solely so that internalsVisibleTo can share internals with this package -->
+  <PropertyGroup>
+    <AssemblyOriginatorKeyFile>$(MSBuildProjectDirectory)\..\..\MSSharedLibKey.snk</AssemblyOriginatorKeyFile>
+    <SignAssembly>true</SignAssembly>
+    <PublicSign>true</PublicSign>
+    <DelaySign>false</DelaySign>
+  </PropertyGroup>
+
 </Project>
