@@ -11,7 +11,8 @@
 #   -fstack-protector-strong      stack canaries
 #   -fstack-clash-protection      stack clash probing
 #   -fcf-protection               x86 CET (IBT + shadow stack)
-#   -D_FORTIFY_SOURCE=2           checked libc calls; optimized builds only (glibc warns at -O0)
+#   -D_FORTIFY_SOURCE=2           checked libc calls; Release, RelWithDebInfo and MinSizeRel only:
+#                                 it does nothing without optimization, and older glibc warns
 #   -Werror=format-security       non-literal format strings (with -Wformat)
 #   PIE, -z relro -z now          read-only relocations after start-up
 #   -z noexecstack                non-executable stack
@@ -41,7 +42,7 @@ if(AZ_IOT_HAS_format_security)
 endif()
 
 # -U first: some toolchains (Ubuntu, Yocto) already define it, and a redefinition warns.
-add_compile_options("$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
+add_compile_options("$<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
 
 if(NOT APPLE)
     foreach(_flag -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
