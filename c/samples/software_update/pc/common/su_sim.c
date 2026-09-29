@@ -209,7 +209,10 @@ int32_t su_restore(const az_iot_su_client_update_manifest* manifest, uint32_t st
 {
   (void)manifest;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
-  s->reboot_pending = 0; /* rolled back: the requested reboot is no longer wanted */
+  /* Rolled back: the requested reboot is no longer wanted, and a later
+   * workflow may request its own. */
+  s->reboot_pending = 0;
+  s->reboot_signalled = 0;
   printf("  [restore] step %u (rollback) [simulated]\n", step);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
