@@ -295,6 +295,8 @@ static int32_t ota_restore(
   {
     esp_ota_set_boot_partition(running);
   }
+  /* Rolled back: the reboot install asked for is no longer wanted. */
+  c->reboot_pending = false;
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 

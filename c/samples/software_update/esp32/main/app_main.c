@@ -470,7 +470,7 @@ void app_main(void)
 
     /* install_fn asked for a reboot to boot the freshly flashed image. Wait
      * while the NVS write is failing: resume() needs that record. If the client
-     * gives up it rolls the update back. */
+     * gives up, the rollback clears reboot_pending. */
     if (ota.reboot_pending && !g_persist_failing)
     {
       ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
