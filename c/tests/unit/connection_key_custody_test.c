@@ -8,8 +8,8 @@
  * These cases cover the seam between az_iot_certificate_material and
  * az_iot_mqtt_tls_options: the key-reference fields and the sign() hook must
  * reach the adapter on BOTH connect paths (the DPS/bootstrap one and the
- * operational/reconnect one), the sign() hook must be gated on the vtable
- * version, and a credential that cannot sign at all must be refused before a
+ * operational/reconnect one), the sign() hook must be forwarded only when set,
+ * and a credential that cannot sign at all must be refused before a
  * socket exists rather than inside the TLS handshake.
  *
  * Driven through the public API and observed through the in-memory mock
@@ -115,29 +115,17 @@ static az_iot_result custody_sign(
   return AZ_IOT_OK;
 }
 
-static const az_iot_certificate_provider_vtable k_vtable_v2_with_sign = {
-  .version = 2u,
+static const az_iot_certificate_provider_vtable k_vtable_with_sign = {
   .load = custody_load,
   .release = custody_release,
   .deinit = custody_deinit,
   .sign = custody_sign,
 };
 
-static const az_iot_certificate_provider_vtable k_vtable_v2_without_sign = {
-  .version = 2u,
+static const az_iot_certificate_provider_vtable k_vtable_without_sign = {
   .load = custody_load,
   .release = custody_release,
   .deinit = custody_deinit,
-};
-
-/* A v1 provider that nevertheless populates the v2 sign slot. The slot did not
- * exist at v1, so the client must not call it however it looks. */
-static const az_iot_certificate_provider_vtable k_vtable_v1_with_sign = {
-  .version = 1u,
-  .load = custody_load,
-  .release = custody_release,
-  .deinit = custody_deinit,
-  .sign = custody_sign,
 };
 
 static void custody_provider_init(
@@ -171,7 +159,7 @@ static int setup(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
-  custody_provider_init(&fx->provider, &k_vtable_v2_with_sign);
+  custody_provider_init(&fx->provider, &k_vtable_with_sign);
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
   *state = fx;
@@ -387,14 +375,8 @@ static void the_forwarded_sign_hook_rejects_an_unusable_provider(void** state)
       c->connect.sign(&no_vtable, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
       AZ_IOT_ERR_INVALID_ARG);
 
-  /* A vtable from before the slot existed. */
-  az_iot_certificate_provider v1 = { .vtable = &k_vtable_v1_with_sign };
-  assert_int_equal(
-      c->connect.sign(&v1, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
-      AZ_IOT_ERR_INVALID_ARG);
-
-  /* v2, but the slot is empty. */
-  az_iot_certificate_provider no_sign = { .vtable = &k_vtable_v2_without_sign };
+  /* The slot is empty. */
+  az_iot_certificate_provider no_sign = { .vtable = &k_vtable_without_sign };
   assert_int_equal(
       c->connect.sign(&no_sign, digest, sizeof(digest), sig, sizeof(sig), &sig_len),
       AZ_IOT_ERR_INVALID_ARG);
@@ -403,14 +385,14 @@ static void the_forwarded_sign_hook_rejects_an_unusable_provider(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* v2 gating                                                                 */
+/* sign() forwarding                                                         */
 /* ------------------------------------------------------------------------- */
 
-/* A v2 provider that leaves .sign NULL gets no hook forwarded. */
-static void a_v2_provider_without_sign_forwards_no_hook(void** state)
+/* A provider that leaves .sign NULL gets no hook forwarded. */
+static void a_provider_without_sign_forwards_no_hook(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
@@ -418,23 +400,8 @@ static void a_v2_provider_without_sign_forwards_no_hook(void** state)
   assert_non_null(c);
   assert_false(c->connect.has_sign);
   assert_null(c->connect.sign_ctx);
-  /* The key reference itself is a v1 material field and still travels. */
+  /* The key reference is a material field and still travels. */
   assert_string_equal(c->connect.crypto_engine_id, "pkcs11");
-}
-
-/* The sign slot does not exist below vtable version 2. A v1 provider whose
- * memory happens to hold something there must never be called through it. */
-static void a_v1_provider_sign_slot_is_ignored(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v1_with_sign;
-  init_client(fx, false);
-  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-
-  const az_iot_mock_call* c = last_connect(fx);
-  assert_non_null(c);
-  assert_false(c->connect.has_sign);
-  assert_int_equal(fx->provider.sign_calls, 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -446,7 +413,7 @@ static void a_v1_provider_sign_slot_is_ignored(void** state)
 static void a_certificate_without_any_key_is_refused_at_open(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   fx->provider.material.client_key_uri = NULL;
   fx->provider.material.crypto_engine_id = NULL;
   init_client(fx, false);
@@ -460,7 +427,7 @@ static void a_certificate_without_any_key_is_refused_at_open(void** state)
 static void a_key_uri_without_an_engine_id_is_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   fx->provider.material.crypto_engine_id = NULL;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
@@ -499,7 +466,7 @@ static void a_sign_hook_alone_satisfies_the_key_requirement(void** state)
 static void material_without_a_client_certificate_is_not_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   memset(&fx->provider.material, 0, sizeof(fx->provider.material));
   fx->provider.material.trusted_ca_path = "/dev/null/ca.pem";
   init_client(fx, false);
@@ -514,7 +481,7 @@ static void material_without_a_client_certificate_is_not_rejected(void** state)
 static void a_plain_pem_credential_is_unaffected(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   memset(&fx->provider.material, 0, sizeof(fx->provider.material));
   fx->provider.material.client_cert_pem = "cert";
   fx->provider.material.client_key_pem = "key";
@@ -536,7 +503,7 @@ static void a_plain_pem_credential_is_unaffected(void** state)
 static void a_provider_with_no_material_yet_is_not_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   fx->provider.operational_result = AZ_IOT_ERR_NOT_INITIALIZED;
   /* Both roles fail: make load() refuse the bootstrap role as well by giving
    * the provider a vtable whose load always fails. */
@@ -544,7 +511,7 @@ static void a_provider_with_no_material_yet_is_not_refused(void** state)
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 }
 
-/* load() is required at every vtable version. A provider without one is a
+/* load() is required. A provider without one is a
  * configuration error open() names, not a NULL dereference several frames
  * later inside the connect attempt. */
 /* A provider whose vtable pointer is NULL is a caller bug, and the client's job
@@ -563,8 +530,8 @@ static void a_provider_with_a_null_vtable_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
-/* The same provider on the CSR path, which gates on the v2 ABI before looking
- * for get_csr and so reads the vtable earlier still. */
+/* The same provider on the CSR path, which checks for get_csr and so reads the
+ * vtable earlier still. */
 static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -587,7 +554,7 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
 static void a_provider_without_load_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
-  static const az_iot_certificate_provider_vtable k_no_load = { .version = 2u };
+  static const az_iot_certificate_provider_vtable k_no_load = { 0 };
   fx->provider.base.vtable = &k_no_load;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
@@ -599,7 +566,7 @@ static void a_provider_without_load_is_rejected(void** state)
 static void a_credential_that_degrades_after_open_fails_the_connect(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   /* Call 1 is the open() pre-flight and succeeds; call 2 is the connect
    * attempt's own load(), and it comes back without a key. */
   fx->provider.degrade_after_calls = 1;
@@ -612,7 +579,7 @@ static void a_credential_that_degrades_after_open_fails_the_connect(void** state
 static void a_dps_credential_without_a_key_fails_the_connect(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.base.vtable = &k_vtable_without_sign;
   fx->provider.degrade_after_calls = 1;
   init_client(fx, true);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
@@ -640,8 +607,7 @@ int main(void)
         the_forwarded_sign_hook_preserves_out_len_on_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_forwarded_sign_hook_rejects_an_unusable_provider, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_v2_provider_without_sign_forwards_no_hook, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_v1_provider_sign_slot_is_ignored, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_provider_without_sign_forwards_no_hook, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_certificate_without_any_key_is_refused_at_open, setup, teardown),
     cmocka_unit_test_setup_teardown(a_key_uri_without_an_engine_id_is_refused, setup, teardown),

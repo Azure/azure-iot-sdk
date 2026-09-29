@@ -454,6 +454,10 @@ if(TARGET az_iot_certificate_provider_managed)
         unit/certificate_provider_managed_test.c)
     target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE
         az_iot_certificate_provider_managed OpenSSL::Crypto)
+    if(WIN32)
+        # GetNamedSecurityInfoA and friends, to check the written files' DACLs.
+        target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE advapi32)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

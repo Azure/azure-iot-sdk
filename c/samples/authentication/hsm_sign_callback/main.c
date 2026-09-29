@@ -21,7 +21,7 @@
  * What the sample shows, and what it does not:
  *
  *   - It DOES show the whole seam: a provider that implements sign(), the SDK
- *     gating that hook on vtable version >= 2, and an adapter reading
+ *     forwarding that hook, and an adapter reading
  *     tls.sign / tls.sign_ctx out of az_iot_mqtt_connect_options and invoking
  *     it -- which is the exact line an integrator writes in their own adapter.
  *   - It does NOT speak MQTT. The adapter below is a stand-in that performs the
@@ -116,8 +116,6 @@ static az_iot_result sign_sign(
 }
 
 static const az_iot_certificate_provider_vtable k_sign_vtable = {
-  /* Version 2 or later, or the SDK will not look at .sign at all. */
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = sign_load,
   .release = sign_release,
   .deinit = sign_deinit,

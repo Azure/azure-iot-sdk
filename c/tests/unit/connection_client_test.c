@@ -1313,7 +1313,7 @@ static void hub_mqtt_v5_birth_ack_truncated_payload_is_safe(void** state)
 }
 
 /* D2: request_operational_certificate requires a certificate_provider whose
- * vtable exposes get_csr (ABI version >= 2). open() must reject otherwise. */
+ * vtable exposes get_csr. open() must reject otherwise. */
 static void open_rejects_operational_cert_without_csr_provider(void** state)
 {
   (void)state;
@@ -1330,11 +1330,9 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c1);
 
-  /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;
+  /* Case 2: a provider that does not implement get_csr (all hooks NULL;
    * open() rejects before any hook is invoked). */
-  static const az_iot_certificate_provider_vtable no_csr_vtable = {
-    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
-  };
+  static const az_iot_certificate_provider_vtable no_csr_vtable = { 0 };
   az_iot_certificate_provider prov = { .vtable = &no_csr_vtable };
   opts.certificate_provider = &prov;
 
@@ -1354,6 +1352,7 @@ typedef struct fake_csr_provider
   size_t stored_count;
   char stored_leaf[256];
   az_iot_cert_role last_load_role;
+  az_iot_result store_rc; /* returned by fake_store; AZ_IOT_OK by default */
 } fake_csr_provider;
 
 static az_iot_result fake_csr_load(
@@ -1410,10 +1409,9 @@ static az_iot_result fake_store(
     memcpy(f->stored_leaf, az_span_ptr(leaf), n);
     f->stored_leaf[n] = '\0';
   }
-  return AZ_IOT_OK;
+  return f->store_rc;
 }
 static const az_iot_certificate_provider_vtable k_fake_csr_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = fake_csr_load,
   .release = fake_csr_release,
   .deinit = fake_csr_destroy,
@@ -1424,42 +1422,66 @@ static const az_iot_certificate_provider_vtable k_fake_csr_vtable = {
 
 static int g_dps_op_cert_count = 0;
 static size_t g_dps_op_cert_chain = 0;
-static void on_dps_op_cert(const az_iot_issued_certificate* issued, void* uc)
+static az_iot_result g_dps_op_cert_store_result = AZ_IOT_OK;
+static int g_dps_store_calls_at_cb = -1;
+static fake_csr_provider* g_dps_prov = NULL;
+/* When set, the callback unregisters itself from this client. */
+static az_iot_connection_client* g_dps_unregister_from = NULL;
+static void on_dps_op_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* uc)
 {
   (void)uc;
   g_dps_op_cert_count++;
   g_dps_op_cert_chain = issued->count;
+  g_dps_op_cert_store_result = store_result;
+  g_dps_store_calls_at_cb = g_dps_prov ? g_dps_prov->store_calls : -1;
+  if (g_dps_unregister_from)
+  {
+    (void)az_iot_connection_client_set_operational_cert_callback(g_dps_unregister_from, NULL, NULL);
+  }
 }
 
-static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
+/* Init a DPS client with request_operational_certificate over @p prov, drive it
+ * through registration and deliver an ASSIGNED response carrying a two-cert
+ * chain. The client is left initialized; the caller deinits it. */
+/* ASSIGNED response drive_dps_csr_assignment() injects; NULL = a valid one. */
+static const char* g_dps_resp = NULL;
+
+static void drive_dps_csr_assignment(
+    az_iot_connection_client* client,
+    uint8_t* csr_buf,
+    size_t csr_buf_size,
+    fake_csr_provider* prov,
+    bool with_callback)
 {
-  (void)state;
-
-  fake_csr_provider prov = { 0 };
-  prov.base.vtable = &k_fake_csr_vtable;
-
-  az_iot_connection_client client;
-  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
   az_iot_connection_client_options opts = { 0 };
   opts.host = NULL; /* DPS mode */
   opts.client_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
-  opts.certificate_provider = &prov.base;
-  opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  opts.certificate_provider = &prov->base;
+  opts.csr_payload_buffer = az_span_create(csr_buf, (int32_t)csr_buf_size);
+  assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
 
   g_dps_op_cert_count = 0;
   g_dps_op_cert_chain = 0;
-  az_iot_connection_client_set_operational_cert_callback(&client, on_dps_op_cert, NULL);
+  g_dps_op_cert_store_result = AZ_IOT_OK;
+  g_dps_store_calls_at_cb = -1;
+  g_dps_prov = prov;
+  if (with_callback)
+  {
+    az_iot_connection_client_set_operational_cert_callback(client, on_dps_op_cert, NULL);
+  }
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
   /* open() -> dps_start creates the DPS mock client and connects. */
-  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(factory);
   assert_non_null(dps);
   const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_CONNECT);
@@ -1469,7 +1491,7 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
 
   /* CONNECTED -> subscribe. */
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(&client, 0);
+  (void)az_iot_connection_client_do_work(client, 0);
 
   /* SUBSCRIBE_ACK -> register publish carrying the CSR. */
   az_iot_mqtt_event suback;
@@ -1477,9 +1499,9 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
   suback.status = AZ_IOT_OK;
   assert_true(az_iot_mock_mqtt_client_inject_event(dps, &suback));
-  (void)az_iot_connection_client_do_work(&client, 0);
+  (void)az_iot_connection_client_do_work(client, 0);
 
-  assert_true(prov.get_csr_calls >= 1);
+  assert_true(prov->get_csr_calls >= 1);
   bool found_csr_publish = false;
   for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(dps); ++i)
   {
@@ -1497,6 +1519,10 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
                      "\"registrationState\":{\"registrationId\":\"ut-device\","
                      "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
                      "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  if (g_dps_resp)
+  {
+    resp = g_dps_resp;
+  }
   assert_true(az_iot_mock_mqtt_client_inject_message(
       dps,
       "$dps/registrations/res/200/?$rid=1",
@@ -1508,8 +1534,20 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
    * hub connect). Several do_work iterations cover the deferred steps. */
   for (int i = 0; i < 5; ++i)
   {
-    (void)az_iot_connection_client_do_work(&client, 0);
+    (void)az_iot_connection_client_do_work(client, 0);
   }
+  g_dps_prov = NULL;
+}
+
+static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
 
   /* Provider received the PEM-wrapped issued chain. */
   assert_int_equal(prov.store_calls, 1);
@@ -1519,10 +1557,135 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
 
   /* Hub connect selected the OPERATIONAL identity. */
   assert_int_equal(prov.last_load_role, AZ_IOT_CRED_OPERATIONAL);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
 
-  /* The app operational-cert callback (D4) also fired with the chain. */
+  /* The app operational-cert callback (D4) fired after the store, with its result. */
   assert_int_equal(g_dps_op_cert_count, 1);
   assert_int_equal((int)g_dps_op_cert_chain, 2);
+  assert_int_equal(g_dps_store_calls_at_cb, 1);
+  assert_int_equal(g_dps_op_cert_store_result, AZ_IOT_OK);
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A truncated ASSIGNED payload never reaches the provider; the registration
+ * fails. */
+static void dps_a_truncated_assignment_is_not_stored(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  g_dps_resp = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+               "\"registrationState\":{\"registrationId\":\"ut-device\","
+               "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+               "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]";
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
+  g_dps_resp = NULL;
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(g_dps_op_cert_count, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A failed store must not hide the chain from the app: the callback still fires,
+ * carrying the provider's error, and the registration fails as before. */
+static void dps_store_failure_still_delivers_the_chain_with_the_error(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  prov.store_rc = AZ_IOT_ERR_INTERNAL;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
+
+  assert_int_equal(prov.store_calls, 1);
+  assert_int_equal(g_dps_op_cert_count, 1);
+  assert_int_equal((int)g_dps_op_cert_chain, 2);
+  assert_int_equal(g_dps_op_cert_store_result, AZ_IOT_ERR_INTERNAL);
+
+  /* Registration failed: no hub connect was attempted. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* DPS enrollment needs a provider that also releases the CSR and stores the
+ * issued chain: the client never keeps the chain itself. */
+static void open_rejects_operational_cert_without_release_or_store(void** state)
+{
+  (void)state;
+  static const az_iot_certificate_provider_vtable no_store = {
+    .load = fake_csr_load,
+    .release = fake_csr_release,
+    .deinit = fake_csr_destroy,
+    .get_csr = fake_get_csr,
+    .release_csr = fake_release_csr,
+  };
+  static const az_iot_certificate_provider_vtable no_release_csr = {
+    .load = fake_csr_load,
+    .release = fake_csr_release,
+    .deinit = fake_csr_destroy,
+    .get_csr = fake_get_csr,
+    .store_issued_certificate = fake_store,
+  };
+  const az_iot_certificate_provider_vtable* vtables[] = { &no_store, &no_release_csr };
+  for (size_t i = 0; i < sizeof(vtables) / sizeof(vtables[0]); ++i)
+  {
+    fake_csr_provider prov = { 0 };
+    prov.base.vtable = vtables[i];
+    uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+    az_iot_connection_client_options opts = { 0 };
+    opts.client_id = "ut-device";
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+    opts.dps.request_operational_certificate = true;
+    opts.certificate_provider = &prov.base;
+    opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
+    az_iot_connection_client client;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+    /* A registered factory, so the refusal can only come from the provider check. */
+    az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_non_null(factory);
+    assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_NOT_SUPPORTED);
+    assert_int_equal(prov.get_csr_calls, 0);
+    assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+    az_iot_connection_client_deinit(&client);
+  }
+}
+
+/* The callback may unregister itself while running; the chain is still stored
+ * and the registration proceeds to the hub. */
+static void dps_a_callback_that_unregisters_itself_still_handles_the_chain(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  g_dps_unregister_from = &client;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
+  g_dps_unregister_from = NULL;
+
+  assert_int_equal(g_dps_op_cert_count, 1);
+  assert_int_equal(prov.store_calls, 1);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
 
   az_iot_connection_client_deinit(&client);
 }
@@ -1541,6 +1704,7 @@ typedef struct csr_test_ctx
 static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
 {
   csr_test_ctx* t = (csr_test_ctx*)uc;
+  assert_int_equal(evt->_internal_size, sizeof(az_iot_csr_event));
   switch (evt->kind)
   {
     case AZ_IOT_CSR_ACCEPTED:
@@ -1689,6 +1853,406 @@ static void send_csr_error_reports_service_code(void** state)
   assert_int_equal(tc.failed, 1);
   assert_int_equal(tc.service_code, 409005);
   assert_int_equal((int)tc.retry_after_s, 5);
+}
+
+/* ---- Hub renewal: who owns the key owns the chain ---- */
+
+/* Serves BOOTSTRAP until a store succeeds, then OPERATIONAL; paths let a test
+ * see which identity a CONNECT used. */
+typedef struct renew_provider
+{
+  az_iot_certificate_provider base;
+  int get_csr_calls;
+  int release_csr_calls;
+  char csr_subject[64];
+  az_iot_result get_csr_rc;
+  int store_calls;
+  char stored_leaf[64];
+  az_iot_result store_rc;
+  bool has_operational;
+} renew_provider;
+
+static az_iot_result renew_load(
+    az_iot_certificate_provider* s,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  renew_provider* p = (renew_provider*)s;
+  memset(out, 0, sizeof(*out));
+  if (role == AZ_IOT_CRED_OPERATIONAL)
+  {
+    if (!p->has_operational)
+    {
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
+    out->client_cert_path = "operational-cert.pem";
+    out->client_key_path = "operational-key.pem";
+  }
+  else
+  {
+    out->client_cert_path = "bootstrap-cert.pem";
+    out->client_key_path = "bootstrap-key.pem";
+  }
+  return AZ_IOT_OK;
+}
+
+static az_iot_result renew_get_csr(
+    az_iot_certificate_provider* s,
+    const char* cn,
+    az_iot_certificate_signing_request* out)
+{
+  renew_provider* p = (renew_provider*)s;
+  p->get_csr_calls++;
+  size_t n = strlen(cn);
+  n = n < sizeof(p->csr_subject) - 1 ? n : sizeof(p->csr_subject) - 1;
+  memcpy(p->csr_subject, cn, n);
+  p->csr_subject[n] = '\0';
+  if (p->get_csr_rc != AZ_IOT_OK)
+  {
+    return p->get_csr_rc;
+  }
+  out->csr_base64 = "UFJPVkNTUg==";
+  return AZ_IOT_OK;
+}
+
+static void renew_release_csr(
+    az_iot_certificate_provider* s,
+    az_iot_certificate_signing_request* csr)
+{
+  ((renew_provider*)s)->release_csr_calls++;
+  csr->csr_base64 = NULL;
+}
+
+static az_iot_result renew_store(
+    az_iot_certificate_provider* s,
+    const az_iot_issued_certificate* issued)
+{
+  renew_provider* p = (renew_provider*)s;
+  p->store_calls++;
+  az_span leaf = issued->certificates[0];
+  size_t n = (size_t)az_span_size(leaf);
+  n = n < sizeof(p->stored_leaf) - 1 ? n : sizeof(p->stored_leaf) - 1;
+  memcpy(p->stored_leaf, az_span_ptr(leaf), n);
+  p->stored_leaf[n] = '\0';
+  if (p->store_rc == AZ_IOT_OK)
+  {
+    p->has_operational = true;
+  }
+  return p->store_rc;
+}
+
+static const az_iot_certificate_provider_vtable k_renew_vtable = {
+  .load = renew_load,
+  .release = fake_csr_release,
+  .deinit = fake_csr_destroy,
+  .get_csr = renew_get_csr,
+  .release_csr = renew_release_csr,
+  .store_issued_certificate = renew_store,
+};
+
+/* Can store but not produce a CSR. */
+static const az_iot_certificate_provider_vtable k_renew_vtable_no_csr = {
+  .load = renew_load,
+  .release = fake_csr_release,
+  .deinit = fake_csr_destroy,
+  .store_issued_certificate = renew_store,
+};
+
+/* Can produce a CSR but not store the chain. */
+static const az_iot_certificate_provider_vtable k_renew_vtable_no_store = {
+  .load = renew_load,
+  .release = fake_csr_release,
+  .deinit = fake_csr_destroy,
+  .get_csr = renew_get_csr,
+  .release_csr = renew_release_csr,
+};
+
+typedef struct renew_cb_ctx
+{
+  int issued;
+  size_t issued_count;
+  az_iot_result store_status;
+  int store_calls_at_cb;
+  int failed;
+  az_iot_result failed_status;
+  renew_provider* prov;
+} renew_cb_ctx;
+
+static void on_renew_evt(const az_iot_csr_event* evt, void* uc)
+{
+  renew_cb_ctx* t = (renew_cb_ctx*)uc;
+  assert_int_equal(evt->_internal_size, sizeof(az_iot_csr_event));
+  if (evt->kind == AZ_IOT_CSR_ISSUED)
+  {
+    t->issued++;
+    t->issued_count = evt->issued ? evt->issued->count : 0;
+    t->store_status = evt->store_status;
+    t->store_calls_at_cb = t->prov ? t->prov->store_calls : -1;
+  }
+  else if (evt->kind == AZ_IOT_CSR_FAILED)
+  {
+    t->failed++;
+    t->failed_status = evt->status;
+  }
+}
+
+typedef struct renew_fixture
+{
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory;
+  az_iot_mock_mqtt_client* hub;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+} renew_fixture;
+
+/* Connect a direct-hub client over @p prov (may be NULL) and return with the
+ * session up. */
+static void renew_connect(renew_fixture* rf, renew_provider* prov)
+{
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  opts.host = "broker.example";
+  opts.client_id = "ut-device";
+  opts.certificate_provider = prov ? &prov->base : NULL;
+  opts.csr_payload_buffer = az_span_create(rf->csr_buf, sizeof(rf->csr_buf));
+  assert_int_equal(az_iot_connection_client_init(&rf->client, &opts), AZ_IOT_OK);
+
+  rf->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(rf->factory);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&rf->client, rf->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&rf->client), AZ_IOT_OK);
+  rf->hub = az_iot_mock_mqtt_factory_last_client(rf->factory);
+  assert_non_null(rf->hub);
+  if (prov)
+  {
+    const az_iot_mock_call* connect
+        = az_iot_mock_mqtt_client_last_of(rf->hub, AZ_IOT_MOCK_CALL_CONNECT);
+    assert_non_null(connect);
+    assert_string_equal(connect->connect.client_cert_path, "bootstrap-cert.pem");
+  }
+  assert_true(az_iot_mock_mqtt_client_inject_connected(rf->hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&rf->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&rf->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* send_csr(@p csr) on the connected fixture, then answer it with a 200 carrying
+ * a two-cert chain. Returns the request body that was published. */
+static void renew_issue(
+    renew_fixture* rf,
+    renew_cb_ctx* tc,
+    const az_iot_certificate_signing_request* csr,
+    char* body,
+    size_t body_size)
+{
+  tc->store_calls_at_cb = -1;
+  assert_int_equal(
+      az_iot_connection_client_send_csr(&rf->client, csr, "req-renew", NULL, on_renew_evt, tc),
+      AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(rf->hub, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  size_t n = pub->payload_len < body_size - 1 ? pub->payload_len : body_size - 1;
+  memcpy(body, pub->payload, n);
+  body[n] = '\0';
+
+  const char* r200 = "{\"correlationId\":\"x\",\"certificates\":[\"TEEF\",\"SU5U\"]}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      rf->hub,
+      "$iothub/credentials/res/200/?$rid=req-renew",
+      (const uint8_t*)r200,
+      strlen(r200),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(&rf->client, 0);
+  assert_int_equal(tc->issued, 1);
+  assert_int_equal((int)tc->issued_count, 2);
+}
+
+/* The live session survives the issuance: no DISCONNECT, still CONNECTED. */
+static void assert_session_untouched(renew_fixture* rf)
+{
+  assert_null(az_iot_mock_mqtt_client_last_of(rf->hub, AZ_IOT_MOCK_CALL_DISCONNECT));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&rf->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* close() + open(), and return the client certificate the new CONNECT used. */
+static const char* renew_reconnect(renew_fixture* rf)
+{
+  assert_int_equal(az_iot_connection_client_close(&rf->client), AZ_IOT_OK);
+  az_iot_mqtt_event evt = { 0 };
+  evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  evt.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(rf->hub, &evt));
+  (void)az_iot_connection_client_do_work(&rf->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&rf->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+
+  assert_int_equal(az_iot_connection_client_open(&rf->client), AZ_IOT_OK);
+  rf->hub = az_iot_mock_mqtt_factory_last_client(rf->factory);
+  assert_non_null(rf->hub);
+  const az_iot_mock_call* connect
+      = az_iot_mock_mqtt_client_last_of(rf->hub, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  return connect->connect.client_cert_path;
+}
+
+/* No CSR from the app: the provider makes it (subject = device id), and the
+ * chain is stored there before the callback and used on the next connect. */
+static void a_provider_csr_chain_is_stored_and_used_on_the_next_connect(void** state)
+{
+  (void)state;
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable };
+  renew_cb_ctx tc = { .prov = &prov };
+  char body[256];
+  renew_connect(&rf, &prov);
+  renew_issue(&rf, &tc, NULL, body, sizeof(body));
+
+  assert_int_equal(prov.get_csr_calls, 1);
+  assert_int_equal(prov.release_csr_calls, 1);
+  assert_string_equal(prov.csr_subject, "ut-device");
+  assert_non_null(strstr(body, "\"csr\":\"UFJPVkNTUg==\""));
+
+  assert_int_equal(prov.store_calls, 1);
+  assert_string_equal(prov.stored_leaf, "TEEF");
+  assert_int_equal(tc.store_calls_at_cb, 1);
+  assert_int_equal(tc.store_status, AZ_IOT_OK);
+  assert_session_untouched(&rf);
+
+  assert_string_equal(renew_reconnect(&rf), "operational-cert.pem");
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+/* A truncated or malformed 200 is a failed renewal: nothing reaches the
+ * provider and the session is kept. */
+static void a_malformed_credentials_response_is_not_stored(void** state)
+{
+  (void)state;
+  static const char* const k_bad[] = {
+    "{\"certificates\":[\"TEEF\"",
+    "{\"certificates\":[\"TEEF\"]",
+    "{\"certificates\":[\"TEEF\"]}x",
+  };
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable };
+  renew_cb_ctx tc = { .prov = &prov };
+  renew_connect(&rf, &prov);
+
+  for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client_send_csr(&rf.client, NULL, "req-bad", NULL, on_renew_evt, &tc),
+        AZ_IOT_OK);
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        rf.hub,
+        "$iothub/credentials/res/200/?$rid=req-bad",
+        (const uint8_t*)k_bad[i],
+        strlen(k_bad[i]),
+        AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(&rf.client, 0);
+    assert_int_equal(tc.failed, (int)i + 1);
+    assert_int_equal(tc.failed_status, AZ_IOT_ERR_PROTOCOL);
+  }
+  assert_int_equal(tc.issued, 0);
+  assert_int_equal(prov.store_calls, 0);
+  assert_session_untouched(&rf);
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+/* Staying connected comes first: a failed store is reported, the session is
+ * kept, and the next connect still uses the previous credential. */
+static void a_failed_store_keeps_the_session_and_the_previous_credential(void** state)
+{
+  (void)state;
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable, .store_rc = AZ_IOT_ERR_INTERNAL };
+  renew_cb_ctx tc = { .prov = &prov };
+  char body[256];
+  renew_connect(&rf, &prov);
+  renew_issue(&rf, &tc, NULL, body, sizeof(body));
+
+  assert_int_equal(prov.store_calls, 1);
+  assert_int_equal(tc.store_status, AZ_IOT_ERR_INTERNAL);
+  assert_session_untouched(&rf);
+
+  assert_string_equal(renew_reconnect(&rf), "bootstrap-cert.pem");
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+/* An application CSR means the application owns the key, so the chain is only
+ * delivered, never stored. */
+static void an_application_csr_chain_is_not_stored(void** state)
+{
+  (void)state;
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable };
+  renew_cb_ctx tc = { .prov = &prov };
+  char body[256];
+  az_iot_certificate_signing_request csr = { .csr_base64 = "QVBQQ1NS" };
+  renew_connect(&rf, &prov);
+  renew_issue(&rf, &tc, &csr, body, sizeof(body));
+
+  assert_int_equal(prov.get_csr_calls, 0);
+  assert_non_null(strstr(body, "\"csr\":\"QVBQQ1NS\""));
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(tc.store_status, AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_session_untouched(&rf);
+
+  assert_string_equal(renew_reconnect(&rf), "bootstrap-cert.pem");
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+/* Refused before anything is published, and the slot stays free. */
+static void assert_send_csr_without_csr_refused(renew_fixture* rf, renew_provider* prov)
+{
+  renew_cb_ctx tc = { .prov = prov };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(&rf->client, NULL, NULL, NULL, on_renew_evt, &tc),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_null(az_iot_mock_mqtt_client_last_of(rf->hub, AZ_IOT_MOCK_CALL_PUBLISH));
+  az_iot_certificate_signing_request csr = { .csr_base64 = "QVBQQ1NS" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(&rf->client, &csr, NULL, NULL, on_renew_evt, &tc),
+      AZ_IOT_OK);
+}
+
+static void send_csr_without_a_csr_needs_a_provider_that_can_renew(void** state)
+{
+  (void)state;
+  renew_fixture rf;
+  renew_provider no_store = { .base.vtable = &k_renew_vtable_no_store };
+  renew_connect(&rf, &no_store);
+  assert_send_csr_without_csr_refused(&rf, &no_store);
+  assert_int_equal(no_store.get_csr_calls, 0);
+  az_iot_connection_client_deinit(&rf.client);
+
+  renew_provider no_csr = { .base.vtable = &k_renew_vtable_no_csr };
+  renew_connect(&rf, &no_csr);
+  assert_send_csr_without_csr_refused(&rf, &no_csr);
+  az_iot_connection_client_deinit(&rf.client);
+
+  renew_connect(&rf, NULL);
+  assert_send_csr_without_csr_refused(&rf, NULL);
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+static void a_failed_get_csr_fails_send_csr(void** state)
+{
+  (void)state;
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable, .get_csr_rc = AZ_IOT_ERR_INTERNAL };
+  renew_cb_ctx tc = { .prov = &prov };
+  renew_connect(&rf, &prov);
+  assert_int_equal(
+      az_iot_connection_client_send_csr(&rf.client, NULL, NULL, NULL, on_renew_evt, &tc),
+      AZ_IOT_ERR_INTERNAL);
+  assert_int_equal(prov.get_csr_calls, 1);
+  assert_int_equal(prov.release_csr_calls, 0);
+  assert_null(az_iot_mock_mqtt_client_last_of(rf.hub, AZ_IOT_MOCK_CALL_PUBLISH));
+  az_iot_connection_client_deinit(&rf.client);
 }
 
 static void send_csr_cancel_frees_slot(void** state)
@@ -2241,9 +2805,19 @@ int main(void)
         hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+    cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
+    cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
+    cmocka_unit_test(dps_a_callback_that_unregisters_itself_still_handles_the_chain),
+    cmocka_unit_test(open_rejects_operational_cert_without_release_or_store),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
+    cmocka_unit_test(a_provider_csr_chain_is_stored_and_used_on_the_next_connect),
+    cmocka_unit_test(a_malformed_credentials_response_is_not_stored),
+    cmocka_unit_test(a_failed_store_keeps_the_session_and_the_previous_credential),
+    cmocka_unit_test(an_application_csr_chain_is_not_stored),
+    cmocka_unit_test(send_csr_without_a_csr_needs_a_provider_that_can_renew),
+    cmocka_unit_test(a_failed_get_csr_fails_send_csr),
     cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_subscribes_the_credentials_response_filter, setup, teardown),

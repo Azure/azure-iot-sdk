@@ -58,6 +58,7 @@ typedef struct
   az_iot_result last_reason;
   int issued;
   size_t issued_count;
+  az_iot_result store_result;
   int send_done;
   az_iot_result send_status;
 } csr_ctx;
@@ -80,11 +81,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   fprintf(stderr, "[e2e-csr] conn state -> 0x%x (reason 0x%x)\n", (unsigned)s, (unsigned)reason);
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   csr_ctx* c = (csr_ctx*)user_ctx;
   c->issued = 1;
   c->issued_count = issued ? issued->count : 0;
+  c->store_result = store_result;
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -174,6 +179,7 @@ static void run_csr_enrollment(az_iot_certificate_managed_key_type key_type, con
   /* the operational-cert callback (D4) fired with a non-empty chain, and */
   assert_int_equal(ctx.issued, 1);
   assert_true(ctx.issued_count >= 1);
+  assert_int_equal(ctx.store_result, AZ_IOT_OK);
   /* the managed provider persisted the issued cert for the next boot. */
   assert_true(provider.has_operational);
 

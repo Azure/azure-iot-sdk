@@ -64,13 +64,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   ((user_context*)user_ctx)->issued = 1;
   fprintf(
       stderr,
-      "[custom_cert] operational certificate issued: %zu cert(s) in chain\n",
-      issued ? issued->count : (size_t)0);
+      "[custom_cert] operational certificate issued: %zu cert(s) in chain, store status=%d\n",
+      issued ? issued->count : (size_t)0,
+      (int)store_result);
 }
 
 int main(void)

@@ -125,15 +125,19 @@ static void on_registration_payload(az_span payload, void* user_ctx)
       (const char*)az_span_ptr(payload));
 }
 
-/** @brief Called after the provider has persisted the issued chain. */
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+/** @brief Called after the client tried to store the issued chain in the provider. */
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
   ctx->issued = true;
   fprintf(
       stderr,
-      "[dps_csr] operational certificate issued (%zu cert(s) in chain), saved to %s\n",
+      "[dps_csr] operational certificate issued (%zu cert(s) in chain), %s %s\n",
       issued != NULL ? issued->count : (size_t)0,
+      store_result == AZ_IOT_OK ? "saved to" : "NOT saved to",
       ctx->operational_cert_path);
 }
 

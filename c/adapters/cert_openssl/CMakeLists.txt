@@ -40,5 +40,9 @@ target_link_libraries(az_iot_certificate_provider_managed
     PRIVATE
         OpenSSL::Crypto
 )
+if(WIN32)
+    # ConvertStringSecurityDescriptorToSecurityDescriptorA (owner-only files).
+    target_link_libraries(az_iot_certificate_provider_managed PRIVATE advapi32)
+endif()
 az_iot_apply_warnings(az_iot_certificate_provider_managed)
 az_iot_apply_coverage(az_iot_certificate_provider_managed)
