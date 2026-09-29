@@ -768,8 +768,10 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&SU_I(client).crypto, file, su_read_file_adapter, &a);
 }
 
-/** @brief Minimum spacing, in milliseconds, of Idle retries of a failed checkpoint clear. */
+/** @brief Minimum spacing, in milliseconds, of retries of a failed checkpoint write. */
 #define AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS 1000u
+
+static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
 
 /**
  * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
@@ -790,6 +792,8 @@ static void clear_checkpoint(az_iot_su_client* client)
   if (h->persist_state_fn(SU_I(client).persist_scratch, 0, h->user_ctx) == 0)
   {
     SU_I(client).checkpoint_stored = false;
+    SU_I(client).checkpoint_terminal = false;
+    SU_I(client).checkpoint_superseded = false;
   }
   else
   {
@@ -799,10 +803,65 @@ static void clear_checkpoint(az_iot_su_client* client)
   }
 }
 
+/**
+ * @brief Bring storage in line with a finished (or idle) workflow.
+ *
+ * An owed terminal report is stored as the terminal record; otherwise the
+ * record is retired. When the terminal record cannot be written, a stale
+ * workflow-position record is retired instead, so a reboot cannot re-apply a
+ * finished workflow. Failures are retried from do_work() while Idle.
+ */
+static void sync_checkpoint(az_iot_su_client* client)
+{
+  if (SU_I(client).hooks.persist_state_fn == NULL)
+  {
+    return;
+  }
+  if (!SU_I(client).report_owed)
+  {
+    clear_checkpoint(client);
+    return;
+  }
+  if (SU_I(client).checkpoint_terminal)
+  {
+    return;
+  }
+  az_iot_result pr = su_persist(client, true);
+  if (pr == AZ_IOT_OK)
+  {
+    return;
+  }
+  clear_checkpoint(client);
+  if (pr != AZ_IOT_ERR_INTERNAL)
+  {
+    /* Not representable (e.g. no workflow id kept): the report stays in memory only. */
+    SU_I(client).report_owed = false;
+  }
+}
+
+/** @brief Whether storage differs from what sync_checkpoint() would leave there. */
+static bool checkpoint_out_of_sync(const az_iot_su_client* client)
+{
+  if (SU_I(client).hooks.persist_state_fn == NULL)
+  {
+    return false;
+  }
+  return SU_I(client).report_owed ? !SU_I(client).checkpoint_terminal
+                                  : SU_I(client).checkpoint_stored;
+}
+
+/** @brief Latch a terminal outcome whose report must survive a reboot until accepted. */
+static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
+{
+  SU_I(client).pending_outcome = outcome;
+  SU_I(client).report_owed = true;
+  SU_I(client).checkpoint_terminal = false;
+}
+
 /* Reset the workflow back to Idle, clearing the parsed request. */
 static void reset_to_idle(az_iot_su_client* client)
 {
-  clear_checkpoint(client);
+  sync_checkpoint(client);
   set_su_state(client, AZ_IOT_SU_STATE_IDLE);
   SU_I(client).have_request = false;
   SU_I(client).current_step = 0;
@@ -1173,8 +1232,12 @@ static void process_update_metadata(
     return;
   }
 
-  /* A new workflow supersedes whatever the stored checkpoint belongs to. */
+  /* A new workflow supersedes whatever the stored checkpoint belongs to,
+   * including an unsent terminal report of the previous one. */
+  SU_I(client).report_owed = false;
+  SU_I(client).terminal_report_in_flight = false;
   clear_checkpoint(client);
+  SU_I(client).checkpoint_superseded = SU_I(client).checkpoint_stored;
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -1319,6 +1382,30 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
   dispatch_event(client, &event);
 }
 
+/**
+ * @brief Retire the owed terminal report once the channel's verdict makes it final.
+ *
+ * A report abandoned for want of a session (AZ_IOT_ERR_NOT_CONNECTED) never
+ * reached the service, so its record is kept for the next boot.
+ */
+static void settle_terminal_report(az_iot_su_client* client, az_iot_result result)
+{
+  if (!SU_I(client).terminal_report_in_flight)
+  {
+    return;
+  }
+  SU_I(client).terminal_report_in_flight = false;
+  if (result == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    return;
+  }
+  SU_I(client).report_owed = false;
+  if (SU_I(client).state == AZ_IOT_SU_STATE_IDLE || SU_I(client).state == AZ_IOT_SU_STATE_FAILED)
+  {
+    sync_checkpoint(client);
+  }
+}
+
 /* The channel's verdict on an operation it accepted earlier.
  *
  * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
@@ -1389,6 +1476,10 @@ static void on_channel_result(
     {
       raise_abandoned(client, operation, result, service_error);
     }
+    if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
+    {
+      settle_terminal_report(client, result);
+    }
     /* The request is over -- but only ITS deadline goes with it. A newer
      * request may already be queued, holding the slot with its own deadline;
      * clearing unconditionally would strip that and leave the newer request
@@ -1403,6 +1494,7 @@ static void on_channel_result(
   switch (operation)
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
+      SU_I(client).terminal_report_in_flight = false;
       SU_I(client).device_properties_report_pending = true;
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
@@ -1770,9 +1862,9 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 /* ------------------------------------------------------------------------- */
 
 /* Versioned, integrity-checked workflow snapshot. Layout (all little-endian):
- *   [0]  magic[4]   = 'A','D','U','1'
+ *   [0]  magic[4]   = 'S','U','C','P'
  *   [4]  u16 version (= AZ_IOT_SU_PERSIST_VERSION)
- *   [6]  u16 flags   (bit0 cancel_requested, bit1 have_request)
+ *   [6]  u16 flags   (bit0 cancel_requested, bit1 have_request, bit2 report_owed)
  *   [8]  u32 state
  *   [12] u32 current_step
  *   [16] u32 current_file
@@ -1782,52 +1874,48 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
  *   [32] u32 manifest_len
  *   [36] u32 request_len
  *   [40] request_buffer[request_len]
- *   --- v2 trailer (immediately after request_buffer) ---
- *   [T+0]  u32 retry_off          (offset into request_buffer; 0/0 if absent)
- *   [T+4]  u32 retry_len
- *   [T+8]  u32 manifest_crc       (fingerprint of the active raw updateManifest)
- *   [T+12] i32 result_code        (accumulated install_result)
- *   [T+16] i32 extended_result_code
- *   [T+20] i32 step_results_count (clamped to MAX_INSTRUCTIONS_STEPS)
- *   [T+24] step records:
- *            v2: { i32 result_code, i32 extended_result_code }
- *            v3: { u32 outcome, u32 failure_origin, i32 result_code,
- *                  i32 extended_result_code }
- *   v3 only: u32 url_count, then url_count *
+ *   --- trailer (T = 40 + request_len) ---
+ *   [T+0]  u32 outcome            (latched terminal outcome)
+ *   [T+4]  i32 result_code        (accumulated install_result)
+ *   [T+8]  i32 extended_result_code
+ *   [T+12] u32 step_results_count (clamped to MAX_INSTRUCTIONS_STEPS)
+ *   [T+16] step records { u32 outcome, u32 failure_origin, i32 result_code,
+ *                         i32 extended_result_code }
+ *          u32 url_count, then url_count *
  *            { u32 id_off, u32 id_len, u32 url_off, u32 url_len }
  *            (offsets into request_buffer)
+ *          u32 len + active workflow id
+ *          u32 len + applied update id ("provider\0name\0version\0"; 0 = none)
+ *          u32 len + opaque channel state (save_state())
  *   [end] u32 crc32 (over bytes [0 .. end))
  *
- * v3 persists each step's outcome explicitly, and the fileUrls map so a resume
- * before the last step can still download the remaining steps' files. A v2
- * snapshot is still read; it is refused when steps with files remain.
- *
- * retryTimestamp and manifest fingerprint are kept for snapshot format
- * compatibility; duplicate detection uses the workflow id alone. Persisting install_result keeps
- * already-completed step results from a multi-step deployment from being lost
- * when a mid-deployment reboot resumes.  */
-#define AZ_IOT_SU_PERSIST_MAGIC0 'A'
-#define AZ_IOT_SU_PERSIST_MAGIC1 'D'
-#define AZ_IOT_SU_PERSIST_MAGIC2 'U'
-#define AZ_IOT_SU_PERSIST_MAGIC3 '1'
-#define AZ_IOT_SU_PERSIST_VERSION 3u
-#define AZ_IOT_SU_PERSIST_VERSION_V2 2u
+ * A record with report_owed set is a terminal record: state Idle, no request.
+ * It carries only the unsent terminal report, so resume re-sends it and runs
+ * nothing. A record of any other magic or version is ignored. */
+#define AZ_IOT_SU_PERSIST_MAGIC0 'S'
+#define AZ_IOT_SU_PERSIST_MAGIC1 'U'
+#define AZ_IOT_SU_PERSIST_MAGIC2 'C'
+#define AZ_IOT_SU_PERSIST_MAGIC3 'P'
+#define AZ_IOT_SU_PERSIST_VERSION 1u
 #define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
-/* Fixed part of the v2 trailer (retry off/len + manifest crc + 3 result ints),
- * excluding the variable per-step pairs and the trailing crc32. */
-#define AZ_IOT_SU_PERSIST_TRAILER_FIXED 24u
-/* Upper bound on the whole v2 trailer + crc, used to size the persist scratch. */
-#define AZ_IOT_SU_PERSIST_STEP_RECORD_V2 8u
+#define AZ_IOT_SU_PERSIST_FLAG_CANCEL 0x1u
+#define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
+#define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
+/* Fixed part of the trailer (outcome + 3 result ints). */
+#define AZ_IOT_SU_PERSIST_TRAILER_FIXED 16u
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
 #define AZ_IOT_SU_PERSIST_URL_RECORD 16u
+/* Upper bound on the whole trailer + crc, used to size the persist scratch. */
 #define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                             \
   (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                \
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u)
+   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
+   + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
+   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 4u)
 
 /* The per-instance persist_scratch (AZ_IOT_SU_PERSIST_BLOB_SIZE, in the client
  * struct) must hold the largest serialized blob: header + full request buffer +
- * the maximum v2 trailer. C99-portable compile-time check (negative array size
+ * the maximum trailer. C99-portable compile-time check (negative array size
  * on failure) so bumping the step count without growing the overhead is caught
  * at build time rather than overflowing at run time. */
 typedef char az_iot_su_persist_blob_fits
@@ -1924,14 +2012,28 @@ static bool remaining_files_have_urls(
   return true;
 }
 
+/** @brief Length of the packed applied update id, or 0 when none is held. */
+static size_t applied_update_id_len(const az_iot_su_client* client)
+{
+  if (!SU_I(client).applied_update_id_valid)
+  {
+    return 0;
+  }
+  const char* base = SU_I(client).applied_update_id_buf;
+  const char* v = SU_I(client).applied_update_id.version;
+  return (size_t)(v - base) + strlen(v) + 1u;
+}
+
 /**
- * @brief Serialize the workflow position and hand it to persist_state_fn.
+ * @brief Serialize the workflow and hand it to persist_state_fn.
  *
+ * @param terminal Write the terminal record (unsent terminal report only)
+ *                 instead of the workflow position.
  * @return AZ_IOT_OK when written; AZ_IOT_ERR_NOT_SUPPORTED when no
  * persist_state_fn is set; AZ_IOT_ERR_INVALID_ARG when the state cannot be
  * represented; AZ_IOT_ERR_INTERNAL when the hook fails.
  */
-static az_iot_result su_persist(az_iot_su_client* client)
+static az_iot_result su_persist(az_iot_su_client* client, bool terminal)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
   if (h->persist_state_fn == NULL)
@@ -1939,14 +2041,15 @@ static az_iot_result su_persist(az_iot_su_client* client)
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
-  uint32_t request_len = (uint32_t)SU_I(client).request_len;
   const az_iot_su_client_update_request* req = &SU_I(client).current_request;
+  uint32_t request_len = terminal ? 0u : (uint32_t)SU_I(client).request_len;
+  uint32_t url_count = terminal ? 0u : req->file_urls_count;
   if (request_len > AZ_IOT_SU_REQUEST_BUFFER_SIZE
-      || req->file_urls_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+      || url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  for (uint32_t i = 0; i < req->file_urls_count; ++i)
+  for (uint32_t i = 0; i < url_count; ++i)
   {
     if (!span_in_request(client, req->file_urls[i].id)
         || !span_in_request(client, req->file_urls[i].url))
@@ -1954,16 +2057,33 @@ static az_iot_result su_persist(az_iot_su_client* client)
       return AZ_IOT_ERR_INVALID_ARG;
     }
   }
+  int32_t step_count = SU_I(client).step_results_count;
+  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t wf_len = SU_I(client).active_workflow_valid ? SU_I(client).active_workflow_id_len : 0u;
+  if (terminal && wf_len == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG; /* nothing the service could attribute it to */
+  }
 
   uint8_t* blob = SU_I(client).persist_scratch;
   uint16_t flags = 0;
-  if (SU_I(client).cancel_requested)
+  if (terminal)
   {
-    flags |= 0x1u;
+    flags = AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED;
   }
-  if (SU_I(client).have_request)
+  else
   {
-    flags |= 0x2u;
+    if (SU_I(client).cancel_requested)
+    {
+      flags |= AZ_IOT_SU_PERSIST_FLAG_CANCEL;
+    }
+    if (SU_I(client).have_request)
+    {
+      flags |= AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST;
+    }
   }
 
   blob[0] = AZ_IOT_SU_PERSIST_MAGIC0;
@@ -1972,31 +2092,22 @@ static az_iot_result su_persist(az_iot_su_client* client)
   blob[3] = AZ_IOT_SU_PERSIST_MAGIC3;
   wr_u16le(&blob[4], (uint16_t)AZ_IOT_SU_PERSIST_VERSION);
   wr_u16le(&blob[6], flags);
-  wr_u32le(&blob[8], (uint32_t)SU_I(client).state);
-  wr_u32le(&blob[12], SU_I(client).current_step);
-  wr_u32le(&blob[16], SU_I(client).current_file);
-  wr_u32le(&blob[20], request_offset(client, req->workflow.id));
-  wr_u32le(&blob[24], (uint32_t)az_span_size(req->workflow.id));
-  wr_u32le(&blob[28], request_offset(client, SU_I(client).manifest_text));
-  wr_u32le(&blob[32], (uint32_t)az_span_size(SU_I(client).manifest_text));
+  wr_u32le(&blob[8], terminal ? (uint32_t)AZ_IOT_SU_STATE_IDLE : (uint32_t)SU_I(client).state);
+  wr_u32le(&blob[12], terminal ? 0u : SU_I(client).current_step);
+  wr_u32le(&blob[16], terminal ? 0u : SU_I(client).current_file);
+  wr_u32le(&blob[20], terminal ? 0u : request_offset(client, req->workflow.id));
+  wr_u32le(&blob[24], terminal ? 0u : (uint32_t)az_span_size(req->workflow.id));
+  wr_u32le(&blob[28], terminal ? 0u : request_offset(client, SU_I(client).manifest_text));
+  wr_u32le(&blob[32], terminal ? 0u : (uint32_t)az_span_size(SU_I(client).manifest_text));
   wr_u32le(&blob[36], request_len);
   memcpy(&blob[AZ_IOT_SU_PERSIST_HEADER_SIZE], SU_I(client).request_buffer, request_len);
 
   uint32_t t = AZ_IOT_SU_PERSIST_HEADER_SIZE + request_len;
-  az_span retry = req->workflow.retry_timestamp;
-  wr_u32le(&blob[t + 0], request_offset(client, retry));
-  wr_u32le(&blob[t + 4], (uint32_t)az_span_size(retry));
-  wr_u32le(&blob[t + 8], SU_I(client).active_manifest_crc);
-
   const az_iot_su_client_install_result* r = &SU_I(client).install_result;
-  int32_t step_count = SU_I(client).step_results_count;
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  wr_u32le(&blob[t + 12], (uint32_t)r->result_code);
-  wr_u32le(&blob[t + 16], (uint32_t)r->extended_result_code);
-  wr_u32le(&blob[t + 20], (uint32_t)step_count);
+  wr_u32le(&blob[t + 0], (uint32_t)SU_I(client).pending_outcome);
+  wr_u32le(&blob[t + 4], (uint32_t)r->result_code);
+  wr_u32le(&blob[t + 8], (uint32_t)r->extended_result_code);
+  wr_u32le(&blob[t + 12], (uint32_t)step_count);
   uint32_t p = t + AZ_IOT_SU_PERSIST_TRAILER_FIXED;
   for (int32_t i = 0; i < step_count; ++i)
   {
@@ -2008,9 +2119,9 @@ static az_iot_result su_persist(az_iot_su_client* client)
     p += AZ_IOT_SU_PERSIST_STEP_RECORD;
   }
 
-  wr_u32le(&blob[p], req->file_urls_count);
+  wr_u32le(&blob[p], url_count);
   p += 4u;
-  for (uint32_t i = 0; i < req->file_urls_count; ++i)
+  for (uint32_t i = 0; i < url_count; ++i)
   {
     wr_u32le(&blob[p], request_offset(client, req->file_urls[i].id));
     wr_u32le(&blob[p + 4], (uint32_t)az_span_size(req->file_urls[i].id));
@@ -2019,13 +2130,153 @@ static az_iot_result su_persist(az_iot_su_client* client)
     p += AZ_IOT_SU_PERSIST_URL_RECORD;
   }
 
+  wr_u32le(&blob[p], (uint32_t)wf_len);
+  memcpy(&blob[p + 4u], SU_I(client).active_workflow_id, wf_len);
+  p += 4u + (uint32_t)wf_len;
+
+  size_t applied_len = applied_update_id_len(client);
+  wr_u32le(&blob[p], (uint32_t)applied_len);
+  memcpy(&blob[p + 4u], SU_I(client).applied_update_id_buf, applied_len);
+  p += 4u + (uint32_t)applied_len;
+
+  size_t ch_len = 0;
+  const az_iot_su_channel_vtable* vt = SU_I(client).channel.vtable;
+  if (vt != NULL && vt->save_state != NULL
+      && (vt->save_state(
+              SU_I(client).channel.ctx, &blob[p + 4u], AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE, &ch_len)
+              != AZ_IOT_OK
+          || ch_len > AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE))
+  {
+    ch_len = 0;
+  }
+  wr_u32le(&blob[p], (uint32_t)ch_len);
+  p += 4u + (uint32_t)ch_len;
+
   wr_u32le(&blob[p], su_crc32(blob, p));
   if (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) != 0)
   {
+    SU_I(client).checkpoint_clear_retry_ms
+        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
+    AZ_IOT_LOG_ERROR("su: failed to persist the checkpoint; will retry");
     return AZ_IOT_ERR_INTERNAL;
   }
   SU_I(client).checkpoint_stored = true;
+  SU_I(client).checkpoint_terminal = terminal;
+  SU_I(client).checkpoint_superseded = false;
   return AZ_IOT_OK;
+}
+
+/**
+ * @brief Take one u32-length-prefixed field at @p *pos.
+ *
+ * @return false when the field exceeds @p max or the blob; *pos then is unchanged.
+ */
+static bool take_field(
+    const uint8_t* blob,
+    size_t blen,
+    uint32_t* pos,
+    uint32_t max,
+    uint32_t* out_at,
+    uint32_t* out_len)
+{
+  if ((size_t)*pos + 4u > blen)
+  {
+    return false;
+  }
+  uint32_t len = rd_u32le(&blob[*pos]);
+  if (len > max || (size_t)*pos + 4u + len > blen)
+  {
+    return false;
+  }
+  *out_at = *pos + 4u;
+  *out_len = len;
+  *pos = *out_at + len;
+  return true;
+}
+
+/**
+ * @brief Restore a packed applied update id ("provider\0name\0version\0").
+ *
+ * @return false, leaving the client unchanged, when @p src is not exactly three
+ * non-empty NUL-terminated strings.
+ */
+static bool restore_applied_update_id(az_iot_su_client* client, const uint8_t* src, uint32_t len)
+{
+  if (len == 0)
+  {
+    SU_I(client).applied_update_id_valid = false;
+    return true;
+  }
+  if (len > sizeof(SU_I(client).applied_update_id_buf) || src[len - 1u] != '\0')
+  {
+    return false;
+  }
+  const char* parts[3] = { NULL, NULL, NULL };
+  uint32_t start = 0;
+  int n = 0;
+  for (uint32_t i = 0; i < len; ++i)
+  {
+    if (src[i] == '\0')
+    {
+      if (i == start || n == 3)
+      {
+        return false;
+      }
+      parts[n++] = SU_I(client).applied_update_id_buf + start;
+      start = i + 1u;
+    }
+  }
+  if (n != 3)
+  {
+    return false;
+  }
+  memcpy(SU_I(client).applied_update_id_buf, src, len);
+  SU_I(client).applied_update_id.provider = parts[0];
+  SU_I(client).applied_update_id.name = parts[1];
+  SU_I(client).applied_update_id.version = parts[2];
+  SU_I(client).applied_update_id_valid = true;
+  return true;
+}
+
+/** @brief Whether @p o is an outcome that ends a workflow. */
+static bool is_terminal_outcome(uint32_t o)
+{
+  return o == (uint32_t)AZ_IOT_SU_OUTCOME_SUCCEEDED || o == (uint32_t)AZ_IOT_SU_OUTCOME_FAILED
+      || o == (uint32_t)AZ_IOT_SU_OUTCOME_CANCELED || o == (uint32_t)AZ_IOT_SU_OUTCOME_SKIPPED;
+}
+
+/** @brief Restore persisted step results and the accumulated result. */
+static void restore_step_results(
+    az_iot_su_client* client,
+    const uint8_t* steps,
+    int32_t step_count,
+    int32_t res_code,
+    int32_t res_ext)
+{
+  memset(&SU_I(client).install_result, 0, sizeof(SU_I(client).install_result));
+  memset(SU_I(client).step_results, 0, sizeof(SU_I(client).step_results));
+  SU_I(client).install_result.result_code = res_code;
+  SU_I(client).install_result.extended_result_code = res_ext;
+  SU_I(client).step_results_count = step_count;
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    const uint8_t* rec = &steps[(uint32_t)i * AZ_IOT_SU_PERSIST_STEP_RECORD];
+    az_iot_su_step_result* sr = &SU_I(client).step_results[i];
+    sr->outcome = (az_iot_su_outcome)rd_u32le(rec);
+    sr->failure_origin = (az_iot_su_failure_origin)rd_u32le(rec + 4);
+    sr->result_code = (int32_t)rd_u32le(rec + 8);
+    sr->extended_result_code = (int32_t)rd_u32le(rec + 12);
+  }
+}
+
+/** @brief Hand persisted channel state back to the channel; best effort. */
+static void restore_channel_state(az_iot_su_client* client, const uint8_t* src, uint32_t len)
+{
+  const az_iot_su_channel_vtable* vt = SU_I(client).channel.vtable;
+  if (len > 0 && vt != NULL && vt->restore_state != NULL)
+  {
+    (void)vt->restore_state(SU_I(client).channel.ctx, src, len);
+  }
 }
 
 az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
@@ -2051,27 +2302,19 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK; /* nothing persisted */
   }
-  if (blen < AZ_IOT_SU_PERSIST_HEADER_SIZE + 4u)
+  if (blen > sizeof(SU_I(client).persist_scratch) || blen < AZ_IOT_SU_PERSIST_HEADER_SIZE + 4u)
   {
     return AZ_IOT_OK; /* too small, including an invalidated (empty) record */
-  }
-  if (SU_I(client).hooks.persist_state_fn == NULL)
-  {
-    /* It could never be invalidated, so every later boot would re-apply it. */
-    return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   if (blob[0] != AZ_IOT_SU_PERSIST_MAGIC0 || blob[1] != AZ_IOT_SU_PERSIST_MAGIC1
       || blob[2] != AZ_IOT_SU_PERSIST_MAGIC2 || blob[3] != AZ_IOT_SU_PERSIST_MAGIC3)
   {
     return AZ_IOT_OK; /* not our blob */
   }
-  uint16_t version = rd_u16le(&blob[4]);
-  if (version != AZ_IOT_SU_PERSIST_VERSION && version != AZ_IOT_SU_PERSIST_VERSION_V2)
+  if (rd_u16le(&blob[4]) != AZ_IOT_SU_PERSIST_VERSION)
   {
     return AZ_IOT_OK;
   }
-  uint32_t step_record = (version == AZ_IOT_SU_PERSIST_VERSION) ? AZ_IOT_SU_PERSIST_STEP_RECORD
-                                                                : AZ_IOT_SU_PERSIST_STEP_RECORD_V2;
 
   uint32_t request_len = rd_u32le(&blob[36]);
   if (request_len > AZ_IOT_SU_REQUEST_BUFFER_SIZE)
@@ -2080,50 +2323,90 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   }
 
   /* Locate and bounds-check the trailer. Every length below is bounded by
-   * blen, so the sums cannot wrap. */
+   * blen or a compile-time limit, so the sums cannot wrap. */
   uint32_t t = AZ_IOT_SU_PERSIST_HEADER_SIZE + request_len;
   if ((size_t)t + AZ_IOT_SU_PERSIST_TRAILER_FIXED > blen)
   {
     return AZ_IOT_OK;
   }
-  uint32_t retry_off = rd_u32le(&blob[t + 0]);
-  uint32_t retry_len = rd_u32le(&blob[t + 4]);
-  uint32_t manifest_crc = rd_u32le(&blob[t + 8]);
-  int32_t res_code = (int32_t)rd_u32le(&blob[t + 12]);
-  int32_t res_ext = (int32_t)rd_u32le(&blob[t + 16]);
-  int32_t step_count = (int32_t)rd_u32le(&blob[t + 20]);
+  uint32_t outcome = rd_u32le(&blob[t]);
+  int32_t res_code = (int32_t)rd_u32le(&blob[t + 4u]);
+  int32_t res_ext = (int32_t)rd_u32le(&blob[t + 8u]);
+  int32_t step_count = (int32_t)rd_u32le(&blob[t + 12u]);
   if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
   {
     return AZ_IOT_OK;
   }
   uint32_t steps_at = t + AZ_IOT_SU_PERSIST_TRAILER_FIXED;
-  uint32_t end = steps_at + (uint32_t)step_count * step_record;
-  uint32_t url_count = 0;
-  uint32_t urls_at = 0;
-  if (version == AZ_IOT_SU_PERSIST_VERSION)
-  {
-    if ((size_t)end + 4u > blen)
-    {
-      return AZ_IOT_OK;
-    }
-    url_count = rd_u32le(&blob[end]);
-    if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
-    {
-      return AZ_IOT_OK;
-    }
-    urls_at = end + 4u;
-    end = urls_at + url_count * AZ_IOT_SU_PERSIST_URL_RECORD;
-  }
+  uint32_t end = steps_at + (uint32_t)step_count * AZ_IOT_SU_PERSIST_STEP_RECORD;
   if ((size_t)end + 4u > blen)
   {
     return AZ_IOT_OK;
+  }
+  uint32_t url_count = rd_u32le(&blob[end]);
+  if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  {
+    return AZ_IOT_OK;
+  }
+  uint32_t urls_at = end + 4u;
+  end = urls_at + url_count * AZ_IOT_SU_PERSIST_URL_RECORD;
+  uint32_t wf_at = 0;
+  uint32_t wf_id_len = 0;
+  uint32_t applied_at = 0;
+  uint32_t applied_len = 0;
+  uint32_t ch_at = 0;
+  uint32_t ch_len = 0;
+  if (!take_field(blob, blen, &end, AZ_IOT_SU_WORKFLOW_ID_SIZE, &wf_at, &wf_id_len)
+      || !take_field(blob, blen, &end, AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, &applied_at, &applied_len)
+      || !take_field(blob, blen, &end, AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE, &ch_at, &ch_len))
+  {
+    return AZ_IOT_OK;
+  }
+  if ((size_t)end + 4u != blen)
+  {
+    return AZ_IOT_OK; /* the CRC must be the last four bytes */
   }
   if (su_crc32(blob, end) != rd_u32le(&blob[end]))
   {
     return AZ_IOT_OK; /* corrupt */
   }
+  if (SU_I(client).hooks.persist_state_fn == NULL)
+  {
+    /* It could never be invalidated, so every later boot would re-apply it. */
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 
   uint16_t flags = rd_u16le(&blob[6]);
+  if ((flags & AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED) != 0)
+  {
+    /* Terminal record: restore the unsent report and stay Idle. */
+    if (!is_terminal_outcome(outcome) || wf_id_len == 0
+        || !restore_applied_update_id(client, &blob[applied_at], applied_len))
+    {
+      return AZ_IOT_OK;
+    }
+    memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
+    memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
+    SU_I(client).request_len = 0;
+    SU_I(client).have_request = false;
+    SU_I(client).cancel_requested = false;
+    SU_I(client).current_step = 0;
+    SU_I(client).current_file = 0;
+    SU_I(client).checkpoint_pending = false;
+    restore_step_results(client, &blob[steps_at], step_count, res_code, res_ext);
+    set_active_workflow(client, az_span_create(&blob[wf_at], (int32_t)wf_id_len), AZ_SPAN_EMPTY, 0);
+    SU_I(client).pending_outcome = (az_iot_su_outcome)outcome;
+    SU_I(client).report_owed = true;
+    SU_I(client).terminal_report_in_flight = false;
+    SU_I(client).checkpoint_stored = true;
+    SU_I(client).checkpoint_terminal = true;
+    SU_I(client).checkpoint_superseded = false;
+    SU_I(client).device_properties_report_pending = true;
+    restore_channel_state(client, &blob[ch_at], ch_len);
+    set_su_state(client, AZ_IOT_SU_STATE_IDLE);
+    return AZ_IOT_OK;
+  }
+
   uint32_t state = rd_u32le(&blob[8]);
   uint32_t step = rd_u32le(&blob[12]);
   uint32_t file = rd_u32le(&blob[16]);
@@ -2133,10 +2416,6 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   uint32_t mf_len = rd_u32le(&blob[32]);
   if (mf_off > request_len || mf_len > request_len - mf_off || wf_off > request_len
       || wf_len > request_len - wf_off)
-  {
-    return AZ_IOT_OK;
-  }
-  if (retry_len != 0 && (retry_off > request_len || retry_len > request_len - retry_off))
   {
     return AZ_IOT_OK;
   }
@@ -2155,6 +2434,8 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   }
 
   /* Restore the request payload and re-derive the manifest from it. */
+  SU_I(client).report_owed = false;
+  SU_I(client).terminal_report_in_flight = false;
   memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
   memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
   memcpy(SU_I(client).request_buffer, &blob[AZ_IOT_SU_PERSIST_HEADER_SIZE], request_len);
@@ -2184,69 +2465,40 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
         = az_span_create(SU_I(client).request_buffer + rd_u32le(u + 8), (int32_t)rd_u32le(u + 12));
   }
 
-  /* Any step still to run must be able to download its files. A v2 snapshot
-   * carries no URLs, so it resumes only when nothing is left to download. */
-  if (!remaining_files_have_urls(
-          &SU_I(client).current_manifest, step + 1, req->file_urls, url_count))
+  /* Any step still to run must be able to download its files. A record taken
+   * after the current step's install needs URLs only for the later steps. */
+  bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
+      || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
+  uint32_t from = step_installed ? step + 1u : step;
+  if (!remaining_files_have_urls(&SU_I(client).current_manifest, from, req->file_urls, url_count))
   {
     /* It can never be resumed, so retire it rather than refuse it every boot. */
     SU_I(client).checkpoint_stored = true;
     reset_to_idle(client);
-    return (version == AZ_IOT_SU_PERSIST_VERSION_V2) ? AZ_IOT_ERR_NOT_SUPPORTED
-                                                     : AZ_IOT_ERR_INVALID_ARG;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   req->workflow.id = az_span_create(SU_I(client).request_buffer + wf_off, (int32_t)wf_len);
-  az_span retry_ts = AZ_SPAN_EMPTY;
-  if (retry_len != 0)
-  {
-    retry_ts = az_span_create(SU_I(client).request_buffer + retry_off, (int32_t)retry_len);
-  }
-  req->workflow.retry_timestamp = retry_ts;
+  req->workflow.retry_timestamp = AZ_SPAN_EMPTY;
   req->update_manifest = manifest_text;
 
   SU_I(client).current_step = step;
   SU_I(client).current_file = file;
-  SU_I(client).cancel_requested = (flags & 0x1u) != 0;
-  SU_I(client).have_request = (flags & 0x2u) != 0;
+  SU_I(client).cancel_requested = (flags & AZ_IOT_SU_PERSIST_FLAG_CANCEL) != 0;
+  SU_I(client).have_request = (flags & AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST) != 0;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).checkpoint_stored = true;
+  SU_I(client).checkpoint_terminal = false;
+  SU_I(client).checkpoint_superseded = false;
 
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */
-  memset(&SU_I(client).install_result, 0, sizeof(SU_I(client).install_result));
-  memset(SU_I(client).step_results, 0, sizeof(SU_I(client).step_results));
-  SU_I(client).install_result.result_code = res_code;
-  SU_I(client).install_result.extended_result_code = res_ext;
-  SU_I(client).step_results_count = step_count;
-  for (int32_t i = 0; i < step_count; ++i)
-  {
-    const uint8_t* rec = &blob[steps_at + (uint32_t)i * step_record];
-    az_iot_su_step_result* sr = &SU_I(client).step_results[i];
-    if (version == AZ_IOT_SU_PERSIST_VERSION)
-    {
-      sr->outcome = (az_iot_su_outcome)rd_u32le(rec);
-      sr->failure_origin = (az_iot_su_failure_origin)rd_u32le(rec + 4);
-      sr->result_code = (int32_t)rd_u32le(rec + 8);
-      sr->extended_result_code = (int32_t)rd_u32le(rec + 12);
-    }
-    else
-    {
-      /* v2 kept codes only; derive the outcome from them. */
-      sr->result_code = (int32_t)rd_u32le(rec);
-      sr->extended_result_code = (int32_t)rd_u32le(rec + 4);
-      sr->outcome = (sr->result_code == AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS)
-          ? AZ_IOT_SU_OUTCOME_SUCCEEDED
-          : ((sr->result_code == 0) ? AZ_IOT_SU_OUTCOME_SKIPPED : AZ_IOT_SU_OUTCOME_FAILED);
-      sr->failure_origin = (sr->outcome == AZ_IOT_SU_OUTCOME_FAILED)
-          ? AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE
-          : AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
-    }
-  }
+  restore_step_results(client, &blob[steps_at], step_count, res_code, res_ext);
+  restore_channel_state(client, &blob[ch_at], ch_len);
 
   /* Re-establish the active workflow id so a redelivery after the reboot is
    * recognized as a duplicate and does NOT restart the resumed workflow. */
-  set_active_workflow(client, req->workflow.id, retry_ts, manifest_crc);
+  set_active_workflow(client, req->workflow.id, AZ_SPAN_EMPTY, 0);
   set_su_state(client, (az_iot_su_state)state);
   return AZ_IOT_OK;
 }
@@ -2299,6 +2551,14 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
  * download or backup of step N leaves step N without a backup (restore_count =
  * N); a failure during install or apply of step N means step N was backed up
  * (restore_count = N + 1). */
+/** @brief Enter FAILED and store the terminal report before it is sent. */
+static void fail_workflow(az_iot_su_client* client)
+{
+  set_su_state(client, AZ_IOT_SU_STATE_FAILED);
+  latch_terminal(client, AZ_IOT_SU_OUTCOME_FAILED);
+  sync_checkpoint(client);
+}
+
 static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
 {
   /* Since backup/restore are non-blocking in practice (simulated or fast OTA
@@ -2318,7 +2578,7 @@ static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
       }
     }
   }
-  set_su_state(client, AZ_IOT_SU_STATE_FAILED);
+  fail_workflow(client);
 }
 
 az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
@@ -2340,12 +2600,30 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     (void)SU_I(client).channel.vtable->do_work(SU_I(client).channel.ctx);
   }
 
-  /* A stored checkpoint while Idle is a failed clear; a reboot now would
-   * resume the finished workflow, so retry it rather than wait for the next. */
-  if (SU_I(client).state == AZ_IOT_SU_STATE_IDLE && SU_I(client).checkpoint_stored
+  /* Storage out of step while Idle is a failed write: a reboot now would
+   * resume the finished workflow or lose its report, so retry it rather than
+   * wait for the next workflow. */
+  if (SU_I(client).state == AZ_IOT_SU_STATE_IDLE && checkpoint_out_of_sync(client)
+      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
+  {
+    sync_checkpoint(client);
+  }
+
+  /* Retry failed checkpoint writes ahead of anything that needs the network,
+   * so storage recovery does not wait on connectivity. Every retry shares the
+   * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS spacing to spare flash endurance. */
+  if (SU_I(client).checkpoint_superseded
       && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
   {
     clear_checkpoint(client);
+  }
+  bool running
+      = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
+  if (SU_I(client).checkpoint_pending && running
+      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms
+      && su_persist(client, false) != AZ_IOT_ERR_INTERNAL)
+  {
+    SU_I(client).checkpoint_pending = false;
   }
 
   /* A pending device-properties / startup report takes priority. */
@@ -2380,9 +2658,19 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
   {
     result_step_canceled(client);
-    SU_I(client).pending_outcome = AZ_IOT_SU_OUTCOME_CANCELED;
+    latch_terminal(client, AZ_IOT_SU_OUTCOME_CANCELED);
     reset_to_idle(client);
     (void)az_iot_su__report_state(client);
+    return AZ_IOT_OK;
+  }
+
+  /* Hold while a checkpoint write is outstanding. A superseded workflow's
+   * record would make a reboot resume it or re-send its report; a failed
+   * boundary write would let the workflow run a phase it could not resume. */
+  if (SU_I(client).checkpoint_superseded
+      || (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
+          && SU_I(client).state != AZ_IOT_SU_STATE_FAILED))
+  {
     return AZ_IOT_OK;
   }
 
@@ -2400,7 +2688,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
-        set_su_state(client, AZ_IOT_SU_STATE_FAILED);
+        fail_workflow(client);
         (void)az_iot_su__report_state(client);
         break;
       }
@@ -2415,7 +2703,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       if (verify_manifest(client) != AZ_IOT_SU_RESULT_SUCCESS)
       {
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, 0);
-        set_su_state(client, AZ_IOT_SU_STATE_FAILED);
+        fail_workflow(client);
         (void)az_iot_su__report_state(client);
         break;
       }
@@ -2427,7 +2715,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
           : AZ_IOT_SU_RESULT_SUCCESS;
       if (inst == AZ_IOT_SU_RESULT_ALREADY_INSTALLED)
       {
-        SU_I(client).pending_outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
+        latch_terminal(client, AZ_IOT_SU_OUTCOME_SKIPPED);
         reset_to_idle(client);
         (void)az_iot_su__report_state(client);
         break;
@@ -2548,7 +2836,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         set_su_state(client, AZ_IOT_SU_STATE_INSTALL_COMPLETE);
         /* A failed write blocks Apply until a retry succeeds; with no
          * persist_state_fn there is nothing to retry. */
-        SU_I(client).checkpoint_pending = (su_persist(client) == AZ_IOT_ERR_INTERNAL);
+        SU_I(client).checkpoint_pending = (su_persist(client, false) == AZ_IOT_ERR_INTERNAL);
         (void)az_iot_su__report_state(client);
         break;
       }
@@ -2564,14 +2852,6 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     }
 
     case AZ_IOT_SU_STATE_INSTALL_COMPLETE:
-      if (SU_I(client).checkpoint_pending)
-      {
-        if (su_persist(client) == AZ_IOT_ERR_INTERNAL)
-        {
-          break;
-        }
-        SU_I(client).checkpoint_pending = false;
-      }
       set_su_state(client, AZ_IOT_SU_STATE_APPLY_STARTED);
       break;
 
@@ -2601,10 +2881,18 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         SU_I(client).current_step = step + 1;
         SU_I(client).current_file = 0;
         set_su_state(client, AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+        /* An apply-requested reboot resumes at the next step. A stored record
+         * is refreshed too: left at this step, a reboot would re-apply it. */
+        if (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED || SU_I(client).checkpoint_stored)
+        {
+          SU_I(client).checkpoint_pending = (su_persist(client, false) == AZ_IOT_ERR_INTERNAL);
+        }
         (void)az_iot_su__report_state(client);
         break;
       }
+      /* The last step: the terminal record replaces any stored position. */
       result_overall_success(client);
+      latch_terminal(client, AZ_IOT_SU_OUTCOME_SUCCEEDED);
       reset_to_idle(client);
       (void)az_iot_su__report_state(client);
       break;
@@ -2613,7 +2901,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_RESTORE_STARTED:
       /* begin_rollback() performs restore synchronously then sets Failed;
        * this state is reserved for a future chunked rollback. */
-      set_su_state(client, AZ_IOT_SU_STATE_FAILED);
+      fail_workflow(client);
       break;
 
     case AZ_IOT_SU_STATE_FAILED:

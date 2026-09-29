@@ -338,9 +338,15 @@ for hooks to poll; no software updates input sets it.
 
 If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 
-1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_state_fn`.
+1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_state_fn`: after `install_fn`, the step's Apply; after `apply_fn`, the next step's start (after the last step, the terminal record below).
 2. The application MUST reboot the device after the client persists state.
 3. On startup, the application MUST call `az_iot_su_client_resume()`, which reads persisted state and continues the workflow from the appropriate phase.
+
+When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
+**terminal record** holding the unsent terminal report before sending it, and
+retires it once the channel's verdict is final: accepted, `ALREADY_REPORTED`,
+or refused by the service. A report abandoned for want of a session is kept, so
+it is re-sent after the next boot. A new `workflowId` replaces it.
 
 ### Persistence & Resume Blob Format
 
@@ -350,12 +356,17 @@ NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
 - **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
-- **Versioned** — magic `"ADU1"` and a `u16` version (currently 3; 2 is still
-  read). All integers are little-endian.
-- **Integrity-checked** — a trailing CRC-32 over the whole blob.
-- **Contents** — workflow state, step/file position, flags (cancel, have-request),
-  the raw request buffer (manifest, workflow id, retry timestamp), the overall
-  and per-step results, and (v3) the download URLs of the request.
+- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 1). A
+  record of any other magic or version is ignored. All integers are
+  little-endian.
+- **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
+- **Contents** — workflow state, step/file position, flags (cancel,
+  have-request, report-owed), the raw request buffer (manifest, workflow id),
+  the latched outcome, the overall and per-step results, the download URLs, the
+  active workflow id, the applied update id, and opaque channel state (the DPS
+  channel's `agentInfoEtag` / `serviceConfigEtag`).
+- **Terminal record** — report-owed set, state Idle, no request: only what the
+  terminal report needs.
 
 The byte layout is documented next to the serializer in
 `src/features/su/su_client.c`; it is not a public contract.
@@ -365,13 +376,14 @@ The byte layout is documented next to the serializer in
 1. Call `load_state_fn`. If it reports no state (including an empty record), or
    `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
    success — the agent starts clean and waits for the next update offer. A
-   stored record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
-   `persist_state_fn` is NULL (it could never be cleared), or when it is a v2
-   record and later steps still need downloads; it is refused with
-   `AZ_IOT_ERR_INVALID_ARG` when its URLs do not cover the remaining steps. A
-   refused v2/URL record is cleared.
-2. Otherwise core rehydrates `current_request`, `current_step`, `current_file`,
-   and the overall and per-step results from the blob.
+   valid record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
+   `persist_state_fn` is NULL (it could never be cleared), and with
+   `AZ_IOT_ERR_INVALID_ARG` when its URLs do not cover the remaining steps; the
+   latter is cleared.
+2. A terminal record restores the workflow id, outcome, results, applied update
+   id and channel state; the client stays Idle and re-sends the report from
+   `do_work()`. Otherwise core rehydrates `current_request`, `current_step`,
+   `current_file`, the overall and per-step results and channel state.
 3. **Replacement check** — when the next offer arrives, core compares its
    `workflowId` against the persisted one. A different id means the persisted
    workflow was superseded while the device was down: core MUST discard the
@@ -386,13 +398,18 @@ The byte layout is documented next to the serializer in
    - any earlier phase (download/backup) ⇒ re-enter at the **start of that step**
      (Download), re-downloading any partially fetched file; partial download
      progress is intentionally **not** trusted across reboot.
-5. Core clears the stored blob (a zero-length `persist_state_fn` write) whenever
-   the workflow returns to Idle and when a new workflow supersedes it, so a later
-   boot does not replay a finished workflow. It writes only when it wrote or
-   resumed from a blob. A failed clear is retried from `do_work()` while Idle, at
-   most once a second, and at the next such transition.
-   A failed checkpoint write before a requested reboot holds the workflow at
-   `INSTALL_COMPLETE`, retrying the write, and Apply does not run until it lands.
+5. When the workflow returns to Idle, core replaces the stored blob with the
+   terminal record; it clears it (a zero-length `persist_state_fn` write) once
+   the report is final and when a new workflow supersedes it, so a later boot
+   does not replay a finished workflow. If the terminal record cannot be
+   written, the stale blob is cleared instead. Every failed write is retried
+   from `do_work()` at most once a second, and at the next such transition. A
+   failed checkpoint write before a requested reboot holds the workflow at that
+   boundary (`INSTALL_COMPLETE`, or the next step's `DOWNLOAD_STARTED`) until
+   it lands. There is no retry limit and no event: the application sees
+   failures through its own `persist_state_fn` return values. Moving past a step
+   whose checkpoint is stored refreshes it to the next step. If the clear on
+   supersede fails, the new workflow waits until the old record is retired.
 
 > Persisting after **every** phase is OPTIONAL; the only MUST is to persist before
 > a reboot the agent itself requested (`REBOOT_REQUIRED`). Persisting at more
