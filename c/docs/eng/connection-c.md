@@ -18,8 +18,7 @@ Related documents:
 - [dps-integration.md](../dps-integration.md), [devnotes.md](../devnotes.md) — DPS contract and the running requirements log.
 - **Software updates** — [su-spec.md](su-spec.md) is the device contract and the source for §7
   below; it owns the request/response shapes, error codes and trust model, which are deliberately not
-  restated here. [su-client-plan.md](su-client-plan.md) carries the SDK status and the work
-  queue for the Device Update for IoT Hub cut. [su-client-design.md](su-client-design.md) covers the shared verify/download/install
+  restated here. [su-client-design.md](su-client-design.md) covers the shared verify/download/install
   engine, which is unchanged from Device Update for IoT Hub.
 
 ### Status legend
@@ -579,7 +578,7 @@ no subscription and no unsolicited offer.
 | Phase | Gateway | Operation (on the wire) | Spec working name |
 | --- | --- | --- | --- |
 | First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `GetOnboardingDeviceUpdate` |
-| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `requestSoftwareUpdates` | `GetDeviceUpdate` |
+| Regular / operational (**after** provisioning) | DPS *(interim)* | `requestSoftwareUpdates` | `GetDeviceUpdate` |
 | Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `ReportDeviceUpdateStatus` |
 
 All three are POSTs under the device's own registration on the gateway's device endpoint; see
@@ -589,10 +588,9 @@ of the contract are measured rather than drafted.
 The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
 or validate the choice.
 
-> **The Hub updating API is not ready for Ignite '26.** In preview, DPS fronts both the bootstrap and
-> the operational flow, using the existing DPS device credential (X.509 in phase 1). The operational
-> path moves to IoT Hub afterwards **with no device-contract change** — same request and response, a
-> different gateway. Treat the gateway as a channel parameter, not a constant.
+> In preview, DPS fronts both the bootstrap and the operational flow, using the existing DPS device
+> credential (X.509). The device contract does not depend on the gateway. Treat the gateway as a
+> channel parameter, not a constant.
 
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
@@ -633,12 +631,12 @@ sequenceDiagram
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
-  the same call. Account scoping (`accountId` bound into the manifest signature) is **deferred past
-  Ignite '26** — DPS returns no `accountId`, so the device verifies provenance-from-Device-Update but not
+  the same call. Account scoping (`accountId` bound into the manifest signature) is **not yet
+  supported** — DPS returns no `accountId`, so the device verifies provenance-from-Device-Update but not
   account scoping. Base signature validation stays required.
 - `fileUrls` are **not** covered by the signed manifest; payloads are downloaded straight from blob
   storage and integrity comes from the per-file hashes inside the manifest.
-- Bootstrap orchestration is entirely the agent's responsibility for Ignite '26. DPS does **not**
+- Bootstrap orchestration is entirely the agent's responsibility. DPS does **not**
   enforce that a device is on a given update version before provisioning it.
 
 ### 7.2 Renewal — operational update check, after `CONNECTED`
@@ -704,8 +702,8 @@ reports include complete per-step outcomes when steps are available — see
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
-- **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
-  Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
+- **The gateway is a channel parameter.** Bootstrap always uses DPS; operational currently uses DPS
+  too. This SDK plans to
   expose the operational channel as an MQTTv5 feature client
   ([client-separation.md](client-separation.md) §8), but the service contract binds software updates to
   the updating operations, not to a connection profile.
@@ -758,7 +756,7 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
+| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (currently over DPS) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS scope, with registration held in `DPS_HOLD` for the bootstrap check | Backoff-driven reconnect reuses the cached assignment; DPS again only on `needs_reprovision` |
 
@@ -1129,7 +1127,7 @@ decide now than later.
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented — the DPS-reported value still needs the raised api-version to arrive, so it resolves to `classic` until then |
 | `az_iot_su_channel` vtable, DPS channel | [az_iot_su.h](../../inc/azure/iot/az_iot_su.h), [su_channel_dps.c](../../src/features/su/su_channel_dps.c) | implemented — the MQTTv5 hub channel is not written |
 | Software updates engine internals reused by software updates | [c/src/features/su](../../src/features/su) | implemented; the Device Update for IoT Hub twin-based API has been removed |
-| Software updates device contract | [su-spec.md](su-spec.md), [su_protocol.c](../../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows for Ignite '26 |
+| Software updates device contract | [su-spec.md](su-spec.md), [su_protocol.c](../../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows |
 | CONNACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
 | Paho adapter event and code mapping | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented |
 | Inbound dispatch table | [dispatch.c](../../src/core/dispatch.c) | implemented |

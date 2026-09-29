@@ -1,20 +1,17 @@
 # Software updates via DPS (design summary)
 
-> **Status: design summary of a DRAFT, Microsoft-internal spec** (api-version `2026-11-02-preview`).
+> **Status: design summary of a draft service contract** (api-version `2026-11-02-preview`).
 > Device-SDK-oriented digest of the DPS *"ADU first-time update"* design. Contract details are still
 > settling and DPS re-syncs on Device Update revisions — treat field-level specifics as provisional.
-> **This is the only device-facing software updates channel the SDK will implement — Device Update for IoT Hub (twin) is cut**
-> ([su-client-plan.md](su-client-plan.md#what-device-update-for-iot-hub-is-cut-means)).
-> For SDK status/cost, see [su-client-plan.md](su-client-plan.md); for the shared engine/crypto core,
-> see [su-client-design.md](su-client-design.md).
+> **This is the only device-facing software updates channel the SDK implements; the Device Update for IoT Hub twin channel was removed.**
+> For the shared engine/crypto core, see [su-client-design.md](su-client-design.md).
 
 ## What changed
 
 Software updates' **device-facing delivery moved off a dedicated Device Update HTTPS endpoint**. Instead, **DPS** exposes three
 new device-facing update APIs and acts as an **authenticated pass-through** to Azure Device Registry (ADR) →
-Device Update. The device **reuses its existing DPS auth and endpoint** and **never talks to Device Update directly**. (Post-Ignite,
-IoT Hub will front the *operational* flow the same way; for Ignite '26 **DPS fronts both** bootstrap and
-operational as an interim.)
+Device Update. The device **reuses its existing DPS auth and endpoint** and **never talks to Device Update directly**. (Currently
+**DPS fronts both** bootstrap and operational.)
 
 | | Previous software updates sketch | **Now (DPS-fronted)** |
 |---|---|---|
@@ -34,7 +31,7 @@ with Device Update powering updating behind it. A working deployment needs four 
 |---|---|
 | **ADR** | Device identities, grouping (device-query `Group` resources), deployments (`Jobs` / `Runs`), and the stored device updating state |
 | **Device Update** | Uploading, hosting and distributing update files; the backend APIs that power ADR's updating capabilities |
-| **IoT Hub** | The operational device gateway, and — post-Ignite — the operational updating API |
+| **IoT Hub** | The operational device gateway |
 | **DPS** | The onboarding device gateway, the bootstrap updating API, and the Hub binding returned by `Register` |
 
 Neither gateway stores update state. Where the device's reported state lands depends on the flow:
@@ -48,8 +45,7 @@ Consequence for a device author: **bootstrap progress is observable only through
 job**, never on a per-device resource.
 
 Against Device Update for IoT Hub: the registry moves from IoT Hub to ADR, grouping and deployment management move from Device Update
-to ADR, and the device gateway moves from the **twin** to an **RPC** fronted by DPS (Ignite '26) and
-later IoT Hub.
+to ADR, and the device gateway moves from the **twin** to an **RPC** fronted by DPS.
 
 ## The three device-facing DPS operations
 
@@ -119,8 +115,7 @@ The device **re-checks after each successful install** and only proceeds to `Reg
 ### Operational (interim)
 
 An already-provisioned device polls `requestSoftwareUpdates` on the same shape. This DPS-fronted operational path is a
-**time-boxed interim**; post-Ignite it moves to **IoT Hub's** own updating API (no device-contract change —
-same request/response, different gateway).
+**interim**; the device contract does not depend on the gateway.
 
 ## Contract summary
 
@@ -190,7 +185,7 @@ read off a DRAFT spec. Treat them differently.
 - The device **validates `updateManifestSignature`** (nested JWS / RS256) against the **root-key package** at
   `rootKeyDownloadUrl` (hardcoded Microsoft root key → SJWK signing key → manifest hash). Root-key rotation +
   `disabledSigningKeys` revocation are supported. `fileUrls` are **not** in the signed manifest.
-- **Ignite defers the `accountId`-in-signature binding** (manifest-signature-v2): DPS returns **no** `accountId`,
+- **The `accountId`-in-signature binding is not yet supported** (manifest-signature-v2): DPS returns **no** `accountId`,
   so the device verifies *provenance-from-Device-Update* but not *account scoping*. **Base signature validation stays
   required.**
 
@@ -211,12 +206,12 @@ Drive behavior from the machine-readable **`error.code`** (`x-ms-error-code` hea
 **The device is the sole retrier** (DPS fails fast, one attempt per hop) and honors `Retry-After`. `reportStatus`
 is a durable write — retry until acked; safe because the service is idempotent on `workflowId`.
 
-## Ignite '26 scope
+## Current scope
 
 - **In:** the 3 device APIs · X.509 auth · HTTP + MQTT · DPS fronts **bootstrap + operational (interim)** ·
   advisory pass-through · stateless.
-- **Deferred (post-Ignite):** `accountId` delivery + signature binding (manifest-sig-v2) · symmetric-key & TPM
-  auth · AMQP · per-enrollment-group enablement toggle · operational path moving to IoT Hub.
+- **Not supported:** `accountId` delivery + signature binding (manifest-sig-v2) · symmetric-key & TPM
+  auth · AMQP · per-enrollment-group enablement toggle.
 
 ### Known gaps to design around
 
@@ -258,8 +253,4 @@ keep working. New client work is the **transport binding + orchestration**:
 ## References
 
 - **Public REST API (TypeSpec, draft):** [Azure/azure-rest-api-specs#44617](https://github.com/Azure/azure-rest-api-specs/pull/44617) — the three device-update operations, api-version `2026-11-02-preview`.
-- **Service architecture (Microsoft-internal):** *Azure Device Update v2 — Public Preview (Ignite 2026)*,
-  Leo Lie / Joe Heiniger / Darko Aleksic, 7/6/2026 — ADR resource model, division of responsibilities
-  across ADR / Device Update / Hub / DPS, and the Ignite '26 gap list.
-- **Design spec (Microsoft-internal):** DPS *"ADU first-time update"* spec package — [Azure-IoT-Hub-DeviceRegistrationService `/specs/002-adu-first-time-update`](https://dev.azure.com/msazure/One/_git/Azure-IoT-Hub-DeviceRegistrationService?path=/specs/002-adu-first-time-update).
-- Related SDK docs: [su-client-plan.md](su-client-plan.md), [su-client-design.md](su-client-design.md).
+- Related SDK docs: [su-client-design.md](su-client-design.md).

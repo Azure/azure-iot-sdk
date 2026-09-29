@@ -88,9 +88,8 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# export AZ_IOT_DPS_GLOBAL_ENDPOINT='<dps-global-endpoint>'
 ```
 
 PowerShell:
@@ -101,9 +100,8 @@ $env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
 $env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
 $env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
 $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = 'global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = '<dps-global-endpoint>'
 ```
 
 > Manifest signature verification works out of the box: the sample uses

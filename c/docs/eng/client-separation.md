@@ -493,10 +493,7 @@ carrying delivery and reporting.
 
 > **Software updates is specified elsewhere; this section only states where the seam is.**
 > See [su-spec.md](su-spec.md) for the wire contract and
-> [su-client-plan.md](su-client-plan.md) for SDK status and cost. Both landed
-> with [PR #24](https://github.com/Azure/azure-iot-sdk/pull/24), which also
-> reduced `su-feature-support.md` to a superseded stub — do not treat that file
-> as current.
+> [su-client-design.md](su-client-design.md) for the client design.
 
 One consequence of the software updates shape is worth pulling into this document, because
 it constrains the seam: the device's update traffic goes **device → DPS → ADR →
@@ -731,8 +728,7 @@ fails with a distinct result or is simply undefined. Init-time
 `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` covers the start-up case and does
 nothing for this one.
 
-Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066)**
-— *Define device behaviour when a hub reassignment changes the connection profile*.
+Open: *define device behaviour when a hub reassignment changes the connection profile*.
 
 > **The pattern above is not safe yet. Two connection-client defects must be
 > fixed before P2 relies on it.**
@@ -757,7 +753,6 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > transition — is what also covers the second half: a SUBSCRIBE the broker
 > *rejects* (topic filter not authorized, which is a live possibility on MQTTv5's
 > topic-space authorization) must not be reported as a live subscription either.
-> Tracked as [AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084).
 > The MQTTv5 presence handshake already implements the correct shape — it waits for
 > its own SUBACK before publishing birth — it simply is not applied to feature
 > subscriptions.
@@ -889,8 +884,7 @@ Tracked as **[AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/393
 > device re-subscribes to `$iothub/...` topics on an MQTTv5 hub and consumes registry
 > slots permanently — past `AZ_IOT_MAX_PERSISTENT_SUBS` (8) and past the
 > service-side limit of five topics per device. Step 2 above cannot work until
-> this exists. Tracked as
-> [AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086).
+> this exists.
 >
 > **These two fixes deadlock if they are built naively — the order matters.**
 > Gating `CONNECTED` on SUBACKs (defect 1) while removal is still driven by the
@@ -1075,7 +1069,7 @@ plus the conformance suites.
 | P0b | This document + doc reconciliation | — | |
 | P1a | Request `2026-11-02-preview` for all DPS CONNECT sessions in the shared connection client without patching `azure-sdk-for-c` | — | **Implemented in this PR.** The pinned dependency and ESP-IDF submodule are unchanged; verify the platform-specific sample builds separately. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive: absent/null still resolves to `classic`; the `2026-11-02-preview` CONNECT version enables wire values when the service supplies them. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
-| P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `deinit()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on MQTTv5 once its redundant filters are gone); drop the five MQTTv5 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant MQTTv5 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
+| P1c | Gate `CONNECTED` on subscriptions being SUBACKed; tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `deinit()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on MQTTv5 once its redundant filters are gone); drop the five MQTTv5 filters already covered by `ih/{device_id}/dev/#`; preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant MQTTv5 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
 | P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** For local testing when DPS omits the profile, the absent/null development override above supplies `mqttV5` for MQTTv5 testing. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the MQTTv5 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the MQTTv5 probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to MQTTv5 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no software updates change at all:** the software updates cut landed first, so there was no `az_iot_su_client_init()` to repoint and software updates no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the MQTTv5 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; MQTTv5 now binds its three `dev/twin/...` handlers at connect like every other MQTTv5 client. |
 | P3 | File upload redesign — HTTP transport becomes mqttv3-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from MQTTv5**, so there is no MQTTv5 client and none is manufactured. `az_iot_mqttv3_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins MQTTv3 — see [§4](#file-upload-is-mqttv3-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
@@ -1180,17 +1174,15 @@ baseline.
 
 1. **Can a device be rolled back to an MQTTv3 hub?**
    ([§9](#the-profile-can-change-while-the-device-is-running)) Decides whether
-   profile invalidation is one-way or bidirectional. Tracked as
-   [AB#39350066](https://dev.azure.com/msazure/One/_workitems/edit/39350066).
+   profile invalidation is one-way or bidirectional.
 2. **Does a call on a stale feature client fail with a distinct result, or is it
    undefined?** ([§9](#the-profile-can-change-while-the-device-is-running)) The
    rest of this question is now decided: the profile is delivered on the
    `CONNECTED` event, so the application is told, and the check itself stays at
-   `_init()`. Same work item.
+   `_init()`.
 3. **The struct-versioning pattern for `az_iot_hub_profile`**
    ([§2](#shape)) is specified but not implemented, and the scope (this struct
-   only, or every caller-allocated public struct) is undecided. Tracked as
-   [AB#39350065](https://dev.azure.com/msazure/One/_workitems/edit/39350065).
+   only, or every caller-allocated public struct) is undecided.
 
 ---
 
