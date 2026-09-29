@@ -117,6 +117,9 @@ jobs:
           SRCREV_sdk = "$(git rev-parse HEAD)"
           EOT
           cat "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf"
+          # This layer's recipes always build: restored from sstate, they would
+          # leave no packages-split or image directory for the checks below.
+          find "$SSTATE_DIR" -type f -name 'sstate:azure-iot-sdk*' -delete
           # Objects of other recipes, to tell whether this run adds any.
           find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l > "$RUNNER_TEMP/sstate-before"
           echo "sstate objects restored: $(cat "$RUNNER_TEMP/sstate-before")"
@@ -162,6 +165,7 @@ jobs:
         if: always() && steps.bitbake.outcome != 'skipped'
         run: |
           before="$(cat "$RUNNER_TEMP/sstate-before")"
+          find "$SSTATE_DIR" -type f -name 'sstate:azure-iot-sdk*' -delete
           after="$(find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l)"
           echo "sstate objects of other recipes: $before restored, $after now"
           echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
