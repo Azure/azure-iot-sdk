@@ -350,6 +350,26 @@ static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
 }
 
 /**
+ * @brief True when nothing exists at @p path, as opposed to a file that exists
+ * but cannot be opened. Uses the OS directly: OpenSSL's own not-found report
+ * relies on errno, which it does not preserve on Windows.
+ */
+static bool file_is_missing(const char* path)
+{
+#ifdef _WIN32
+  if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
+  {
+    return false;
+  }
+  DWORD err = GetLastError();
+  return err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND;
+#else
+  struct stat st;
+  return stat(path, &st) != 0 && errno == ENOENT;
+#endif
+}
+
+/**
  * @brief Stage a copy of the file at @p src next to @p dst (stage_bio).
  *
  * Only a missing file is treated as absent (*out_tmp NULL, AZ_IOT_OK); any other
@@ -358,12 +378,15 @@ static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
 static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp)
 {
   *out_tmp = NULL;
+  if (file_is_missing(src))
+  {
+    return AZ_IOT_OK;
+  }
   BIO* in = BIO_new_file(src, "rb");
   if (!in)
   {
-    bool missing = ERR_GET_REASON(ERR_peek_last_error()) == BIO_R_NO_SUCH_FILE;
     ERR_clear_error();
-    return missing ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
+    return AZ_IOT_ERR_INTERNAL;
   }
   BIO* mem = BIO_new(BIO_s_mem());
   az_iot_result rc = mem ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
