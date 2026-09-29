@@ -829,6 +829,80 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
+/* ETags survive a reboot through save_state()/restore_state(), at their
+ * largest size too. */
+static void etags_round_trip_through_saved_state(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_channel_dps* c = &fx->channel_state;
+  const az_iot_su_channel_vtable* vt = fx->channel.vtable;
+  assert_non_null(vt->save_state);
+  assert_non_null(vt->restore_state);
+
+  uint8_t buf[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
+  size_t len = 99;
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  assert_int_equal(len, 0); /* nothing held yet */
+
+  memset(c->agent_info_etag, 'a', sizeof(c->agent_info_etag) - 1);
+  c->agent_info_etag[sizeof(c->agent_info_etag) - 1] = '\0';
+  memset(c->service_config_etag, 's', sizeof(c->service_config_etag) - 1);
+  c->service_config_etag[sizeof(c->service_config_etag) - 1] = '\0';
+  char agent[sizeof(c->agent_info_etag)];
+  char config[sizeof(c->service_config_etag)];
+  memcpy(agent, c->agent_info_etag, sizeof(agent));
+  memcpy(config, c->service_config_etag, sizeof(config));
+
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf) - 1u, &len), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  assert_int_equal(len, sizeof(buf));
+
+  c->agent_info_etag[0] = '\0';
+  c->service_config_etag[0] = '\0';
+  assert_int_equal(vt->restore_state(c, buf, len), AZ_IOT_OK);
+  assert_string_equal(c->agent_info_etag, agent);
+  assert_string_equal(c->service_config_etag, config);
+
+  memcpy(c->agent_info_etag, "agent", sizeof("agent"));
+  c->service_config_etag[0] = '\0';
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  c->agent_info_etag[0] = '\0';
+  assert_int_equal(vt->restore_state(c, buf, len), AZ_IOT_OK);
+  assert_string_equal(c->agent_info_etag, "agent");
+  assert_string_equal(c->service_config_etag, "");
+}
+
+/* Anything save_state() did not write is refused and changes nothing. */
+static void malformed_saved_state_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_channel_dps* c = &fx->channel_state;
+  const az_iot_su_channel_vtable* vt = fx->channel.vtable;
+  memcpy(c->agent_info_etag, "agent", sizeof("agent"));
+  memcpy(c->service_config_etag, "config", sizeof("config"));
+
+  static const uint8_t big[2 + 128] = { 128 };
+  const struct
+  {
+    const uint8_t* buf;
+    size_t len;
+  } cases[] = {
+    { (const uint8_t*)"\0", 1 }, /* too short */
+    { (const uint8_t*)"\0\0", 2 }, /* both empty: never saved */
+    { (const uint8_t*)"\1a\1b\0", 5 }, /* trailing byte */
+    { (const uint8_t*)"\2a", 2 }, /* agent ETag past the end */
+    { (const uint8_t*)"\1a\2b", 4 }, /* config ETag past the end */
+    { (const uint8_t*)"\2a\0\0", 4 }, /* embedded NUL */
+    { big, sizeof(big) }, /* agent ETag too long */
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    assert_int_equal(vt->restore_state(c, cases[i].buf, cases[i].len), AZ_IOT_ERR_INVALID_ARG);
+    assert_string_equal(c->agent_info_etag, "agent");
+    assert_string_equal(c->service_config_etag, "config");
+  }
+}
+
 /* Cached ETags never make a validated property set unsendable: properties are
  * sized without them, and a request they would overflow is sent without them. */
 static void oversized_cached_etags_are_dropped_from_the_request(void** state)
@@ -2573,6 +2647,8 @@ int main(void)
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(
         oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(etags_round_trip_through_saved_state, setup, teardown),
+    cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
