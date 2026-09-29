@@ -1428,6 +1428,8 @@ static size_t g_dps_op_cert_chain = 0;
 static az_iot_result g_dps_op_cert_store_result = AZ_IOT_OK;
 static int g_dps_store_calls_at_cb = -1;
 static fake_csr_provider* g_dps_prov = NULL;
+/* When set, the callback unregisters itself from this client. */
+static az_iot_connection_client* g_dps_unregister_from = NULL;
 static void on_dps_op_cert(
     const az_iot_issued_certificate* issued,
     az_iot_result store_result,
@@ -1438,6 +1440,10 @@ static void on_dps_op_cert(
   g_dps_op_cert_chain = issued->count;
   g_dps_op_cert_store_result = store_result;
   g_dps_store_calls_at_cb = g_dps_prov ? g_dps_prov->store_calls : -1;
+  if (g_dps_unregister_from)
+  {
+    (void)az_iot_connection_client_set_operational_cert_callback(g_dps_unregister_from, NULL, NULL);
+  }
 }
 
 /* Init a DPS client with request_operational_certificate over @p prov, drive it
@@ -1609,6 +1615,28 @@ static void dps_without_a_store_hook_reports_not_supported_to_the_app(void** sta
 
   assert_int_equal(g_dps_op_cert_count, 1);
   assert_int_equal(g_dps_op_cert_store_result, AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* The callback took the chain even if it unregisters itself while running, so
+ * the registration still proceeds to the hub. */
+static void dps_a_callback_that_unregisters_itself_still_handles_the_chain(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable_no_store;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  g_dps_unregister_from = &client;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
+  g_dps_unregister_from = NULL;
+
+  assert_int_equal(g_dps_op_cert_count, 1);
   assert_int_equal(
       az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTING);
@@ -2714,6 +2742,7 @@ int main(void)
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_without_a_store_hook_reports_not_supported_to_the_app),
+    cmocka_unit_test(dps_a_callback_that_unregisters_itself_still_handles_the_chain),
     cmocka_unit_test(dps_without_a_store_hook_or_callback_fails_the_registration),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),

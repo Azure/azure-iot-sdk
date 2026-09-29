@@ -1617,15 +1617,17 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
       AZ_IOT_LOG_ERRORF("dps: storing the issued certificate failed (%d)", (int)store_rc);
     }
   }
-  if (c->op_cert_cb)
+  /* Captured first: the callback may unregister itself. */
+  az_iot_operational_cert_callback cb = c->op_cert_cb;
+  if (cb)
   {
-    c->op_cert_cb(&issued, store_rc, c->op_cert_cb_ctx);
+    cb(&issued, store_rc, c->op_cert_cb_ctx);
   }
   if (has_store)
   {
     return store_rc;
   }
-  return c->op_cert_cb ? AZ_IOT_OK : AZ_IOT_ERR_NOT_SUPPORTED;
+  return cb ? AZ_IOT_OK : AZ_IOT_ERR_NOT_SUPPORTED;
 }
 
 static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)

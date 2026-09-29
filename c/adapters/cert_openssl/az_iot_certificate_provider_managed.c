@@ -612,7 +612,8 @@ static az_iot_result managed_store(
     int len = (int)az_span_size(cert);
     if (len <= 0)
     {
-      continue;
+      rc = AZ_IOT_ERR_INVALID_ARG; /* every issued entry must be a certificate */
+      break;
     }
     if (!write_issued_cert(mem, az_span_ptr(cert), len))
     {
