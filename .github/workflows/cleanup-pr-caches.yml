@@ -1,0 +1,78 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Deletes the Actions caches of closed pull requests.
+#
+# A pull request's caches (ref refs/pull/<n>/merge) serve only that pull
+# request, yet count against the repository's 10 GB cache quota until they go
+# unused for 7 days. ci-c-yocto saves a ~450 MB sstate entry per run that built
+# something, so closed pull requests could push main's entry out.
+#
+# - On close: deletes that pull request's caches. Same-repository pull requests
+#   only: a fork's token is read-only.
+# - Nightly (and manual): deletes the caches of every closed pull request. Covers
+#   forks, entries saved by a run still going when the pull request closed, and
+#   pull requests closed before this workflow existed.
+
+name: cleanup-pr-caches
+
+on:
+  pull_request:
+    types: [ closed ]
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List what would be deleted, delete nothing.
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  on-close:
+    name: delete this pull request's caches
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete caches of refs/pull/${{ github.event.pull_request.number }}/merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          gh cache list --ref "$REF" --limit 1000
+          gh cache delete --all --ref "$REF" --succeed-on-no-caches
+
+  sweep:
+    name: delete caches of closed pull requests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Delete caches of closed pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry-run || false }}
+        run: |
+          set -euo pipefail
+          prs="$(gh cache list --limit 10000 --json ref --jq '.[].ref' \
+                   | sed -n 's|^refs/pull/\([0-9][0-9]*\)/merge$|\1|p' | sort -un)"
+          for pr in $prs; do
+            state="$(gh pr view "$pr" --json state --jq .state)"
+            echo "#$pr: $state"
+            [ "$state" = OPEN ] && continue
+            if [ "$DRY_RUN" = true ]; then
+              gh cache list --ref "refs/pull/$pr/merge" --limit 1000
+            else
+              gh cache delete --all --ref "refs/pull/$pr/merge" --succeed-on-no-caches
+            fi
+          done
