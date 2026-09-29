@@ -25,7 +25,9 @@
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
  * ("<path>.aziot-...") next to the destination, then renamed over it. init()
- * uses such files a stopped process left behind to recover, then deletes them.
+ * uses such files a stopped process left behind to recover, then deletes them;
+ * if recovery cannot complete they are kept for the next init(), and the
+ * operational identity is not served until then.
  * The private key is stored unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments

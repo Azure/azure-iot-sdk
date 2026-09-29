@@ -419,9 +419,12 @@ typedef bool (*staged_file_fn)(const char* staged, void* ctx);
 /**
  * @brief Call @p fn for each file stage_file() created next to @p path:
  * "<path>.aziot-XXXXXX" (6 alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
- * on Windows. Other names are never passed. Best effort.
+ * on Windows. Other names are never passed.
+ *
+ * @return false if the directory could not be listed completely, so a caller
+ * cannot tell whether every staged file was seen.
  */
-static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
+static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
 {
   const char* slash = strrchr(path, '/');
 #ifdef _WIN32
@@ -439,7 +442,7 @@ static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
   char* pattern = (char*)malloc(pattern_size);
   if (!pattern)
   {
-    return;
+    return false;
   }
   (void)snprintf(pattern, pattern_size, "%s" MANAGED_TMP_TAG "*.tmp", path);
   WIN32_FIND_DATAA fd;
@@ -447,15 +450,21 @@ static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
   free(pattern);
   if (h == INVALID_HANDLE_VALUE)
   {
-    return;
+    DWORD err = GetLastError();
+    return err == ERROR_FILE_NOT_FOUND || err == ERROR_NO_MORE_FILES;
   }
   char* stale = (char*)malloc(dir_len + MAX_PATH + 1);
+  if (!stale)
+  {
+    FindClose(h);
+    return false;
+  }
   bool stop = false;
   do
   {
     const char* name = fd.cFileName;
     size_t hex_at = base_len + MANAGED_TMP_TAG_LEN;
-    bool match = stale && strlen(name) == hex_at + 12 && _strnicmp(name, base, base_len) == 0
+    bool match = strlen(name) == hex_at + 12 && _strnicmp(name, base, base_len) == 0
         && _strnicmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0
         && _stricmp(name + hex_at + 8, ".tmp") == 0;
     for (size_t i = 0; match && i < 8; ++i)
@@ -469,8 +478,10 @@ static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
       stop = fn(stale, ctx);
     }
   } while (!stop && FindNextFileA(h, &fd));
+  bool ok = stop || GetLastError() == ERROR_NO_MORE_FILES;
   FindClose(h);
   free(stale);
+  return ok;
 #else
   char* dir = (char*)malloc(dir_len + 2);
   size_t name_len = base_len + MANAGED_TMP_TAG_LEN + 6;
@@ -489,10 +500,17 @@ static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
     }
     d = opendir(dir);
   }
-  struct dirent* e = NULL;
   bool stop = false;
-  while (!stop && d && (e = readdir(d)) != NULL)
+  bool listed = d != NULL;
+  while (!stop && d)
   {
+    errno = 0; /* fn() may set it; only readdir()'s own result counts */
+    struct dirent* e = readdir(d);
+    if (!e)
+    {
+      listed = errno == 0;
+      break;
+    }
     const char* name = e->d_name;
     bool match = strlen(name) == name_len && strncmp(name, base, base_len) == 0
         && strncmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
@@ -507,12 +525,14 @@ static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
       stop = fn(stale, ctx);
     }
   }
+  bool ok = listed;
   if (d)
   {
     closedir(d);
   }
   free(dir);
   free(stale);
+  return ok;
 #endif
 }
 
@@ -524,7 +544,10 @@ static bool delete_staged(const char* staged, void* ctx)
 }
 
 /** @brief Remove files stage_file() left next to @p path (for_each_staged). */
-static void remove_stale_temps(const char* path) { for_each_staged(path, delete_staged, NULL); }
+static void remove_stale_temps(const char* path)
+{
+  (void)for_each_staged(path, delete_staged, NULL);
+}
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
@@ -683,6 +706,7 @@ typedef struct recovery_ctx
   const char* cert_path;
   EVP_PKEY* key;
   bool done;
+  bool blocked; /* a matching staged file could not be renamed into place */
 } recovery_ctx;
 
 /* Roll forward: a staged key certified by the chain in place was about to be
@@ -691,50 +715,67 @@ static bool recover_staged_key(const char* staged, void* vctx)
 {
   recovery_ctx* c = (recovery_ctx*)vctx;
   EVP_PKEY* k = load_key_file(staged);
-  if (k && operational_cert_is_valid(c->cert_path, k) && replace_file(staged, c->key_path))
+  if (!k || !operational_cert_is_valid(c->cert_path, k))
   {
-    EVP_PKEY_free(c->key);
-    c->key = k;
-    c->done = true;
+    EVP_PKEY_free(k);
+    return false;
+  }
+  if (!replace_file(staged, c->key_path))
+  {
+    EVP_PKEY_free(k);
+    c->blocked = true;
     return true;
   }
-  EVP_PKEY_free(k);
-  return false;
+  EVP_PKEY_free(c->key);
+  c->key = k;
+  c->done = true;
+  return true;
 }
 
 /* Roll back: a staged chain certifying the key in place is the previous chain. */
 static bool recover_staged_chain(const char* staged, void* vctx)
 {
   recovery_ctx* c = (recovery_ctx*)vctx;
-  if (c->key && operational_cert_is_valid(staged, c->key) && replace_file(staged, c->cert_path))
+  if (!c->key || !operational_cert_is_valid(staged, c->key))
   {
-    c->done = true;
+    return false;
+  }
+  if (!replace_file(staged, c->cert_path))
+  {
+    c->blocked = true;
     return true;
   }
-  return false;
+  c->done = true;
+  return true;
 }
 
 /**
  * @brief Finish or undo a key rotation a stopped process left half-done, so the
  * key and chain files match again.
  *
- * Only runs when the chain in place does not certify @p *key. Prefers the new
+ * Only acts when the chain in place does not certify @p *key. Prefers the new
  * pair (a staged key the chain certifies); otherwise restores a staged previous
  * chain that certifies the key in place. May replace *key.
+ *
+ * @return true when the staged files are spent and may be deleted: the pair
+ * already matched, was recovered, or no staged file could recover it. false
+ * when a recovery rename failed or a directory could not be listed; the staged
+ * files must then be kept so a later init() can retry.
  */
-static void recover_rotation(const char* key_path, const char* cert_path, EVP_PKEY** key)
+static bool recover_rotation(const char* key_path, const char* cert_path, EVP_PKEY** key)
 {
   if (*key && operational_cert_is_valid(cert_path, *key))
   {
-    return;
+    return true;
   }
-  recovery_ctx c = { .key_path = key_path, .cert_path = cert_path, .key = *key, .done = false };
-  for_each_staged(key_path, recover_staged_key, &c);
-  if (!c.done)
+  recovery_ctx c = { .key_path = key_path, .cert_path = cert_path, .key = *key };
+  bool listed = for_each_staged(key_path, recover_staged_key, &c);
+  if (!c.done && !c.blocked)
   {
-    for_each_staged(cert_path, recover_staged_chain, &c);
+    listed = for_each_staged(cert_path, recover_staged_chain, &c) && listed;
   }
   *key = c.key;
+  return c.done || (listed && !c.blocked);
 }
 
 /* --------------------------------------------------------------------------
@@ -1215,12 +1256,16 @@ az_iot_result az_iot_certificate_provider_managed_init(
   }
 
   /* Operational key: load if present on disk, else generate and persist. A
-   * rotation a stopped process left half-done is finished or undone first;
-   * then the files it staged are deleted. */
+   * rotation a stopped process left half-done is finished or undone first,
+   * and only then are the files it staged deleted. If recovery could not run
+   * to completion they are kept for the next init(), and until then the
+   * operational identity is not served (the bootstrap one still is). */
   EVP_PKEY* key = load_key_file(provider->operational_key_path);
-  recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key);
-  remove_stale_temps(provider->operational_key_path);
-  remove_stale_temps(provider->operational_cert_path);
+  if (recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key))
+  {
+    remove_stale_temps(provider->operational_key_path);
+    remove_stale_temps(provider->operational_cert_path);
+  }
   if (!key)
   {
     key = generate_key(provider->key_type);

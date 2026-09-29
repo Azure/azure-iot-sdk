@@ -1385,6 +1385,43 @@ static void managed_init_undoes_a_rotation_it_cannot_finish(void** state)
   remove_test_files();
 }
 
+/* Recovery that cannot complete keeps the staged files, and the next init()
+ * finishes it. A directory at the chain path stops the first attempt. */
+static void managed_init_keeps_staged_files_until_recovery_succeeds(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  assert_int_equal(0, remove(OP_CERT));
+  make_dir(OP_CERT);
+  write_chain_file(STAGED_1(OP_CERT), first);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  assert_true(file_exists(STAGED_1(OP_CERT)));
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  remove_dir(OP_CERT);
+  az_iot_certificate_provider_managed prov3;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov3, &opts));
+  assert_true(prov3.has_operational);
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, first);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov3);
+
+  free(on_disk);
+  free(first);
+  remove_test_files();
+}
+
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
  * makes adding an implementation a deliberate act rather than a surprise. */
@@ -1440,6 +1477,7 @@ int main(void)
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
     cmocka_unit_test(managed_init_finishes_a_rotation_stopped_after_the_chain),
     cmocka_unit_test(managed_init_undoes_a_rotation_it_cannot_finish),
+    cmocka_unit_test(managed_init_keeps_staged_files_until_recovery_succeeds),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
