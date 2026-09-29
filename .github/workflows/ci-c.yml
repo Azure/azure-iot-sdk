@@ -496,7 +496,13 @@ jobs:
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:suppressions=${{ github.workspace }}/c/eng/sanitizers/ubsan.supp
-        run: ctest --preset linux-clang-debug --output-on-failure
+        # Function-name suppressions (and readable stacks) need clang's own symbolizer.
+        run: |
+          symbolizer="$(clang -print-prog-name=llvm-symbolizer)"
+          test -x "$symbolizer"
+          export ASAN_SYMBOLIZER_PATH="$symbolizer"
+          export UBSAN_OPTIONS="$UBSAN_OPTIONS:external_symbolizer_path=$symbolizer"
+          ctest --preset linux-clang-debug --output-on-failure
 
   # ---------------------------------------------------------------------------
   # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch

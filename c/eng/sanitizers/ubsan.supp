@@ -1,3 +1,4 @@
 # UBSan suppressions for third-party code only (see ci-c.yml, job asan-ubsan-linux).
-# Paho writes an empty Will payload with memcpy(dst, NULL, 0).
-nonnull-attribute:*/paho_mqtt_c-src/src/MQTTPacket.c
+# Paho writeData() calls memcpy(dst, NULL, 0) for an empty Will payload. Matched by function name,
+# so UBSAN_OPTIONS must give a symbolizer.
+nonnull-attribute:writeData
