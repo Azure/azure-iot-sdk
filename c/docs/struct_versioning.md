@@ -24,7 +24,11 @@ older headers is not supported.
 - `az_iot_core`, `az_iot_mqttv3` and `az_iot_mqttv5` build as shared libraries.
   Adapters are always static.
 - azure-sdk-for-c is always static (position-independent in a shared build) and
-  is linked into `az_iot_core` only.
+  a public dependency of `az_iot_core`, since its types are in our headers. On
+  Linux, `az_iot_mqttv3`/`az_iot_mqttv5` resolve it from `az_iot_core`; on
+  Windows, each DLL or executable calling it links its own copy. Copies are
+  independent: the SDK sets no azure-sdk-for-c global state (log or precondition
+  callbacks).
 - The full release version is in the soname (`libaz_iot_core.so.0.0.1`) and the
   Windows DLL name (`az_iot_core-0.0.1.dll`). An application built against one
   release fails to load with any other, instead of misreading struct layouts.
