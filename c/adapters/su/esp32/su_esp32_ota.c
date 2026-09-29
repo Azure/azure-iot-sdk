@@ -289,14 +289,16 @@ static int32_t ota_restore(
     esp_ota_abort(c->ota_handle);
     c->ota_in_progress = false;
   }
-  /* Point boot back at the currently-running (good) partition. */
-  const esp_partition_t* running = esp_ota_get_running_partition();
-  if (running)
-  {
-    esp_ota_set_boot_partition(running);
-  }
   /* Rolled back: the reboot install asked for is no longer wanted. */
   c->reboot_pending = false;
+  /* Point boot back at the currently-running (good) partition. */
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_err_t err = (running != NULL) ? esp_ota_set_boot_partition(running) : ESP_FAIL;
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(TAG, "restore: could not select the running partition: %s", esp_err_to_name(err));
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
