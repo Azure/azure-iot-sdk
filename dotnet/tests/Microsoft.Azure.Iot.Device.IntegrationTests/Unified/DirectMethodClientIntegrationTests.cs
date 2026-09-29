@@ -41,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
-                if (args.MethodName.Equals(expectedDirectMethodName))
+                if (args.MethodName.Equals(expectedDirectMethodName, StringComparison.Ordinal))
                 {
                     if (args.Payload == null)
                     {
@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
                     var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Payload);
 
-                    if (requestPayload.SomeString.Equals(expectedRequestPayload.SomeString) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
+                    if (string.Equals(requestPayload.SomeString, expectedRequestPayload.SomeString, StringComparison.Ordinal) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
                     {
                         actualDirectMethodRequestsReceivedCount++;
                         DirectMethodResponse response = new()
