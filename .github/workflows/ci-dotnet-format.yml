@@ -2,7 +2,7 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Fails when .NET code under dotnet/ is not formatted per dotnet/.editorconfig (whitespace and code
-# style). Fix locally with: dotnet format whitespace dotnet/Project.slnx && dotnet format style dotnet/Project.slnx
+# style), in Project.slnx and in every project it does not list. Fix with: dotnet/eng/check-format.sh --fix
 name: ci-dotnet-format
 
 on:
@@ -54,9 +54,6 @@ jobs:
     if: needs.changes.outputs.dotnet == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: dotnet
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -67,7 +64,5 @@ jobs:
           dotnet-version: '10.0.x'
 
       # Analyzer diagnostics belong to the build, not to this check.
-      - name: Whitespace
-        run: dotnet format whitespace Project.slnx --verify-no-changes
-      - name: Code style
-        run: dotnet format style Project.slnx --verify-no-changes
+      - name: Check formatting
+        run: bash dotnet/eng/check-format.sh
