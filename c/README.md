@@ -72,7 +72,18 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
   libraries. There is no ABI guarantee between releases: rebuild the application
   whenever the library is updated ([struct_versioning.md](docs/struct_versioning.md)).
 
-[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package.
+pkg-config (not MSVC): one `azure-iot-sdk-<component>.pc` per component. The
+libraries are static, so pass `--static`; OpenSSL's and mbedTLS's `.pc` files
+must be on `PKG_CONFIG_PATH`.
+
+```sh
+cc app.c $(pkg-config --static --cflags --libs azure-iot-sdk-mqttv3 azure-iot-sdk-adapter_paho)
+```
+
+Yocto: [platforms/yocto/meta-azure-iot-sdk](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap).
+
+[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
+with CMake and with pkg-config alone ([pkg-config-test.sh](tests/install/pkg-config-test.sh)).
 
 ## Project layout
 

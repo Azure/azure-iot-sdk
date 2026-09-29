@@ -478,6 +478,8 @@ jobs:
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
   # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # Configured with one prefix and installed with `--prefix` to another: the
+  # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # ---------------------------------------------------------------------------
   install:
@@ -522,7 +524,7 @@ jobs:
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev pkg-config
 
       - name: Set paths
         # Forward slashes on Windows: these values end up in CMake files.
@@ -531,6 +533,7 @@ jobs:
           mbedtls=""
           if [ -n "${{ matrix.mbedtls }}" ]; then mbedtls="$tmp/mbedtls"; fi
           {
+            echo "AZ_IOT_CONFIGURED_PREFIX=$tmp/az-iot-sdk-configured"
             echo "AZ_IOT_PREFIX=$tmp/az-iot-sdk"
             echo "AZ_IOT_CONSUMER=$tmp/install-test"
             echo "AZ_IOT_MBEDTLS=$mbedtls"
@@ -544,7 +547,7 @@ jobs:
         run: >
           cmake -S . -B build/install -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_INSTALL_PREFIX="$AZ_IOT_PREFIX"
+          -DCMAKE_INSTALL_PREFIX="$AZ_IOT_CONFIGURED_PREFIX"
           -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS"
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
@@ -556,7 +559,7 @@ jobs:
         run: ctest --test-dir build/install --output-on-failure --no-tests=error
 
       - name: Install
-        run: cmake --install build/install
+        run: cmake --install build/install --prefix "$AZ_IOT_PREFIX"
       - name: Check the installed tree
         run: |
           test -f "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
@@ -570,6 +573,11 @@ jobs:
             echo "::error::installed files reference the checkout ($ws)"
             exit 1
           fi
+          if grep -rIil -F "$AZ_IOT_CONFIGURED_PREFIX" "$AZ_IOT_PREFIX"; then
+            echo "::error::installed files reference the configure-time prefix"
+            exit 1
+          fi
+          test ! -e "$AZ_IOT_CONFIGURED_PREFIX"
           rm -rf build/install
 
       - name: Configure the consumer
@@ -619,6 +627,19 @@ jobs:
               exit 1
             fi
           fi
+
+      # No CMake: the .pc files alone must give a working compile and link line.
+      # MSVC builds install no .pc files.
+      - name: Build and run the pkg-config consumer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export PKG_CONFIG_PATH="$AZ_IOT_PREFIX/lib/pkgconfig:$AZ_IOT_MBEDTLS/lib/pkgconfig"
+          # pkg-config sets no runtime search path for the shared libraries.
+          if [ "${{ matrix.shared }}" = "ON" ]; then
+            export LD_LIBRARY_PATH="$AZ_IOT_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          IFS=';' read -ra comps <<< "${{ matrix.components }}"
+          bash tests/install/pkg-config-test.sh --run "$RUNNER_TEMP/pkg-config-test" "${comps[@]}"
 
   # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
