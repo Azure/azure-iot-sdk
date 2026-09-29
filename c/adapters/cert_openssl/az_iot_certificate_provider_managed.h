@@ -27,7 +27,8 @@
  * ("<path>.aziot-...") next to the destination, then renamed over it. init()
  * uses such files a stopped process left behind to recover, then deletes them;
  * if recovery cannot complete they are kept for the next init(), and the
- * operational identity is not served until then.
+ * operational identity is not served until then (if the key cannot be loaded
+ * either, no key is generated and get_csr() fails until recovery succeeds).
  * The private key is stored unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments

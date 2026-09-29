@@ -1422,6 +1422,56 @@ static void managed_init_keeps_staged_files_until_recovery_succeeds(void** state
   remove_test_files();
 }
 
+/* With no loadable key and a recovery that cannot complete, init() still
+ * succeeds in bootstrap-only mode and generates no key over the one a retry
+ * restores. A directory at the key path blocks the first attempt. */
+static void managed_init_stays_bootstrap_only_while_recovery_is_blocked(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  EVP_PKEY* new_key = EVP_PKEY_dup((EVP_PKEY*)prov.pending_key);
+  assert_non_null(new_key);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* renewed = make_cert_base64(csr_key, 1);
+  write_chain_file(OP_CERT, renewed);
+  write_key_pem(STAGED_1(OP_KEY), new_key);
+  assert_int_equal(0, remove(OP_KEY));
+  make_dir(OP_KEY);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_OK, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  az_iot_certificate_signing_request csr;
+  memset(&csr, 0, sizeof(csr));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_INITIALIZED, prov2.base.vtable->get_csr(&prov2.base, "my-device-id", &csr));
+  assert_true(file_exists(STAGED_1(OP_KEY)));
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  remove_dir(OP_KEY);
+  az_iot_certificate_provider_managed prov3;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov3, &opts));
+  assert_true(prov3.has_operational);
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov3.operational_key, new_key));
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov3);
+
+  free(renewed);
+  EVP_PKEY_free(new_key);
+  EVP_PKEY_free(csr_key);
+  remove_test_files();
+}
+
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
  * makes adding an implementation a deliberate act rather than a surprise. */
@@ -1478,6 +1528,7 @@ int main(void)
     cmocka_unit_test(managed_init_finishes_a_rotation_stopped_after_the_chain),
     cmocka_unit_test(managed_init_undoes_a_rotation_it_cannot_finish),
     cmocka_unit_test(managed_init_keeps_staged_files_until_recovery_succeeds),
+    cmocka_unit_test(managed_init_stays_bootstrap_only_while_recovery_is_blocked),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

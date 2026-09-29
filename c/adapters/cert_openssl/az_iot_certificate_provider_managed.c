@@ -435,6 +435,13 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
   }
 #endif
   size_t dir_len = slash ? (size_t)(slash - path) + 1 : 0;
+#ifdef _WIN32
+  /* A drive-relative path ("D:name") has no separator but keeps its drive. */
+  if (!slash && isalpha((unsigned char)path[0]) && path[1] == ':')
+  {
+    dir_len = 2;
+  }
+#endif
   const char* base = path + dir_len;
   size_t base_len = strlen(base);
 #ifdef _WIN32
@@ -1259,14 +1266,19 @@ az_iot_result az_iot_certificate_provider_managed_init(
    * rotation a stopped process left half-done is finished or undone first,
    * and only then are the files it staged deleted. If recovery could not run
    * to completion they are kept for the next init(), and until then the
-   * operational identity is not served (the bootstrap one still is). */
+   * operational identity is not served (the bootstrap one still is). No key is
+   * generated then either: it could overwrite the key a retry would restore,
+   * so without a loadable key the provider serves the bootstrap identity only
+   * and get_csr() reports AZ_IOT_ERR_NOT_INITIALIZED. */
   EVP_PKEY* key = load_key_file(provider->operational_key_path);
-  if (recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key))
+  bool recovered
+      = recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key);
+  if (recovered)
   {
     remove_stale_temps(provider->operational_key_path);
     remove_stale_temps(provider->operational_cert_path);
   }
-  if (!key)
+  if (!key && recovered)
   {
     key = generate_key(provider->key_type);
     if (!key)
@@ -1286,7 +1298,8 @@ az_iot_result az_iot_certificate_provider_managed_init(
 
   /* An operational cert persisted by a previous run, issued for this key, means
    * we can connect with the OPERATIONAL identity immediately (no re-enrollment). */
-  provider->has_operational = operational_cert_is_valid(provider->operational_cert_path, key);
+  provider->has_operational
+      = recovered && key && operational_cert_is_valid(provider->operational_cert_path, key);
 
   provider->loaded = true;
   return AZ_IOT_OK;
