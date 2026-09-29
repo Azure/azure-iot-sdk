@@ -334,18 +334,22 @@ typedef enum
 
 typedef struct
 {
+    uint32_t                _internal_size; /* SDK-stamped sizeof           */
     az_iot_csr_event_kind kind;
     az_iot_result         status;         /* AZ_IOT_OK unless FAILED       */
     int32_t                 service_code;   /* e.g. 409005; 0 if none         */
     uint32_t                retry_after_s;  /* 0 if none                      */
     const az_iot_issued_certificate* issued;  /* non-NULL on ISSUED         */
+    az_iot_result         store_status;   /* ISSUED: provider store result */
 } az_iot_csr_event;
 
 typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
-/* Device-initiated renewal against the connected Hub. request_id NULL => the
- * SDK generates one; pass a prior id to resubmit. replace NULL, or "*" to
- * supersede any active request. */
+/* Device-initiated renewal against the connected Hub. csr NULL => the SDK takes
+ * it from the provider's get_csr() and stores the issued chain there; an
+ * application CSR is never stored. request_id NULL => the SDK generates one;
+ * pass a prior id to resubmit. replace NULL, or "*" to supersede any active
+ * request. */
 az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
     const az_iot_certificate_signing_request* csr,

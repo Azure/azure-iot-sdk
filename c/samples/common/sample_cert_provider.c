@@ -16,9 +16,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 /* PEM framing written around each base64 DER certificate the service issues. */
 #define PEM_CERT_BEGIN "-----BEGIN CERTIFICATE-----\n"
 #define PEM_CERT_END "\n-----END CERTIFICATE-----\n"
+
+/* Suffix of the temporary file a new chain is written to before it replaces
+ * the operational cert file. */
+#define SAMPLE_TMP_SUFFIX ".tmp"
+
+/* Replace @p to with @p from in one step. Returns nonzero on success. */
+static int sample_replace_file(const char* from, const char* to)
+{
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return rename(from, to) == 0;
+#endif
+}
 
 static char* dup_str(const char* s)
 {
@@ -132,13 +153,27 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  FILE* f = fopen(p->operational_cert_path, "wb");
+  /* All-or-nothing: write a temporary file next to the destination, then
+   * replace the destination with it, so a failure keeps the previous chain.
+   * A production provider should also create it owner-only under a unique
+   * name (see the managed provider). */
+  size_t path_len = strlen(p->operational_cert_path);
+  char* tmp = (char*)malloc(path_len + sizeof(SAMPLE_TMP_SUFFIX));
+  if (!tmp)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  memcpy(tmp, p->operational_cert_path, path_len);
+  memcpy(tmp + path_len, SAMPLE_TMP_SUFFIX, sizeof(SAMPLE_TMP_SUFFIX));
+
+  FILE* f = fopen(tmp, "wb");
   if (!f)
   {
+    free(tmp);
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* PEM-wrap each base64 DER cert (leaf first) into the operational cert file. */
+  /* PEM-wrap each base64 DER cert (leaf first) into the temporary file. */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
@@ -155,10 +190,23 @@ static az_iot_result provider_store(
       break;
     }
   }
+  if (fflush(f) != 0)
+  {
+    rc = AZ_IOT_ERR_INTERNAL;
+  }
   if (fclose(f) != 0)
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
+  if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
+  {
+    rc = AZ_IOT_ERR_INTERNAL;
+  }
+  if (rc != AZ_IOT_OK)
+  {
+    (void)remove(tmp);
+  }
+  free(tmp);
 
   if (rc == AZ_IOT_OK)
   {
