@@ -204,6 +204,15 @@ The two `test` legs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a leg fails — or if the run is cancelled — so resources
 are never leaked.
 
+**Shared environment (temporary, opt-in).** When repository variable
+`E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
+long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
+X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1)),
+so there is nothing to clean up. Inputs are repository secrets
+`E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
+(`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
+upload with notifications. Push and nightly runs always provision.
+
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch
 > until its environment exists). See [Software updates e2e](#software-updates-e2e).
