@@ -413,7 +413,8 @@ The byte layout is documented next to the serializer in
    is retried from `do_work()` after 1 s, 2 s, 4 s, … (at most 60 s). A success
    raises `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`. After
    `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` (default 5) consecutive failures the event
-   is raised again with `persist_retrying` false and retries stop:
+   is raised again with `persist_retrying` false and retries stop (with a
+   limit of 1, the first event already carries `persist_retrying` false):
    - a held reboot boundary fails the workflow: rolled back, reported FAILED
      with facility `0x8`;
    - an unsent terminal report is no longer stored (it is still sent);

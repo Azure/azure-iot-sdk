@@ -623,10 +623,11 @@ extern "C"
 
     /* persist_state_fn failed. Raised on the first failure of an episode
      * (`persist_retrying` true) and when AZ_IOT_SU_PERSIST_MAX_ATTEMPTS is
-     * reached (`persist_retrying` false); see that macro for what giving up
-     * does. Carries `state`, `reason` (AZ_IOT_ERR_INTERNAL) and
-     * `persist_attempts`. While retrying, the workflow is held at a reboot
-     * boundary: do not reboot the device. */
+     * reached (`persist_retrying` false); with a limit of 1, once, with
+     * `persist_retrying` false. See that macro for what giving up does.
+     * Carries `state`, `reason` (AZ_IOT_ERR_INTERNAL) and `persist_attempts`.
+     * While retrying, the workflow is held at a reboot boundary: do not
+     * reboot the device. */
     AZ_IOT_SU_EVENT_PERSIST_FAILED,
 
     /* A persist_state_fn write succeeded after AZ_IOT_SU_EVENT_PERSIST_FAILED.
