@@ -650,13 +650,6 @@ extern "C"
    * returns; copy anything that must outlive it. */
   typedef struct az_iot_su_event
   {
-    /* Stamped by the SDK with sizeof(az_iot_su_event); callers never set it.
-     * Future SDKs may APPEND fields, so a callback compiled against a newer
-     * header but invoked by an older library must check this before reading
-     * any field added after the version that library was built from (use
-     * AZ_IOT_STRUCT_HAS_FIELD()) -- otherwise it reads past the end of the event
-     * the older library put on the stack. */
-    uint32_t _internal_size;
     az_iot_su_event_kind kind;
 
     /* WORKFLOW_STATE_CHANGED only. */

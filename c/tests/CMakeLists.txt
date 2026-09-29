@@ -111,7 +111,6 @@ target_include_directories(az_iot_test_support PUBLIC
 target_link_libraries(az_iot_test_support PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_test_support)
 
-az_iot_add_cmocka_test(az_iot_tests_abi unit/abi_test.c)
 az_iot_add_cmocka_test(az_iot_tests_smoke unit/smoke_test.c)
 target_include_directories(az_iot_tests_smoke PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)

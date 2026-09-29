@@ -80,21 +80,3 @@ option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       O
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.
-
-# ABI profile (docs/struct_versioning.md). EMBEDDED: application and library
-# are always built together; no reserves. SHARED: the library may be updated
-# under a prebuilt application; caller-allocated clients carry reserves.
-if(BUILD_SHARED_LIBS)
-    set(_az_iot_abi_profile_default SHARED)
-else()
-    set(_az_iot_abi_profile_default EMBEDDED)
-endif()
-set(AZ_IOT_ABI_PROFILE "${_az_iot_abi_profile_default}" CACHE STRING "ABI profile: EMBEDDED or SHARED")
-set_property(CACHE AZ_IOT_ABI_PROFILE PROPERTY STRINGS EMBEDDED SHARED)
-unset(_az_iot_abi_profile_default)
-if(NOT AZ_IOT_ABI_PROFILE MATCHES "^(EMBEDDED|SHARED)$")
-    message(FATAL_ERROR "AZ_IOT_ABI_PROFILE must be EMBEDDED or SHARED, got '${AZ_IOT_ABI_PROFILE}'")
-endif()
-if(BUILD_SHARED_LIBS AND AZ_IOT_ABI_PROFILE STREQUAL "EMBEDDED")
-    message(FATAL_ERROR "BUILD_SHARED_LIBS=ON requires AZ_IOT_ABI_PROFILE=SHARED")
-endif()

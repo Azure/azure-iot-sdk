@@ -478,6 +478,7 @@ jobs:
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
   # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -489,10 +490,22 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-gcc
+            shared: 'OFF'
+            mbedtls: '3.6.7'
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+          - os: ubuntu-latest
+            name: linux-gcc-shared
+            shared: 'ON'
             mbedtls: '3.6.7'
             components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
+            shared: 'OFF'
+            mbedtls: ''
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+          - os: windows-latest
+            name: windows-msvc-shared
+            shared: 'ON'
             mbedtls: ''
             components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
@@ -536,6 +549,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
         run: cmake --build build/install
       - name: Unit tests
@@ -566,6 +580,9 @@ jobs:
           -DAZ_IOT_EXPECTED_COMPONENTS="${{ matrix.components }}"
       - name: Build the consumer
         run: cmake --build "$AZ_IOT_CONSUMER"
+      - name: Put the installed DLLs on PATH (Windows, shared)
+        if: runner.os == 'Windows' && matrix.shared == 'ON'
+        run: cygpath -w "$AZ_IOT_PREFIX/bin" >> "$GITHUB_PATH"
       - name: Test the consumer
         run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
 

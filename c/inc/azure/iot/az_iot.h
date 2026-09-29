@@ -6,7 +6,6 @@
 #ifndef AZ_IOT_H
 #define AZ_IOT_H
 
-#include "az_iot_abi.h"
 #include "az_iot_result.h"
 #include "az_iot_log.h"
 #include "az_iot_message.h"

@@ -27,7 +27,7 @@
  * regardless. If max_attempts > 0 is configured and reached, we transition to
  * FAULTED.
  */
-#include <stddef.h> /* offsetof, for the bounded write in get_hub_profile */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -459,15 +459,17 @@ static void set_state_to(
   {
     return;
   }
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile profile = {
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3,
+    .connection_profile_raw = NULL,
+    .connection_profile_raw_truncated = false,
+  };
   az_iot_connection_error_detail detail = {
-    ._internal_size = sizeof(az_iot_connection_error_detail),
     .source = AZ_IOT_CONN_ERR_SRC_NONE,
     .code = 0,
     .message = AZ_SPAN_EMPTY,
   };
   az_iot_connection_state_event event = {
-    ._internal_size = sizeof(az_iot_connection_state_event),
     .scope = scope,
     .state = next,
     .reason = reason,
@@ -4689,21 +4691,6 @@ az_iot_result az_iot_connection_client_get_hub_profile(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* The size stamp is what makes this struct safe to grow. A zero stamp means
-   * the caller used `= {0}` instead of AZ_IOT_HUB_PROFILE_INIT, so the library
-   * cannot tell which fields it may write -- reject rather than guess. */
-  if (out_profile->_internal_size == 0)
-  {
-    AZ_IOT_LOG_ERROR("get_hub_profile: out_profile was not initialized with "
-                     "AZ_IOT_HUB_PROFILE_INIT");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* A caller built against a newer header than the library is the one case the
-   * size stamp cannot rescue: it would expect fields this build never writes. */
-  if (out_profile->_internal_size > sizeof(az_iot_hub_profile))
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
   /* Readable once connected, and also after a profile-driven failure -- that is
    * the case where an application most needs to see what the service said. */
   if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
@@ -4712,20 +4699,9 @@ az_iot_result az_iot_connection_client_get_hub_profile(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  /* Written field by field, bounded by the caller's stamp, so a caller compiled
-   * against an older (smaller) header is never written past. */
-  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile))
-  {
-    out_profile->connection_profile = client->connection_profile;
-  }
-  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile_raw))
-  {
-    out_profile->connection_profile_raw = client->connection_profile_raw;
-  }
-  if (AZ_IOT_STRUCT_HAS_FIELD(out_profile, az_iot_hub_profile, connection_profile_raw_truncated))
-  {
-    out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
-  }
+  out_profile->connection_profile = client->connection_profile;
+  out_profile->connection_profile_raw = client->connection_profile_raw;
+  out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
   return AZ_IOT_OK;
 }
 

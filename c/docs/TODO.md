@@ -147,9 +147,6 @@ Canonical pending-work tracker for MQTTv5 hub integration.
 - [ ] Conformance suite v5 pass against Mosquitto
 - [ ] CI: add MQTTv5-mock integration test job
 - [x] Mock service auto-triggers: DM (loops forever), C2D (rotating payloads), Twin desired
-- [ ] Struct versioning (docs/struct_versioning.md): convert kind A-D structs; shared-library
-      export, SOVERSION and ABI checks in CI.
-- [ ] Re-baseline the SHARED client reserves right before the first GA and mqttv5 preview releases.
 
 ---
 
