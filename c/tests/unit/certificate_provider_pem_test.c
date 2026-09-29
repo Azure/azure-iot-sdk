@@ -48,19 +48,13 @@ static unsigned s_counter;
 
 static void make_temp(char* out_path, const char* tag, const void* bytes, size_t n)
 {
-  snprintf(
-      out_path,
-      PATH_BUF,
-      "az_iot_pem_%u_%u_%s.pem",
-      (unsigned)
+  /* Not inside the snprintf arguments: with _FORTIFY_SOURCE, snprintf may be a macro. */
 #if defined(_WIN32)
-          _getpid()
+  unsigned pid = (unsigned)_getpid();
 #else
-          getpid()
+  unsigned pid = (unsigned)getpid();
 #endif
-              ,
-      ++s_counter,
-      tag);
+  snprintf(out_path, PATH_BUF, "az_iot_pem_%u_%u_%s.pem", pid, ++s_counter, tag);
   FILE* f = fopen(out_path, "wb");
   assert_non_null(f);
   assert_int_equal(n, fwrite(bytes, 1, n, f));

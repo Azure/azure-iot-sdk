@@ -4,7 +4,9 @@
 #
 # Verifies that every ELF executable and shared library in a build tree carries the hardening from
 # cmake/az_iot_hardening.cmake: PIE (executables), full RELRO (GNU_RELRO + BIND_NOW), a
-# non-executable stack, and stack protector references in first-party executables.
+# non-executable stack, and stack protector references in first-party executables. A single
+# executable may have no function that needs a canary (compiler heuristics), so that is reported;
+# it fails only when no first-party executable has one.
 #
 #   eng/check-hardening.sh <build-dir>
 #
@@ -18,6 +20,8 @@ command -v readelf >/dev/null || { echo "readelf not found" 1>&2; exit 1; }
 
 checked=0
 failures=0
+first_party=0
+with_canary=0
 
 fail() {
     echo "FAIL $1: $2"
@@ -47,14 +51,20 @@ while IFS= read -r -d '' f; do
     if ! grep -qE ' RW +0x' <<<"$stack"; then
         fail "$f" "executable or missing GNU_STACK"
     fi
-    # Libraries may legitimately have no function that needs a canary; executables that link
-    # the SDK always do.
-    if [ "$shared" -eq 0 ] && [[ "$f" != */_deps/* ]] \
-        && ! grep -q '__stack_chk_fail' <<<"$symbols"; then
-        fail "$f" "no stack protector"
+    if [ "$shared" -eq 0 ] && [[ "$f" != */_deps/* ]]; then
+        first_party=$((first_party + 1))
+        if grep -q '__stack_chk_fail' <<<"$symbols"; then
+            with_canary=$((with_canary + 1))
+        else
+            echo "NOTE $f: no stack protector reference"
+        fi
     fi
 done < <(find "$build_dir" -path '*/CMakeFiles' -prune -o -type f \( -perm -u+x -o -name '*.so' -o -name '*.so.*' \) -print0)
 
-echo "hardening: ${checked} ELF files checked, ${failures} failures"
+if [ "$first_party" -gt 0 ] && [ "$with_canary" -eq 0 ]; then
+    fail "$build_dir" "no first-party executable references __stack_chk_fail"
+fi
+
+echo "hardening: ${checked} ELF files checked, ${with_canary}/${first_party} executables with stack protector, ${failures} failures"
 [ "$checked" -gt 0 ] || { echo "no ELF files under ${build_dir}" 1>&2; exit 1; }
 [ "$failures" -eq 0 ]

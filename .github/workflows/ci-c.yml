@@ -471,11 +471,18 @@ jobs:
           build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
-  # eng/check-hardening.sh, then the unit tests run against it.
+  # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
+  # static and shared: flags are probed per toolchain, and FORTIFY differs
+  # between them (glibc makes some libc calls macros under clang).
   hardening-linux:
-    name: linux-gcc / hardening (RelWithDebInfo)
+    name: linux-${{ matrix.compiler }}${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ gcc, clang ]
+        shared: [ 'OFF', 'ON' ]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -489,7 +496,8 @@ jobs:
         run: >
           cmake -S . -B build/hardening -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_WITH_RUST_MQTT=ON
