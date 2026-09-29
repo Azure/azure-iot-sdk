@@ -2727,7 +2727,9 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     SU_I(client).checkpoint_superseded = false;
     if (SU_I(client).checkpoint_pending && running)
     {
+      /* Reported there; a re-armed report goes out on the next tick. */
       fail_on_persist(client);
+      return AZ_IOT_OK;
     }
   }
 

@@ -3562,11 +3562,16 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   {
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   }
-  for (int i = 0; i < 20 && az_iot_su_client_get_state(&fx->su) == AZ_IOT_SU_STATE_INSTALL_COMPLETE;
-       ++i)
+  while (fx->su._internal.persist_failures + 1u < AZ_IOT_SU_PERSIST_MAX_ATTEMPTS)
   {
     persist_retry_now(fx);
   }
+  /* The last attempt fails with a report also pending: one report goes out. */
+  fx->su._internal.device_properties_report_pending = true;
+  int reports = fx->chan.report_count;
+  persist_retry_now(fx);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
+  assert_int_equal(fx->chan.report_count, reports + 1);
   assert_int_equal(fx->su._internal.persist_failures >= AZ_IOT_SU_PERSIST_MAX_ATTEMPTS, true);
   assert_int_equal(fx->persist_failed_count, 2);
   assert_false(fx->last_persist_retrying);
