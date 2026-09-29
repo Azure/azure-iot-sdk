@@ -104,14 +104,11 @@ endfunction()
 # Test-support library: in-memory mqtt_iface mock used by multiple test exes.
 add_library(az_iot_test_support STATIC
     support/mock_mqtt_iface.c
-    support/plaintext_client.c
+    support/test_provider.c
 )
 target_include_directories(az_iot_test_support PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-# plaintext_client.c reaches the internal test hook.
-target_include_directories(az_iot_test_support PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/core)
 target_link_libraries(az_iot_test_support PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_test_support)
 

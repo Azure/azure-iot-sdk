@@ -22,7 +22,7 @@
 
 #include "azure/iot/az_iot_certificate_provider.h"
 #include "azure/iot/az_iot_connection_client.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 

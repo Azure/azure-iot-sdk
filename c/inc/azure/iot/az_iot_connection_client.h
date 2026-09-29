@@ -1003,10 +1003,6 @@ extern "C"
 
     bool user_close;
 
-    /* Test builds only: connect without a certificate provider, in plaintext.
-     * Set through az_iot_connection_client__allow_plaintext_for_testing(). */
-    bool plaintext_for_testing;
-
     /* Set when the next reconnect attempt must re-provision through DPS rather
      * than reconnect to the cached assignment -- because the hub refused this
      * identity, or because hub attempts crossed the configured threshold. Kept

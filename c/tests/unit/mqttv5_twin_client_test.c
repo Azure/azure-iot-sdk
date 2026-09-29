@@ -33,7 +33,7 @@
 #include "internal/connection_client_internal.h"
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 #define TWIN_SRV_TOPIC "ih/ut-device/srv/twin"

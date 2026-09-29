@@ -22,7 +22,7 @@
 #include "azure/iot/mqttv3/az_iot_twin_client.h"
 
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */

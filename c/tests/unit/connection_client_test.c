@@ -24,7 +24,7 @@
 #include "internal/reconnect.h"
 
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -2309,28 +2309,6 @@ static void a_provider_that_stops_loading_fails_the_reconnect(void** state)
   az_iot_connection_client_deinit(&client);
 }
 
-/* The test-only hook is the one way to connect without a provider. */
-static void only_the_test_hook_allows_plaintext(void** state)
-{
-  (void)state;
-  az_iot_connection_client client;
-  az_iot_mqtt_factory* factory = tls_client_init(&client, NULL, false, false);
-  az_iot_connection_client__allow_plaintext_for_testing(&client);
-  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
-  assert_non_null(m);
-  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
-  assert_non_null(connect);
-  assert_false(connect->connect.use_tls);
-  az_iot_connection_client_deinit(&client);
-
-  /* init() clears it. */
-  factory = tls_client_init(&client, NULL, false, false);
-  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
-  (void)factory;
-  az_iot_connection_client_deinit(&client);
-}
-
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2441,7 +2419,6 @@ int main(void)
     cmocka_unit_test(a_dps_session_without_a_certificate_provider_is_refused),
     cmocka_unit_test(a_failed_load_fails_the_connect_instead_of_going_plaintext),
     cmocka_unit_test(a_provider_that_stops_loading_fails_the_reconnect),
-    cmocka_unit_test(only_the_test_hook_allows_plaintext),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

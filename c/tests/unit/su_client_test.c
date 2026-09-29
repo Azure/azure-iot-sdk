@@ -33,7 +33,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */

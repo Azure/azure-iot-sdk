@@ -19,7 +19,7 @@
 #include "azure/iot/mqttv3/az_iot_telemetry_client.h"
 
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 

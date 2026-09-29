@@ -41,7 +41,7 @@
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
 #include "support/mock_mqtt_iface.h"
-#include "support/plaintext_client.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 #define DEV_TOPIC "ih/ut-device/dev/methods"
