@@ -3815,6 +3815,76 @@ static void a_rollback_that_does_not_happen_is_reported(void** state)
   }
 }
 
+/* A cancel that reaches an installed step not yet applied rolls it back, so a
+ * reboot cannot activate the canceled update: after a held checkpoint lands,
+ * and at an ordinary install boundary. Without restore_fn it says so. */
+static void a_cancel_of_an_installed_step_rolls_it_back(void** state)
+{
+  (void)state;
+  for (int c = 0; c < 3; ++c)
+  {
+    void* st = NULL;
+    assert_int_equal(setup(&st), 0);
+    fixture* fx = (fixture*)st;
+    open_to_connected(fx);
+    if (c == 0)
+    {
+      /* Held, cancel requested, then the checkpoint lands. */
+      hold_at_reboot_boundary(fx, false);
+      fx->su._internal.cancel_requested = true;
+      assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+      assert_int_equal(count_ops(&fx->log, OP_RESTORE), 0);
+      fx->log.persist_failures = 0;
+      persist_retry_now(fx);
+    }
+    else
+    {
+      fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+      inject_patch(fx, signed_patch());
+      pump_to_checkpoint(fx);
+      if (c == 2)
+      {
+        fx->su._internal.hooks.restore_fn = NULL;
+      }
+      fx->su._internal.cancel_requested = true;
+      assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    }
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(count_ops(&fx->log, OP_RESTORE), (c == 2) ? 0u : 1u);
+    assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_CANCELED);
+    if (c == 2)
+    {
+      assert_string_equal(fx->chan.last_extended, "70000000");
+    }
+    assert_int_equal(teardown(&st), 0);
+  }
+}
+
+/* Cancelling an installed step of a multi-step workflow undoes that step only:
+ * the completed step 0 is kept and still reported SUCCEEDED. */
+static void a_cancel_undoes_only_the_installed_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  inject_patch(fx, distinct_files_patch());
+  for (int i = 0; i < 40 && fx->su._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  pump_to_checkpoint(fx);
+  assert_int_equal(fx->su._internal.current_step, 1);
+
+  fx->su._internal.cancel_requested = true;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(count_ops(&fx->log, OP_RESTORE), 1);
+  assert_int_equal(fx->log.op_steps[fx->log.op_count - 1u], 1u);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_CANCELED);
+  assert_int_equal(fx->chan.last_step_results[0].outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_step_results[1].outcome, AZ_IOT_SU_OUTCOME_CANCELED);
+}
+
 /* A cancel does not abandon a held workflow: it waits like everything else, and
  * the give-up rollback runs as usual. */
 static void a_cancel_waits_for_a_held_workflow(void** state)
@@ -5388,6 +5458,8 @@ int main(void)
         giving_up_after_an_apply_reboot_restores_the_applied_steps, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rollback_that_does_not_happen_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_cancel_waits_for_a_held_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_cancel_of_an_installed_step_rolls_it_back, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_cancel_undoes_only_the_installed_step, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_terminal_write_counts_once_with_a_stored_record, setup, teardown),
     cmocka_unit_test_setup_teardown(

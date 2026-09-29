@@ -145,13 +145,14 @@ extern "C"
  * A later write is still attempted once when needed; a tracked success resets
  * the count (the best-effort erase of a stale record does not).
  * While a workflow is held at a reboot boundary, a new workflow is ignored (the
- * service offers it again) and a cancel waits.
+ * service offers it again) and a cancel waits; a cancel of an installed step
+ * not yet applied rolls it back.
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
 #endif
-#if AZ_IOT_SU_PERSIST_MAX_ATTEMPTS < 1
-#error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be at least 1"
+#if AZ_IOT_SU_PERSIST_MAX_ATTEMPTS < 1 || AZ_IOT_SU_PERSIST_MAX_ATTEMPTS > 0xFFFFFFFF
+#error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
 /** @brief Largest blob passed to persist_state_fn; size storage for this. The format

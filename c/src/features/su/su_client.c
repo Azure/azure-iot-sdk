@@ -2682,12 +2682,12 @@ static void fail_workflow(az_iot_su_client* client)
 }
 
 /**
- * @brief Call restore_fn for steps [restore_count-1 .. 0], in reverse order.
+ * @brief Call restore_fn for steps [end-1 .. first], in reverse order.
  *
  * Best effort: a failed restore is recorded (facility AZ_IOT_SU_FACILITY_RESTORE)
  * and earlier steps are still restored.
  */
-static void restore_steps(az_iot_su_client* client, uint32_t restore_count)
+static void restore_step_range(az_iot_su_client* client, uint32_t first, uint32_t end)
 {
   /* Since backup/restore are non-blocking in practice (simulated or fast OTA
    * slot swaps), this performs the rollback synchronously. */
@@ -2695,7 +2695,7 @@ static void restore_steps(az_iot_su_client* client, uint32_t restore_count)
   {
     return;
   }
-  for (int32_t s = (int32_t)restore_count - 1; s >= 0; --s)
+  for (int32_t s = (int32_t)end - 1; s >= (int32_t)first; --s)
   {
     int32_t rr = SU_I(client).hooks.restore_fn(
         &SU_I(client).current_manifest, (uint32_t)s, SU_I(client).hooks.user_ctx);
@@ -2709,8 +2709,25 @@ static void restore_steps(az_iot_su_client* client, uint32_t restore_count)
 
 static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
 {
-  restore_steps(client, restore_count);
+  restore_step_range(client, 0u, restore_count);
   fail_workflow(client);
+}
+
+/**
+ * @brief Roll back steps [first, end) whose undo is required, reporting when it cannot happen.
+ *
+ * Like restore_step_range(), but with no restore_fn the overall extended result
+ * is set to AZ_IOT_SU_FACILITY_RESTORE (sub-code 0) rather than implying a rollback.
+ */
+static void roll_back_installed(az_iot_su_client* client, uint32_t first, uint32_t end)
+{
+  if (end > first && SU_I(client).hooks.restore_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR("su: no restore_fn; the installed step is not rolled back");
+    SU_I(client).install_result.extended_result_code
+        = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, 0u);
+  }
+  restore_step_range(client, first, end);
 }
 
 /**
@@ -2726,14 +2743,8 @@ static void fail_on_persist(az_iot_su_client* client)
   uint32_t count = held_restore_count(client);
   SU_I(client).checkpoint_pending = false;
   result_step_failure(client, step, AZ_IOT_SU_FACILITY_PERSIST, SU_I(client).persist_last_error);
-  if (count > 0u && SU_I(client).hooks.restore_fn == NULL)
-  {
-    /* Nothing can undo the installed step: say so rather than imply a rollback. */
-    AZ_IOT_LOG_ERROR("su: no restore_fn; the installed step is not rolled back");
-    SU_I(client).install_result.extended_result_code
-        = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, 0u);
-  }
-  begin_rollback(client, count);
+  roll_back_installed(client, 0u, count);
+  fail_workflow(client);
   (void)az_iot_su__report_state(client);
 }
 
@@ -2835,6 +2846,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   if (SU_I(client).cancel_requested && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
       && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
   {
+    /* The installed step not yet applied is undone: a reboot must not activate
+     * a canceled update. Completed steps are kept, as the report says. */
+    if (SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
+        || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED)
+    {
+      roll_back_installed(client, SU_I(client).current_step, SU_I(client).current_step + 1u);
+    }
     result_step_canceled(client);
     latch_terminal(client, AZ_IOT_SU_OUTCOME_CANCELED);
     reset_to_idle(client);

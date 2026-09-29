@@ -427,8 +427,10 @@ The byte layout is documented next to the serializer in
 
    A write needed later is still attempted once; a tracked success resets the count.
    While a workflow is held at a reboot boundary, a new `workflowId` is ignored
-   (the service offers it again on a later check) and a cancel waits, so the
-   installed step is never abandoned without a rollback.
+   (the service offers it again on a later check) and a cancel waits. A cancel
+   that reaches an installed step not yet applied (`INSTALL_COMPLETE` /
+   `APPLY_STARTED`) rolls it back first, reported like the give-up above when
+   there is no `restore_fn`; completed steps are kept.
    While a failure is outstanding the application MUST NOT reboot for
    `REBOOT_REQUIRED`: nothing would resume.
 
