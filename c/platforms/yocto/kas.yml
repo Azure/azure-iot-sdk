@@ -38,7 +38,8 @@ local_conf_header:
     # Any QA warning from this layer's recipes fails the build.
     ERROR_QA:append:pn-azure-iot-sdk = " ${WARN_QA}"
     ERROR_QA:append:pn-azure-iot-sdk-pkgconfig-test = " ${WARN_QA}"
-    # Yocto Project's public shared state.
-    BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"
-    SSTATE_MIRRORS ?= "file://.* http://sstate.yoctoproject.org/all/PATH;downloadfilename=PATH"
+    # Plain task hashes, no hash equivalence server: a restored SSTATE_DIR
+    # matches without the server's database.
+    BB_SIGNATURE_HANDLER = "OEBasicHash"
+    BB_HASHSERVE = ""
     include conf/azure-iot-sdk-local.conf
