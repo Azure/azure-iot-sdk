@@ -268,7 +268,16 @@ extern "C"
                            * update, which matches a device on the
                            * compatibility properties it sends with each
                            * update request. */
-    az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+    /**
+     * @brief Source of the TLS material: trust anchors and, if any, the client
+     * identity. Required.
+     *
+     * Every DPS and hub connection uses TLS: open() refuses a client without a
+     * provider (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a connect attempt whose
+     * load() fails fails with the provider's error instead of connecting
+     * without TLS.
+     */
+    az_iot_certificate_provider* certificate_provider;
 
     /* How the client retries after a failure. See az_iot_reconnection_policy
      * for the fields and the getters that name the usual shapes.

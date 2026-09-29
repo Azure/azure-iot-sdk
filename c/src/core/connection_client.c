@@ -1952,14 +1952,20 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
 
-  /* Populate TLS from certificate_provider if available. DPS uses the bootstrap
-   * identity; the operational cert (if any) is issued during this exchange. */
-  if (c->opts.certificate_provider)
+  /* TLS from certificate_provider. DPS uses the bootstrap identity; the
+   * operational cert (if any) is issued during this exchange. No provider, or
+   * a failed load(), fails the attempt rather than connecting in plaintext. */
+  if (!c->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("dps: no certificate provider; refusing to connect without TLS");
+    mc->iface->destroy(mc);
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
   {
     az_iot_certificate_material mat = { 0 };
-    if (c->opts.certificate_provider->vtable->load(
-            c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat)
-        == AZ_IOT_OK)
+    az_iot_result lr = c->opts.certificate_provider->vtable->load(
+        c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
+    if (lr == AZ_IOT_OK)
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, c->opts.certificate_provider);
       AZ_IOT_LOG_DEBUGF(
@@ -1978,12 +1984,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     }
     else
     {
-      AZ_IOT_LOG_ERROR("dps: certificate provider load() failed for the bootstrap identity");
+      AZ_IOT_LOG_ERRORF(
+          "dps: certificate provider load() failed for the bootstrap identity (%d)", (int)lr);
+      mc->iface->destroy(mc);
+      return lr;
     }
-  }
-  else
-  {
-    AZ_IOT_LOG_DEBUG("dps: no certificate provider configured; connecting without client TLS");
   }
 
   c->dps_mqtt = mc;
@@ -3093,11 +3098,17 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     copts.username = c->hub_username;
   }
 
-  /* Populate TLS from certificate_provider if available. Prefer the issued
-   * OPERATIONAL identity (from this DPS session, or persisted by the provider
-   * on a prior run, or supplied for a direct hub connection); fall back to the
-   * BOOTSTRAP identity when the provider has no operational cert yet. */
-  if (c->opts.certificate_provider)
+  /* TLS from certificate_provider. Prefer the issued OPERATIONAL identity (from
+   * this DPS session, or persisted by the provider on a prior run, or supplied
+   * for a direct hub connection); fall back to the BOOTSTRAP identity when the
+   * provider has no operational cert yet. No provider, or a failed load(),
+   * fails the attempt rather than connecting in plaintext. */
+  if (!c->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("connection: no certificate provider; refusing to connect without TLS");
+    mc->iface->destroy(mc);
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
@@ -3106,15 +3117,18 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
     }
-    if (lr == AZ_IOT_OK)
+    if (lr != AZ_IOT_OK)
     {
-      az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-      prov->vtable->release(prov, &mat);
-      if (cr != AZ_IOT_OK)
-      {
-        mc->iface->destroy(mc);
-        return cr;
-      }
+      AZ_IOT_LOG_ERRORF("connection: certificate provider load() failed (%d)", (int)lr);
+      mc->iface->destroy(mc);
+      return lr;
+    }
+    az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
+    prov->vtable->release(prov, &mat);
+    if (cr != AZ_IOT_OK)
+    {
+      mc->iface->destroy(mc);
+      return cr;
     }
   }
 
@@ -3672,6 +3686,16 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     }
   }
 
+  /* Every DPS and hub connection uses TLS, from the certificate provider.
+   * Checked first, so a missing provider is reported as such rather than as a
+   * missing capability below. */
+  if (!client->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
+                     "hub connection uses TLS");
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
+
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
    * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
@@ -3729,7 +3753,6 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * adapter: the operational identity when it holds one, the bootstrap identity
    * otherwise. A provider that can supply neither yet is not rejected -- it may
    * become able to by the time the connect attempt runs. */
-  if (client->opts.certificate_provider)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
     if (p->vtable == NULL || p->vtable->load == NULL)

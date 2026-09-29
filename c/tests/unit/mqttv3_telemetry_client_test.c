@@ -19,6 +19,7 @@
 #include "azure/iot/mqttv3/az_iot_telemetry_client.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -57,7 +58,7 @@ static int setup_profile(
   options.port = 8883;
   options.client_id = "ut-device";
   options.connection_profile = profile;
-  assert_int_equal(az_iot_connection_client_init(&test->connection, &options), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 
   test->factory = az_iot_mock_mqtt_factory_create(version);
   assert_non_null(test->factory);

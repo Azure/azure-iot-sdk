@@ -33,6 +33,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
@@ -815,7 +816,7 @@ static int setup(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -1755,7 +1756,7 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   copts.host = "broker.example";
   copts.port = 8883;
   copts.client_id = "ut-su-public";
-  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
@@ -1871,7 +1872,7 @@ static void device_properties_too_small_is_rejected(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device2";
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
   channel.ctx = &fc;
@@ -1951,7 +1952,7 @@ static void device_properties_buffer_size_matches_need(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device3";
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
   channel.ctx = &fc;

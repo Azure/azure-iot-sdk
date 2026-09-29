@@ -550,6 +550,11 @@ Rules every client must implement. The C client meets all of them; where .NET do
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
+- Every DPS and hub connection uses TLS. `open()` refuses a client with no `certificate_provider`
+  (`AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`), and a connect attempt whose `load()` fails fails with the
+  provider's error instead of connecting in plaintext. From `open()`, `open()` returns that error;
+  on a reconnect, the attempt is retried under the reconnection policy whatever the error (its
+  classification is reported, not acted on).
 - CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and a caller-provided,
   non-empty `csr_payload_buffer`. `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (8448) is the recommended size, enough
   for the largest CSR the service accepts; small keys fit in less, and a buffer too small for the
@@ -1020,7 +1025,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY`; the connection client does not surface it | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect proceeds **without a client credential**: the hub path ignores any `load()` result other than `NOT_FOUND` / `NOT_INITIALIZED`, and the DPS path logs it | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI and duplicated option strings. |
+| Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY` | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect attempt fails with that error and does not connect (the hub path first retries `NOT_FOUND` / `NOT_INITIALIZED` with the bootstrap identity) | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI and duplicated option strings. |
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish has already been sent; the ack callback is not registered | The table is checked after the publish, not before. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
