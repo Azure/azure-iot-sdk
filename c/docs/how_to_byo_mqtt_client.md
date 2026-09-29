@@ -15,7 +15,7 @@ If you can produce a static or shared library that exposes one factory function 
 - Implementations may speak both; ship one factory per version.
 - C99 source-level compatibility for the adapter glue (the underlying client may be C++/Rust/etc., as long as it exposes a C ABI).
 
-The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, Hub-Next uses v5). Your adapter only needs to declare the version it supports — the SDK handles the rest.
+The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, MQTTv5 uses v5). Your adapter only needs to declare the version it supports — the SDK handles the rest.
 
 ## Files you need to write
 
@@ -47,7 +47,7 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 | `set_inbound_cb`  | Register the callback the SDK uses to receive `az_iot_mqtt_event` notifications.                |
 | `destroy`         | Tear down the client. The SDK may call this even on a never-connected client.                        |
 
-### MQTT v5 property handling (critical for HUB_NEXT)
+### MQTT v5 property handling (critical for HUB_MQTT_V5)
 
 The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to an MQTTv5 IoT Hub. Your v5 adapter **must**:
 
@@ -203,7 +203,7 @@ Repeat for `_v5` if applicable.
 The suite needs a real MQTT broker to talk to. Locally, `eclipse-mosquitto:2` works out of the box:
 
 ```sh
-docker run -d --name aeg-mosq -p 1883:1883 eclipse-mosquitto:2 \
+docker run -d --name mqttv5-mosq -p 1883:1883 eclipse-mosquitto:2 \
     sh -c "echo 'listener 1883'>/m.conf; \
            echo 'allow_anonymous true'>>/m.conf; \
            mosquitto -c /m.conf"
@@ -304,7 +304,7 @@ Once the conformance suite is green, plug the factory into the connection client
 ```c
 az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
 az_iot_connection_client_register_mqtt_factory(client, f);
-/* register a v5 factory too if you support HUB_NEXT */
+/* register a v5 factory too if you support HUB_MQTT_V5 */
 ```
 
 The connection client picks the right factory at session-open time based on the MQTT version required for the target Azure service.
@@ -317,7 +317,7 @@ The connection client picks the right factory at session-open time based on the 
 - **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
-- **Wrong version.** Registering only a v3.1.1 factory when you need Hub-Next (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- **Wrong version.** Registering only a v3.1.1 factory when you need MQTTv5 (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ## Feature clients and what they need from the adapter
 

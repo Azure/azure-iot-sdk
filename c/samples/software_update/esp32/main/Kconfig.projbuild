@@ -1,0 +1,38 @@
+menu "Software Updates ESP32 Sample Configuration"
+
+    config SU_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "my-ssid"
+        help
+            SSID of the Wi-Fi network the device joins to reach Azure.
+
+    config SU_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "my-password"
+        help
+            WPA2 password for the configured Wi-Fi network.
+
+    config SU_DPS_ID_SCOPE
+        string "DPS ID scope"
+        default "0ne00000000"
+        help
+            Device Provisioning Service ID scope.
+
+    config SU_DPS_REGISTRATION_ID
+        string "DPS registration id (device id)"
+        default "su-esp32-device"
+        help
+            DPS registration id. Must match the CN of the embedded device
+            certificate and the device's X.509 enrollment.
+
+    config SU_POLL_INTERVAL_S
+        int "Update check interval (seconds)"
+        range 10 86400
+        default 60
+        help
+            Seconds between update checks on the regular route, once the
+            device has connected to its hub. Checks are skipped while a
+            deployment is in flight. A check not answered within half
+            the interval (at most 60 s) is abandoned.
+
+endmenu

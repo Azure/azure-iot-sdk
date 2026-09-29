@@ -3,10 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* MQTTv5 (Hub-Next / AEG, MQTT v5) direct method client unit tests, driven
+/* MQTTv5 (MQTTv5 hub, MQTT v5) direct method client unit tests, driven
  * through the public API and the in-memory mock_mqtt_iface.
  *
- * The AEG protocol is a probe / probe-ack / exec / result handshake over two
+ * The MQTTv5 protocol is a probe / probe-ack / exec / result handshake over two
  * flat topics -- ih/{device}/dev/methods inbound and ih/{device}/srv/methods
  * outbound -- discriminated by a `type` user property, with the request id in
  * MQTT v5 Correlation Data and protobuf payloads. Neither topic names the
@@ -330,7 +330,7 @@ static int probe_ack_rejected_reason(const az_iot_mock_call* c)
   return c->payload[3];
 }
 
-/* Register the factory, open, and deliver CONNACK. On Hub-Next this leaves the
+/* Register the factory, open, and deliver CONNACK. On MQTTv5 this leaves the
  * session CONNECTING with only the presence filter subscribed. */
 static void open_conn(fixture* fx)
 {
@@ -401,7 +401,7 @@ static void finish_birth(fixture* fx)
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
-/* Drive a Hub-Next session all the way to CONNECTED. Unlike the Classic path,
+/* Drive an MQTTv5 session all the way to CONNECTED. Unlike the MQTTv3 path,
  * CONNACK alone does not announce CONNECTED. */
 static void open_to_connected(fixture* fx)
 {
@@ -557,7 +557,7 @@ static void init_rejects_a_null_connection(void** state)
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&dm, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void init_against_a_classic_connection_is_rejected(void** state)
+static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
 {
   (void)state;
 
@@ -568,7 +568,7 @@ static void init_against_a_classic_connection_is_rejected(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_direct_method_client dm;
@@ -1931,7 +1931,7 @@ static void respond_rejects_a_request_from_the_other_generation(void** state)
   run_one_invocation(fx, &rec, 0xF1);
 
   az_iot_direct_method_request foreign = rec.request;
-  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_int_equal(
@@ -1962,7 +1962,7 @@ static void the_sequence_counter_skips_zero_on_wrap(void** state)
   assert_int_equal(
       az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
 
-  /* AZ_IOT_CONNECTION_PROFILE_CLASSIC is 0 -- "also the absent/null default" --
+  /* AZ_IOT_CONNECTION_PROFILE_MQTT_V3 is 0 -- "also the absent/null default" --
    * so a zeroed request reads as an mqttv3 one and is refused on the profile
    * before the sequence is ever consulted. Refused either way, and nothing
    * reaches the wire; on mqttv3, where the profile does match, the sequence is
@@ -2036,7 +2036,7 @@ static void responding_twice_is_rejected(void** state)
   assert_non_null(strstr(cap.last, "already answered"));
 }
 
-/* The alias this handle shape exists to close, on the AEG side.
+/* The alias this handle shape exists to close, on the MQTTv5 side.
  *
  * Answer an invocation, then run enough further invocations that the pool
  * cycles back and another one occupies that slot. With a pointer handle the
@@ -2329,7 +2329,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test(init_rejects_a_null_connection),
-    cmocka_unit_test(init_against_a_classic_connection_is_rejected),
+    cmocka_unit_test(init_against_an_mqtt_v3_connection_is_rejected),
     cmocka_unit_test(a_device_id_too_long_for_the_topics_says_so),
     cmocka_unit_test_setup_teardown(
         init_does_not_subscribe_a_redundant_methods_filter, setup, teardown),

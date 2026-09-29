@@ -6,21 +6,21 @@
 /* unified/twin_get_patch - sample.
  *
  * Issue a twin GET and a reported-properties PATCH on every connect, for ~60
- * seconds, on whichever hub DPS assigns: Classic (mqttv3) or AEG (mqttv5),
+ * seconds, on whichever hub DPS assigns: MQTTv3 or MQTTv5,
  * including after the device is moved to a hub of the other generation. The
- * AEG-only route is mqttv5/twin_get_patch. See unified/telemetry for the shape
+ * MQTTv5-only route is mqttv5/twin_get_patch. See unified/telemetry for the shape
  * every unified sample shares: build for an assumed generation before open(),
  * rebuild when DPS assigns the other one.
  *
  * The two twin clients differ in protocol, not only in type, so each has its
  * own callbacks:
  *
- *   - GET: Classic returns one document; AEG returns the desired and reported
+ *   - GET: MQTTv3 returns one document; MQTTv5 returns the desired and reported
  *     sections separately, each with its own authoritative version.
- *   - PATCH: Classic reports the new version; AEG also reports the service's
- *     verdict. An AEG patch can complete and still be refused -- another writer
+ *   - PATCH: MQTTv3 reports the new version; MQTTv5 also reports the service's
+ *     verdict. An MQTTv5 patch can complete and still be refused -- another writer
  *     moved the version first -- so a run only succeeds when the verdict is OK.
- *   - The AEG client frames patches into protobuf in an application-supplied
+ *   - The MQTTv5 client frames patches into protobuf in an application-supplied
  *     buffer, and needs its own do_work() in the pump.
  *
  * DPS is handled internally by the connection client when dps.id_scope is set.
@@ -61,7 +61,7 @@ typedef struct
   int desired_count;
   az_iot_result get_status;
   az_iot_result patch_status;
-  /* AEG only: the service's verdict, separate from patch_status. Classic has
+  /* MQTTv5 only: the service's verdict, separate from patch_status. MQTTv3 has
    * none, so its patch sets it to OK once the exchange completes. */
   az_iot_mqttv5_twin_patch_status patch_verdict;
   uint64_t patch_version;
@@ -92,7 +92,7 @@ static void sample_state_destroy(sample_state* s)
   sample_config_release(&s->config);
 }
 
-/* AEG frames a reported patch into protobuf before it goes out, and the SDK does
+/* MQTTv5 frames a reported patch into protobuf before it goes out, and the SDK does
  * not allocate, so the application supplies the scratch for it. */
 static uint8_t s_twin_encode_buffer[256];
 
@@ -126,7 +126,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* ---- Classic (mqttv3) callbacks ---------------------------------------------- */
+/* ---- MQTTv3 (mqttv3) callbacks ---------------------------------------------- */
 
 static void on_desired_mqttv3(
     const uint8_t* patch,
@@ -163,7 +163,7 @@ static void on_patch_mqttv3(az_iot_result status, uint64_t version, void* user_c
   ctx->patch_done = 1;
 }
 
-/* ---- AEG (mqttv5) callbacks -------------------------------------------------- */
+/* ---- MQTTv5 (mqttv5) callbacks -------------------------------------------------- */
 
 /* A SNAPSHOT replaces local desired state; a PATCH merges onto it. */
 static void on_desired_mqttv5(
@@ -250,7 +250,7 @@ static az_iot_result clients_build(
         result = az_iot_mqttv5_twin_client_set_desired_handler(&s->mqttv5, on_desired_mqttv5, ctx);
       }
       return result;
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       result = az_iot_mqttv3_twin_client_init(&s->mqttv3, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
@@ -265,7 +265,7 @@ static az_iot_result clients_build(
   }
 }
 
-/* One pump step. The AEG twin client has timers of its own to drive. */
+/* One pump step. The MQTTv5 twin client has timers of its own to drive. */
 static void pump(sample_state* s, uint32_t timeout_ms)
 {
   (void)az_iot_connection_client_do_work(&s->connection_client, timeout_ms);
@@ -347,7 +347,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())
       != AZ_IOT_OK)

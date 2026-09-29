@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* mqttv5/direct_method_slow_responder - sample.
  *
- * Answer a direct method on an AEG (Hub-Next) hub AFTER the handler returned,
+ * Answer a direct method on an MQTTv5 hub AFTER the handler returned,
  * for work that does not fit inside a callback. Read
  * mqttv5/direct_method_responder first: it answers inline, which is all a fast
  * method needs. unified/direct_method_slow_responder serves either generation.
@@ -18,17 +18,17 @@
  * `method_name` and `payload` point into the SDK's transient buffers, so
  * anything still needed afterwards must be copied out, as the payload is below.
  *
- * Slow work is where the AEG handshake earns its round trip, and this sample
+ * Slow work is where the MQTTv5 handshake earns its round trip, and this sample
  * uses both halves of it:
  *
  *   - The method is declared WITH THE TIME IT NEEDS. A caller whose response
  *     timeout cannot cover SLOW_ECHO_SECONDS is refused INSUFFICIENT_TIME at
  *     the probe, before its arguments are sent -- rather than waiting out a
- *     call this device was never going to finish in time. Classic has no way
+ *     call this device was never going to finish in time. MQTTv3 has no way
  *     to express that.
  *
  *   - While one invocation is held, the probe handler answers DEVICE_BUSY, so
- *     the caller is turned away before the arguments cross the wire. Classic
+ *     the caller is turned away before the arguments cross the wire. MQTTv3
  *     can only take the work and then answer 429.
  *
  * Provision via DPS, open, run for ~60 seconds, close.
@@ -118,7 +118,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       ctx->provisioning_faulted = 1;
       if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
       {
-        printf("This device is assigned to a Classic hub. Run the unified "
+        printf("This device is assigned to an MQTTv3 hub. Run the unified "
                "direct_method_slow_responder sample instead.\n");
       }
     }
@@ -213,7 +213,7 @@ static void deferred_pump(user_context* ctx)
 
   /* Worth checking, which answering inline never has to. Here the deadline is
    * the caller's own budget, carried through the probe and the execute -- not
-   * a local guess as on Classic -- so a late answer is refused and nothing is
+   * a local guess as on MQTTv3 -- so a late answer is refused and nothing is
    * sent, because the service has already given up. */
   az_iot_result result = az_iot_mqttv5_direct_method_respond(
       &ctx->state->methods,

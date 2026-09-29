@@ -2,6 +2,7 @@
 #define SAMPLE_UTILS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
@@ -14,7 +15,7 @@ typedef struct sample_config
   char* key;
   char* ca;
   char* device_id; /* AZ_IOT_DEVICE_ID (optional, for mock bypass) */
-  char* mock_endpoint; /* AZ_IOT_HUB_NEXT_MOCK_ENDPOINT (optional) */
+  char* mock_endpoint; /* AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT (optional) */
   /* AZ_IOT_DPS_GLOBAL_ENDPOINT (optional). NULL selects the SDK default,
    * global.azure-devices-provisioning.net. Set it to run a sample against a
    * regional, private-link or sovereign-cloud provisioning endpoint, which
@@ -46,6 +47,30 @@ void sample_config_release(sample_config* config);
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
 char* sample_env_dup(const char* name, const char* fallback);
+
+/**
+ * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
+ * strcpy_s(), which glibc does not provide.
+ *
+ * @param[out] dst      Destination; unchanged when @p src does not fit.
+ * @param[in] dst_size  Capacity of @p dst in bytes.
+ * @param[in] src       NUL-terminated source.
+ * @return true if copied; false if @p src does not fit.
+ */
+bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+
+/**
+ * @brief Read environment variable @p name, or @p fallback when unset/empty,
+ * into @p dst. Prints a line to stderr when the value does not fit.
+ *
+ * @param[in] name      Variable name.
+ * @param[in] fallback  Value when unset/empty; may be NULL.
+ * @param[out] dst      Destination buffer.
+ * @param[in] dst_size  Capacity of @p dst in bytes.
+ * @return true if copied; false when unset with no fallback, out of memory or
+ * too long.
+ */
+bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
@@ -95,8 +120,8 @@ bool sample_event_is_profile_mismatch(
 /**
  * @brief Generation to build feature clients for before open().
  *
- * MQTT v5 when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (that bypass skips DPS and
- * always connects over MQTT v5); otherwise Classic, which DPS assigns when it
+ * MQTT v5 when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (that bypass skips DPS and
+ * always connects over MQTT v5); otherwise MQTTv3, which DPS assigns when it
  * names no connectionProfile.
  *
  * @param[in] config Loaded sample configuration.

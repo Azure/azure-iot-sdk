@@ -1,15 +1,15 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# IoT/AEG client API design discussions — dev notes
+# Azure IoT client API design discussions — dev notes
 
 _Last updated: 5/7/2026_
 
-## DPS integration with IoTHub-Next
+## DPS integration with MQTTv5 hub
 
-- What are the plans for DPS integration with IoTHub-Next? Initially DPS will not be in the picture, but need to confirm.
+- What are the plans for DPS integration with MQTTv5 hub? Initially DPS will not be in the picture, but need to confirm.
 - **TODO:** ask about it in the Auth design discussion.
-- If DPS is present, how will it communicate to the device after provisioning whether the device will connect to an AEG hub vs. a Classic hub?
+- If DPS is present, how will it communicate to the device after provisioning whether the device will connect to an MQTTv5 hub vs. an MQTTv3 hub?
 
 ## Public API
 
@@ -18,9 +18,9 @@ _Last updated: 5/7/2026_
 
 ## Protocol logic depending on IoTHub version selection
 
-- Messaging feature contracts are different between Classic and Next.
+- Messaging feature contracts are different between MQTTv3 and MQTTv5.
 - DPS provisioning will inform what version of IoT Hub is being provisioned. **TODO:** check on that.
-- All MQTT-specific logic that is common between Classic and Next IoT Hubs lives in the **connection client** (CONNECT, CONNACK, DISCONNECT, subscribe, publish).
+- All MQTT-specific logic that is common between MQTTv3 and MQTTv5 IoT Hubs lives in the **connection client** (CONNECT, CONNACK, DISCONNECT, subscribe, publish).
 - MQTT protocol exchange sequence is owned by the **messaging clients**.
 - Provisioning and cert management (DPS + IoT Hub) also live in the connection client.
 - **TODO:** design reconnection logic.
@@ -46,12 +46,12 @@ _Last updated: 5/7/2026_
 
 ## Overall requirements
 
-- Get a good initial review from Will Brown about this design — had concerns about classic SDKs:
+- Get a good initial review from Will Brown about this design — had concerns about legacy SDKs:
   - Too clunky to make them work.
   - Not all features implemented according to how the hub works (e.g., error codes).
   - APIs looked quite different between clients.
 - Client APIs should resemble each other across client languages.
-- Reduce the number of packages and dependencies (compared to IoTHub-Classic SDKs).
+- Reduce the number of packages and dependencies (compared to MQTTv3 hub SDKs).
 - Zero to 100% working sample in 3 minutes.
 
 ## Progress
@@ -75,7 +75,7 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 
 ### Scope (P0 surface)
 - P0 deliverables: ConnectionClient, TwinClient, DirectMethodClient, TelemetryClient, DPSClient, CertManager, plus a runnable smoke sample.
-- Both **Classic** and **Next (AEG)** must be supported from day 1 (single repo, single library).
+- Both **MQTTv3** and **MQTTv5** must be supported from day 1 (single repo, single library).
 - X.509 authentication is in-scope for P0. SAS / other auth modes are out-of-scope for P0.
 - Embedded targets are **design-only** for P0 (no embedded build/CI yet); Linux + Windows are the P0 build/CI targets.
 
@@ -88,33 +88,33 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - MQTT is pluggable via a vtable (`az_iot_mqtt_iface`).
 - Each MQTT adapter instance is **tagged** with `(version, role)`:
   - `version ∈ { v3_1_1, v5 }`
-  - `role ∈ { DPS, HUB_CLASSIC, HUB_NEXT }`
+  - `role ∈ { DPS, HUB_MQTT_V3, HUB_MQTT_V5 }`
 - Hard binding rules:
   - DPS → **MQTTv3.1.1 only**.
-  - HUB_CLASSIC → **MQTTv3.1.1 only**.
-  - HUB_NEXT → **MQTTv5 only**.
+  - HUB_MQTT_V3 → **MQTTv3.1.1 only**.
+  - HUB_MQTT_V5 → **MQTTv5 only**.
 - ConnectionClient holds an **adapter registry** keyed by MQTT version and resolves the adapter at connect time. Adapters are registered via `az_iot_connection_client_register_mqtt_factory()`.
 - Adapters are **destroyed and recreated** across the DPS → Hub transition ("two-adapter dance") rather than being reused.
 - Default adapter shipped: Paho-C. Rust MQTT adapter is a build-time option.
 
 ### Mandatory dependencies
-- `azure-sdk-for-c` is a **mandatory** dependency, not optional. It is how the client talks to DPS and IoTHub-Classic (uses `az::core`, `az::iot::hub`, `az::iot::provisioning`).
+- `azure-sdk-for-c` is a **mandatory** dependency, not optional. It is how the client talks to DPS and the MQTTv3 hub (uses `az::core`, `az::iot::hub`, `az::iot::provisioning`).
 - `azure-sdk-for-c` is integrated via **CMake `FetchContent`**, pinned to a tag (currently `1.5.0`). It is linked **PRIVATE** so it does not leak into the public ABI/include surface.
 - No git submodules. Optional deps (Paho, OpenSSL) come from **vcpkg** (manifest mode); other source deps via FetchContent (CPM is a fallback option).
 
 ### Paho-C MQTT adapter (default)
 - Eclipse `paho.mqtt.c` is integrated the same way as `azure-sdk-for-c`: **FetchContent**, pinned to a tag (currently `v1.3.13`). No vcpkg requirement.
 - Uses Paho's **MQTTAsync** API; one library covers both MQTTv3.1.1 and v5 (selected per session via `MQTTAsync_createOptions::MQTTVersion`).
-- Two factories shipped: `az_iot_paho_factory_create_v3_1_1()` (DPS + HUB_CLASSIC) and `az_iot_paho_factory_create_v5()` (HUB_NEXT).
+- Two factories shipped: `az_iot_paho_factory_create_v3_1_1()` (DPS + HUB_MQTT_V3) and `az_iot_paho_factory_create_v5()` (HUB_MQTT_V5).
 - Paho's callbacks fire on its internal threads; the adapter marshals them into a thread-safe FIFO and dispatches them on the caller's thread inside `process_loop()`. This preserves the single-thread contract.
 - Built static only (`PAHO_BUILD_STATIC=TRUE`, `PAHO_BUILD_SHARED=FALSE`); no DLL artifacts.
 - TLS is **not** enabled in the adapter yet (`PAHO_WITH_SSL=OFF`); X.509 plumbing arrives together with `certificate_provider` wiring in a later phase.
 
 ### Build, toolchain, CI
-- Language: **C99 strict** (`-std=c99 -pedantic`, `CMAKE_C_EXTENSIONS OFF`, warnings-as-errors on by default).
+- Language: **C99 strict** (`-std=c99 -pedantic`, `CMAKE_C_EXTENSIONS OFF`, warnings-as-errors on by default). `-DCMAKE_C_STANDARD=11|17|23` overrides it for first-party code; Paho and azure-sdk-for-c stay on C99.
 - CMake **≥ 3.21**, driven by `CMakePresets.json`. Presets split into `base` + `linux-base` so Windows is not impacted by Linux-only options (e.g. `CMAKE_EXPORT_COMPILE_COMMANDS` symlinking).
 - Linux portability: define `_DEFAULT_SOURCE` / `_POSIX_C_SOURCE=200809L` where needed for `azure-sdk-for-c`'s POSIX platform impl; include upstream headers as `SYSTEM` to avoid `-Werror=strict-prototypes` failures on legacy `func()` declarations.
-- CI matrix (GitHub Actions): Linux GCC, Linux Clang, Windows MSVC, plus a dedicated **C99-strict** job.
+- CI matrix (GitHub Actions): Linux GCC, Linux Clang, Windows MSVC, plus **c99/c11/c17/c23-strict** jobs (GCC 14, `-pedantic -Werror`) guarding forward compatibility.
 - CI awareness: must compile cleanly across all `#if` variants before pushing — do not rely on CI to catch ordering / forward-declaration mistakes.
 
 ### Testing
@@ -125,20 +125,20 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 - CI runs an `eclipse-mosquitto:2` service container on the Linux jobs and points the conformance harnesses at it.
 
 ### Repository hygiene / process
-- Naming: `aeg` / `AEG` is reserved for internal short-form only; **all public artifacts** (file names, types, macros, functions, CMake options, targets, env-var hints) use `az_iot` / `az_iot`.
+- Naming: `aeg`, `classic`, `next`, `gen1` and `gen2` must not appear in artifact names; the hub generations are `mqttv3` and `mqttv5`. **All public artifacts** (file names, types, macros, functions, CMake options, targets, env-var hints) use the `az_iot` prefix.
 - `devnotes.md` is the running requirements log: every time a new requirement is presented, this document must be updated.
 
 ### Hub flavor selection
 - **AMENDED (08/10/2026) by [eng/client-separation.md](eng/client-separation.md).** DPS stays a phase *inside* `az_iot_connection_client` and there is still exactly one connection client — that part is unchanged. What changes is that the **feature clients** split per generation (`az_iot_mqttv3_*` / `az_iot_mqttv5_*`), so the application must be able to see which generation it landed on in order to pick the right one.
-- ~~The IoT Hub flavor (Classic vs Next) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.~~ The generation is now readable via `az_iot_connection_client_get_hub_profile()` once connected. It is still **not** a caller-settable knob — nothing selects it, DPS decides and the SDK reports.
-- DPS tells the SDK which hub the device was provisioned to and the SDK selects the appropriate MQTT version internally (v3.1.1 for Classic, v5 for Next).
+- ~~The IoT Hub flavor (MQTTv3 vs MQTTv5) is **not** a caller-facing knob. There is no `hub_version` field on any public options struct, and no `az_iot_HUB_*` enum exposed in the public API.~~ The generation is now readable via `az_iot_connection_client_get_hub_profile()` once connected. It is still **not** a caller-settable knob — nothing selects it, DPS decides and the SDK reports.
+- DPS tells the SDK which hub the device was provisioned to and the SDK selects the appropriate MQTT version internally (v3.1.1 for MQTTv3, v5 for MQTTv5).
 - The DPS assignment callback exposes `assigned_hub` + `assigned_device_id`. The generation it learned is surfaced through the hub profile rather than the assignment callback.
-- Falling back from AEG to Classic is **application logic**, not an SDK behaviour. The SDK reports the generation accurately and refuses a mismatched feature client with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- Falling back from MQTTv5 to MQTTv3 is **application logic**, not an SDK behaviour. The SDK reports the generation accurately and refuses a mismatched feature client with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 
 ### Connection profile (service contract, 08/10/2026)
 - Source of truth: [azure-rest-api-specs#45041](https://github.com/Azure/azure-rest-api-specs/pull/45041), DPS data-plane api-version **`2026-11-02-preview`**.
 - `connectionProfile` is a `readOnly` **string** property on `DeviceRegistrationResult`, arriving with `assignedHub` / `deviceId` / `issuedCertificateChain`. There is **no** numeric `hub_version` on the wire.
-- Values: `"classic"` (Classic MQTT 3.x hub) and `"mqttV5"` (MQTT 5 hub). **Absent or null resolves to `classic`.**
+- Values: `"classic"` (MQTTv3 hub) and `"mqttV5"` (MQTT 5 hub). **Absent or null resolves to `classic`.**
 - It is an **extensible union** — the spec states future hub capabilities pass through without a breaking change. The SDK must therefore expect values it does not know, and must preserve the raw string rather than collapsing it to a closed enum.
 - **Device-facing API version:** the common connection client builds the DPS CONNECT username with `2026-11-02-preview` for both CSR and non-CSR sessions, including provision-only software updates. The pinned `azure-sdk-for-c` remains unmodified; its `get_user_name()` helper would still emit `2019-03-31`.
 - **Development override:** `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=classic|mqttV5` replaces only an absent/null profile after ASSIGNED; the DPS-assigned host/device remain authoritative, and an explicit wire profile always wins. Invalid values fault the assignment. It is not a production deployment contract.
@@ -148,12 +148,12 @@ _Captured from conversation as the C99 client repo was being scaffolded. Each bu
 ### Dependency ownership: azure-sdk-for-c is ARCHIVED (08/11/2026)
 - `Azure/azure-sdk-for-c` is **archived** upstream (last push 2026-07-15). There will be no upstream fixes, so this repo owns the dependency and must carry its own patches.
 - This supersedes the "No git submodules" / "pinned FetchContent tag" arrangement as the whole story: the pin still holds, but a patch mechanism is now required alongside it.
-- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/su/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
+- **Not a dead gitlink (corrected):** `.gitmodules` registers a submodule at `c/deps/azure-sdk-for-c`, gitlink `6d6e634a` — exactly what tag `1.5.0` resolves to. It is uninitialised on a fresh clone, which makes it look unused, but the ESP-IDF component under `c/samples/software_update/esp32` builds its sources from it (the sample README says to `git submodule update --init` it). So the source exists twice: the FetchContent tree and the submodule, and both must receive the same patches.
 
 ### ConnectionClient lifecycle (Phase 2.1)
 - States: `IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE`, plus `RECONNECTING` (Phase 2.2) and `FAULTED` (CONNACK / inbound ERROR).
 - Single-threaded contract: every state transition and the user state-callback fires from inside `az_iot_connection_client_do_work()`. `on_mqtt_event()` is called from the adapter's `process_loop()` (which `do_work()` drives), and any state change requiring teardown of the active adapter is *deferred* out of the callback to avoid destroying the adapter while it is still on the call stack.
-- Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version`. The SDK internally maps services to required versions (DPS/Classic → v3.1.1, Hub-Next → v5) and selects the matching registered factory at connection time.
+- Adapter registry validates the MQTT version on registration: each factory must declare a valid `az_iot_mqtt_version`. The SDK internally maps services to required versions (DPS/MQTTv3 → v3.1.1, MQTTv5 → v5) and selects the matching registered factory at connection time.
 - The session role is settled at init and DPS overrides it via the **internal-only** `az_iot_connection_client__set_session_role()` (header `src/core/internal/connection_client_internal.h`, NOT part of the public ABI) before driving the post-provisioning open.
 - Reconnect (backoff + jitter), certificate_provider / X.509 plumbing, and the inbound dispatch table for feature clients are deferred to Phase 2.2 / 2.3.
 

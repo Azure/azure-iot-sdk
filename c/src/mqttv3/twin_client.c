@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic (MQTT v3.1.1) twin client.
+/* MQTTv3 hub (MQTT v3.1.1) twin client.
  *
  *   GET            : $iothub/twin/GET/?$rid=<n>
  *   PATCH reported : $iothub/twin/PATCH/properties/reported/?$rid=<n>
@@ -432,7 +432,7 @@ az_iot_result az_iot_mqttv3_twin_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));

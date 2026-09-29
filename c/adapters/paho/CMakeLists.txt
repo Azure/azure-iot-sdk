@@ -8,8 +8,8 @@
 # is available (required for Azure IoT connections on port 8883).
 #
 # Registers two factories:
-#   - v3.1.1, supported roles: { DPS, HUB_CLASSIC }
-#   - v5,     supported roles: { HUB_NEXT }
+#   - v3.1.1, supported roles: { DPS, HUB_MQTT_V3 }
+#   - v5,     supported roles: { HUB_MQTT_V5 }
 # Each factory creates a fresh Paho client object per session (no sharing).
 
 include(FetchContent)
@@ -83,6 +83,18 @@ if(NOT MSVC)
     endforeach()
 endif()
 
+# Paho < v1.3.15 is not C23-clean (MQTTPacket.h: `typedef unsigned int bool;`).
+# Pin its sources to C99 so a CMAKE_C_STANDARD override applies to first-party
+# code only, as azure-sdk-for-c already does for itself.
+foreach(_pt IN ITEMS
+    paho-mqtt3a-static paho-mqtt3as-static
+    paho-mqtt3c-static paho-mqtt3cs-static
+    common_obj_static common_ssl_obj_static)
+    if(TARGET ${_pt})
+        set_target_properties(${_pt} PROPERTIES C_STANDARD 99)
+    endif()
+endforeach()
+
 # Restore deprecation warning setting.
 set(CMAKE_WARN_DEPRECATED ${_sdk_save_warn_deprecated} CACHE BOOL "" FORCE)
 unset(_sdk_save_warn_deprecated)
@@ -120,7 +132,7 @@ add_library(azure::iot::adapter_paho ALIAS az_iot_adapter_paho)
 
 target_include_directories(az_iot_adapter_paho
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/inc
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
 )
 target_link_libraries(az_iot_adapter_paho
     PUBLIC

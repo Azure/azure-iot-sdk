@@ -16,34 +16,49 @@ include_directories(${CMAKE_SOURCE_DIR}/tests)
 # with AZ_IOT_WITH_PAHO=OFF.
 if(AZ_IOT_WITH_PAHO)
 
-# The software updates device-update suite. Uses the shipping Paho adapter and X.509, so it
-# needs no transport or credential of its own -- it exercises the SDK's real
-# auth and transport path rather than a test substitute.
+# The software updates e2e suites. Both use the shipping Paho adapter and X.509
+# against the real service; see docs/eng/end-to-end-tests.md.
+#
+#   az_iot_tests_e2e_su        the DPS channel, with no update offered
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client:
+#                              real crypto, real download (libcurl)
 #
 # Requires AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO as well; this option only
-# selects the suite once the e2e directory is being built at all.
+# selects the suites once the e2e directory is being built at all. Every
+# dependency is REQUIRED: a suite that cannot be built fails the configure
+# rather than dropping out of the run.
 #
-# The PEM certificate provider it uses is part of az_iot_core, so the managed
-# (OpenSSL) provider is deliberately NOT linked: doing so would make the suite
-# fail to build wherever that provider is off.
-# Not built on Windows: the suite reads its configuration with the borrowing
+# Not built on Windows: the suites read their configuration with the borrowing
 # az_iot_test_env(), which cannot exist under MSVC (getenv is deprecated there
-# and these targets build with /WX). Excluded rather than converted to the
-# copying form, because nothing runs this suite on Windows today and the
-# copies would have to be tracked and freed for no gain.
+# and these targets build with /WX), and nothing runs them on Windows.
 if(AZ_IOT_BUILD_E2E_SU AND WIN32)
-    message(STATUS "Software updates e2e suite skipped on Windows.")
+    message(STATUS "Software updates e2e suites skipped on Windows.")
 endif()
 
 if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_su tests/e2e_su_test.c)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_su tests/e2e_su_test.c tests/e2e_su_env.c)
     target_link_libraries(az_iot_tests_e2e_su PRIVATE az_iot_core az_iot_adapter_paho)
     # The suite asserts on the channel and the codecs, which are internal.
     target_include_directories(az_iot_tests_e2e_su PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/features/su/internal)
+
+    if(NOT TARGET az_iot_su_crypto_openssl)
+        message(FATAL_ERROR
+            "AZ_IOT_BUILD_E2E_SU needs the OpenSSL software updates crypto adapter "
+            "(AZ_IOT_WITH_SU_CRYPTO_OPENSSL=ON).")
+    endif()
+    find_package(CURL REQUIRED)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_su_offer
+        tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c)
+    target_link_libraries(az_iot_tests_e2e_su_offer PRIVATE
+        az_iot_core az_iot_adapter_paho az_iot_su_crypto_openssl CURL::libcurl)
+    # The spy wraps the internal channel to observe reports and verdicts.
+    target_include_directories(az_iot_tests_e2e_su_offer PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/features/su/internal)
 else()
-    message(STATUS "Software updates e2e suite disabled (set AZ_IOT_BUILD_E2E_SU=ON).")
+    message(STATUS "Software updates e2e suites disabled (set AZ_IOT_BUILD_E2E_SU=ON).")
 endif()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
@@ -72,44 +87,6 @@ az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_dev
 target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 
 # ---------------------------------------------------------------------------
-# (historical description of the retired twin-driven suite)
-#
-# Software updates e2e suite. It drives a signed deployment end-to-end
-# through the device twin: the cloud PATCHes a signed manifest into desired
-# properties and the device runs the download -> install -> apply workflow
-# (crypto + platform ops mocked, as in the software updates unit test) and reports the
-# outcome back. Because a twin desired-property PATCH is the entire trigger, it
-# needs NO Device Update account, so it is fast. Like the fast suite it plays
-# both halves in one process, so it links the same device (Paho) + service
-# facade libraries.
-#
-# It runs in the fast PR workflow (ci-c-e2e.yml, `ctest -R e2e`, which matches
-# BOTH e2e executables) AND, as an interim placeholder, in the nightly software updates
-# workflow (ci-c-e2e-adu.yml, `ctest -R e2e_su`, which selects only this one)
-# until the real software updates suite -- one that provisions an actual Device Update
-# account and triggers updates through the software updates service -- lands. The `e2e` name
-# filters never match the su_crypto_openssl unit test.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# tests/e2e_su_twin_test.c -- RETIRED WITH THE TWIN CHANNEL CUT (NOT BUILT)
-#
-# All five scenarios in tests/e2e_su_twin_test.c drove a deployment through a twin
-# desired-property PATCH. That channel no longer exists: software updates is now driven
-# through an az_iot_su_channel, so the suite cannot compile and its trigger has
-# no equivalent until the software updates channel lands.
-#
-# The file is deliberately KEPT rather than deleted: its device fixture and its
-# mocked crypto/payload hooks carry over to the rewritten suite unchanged, and
-# they are the expensive part. Only the trigger and the assertions change.
-#
-# The ci-c-e2e-adu workflow is likewise kept rather than removed, so that the
-# coverage gap between the cut and the rewrite stays visible instead of quietly
-# disappearing from the pipeline.
-#
-# Re-enable this target as part of the software updates channel work.
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr
 #
 # CSR-based DPS enrollment (issued operational cert). Requires a DPS enrollment
@@ -135,7 +112,7 @@ endif()
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload
 #
-# Classic file-upload device flow against a real hub that has an Azure Storage
+# MQTTv3 file-upload device flow against a real hub that has an Azure Storage
 # account associated for file upload. It plays both halves like the other
 # suites: the device requests a SAS URI, PUTs the blob, reads it back and reports
 # completion, while the service side watches the hub's file-upload NOTIFICATION
@@ -143,7 +120,7 @@ endif()
 # covers the failure report (accepted, but never notified), a completion carrying
 # an unknown correlation id, and local argument rejection.
 #
-# The Classic HTTP hook and the Storage PUT/GET go through the e2e service lib's
+# The MQTTv3 HTTP hook and the Storage PUT/GET go through the e2e service lib's
 # HTTPS helper (the harness az_amqp TLS transport), so there is no external HTTP
 # dependency. It requires the standard e2e device env, the service connection
 # strings, and a file-upload-capable hub. The `e2e` name matches the fast job's

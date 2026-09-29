@@ -829,6 +829,80 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
+/* ETags survive a reboot through save_state()/restore_state(), at their
+ * largest size too. */
+static void etags_round_trip_through_saved_state(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_channel_dps* c = &fx->channel_state;
+  const az_iot_su_channel_vtable* vt = fx->channel.vtable;
+  assert_non_null(vt->save_state);
+  assert_non_null(vt->restore_state);
+
+  uint8_t buf[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
+  size_t len = 99;
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  assert_int_equal(len, 0); /* nothing held yet */
+
+  memset(c->agent_info_etag, 'a', sizeof(c->agent_info_etag) - 1);
+  c->agent_info_etag[sizeof(c->agent_info_etag) - 1] = '\0';
+  memset(c->service_config_etag, 's', sizeof(c->service_config_etag) - 1);
+  c->service_config_etag[sizeof(c->service_config_etag) - 1] = '\0';
+  char agent[sizeof(c->agent_info_etag)];
+  char config[sizeof(c->service_config_etag)];
+  memcpy(agent, c->agent_info_etag, sizeof(agent));
+  memcpy(config, c->service_config_etag, sizeof(config));
+
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf) - 1u, &len), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  assert_int_equal(len, sizeof(buf));
+
+  c->agent_info_etag[0] = '\0';
+  c->service_config_etag[0] = '\0';
+  assert_int_equal(vt->restore_state(c, buf, len), AZ_IOT_OK);
+  assert_string_equal(c->agent_info_etag, agent);
+  assert_string_equal(c->service_config_etag, config);
+
+  memcpy(c->agent_info_etag, "agent", sizeof("agent"));
+  c->service_config_etag[0] = '\0';
+  assert_int_equal(vt->save_state(c, buf, sizeof(buf), &len), AZ_IOT_OK);
+  c->agent_info_etag[0] = '\0';
+  assert_int_equal(vt->restore_state(c, buf, len), AZ_IOT_OK);
+  assert_string_equal(c->agent_info_etag, "agent");
+  assert_string_equal(c->service_config_etag, "");
+}
+
+/* Anything save_state() did not write is refused and changes nothing. */
+static void malformed_saved_state_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_channel_dps* c = &fx->channel_state;
+  const az_iot_su_channel_vtable* vt = fx->channel.vtable;
+  memcpy(c->agent_info_etag, "agent", sizeof("agent"));
+  memcpy(c->service_config_etag, "config", sizeof("config"));
+
+  static const uint8_t big[2 + 128] = { 128 };
+  const struct
+  {
+    const uint8_t* buf;
+    size_t len;
+  } cases[] = {
+    { (const uint8_t*)"\0", 1 }, /* too short */
+    { (const uint8_t*)"\0\0", 2 }, /* both empty: never saved */
+    { (const uint8_t*)"\1a\1b\0", 5 }, /* trailing byte */
+    { (const uint8_t*)"\2a", 2 }, /* agent ETag past the end */
+    { (const uint8_t*)"\1a\2b", 4 }, /* config ETag past the end */
+    { (const uint8_t*)"\2a\0\0", 4 }, /* embedded NUL */
+    { big, sizeof(big) }, /* agent ETag too long */
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    assert_int_equal(vt->restore_state(c, cases[i].buf, cases[i].len), AZ_IOT_ERR_INVALID_ARG);
+    assert_string_equal(c->agent_info_etag, "agent");
+    assert_string_equal(c->service_config_etag, "config");
+  }
+}
+
 /* Cached ETags never make a validated property set unsendable: properties are
  * sized without them, and a request they would overflow is sent without them. */
 static void oversized_cached_etags_are_dropped_from_the_request(void** state)
@@ -976,6 +1050,46 @@ static void finishing_the_check_releases_the_hold_and_registration_follows(void*
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "$dps/registrations/PUT/iotdps-register"));
+}
+
+/* Cancelling an unanswered fetch frees the slot, ignores its late answer and
+ * lets registration proceed. No verdict is reported: the engine abandoned it. */
+static void cancelling_an_unanswered_fetch_frees_the_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+  assert_non_null(fx->channel.vtable->cancel_update);
+
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  /* A different operation is not the outstanding one: nothing changes. */
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_ERR_BUSY);
+
+  size_t results_before = fx->result_count;
+  fx->channel.vtable->cancel_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+  assert_int_equal(fx->result_count, results_before);
+
+  /* The hold is released, as on any final verdict for a fetch. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+
+  /* The late answer is consumed and ignored. */
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  (void)inject(fx, m, topic, "{\"updateMetadata\":null}");
+  assert_int_equal(fx->result_count, results_before);
+  assert_int_equal(fx->update_count, 0);
 }
 
 /* The load-bearing rule: a stalled or unavailable device-update service must
@@ -2533,6 +2647,8 @@ int main(void)
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(
         oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(etags_round_trip_through_saved_state, setup, teardown),
+    cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
@@ -2578,6 +2694,7 @@ int main(void)
         the_channel_holds_registration_so_bootstrap_can_run, setup, teardown),
     cmocka_unit_test_setup_teardown(
         finishing_the_check_releases_the_hold_and_registration_follows, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancelling_an_unanswered_fetch_frees_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hold_expires_and_registration_proceeds_anyway, setup, teardown),
     cmocka_unit_test_setup_teardown(without_a_holder_registration_is_not_delayed, setup, teardown),

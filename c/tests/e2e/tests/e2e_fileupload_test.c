@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* File upload end-to-end (Classic IoT Hub). Runs on the Linux e2e legs. On
+/* File upload end-to-end (MQTTv3 IoT Hub). Runs on the Linux e2e legs. On
  * Windows the executable is built but not registered as a CTest test, so MSVC
  * keeps compiling it while nothing skips at run time -- see the note in main()
  * and c/tests/e2e/CMakeLists.txt.
@@ -29,7 +29,7 @@
  *   arguments    the client refuses malformed arguments locally, without
  *                touching the network.
  *
- * The device HTTP hook (Classic control plane) and the Storage PUT/GET go through
+ * The device HTTP hook (MQTTv3 control plane) and the Storage PUT/GET go through
  * the e2e harness's own TLS transport (az_iot_e2e_https_request) -- the same
  * az_amqp transport the service facade uses -- so there is no external HTTP
  * client dependency. Mutual TLS with the device certificate authenticates the
@@ -90,7 +90,7 @@ static const char k_blob_content[] = "Hello from the Azure IoT C SDK file upload
 
 /* ---- HTTP (via the e2e harness transport) --------------------------------- */
 
-/* Paths used by the HTTP hook to authenticate the Classic hub REST calls (mTLS). */
+/* Paths used by the HTTP hook to authenticate the MQTTv3 hub REST calls (mTLS). */
 typedef struct
 {
   const char* cert;
@@ -133,7 +133,7 @@ static bool split_url(const char* url, char* host, size_t host_cap, char* path, 
   return true;
 }
 
-/* SDK HTTP transport hook for the Classic control plane: performs the hub REST
+/* SDK HTTP transport hook for the MQTTv3 control plane: performs the hub REST
  * call over the harness TLS transport with the device certificate (mutual TLS). */
 static az_iot_result e2e_http_send(
     const char* method,
@@ -651,7 +651,7 @@ int main(void)
   };
 
   /* Not registered as a test on Windows -- see c/tests/e2e/CMakeLists.txt. The
-   * mutual-TLS hub REST call the Classic control plane needs does not work
+   * mutual-TLS hub REST call the MQTTv3 control plane needs does not work
    * through the e2e harness's Schannel transport on the CI runners. MEASURED
    * (run 30506101665, where the old runtime skip was lifted to test the
    * assumption): every get_sas_uri and notify_complete came back

@@ -108,6 +108,7 @@ Every adapter is behind a build option, and two of them additionally require
 | --- | --- | --- | --- |
 | `az_iot_adapter_paho` | `AZ_IOT_WITH_PAHO` | ON | — |
 | `az_iot_su_crypto_openssl` | `AZ_IOT_WITH_SU_CRYPTO_OPENSSL` | ON | OpenSSL ≥ 3.0 found |
+| `az_iot_su_crypto_mbedtls` | `AZ_IOT_WITH_SU_CRYPTO_MBEDTLS` | ON | mbedTLS 3.6 LTS or ≥ 4.1 found (CMake package) |
 | `az_iot_certificate_provider_managed` | `AZ_IOT_WITH_CERT_PROVIDER_MANAGED` | ON | OpenSSL ≥ 3.0 found |
 | `az_iot_adapter_rust_mqtt` | `AZ_IOT_WITH_RUST_MQTT` | **OFF** | does not currently compile |
 
@@ -165,8 +166,13 @@ reports every one of them in the job summary whether it passed or not, and with
 
 **Rule: built and measured always; gated when shipped by default.**
 
-That gates Paho, the software updates OpenSSL crypto adapter, and the managed certificate
-provider.
+That gates Paho, the software updates OpenSSL and mbedTLS crypto adapters, and the managed
+certificate provider.
+
+The mbedTLS adapter is the exception to the configure-time rule: no distro ships a maintained
+mbedTLS, so a missing one does not fail configuration. The coverage jobs build it with
+`eng/install-mbedtls.sh`, and the exact `EXPECTED_TESTS` count in `ci-c.yml` fails the job if
+its suite drops out.
 
 `az_iot_adapter_rust_mqtt` is excluded from the coverage build entirely, and
 not for policy reasons: **it does not compile.** Building `main` with
@@ -233,9 +239,10 @@ figures by a point or so and a gate that fires on noise gets switched off.
 | `features` | 65 | 50 | 85 |
 | `adapter-paho` | 60 | 35 | 75 |
 | `adapter-su-crypto` | 75 | 40 | 95 |
+| `adapter-su-crypto-mbedtls` | 80 | 70 | 95 |
 | `adapter-cert-managed` | 75 | 55 | 80 |
 
-Minimum headroom across all fifteen floors is 2.7 points (`features` function).
+Minimum headroom across all twenty-four floors is 2.7 points (`features` function).
 The Paho adapter carries the lowest floors deliberately: its coverage comes
 almost entirely from the broker-gated conformance suites, so a broker outage
 moves it further than any other component.
@@ -347,7 +354,7 @@ endfunction()
 
 Called from [src/CMakeLists.txt](../../src/CMakeLists.txt) for `az_iot_core`,
 and from each adapter's `CMakeLists.txt` for `az_iot_adapter_paho`,
-`az_iot_adapter_rust_mqtt`, `az_iot_su_crypto_openssl`, and
+`az_iot_adapter_rust_mqtt`, `az_iot_su_crypto_openssl`, `az_iot_su_crypto_mbedtls`, and
 `az_iot_certificate_provider_managed`.
 
 **Not** called for `az_iot_test_support`, `az_iot_conformance`, or any cmocka

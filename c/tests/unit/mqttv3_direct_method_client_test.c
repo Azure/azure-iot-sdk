@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* MQTTv3 (IoT Hub Classic, MQTT v3.1.1) direct method client unit tests, driven
+/* MQTTv3 (MQTTv3 hub, MQTT v3.1.1) direct method client unit tests, driven
  * through the public API and the in-memory mock_mqtt_iface.
  *
  *   Subscribe  "$iothub/methods/POST/#"

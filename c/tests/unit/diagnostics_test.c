@@ -211,8 +211,8 @@ static void mqtt_role_to_string_covers_every_role(void** state)
     const char* text;
   } all[] = {
     { AZ_IOT_MQTT_ROLE_DPS, "DPS" },
-    { AZ_IOT_MQTT_ROLE_HUB_CLASSIC, "HUB_CLASSIC" },
-    { AZ_IOT_MQTT_ROLE_HUB_NEXT, "HUB_NEXT" },
+    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V3, "HUB_MQTT_V3" },
+    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V5, "HUB_MQTT_V5" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];

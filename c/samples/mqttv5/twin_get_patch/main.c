@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* mqttv5/twin_get_patch - sample.
  *
- * Issue a twin GET and a reported-properties PATCH against an AEG (Hub-Next)
+ * Issue a twin GET and a reported-properties PATCH against an MQTTv5
  * hub over MQTT v5. An application that must serve either hub generation picks
  * at runtime -- see unified/twin_get_patch.
  *
@@ -16,12 +16,12 @@
  * profile, and only then build the right client -- and rebuild it whenever a
  * reconnect landed on the other generation.
  *
- * Two adapters are registered, which a Classic-only app would not need: the hub
+ * Two adapters are registered, which an MQTTv3-only app would not need: the hub
  * leg is MQTT v5, but the DPS leg is still v3.1.1. Registering only the v5
  * factory makes provisioning fail with AZ_IOT_ERR_NOT_SUPPORTED before the hub
  * is ever reached.
  *
- * Two things differ from Classic beyond the client type, and both are protocol
+ * Two things differ from MQTTv3 beyond the client type, and both are protocol
  * rather than API taste:
  *
  *   - GET returns the desired and reported sections separately, each with its
@@ -101,7 +101,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       ctx->provisioning_faulted = 1;
       if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
       {
-        printf("Provisioned to a Classic hub; this AEG-only sample cannot serve it. "
+        printf("Provisioned to an MQTTv3 hub; this MQTTv5-only sample cannot serve it. "
                "Use the unified twin_get_patch sample.\n");
       }
     }

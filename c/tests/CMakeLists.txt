@@ -43,6 +43,8 @@ FetchContent_Declare(
     PATCH_COMMAND  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patch_cmocka_symlink.cmake
 )
 FetchContent_MakeAvailable(cmocka)
+# Test-only: keep cmocka's install rules out of the SDK's install.
+set_property(DIRECTORY "${cmocka_SOURCE_DIR}" PROPERTY EXCLUDE_FROM_ALL TRUE)
 
 # Restore settings.
 set(CMAKE_WARN_DEPRECATED ${_sdk_save_warn_deprecated} CACHE BOOL "" FORCE)
@@ -202,12 +204,12 @@ endif()
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client unit/mqttv5_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv5)
 if(UNIX)
-    # Two AEG direct-method budgets are only observable once a real second has
+    # Two MQTTv5 direct-method budgets are only observable once a real second has
     # passed, so the suite calls nanosleep().
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The AEG design requires the concurrency limit to be configurable. It sizes a
+# The MQTTv5 design requires the concurrency limit to be configurable. It sizes a
 # public struct, so the library and the application must be built against the
 # same value -- hence the mqttv5 sources are compiled into this target rather than
 # linked from az_iot_mqttv5, which carries the default. Running the whole suite
@@ -227,7 +229,7 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The AEG direct-method protobuf codec is hand-rolled, so its wire format is
+# The MQTTv5 direct-method protobuf codec is hand-rolled, so its wire format is
 # pinned here against bytes taken from the .proto rather than from itself.
 az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_direct_method_codec unit/mqttv5_direct_method_codec_test.c)
@@ -430,13 +432,19 @@ if(AZ_IOT_WITH_RUST_MQTT)
     target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
 endif()
 
-# Software updates OpenSSL crypto adapter (only when the adapter target was built, i.e.
-# OpenSSL 3.0+ was found). Links OpenSSL only to generate test vectors.
+# Software updates crypto adapters: the shared known-answer contract suite
+# (support/su_crypto_contract.c), once per adapter target that was built.
 if(TARGET az_iot_su_crypto_openssl)
-    find_package(OpenSSL 3.0 QUIET)
-    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl unit/su_crypto_openssl_test.c)
+    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl
+        unit/su_crypto_openssl_test.c support/su_crypto_contract.c)
     target_link_libraries(az_iot_tests_su_crypto_openssl PRIVATE
-        az_iot_su_crypto_openssl OpenSSL::Crypto)
+        az_iot_su_crypto_openssl az_iot_test_support)
+endif()
+if(TARGET az_iot_su_crypto_mbedtls)
+    az_iot_add_cmocka_test(az_iot_tests_su_crypto_mbedtls
+        unit/su_crypto_mbedtls_test.c support/su_crypto_contract.c)
+    target_link_libraries(az_iot_tests_su_crypto_mbedtls PRIVATE
+        az_iot_su_crypto_mbedtls az_iot_test_support)
 endif()
 
 # Managed OpenSSL certificate provider (only when the adapter target was built,

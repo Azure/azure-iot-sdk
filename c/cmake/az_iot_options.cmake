@@ -11,6 +11,7 @@ option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             O
 # support is absent, rather than connecting without a client key.
 option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Paho adapter (needs OpenSSL 3.0+)" ON)
 option(AZ_IOT_WITH_SU_CRYPTO_OPENSSL "Build the OpenSSL software updates crypto adapter"   ON)
+option(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS "Build the mbedTLS software updates crypto adapter when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
@@ -63,6 +64,10 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
 # the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
 option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
+# Install rules and the azure-iot-sdk CMake package (find_package). On by default
+# only for a top-level build, so a parent project that adds this tree with
+# add_subdirectory() or FetchContent does not install it as a side effect.
+option(AZ_IOT_INSTALL          "Generate install rules and the azure-iot-sdk CMake package" ${PROJECT_IS_TOP_LEVEL})
 option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
 option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
@@ -73,7 +78,7 @@ option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           O
 # externally by OpenCppCoverage against an ordinary build.
 option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       OFF)
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
-# MANDATORY dependency. It is how we talk to DPS and IoTHub-Classic. There is
+# MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.
 
 # ABI profile (docs/struct_versioning.md). EMBEDDED: application and library

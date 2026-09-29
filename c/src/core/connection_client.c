@@ -109,7 +109,7 @@
 /* The hub generation the device was assigned to. A string, and an extensible
  * union: absent or null means "classic". New in api-version 2026-11-02-preview. */
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
-#define CONNECTION_PROFILE_CLASSIC_STR "classic"
+#define CONNECTION_PROFILE_MQTT_V3_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
 #define DPS_CONNECTION_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
 
@@ -118,7 +118,7 @@
 #define CERT_CHAIN_MAX_CERTS 6u
 
 /* ------------------------------------------------------------------------- */
-/* AEG/Hub-Next presence (birth) handshake wire constants. Mirrors the .NET    */
+/* MQTTv5 presence (birth) handshake wire constants. Mirrors the .NET          */
 /* SDK's ConnectToAzureEventGridIotHubAsync and common/Protos/presence.proto.  */
 /* ------------------------------------------------------------------------- */
 #define PRESENCE_PHASE_NONE AZ_IOT_PRESENCE_PHASE_NONE
@@ -133,7 +133,7 @@
 #define PRESENCE_TOPIC_DEV_SUFFIX "/dev/presence"
 /* The device subscribes to the whole device-bound topic space (per RFC
  * topics.md and the .NET SDK) rather than the narrower dev/presence: one
- * subscription that AEG's topic-space authorization is guaranteed to grant and
+ * subscription that MQTTv5's topic-space authorization is guaranteed to grant and
  * that also covers the other device-bound feature topics. The birth-ack is
  * still matched by its exact dev/presence topic. */
 #define PRESENCE_TOPIC_DEV_SUB_SUFFIX "/dev/#"
@@ -145,7 +145,7 @@
 #define PRESENCE_TYPE_BIRTH_ACK "birth-ack"
 /* Connection nonce carried as MQTT v5 Correlation Data on the birth PUBLISH and
  * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce, and
- * is the same width every AEG correlation id uses. */
+ * is the same width every MQTTv5 correlation id uses. */
 #define PRESENCE_NONCE_LEN AZ_IOT_CORRELATION_UUID_LEN
 
 /* The nonce is a UUID, so two of its octets carry RFC 4122 metadata: octet 6
@@ -197,10 +197,10 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
   {
     case AZ_IOT_MQTT_ROLE_DPS:
       return "DPS";
-    case AZ_IOT_MQTT_ROLE_HUB_CLASSIC:
-      return "HUB_CLASSIC";
-    case AZ_IOT_MQTT_ROLE_HUB_NEXT:
-      return "HUB_NEXT";
+    case AZ_IOT_MQTT_ROLE_HUB_MQTT_V3:
+      return "HUB_MQTT_V3";
+    case AZ_IOT_MQTT_ROLE_HUB_MQTT_V5:
+      return "HUB_MQTT_V5";
     default:
       return "ROLE?";
   }
@@ -590,7 +590,7 @@ static void resolve_connect_transport(
  *
  * Every CONNECT this client issues used to go out with whatever the
  * zero-initialized options struct yielded, which is clean_start = false for all
- * three roles -- so DPS and Hub-Next both asked the broker to resume a session
+ * three roles -- so DPS and MQTTv5 both asked the broker to resume a session
  * neither of them has any use for. The three roles do not want the same thing,
  * and the choice is made here, in one place, rather than at the two connect
  * sites:
@@ -608,15 +608,15 @@ static void resolve_connect_transport(
  *    or hub-concurrent DPS session does not change the answer: clean_start is
  *    only read at CONNECT, and it is inert at this service whenever it is read.
  *
- *  - HUB_CLASSIC (v3.1.1): a PERSISTENT session, which is the behaviour this
- *    role already had and is kept deliberately. Classic IoT Hub holds a
+ *  - HUB_MQTT_V3 (v3.1.1): a PERSISTENT session, which is the behaviour this
+ *    role already had and is kept deliberately. MQTTv3 IoT Hub holds a
  *    device's subscriptions, and the cloud-to-device messages that arrived
  *    while it was away, only for a session that is NOT clean; connecting clean
  *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
  *    are re-issued on every connect either way (begin_feature_subscriptions),
  *    so resuming costs nothing and losing the queue costs delivery.
  *
- *  - HUB_NEXT (v5): a resumed session as well, with a Session Expiry Interval
+ *  - HUB_MQTT_V5 (v5): a resumed session as well, with a Session Expiry Interval
  *    so there is something left to resume. The presence design is explicit that
  *    this is a TRANSPORT EFFICIENCY choice and not a correctness one: the
  *    backend never reads clean_start or session_present, the device always
@@ -656,7 +656,7 @@ static void resolve_session_options(
    * A session the caller asked to be clean still carries it: clean_start
    * discards whatever was there at CONNECT, while the expiry governs what
    * happens to THIS session after it ends, and those are independent. */
-  if (role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  if (role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
   {
     copts->session_expiry_seconds = c->opts.session_expiry_seconds
         ? c->opts.session_expiry_seconds
@@ -685,7 +685,7 @@ static void resolve_session_options(
   copts->lwt.qos = c->opts.lwt.qos;
   copts->lwt.retain = c->opts.lwt.retain;
 
-  if (role != AZ_IOT_MQTT_ROLE_HUB_NEXT)
+  if (role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
   {
     return; /* v3.1.1: no will delay, no reason codes */
   }
@@ -711,7 +711,7 @@ static void teardown_active(az_iot_connection_client* c)
     c->active_client->iface->destroy(c->active_client);
   }
   c->active_client = NULL;
-  /* Abandon any in-flight AEG presence (birth) handshake: it belonged to the
+  /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
   /* Same for the subscription gate. Its packet ids died with the session and
@@ -1408,9 +1408,9 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
         c->connection_profile_raw);
     c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_CLASSIC_STR) == 0)
+  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
   else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
   {
@@ -1471,7 +1471,7 @@ static az_iot_result dps_apply_connection_profile_override(az_iot_connection_cli
   memcpy(value, configured, needed);
 #endif
 
-  if (strcmp(value, CONNECTION_PROFILE_CLASSIC_STR) != 0
+  if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
       && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
   {
     AZ_IOT_LOG_ERRORF(
@@ -1492,7 +1492,7 @@ static az_iot_result dps_apply_connection_profile_override(az_iot_connection_cli
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
- * meaning "classic" -- so the caller is left with the classic default it was
+ * meaning "classic" -- so the caller is left with the MQTTv3 default it was
  * seeded with. Only a malformed payload fails here; an unrecognised *value*
  * fails later, at the point the session role is chosen, so the profile is
  * already recorded and readable when it does. */
@@ -1526,7 +1526,7 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
         connection_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
-      /* null (or any non-string) resolves to the classic default unless the
+      /* null (or any non-string) resolves to the MQTTv3 default unless the
        * development bridge explicitly supplies the profile. */
       return dps_apply_connection_profile_override(c);
     }
@@ -2220,11 +2220,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   az_iot_result r;
   switch (c->connection_profile)
   {
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
-      c->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
+      c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V3;
       break;
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+      c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
       break;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
@@ -2311,11 +2311,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 }
 
 /* ------------------------------------------------------------------------- */
-/* AEG/Hub-Next presence (birth) handshake                                    */
+/* MQTTv5 presence (birth) handshake                                          */
 /*                                                                           */
-/* On a HUB_NEXT (MQTT v5) session the connection is not "up" at CONNACK: the  */
+/* On a HUB_MQTT_V5 (MQTT v5) session the connection is not "up" at CONNACK: the  */
 /* device must announce presence by publishing a birth message and waiting for */
-/* a birth-ack before the SDK reports CONNECTED. Classic/DPS sessions skip all */
+/* a birth-ack before the SDK reports CONNECTED. MQTTv3/DPS sessions skip all */
 /* of this. Sequenced as a small sub-state machine driven from on_mqtt_event:  */
 /*   CONNACK  -> SUBSCRIBE ih/{id}/dev/#                  (phase SUBSCRIBING)   */
 /*   SUBACK   -> PUBLISH   ih/{id}/srv/presence (birth)   (phase BIRTH)         */
@@ -2360,7 +2360,7 @@ static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE
   gen_uuid_v4(c, out);
 }
 
-/* Build the Hub-Next (AEG) CONNECT username. The IoT Hub auth webhook denies a
+/* Build the MQTTv5 CONNECT username. The IoT Hub auth webhook denies a
  * connect with an empty username (WebhookAuthUserNameMissing), so the SDK sends
  * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
  * SDK. correlationId is the 32-character lowercase hex of the 16-byte
@@ -2712,7 +2712,7 @@ static bool subscription_gate_settle(
   return false;
 }
 
-/* Begin the presence handshake after a successful HUB_NEXT CONNACK: subscribe
+/* Begin the presence handshake after a successful HUB_MQTT_V5 CONNACK: subscribe
  * to the device-bound topic space (dev/#) so the birth-ack can be received. */
 static az_iot_result presence_start(az_iot_connection_client* c, bool session_present)
 {
@@ -2885,11 +2885,11 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
         c->reconnect_due_ms = 0;
 
-        /* AEG/Hub-Next (MQTT v5): the connection is not usable until
+        /* MQTTv5 (MQTT v5): the connection is not usable until
          * presence is established. Kick off the birth handshake and
          * defer the CONNECTED announcement until the birth-ack arrives.
-         * Classic (and DPS-assigned Classic) sessions announce now. */
-        if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT)
+         * MQTTv3 (and DPS-assigned MQTTv3) sessions announce now. */
+        if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
         {
           az_iot_result pr = presence_start(c, evt->session_present);
           if (pr != AZ_IOT_OK)
@@ -2964,11 +2964,11 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_MESSAGE:
       if (evt->message)
       {
-        /* During the AEG birth handshake, intercept the birth-ack and
+        /* During the MQTTv5 birth handshake, intercept the birth-ack and
          * complete the connection; everything else routes normally. */
         if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
         {
-          /* Same reasoning as the CONNACK case above. On the Hub-Next path it
+          /* Same reasoning as the CONNACK case above. On the MQTTv5 path it
            * is the birth-ack, not the CONNACK, that completes the connection,
            * so suppressing only the CONNACK would leave this route able to
            * announce CONNECTED for an attempt the application has already
@@ -3011,7 +3011,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       break;
 
-    /* The dev/presence SUBACK advances the AEG birth handshake: publish the
+    /* The dev/presence SUBACK advances the MQTTv5 birth handshake: publish the
      * birth message now that the ack topic is subscribed. Other SUBACKs are
      * absorbed (feature clients don't yet need SUBACK correlation). */
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
@@ -3076,9 +3076,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   resolve_connect_transport(c, &copts, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
-  /* Build hub MQTT username via azure-sdk-for-c (Classic only).
-   * Hub-Next does not use the Classic username format. */
-  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_NEXT && c->opts.host && c->opts.client_id)
+  /* Build hub MQTT username via azure-sdk-for-c (MQTTv3 only).
+   * MQTTv5 does not use the MQTTv3 username format. */
+  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
   {
     if (!c->hub_client_initialized)
     {
@@ -3106,16 +3106,16 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       }
     }
   }
-  else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT && c->opts.host && c->opts.client_id)
+  else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
   {
-    /* Hub-Next (AEG): generate the per-attempt connection nonce now so it
+    /* MQTTv5: generate the per-attempt connection nonce now so it
      * rides the CONNECT username (correlationId) and is reused as the birth
      * Correlation Data. The auth webhook denies an empty username. */
     presence_gen_nonce(c, c->presence.nonce);
     if (!presence_build_username(c, c->hub_username, sizeof(c->hub_username)))
     {
       AZ_IOT_LOG_ERROR(
-          "connection: AZ_IOT_MQTT_USERNAME_BUF is too small for the hub-next CONNECT username");
+          "connection: AZ_IOT_MQTT_USERNAME_BUF is too small for the MQTTv5 CONNECT username");
       mc->iface->destroy(mc);
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -3193,11 +3193,11 @@ static void apply_deferred(az_iot_connection_client* c)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Hub-Next mock bypass (env-var-driven, for local dev/test only)            */
+/* MQTTv5 mock bypass (env-var-driven, for local dev/test only)            */
 /* ------------------------------------------------------------------------- */
 
-/* When AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
- * entirely and connect to the mock Hub-Next using MQTT v5. The device identity
+/* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
+ * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
  * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
  * avoids the need for a real DPS service during local development.
  *
@@ -3209,12 +3209,12 @@ static void apply_deferred(az_iot_connection_client* c)
  * does not allocate.
  *
  * az-iot-allow: free -- releases the _dupenv_s buffer in the same function */
-static bool mock_next_configured(void)
+static bool mock_mqtt_v5_configured(void)
 {
 #ifdef _WIN32
   char* buf = NULL;
   size_t len = 0;
-  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT") != 0 || !is_nonempty_cstr(buf))
+  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !is_nonempty_cstr(buf))
   {
     free(buf);
     return false;
@@ -3222,7 +3222,7 @@ static bool mock_next_configured(void)
   free(buf);
   return true;
 #else
-  const char* val = getenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
+  const char* val = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
   return is_nonempty_cstr(val);
 #endif
 }
@@ -3258,7 +3258,7 @@ static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap
   return port;
 }
 
-static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
+static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 {
   const char* endpoint;
   const char* device_id;
@@ -3267,7 +3267,7 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
   char* ep_buf = NULL;
   char* id_buf = NULL;
   size_t ep_len = 0, id_len = 0;
-  if (_dupenv_s(&ep_buf, &ep_len, "AZ_IOT_HUB_NEXT_MOCK_ENDPOINT") != 0 || !ep_buf)
+  if (_dupenv_s(&ep_buf, &ep_len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !ep_buf)
   {
     return AZ_IOT_ERR_INTERNAL;
   }
@@ -3280,7 +3280,7 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
   endpoint = ep_buf;
   device_id = id_buf ? id_buf : c->opts.dps.registration_id;
 #else
-  endpoint = getenv("AZ_IOT_HUB_NEXT_MOCK_ENDPOINT");
+  endpoint = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
   device_id = getenv("AZ_IOT_DEVICE_ID");
   if (!is_nonempty_cstr(device_id))
   {
@@ -3313,13 +3313,13 @@ static az_iot_result apply_mock_next_bypass(az_iot_connection_client* c)
   }
   if (r == AZ_IOT_OK)
   {
-    c->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+    c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
     c->dps_phase = DPS_PHASE_DONE;
 
     /* Warn, not debug: provisioning was skipped entirely, so anyone reading
      * the log needs to know this session never talked to DPS. */
     AZ_IOT_LOG_WARNF(
-        "dps: mock-next bypass active; host=%s port=%u device=%s",
+        "dps: mqttv5 mock bypass active; host=%s port=%u device=%s",
         host,
         (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
         device_id);
@@ -3371,7 +3371,7 @@ az_iot_result az_iot_connection_client_init(
   }
   /* UNKNOWN only ever comes back FROM the service; a caller cannot meaningfully
    * declare a profile the SDK does not know how to speak. */
-  if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC
+  if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3
       && opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     AZ_IOT_LOG_ERROR("connection_client_init: connection_profile is not a profile this SDK speaks");
@@ -3382,11 +3382,11 @@ az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
-   * during their init (which happens before open()). When mock-next is
+   * during their init (which happens before open()). When the mqttv5 mock is
    * configured, also resolve the device_id so subscriptions can be built. */
-  if (mock_next_configured())
+  if (mock_mqtt_v5_configured())
   {
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
     /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
     const char* dev_id = NULL;
 #ifdef _WIN32
@@ -3418,23 +3418,23 @@ az_iot_result az_iot_connection_client_init(
   else if (
       client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    /* Direct connect to an IoT Hub Next / AEG endpoint (MQTT v5). For DPS
+    /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
      * (host == NULL) the profile is learned during provisioning, so
      * opts.connection_profile is honored only when a direct host is supplied. */
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_NEXT;
+    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
   }
   else
   {
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_CLASSIC;
+    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V3;
   }
   /* Seed the reported profile from the role settled above, so a direct connect
    * -- where there is no service to ask -- is answerable from init onward. The
    * DPS path overwrites this when the ASSIGNED payload arrives. */
   connection_profile_set(
       client,
-      client->session_role == AZ_IOT_MQTT_ROLE_HUB_NEXT
+      client->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5
           ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
-          : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_CLASSIC_STR));
+          : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
   /* A direct connect has no service to ask, so the seed above is the answer. */
   client->connection_profile_resolved = !dps_configured(client);
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
@@ -3852,21 +3852,21 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * exactly the hub that was rejected or unreachable, because the cached host
    * is still set. It is consumed by the DPS route below. */
 
-  /* --- Mock-Next bypass: when AZ_IOT_HUB_NEXT_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock Hub-Next (MQTT v5). ---
+  /* --- MQTTv5 mock bypass: when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set,
+   * skip DPS and connect directly to the mock MQTTv5 (MQTT v5). ---
    *
    * Never for provision_only: the bypass makes a hostless client a hub
    * connection, and an environment variable must not override a declared
    * device shape. */
-  if (mock_next_configured() && !client->opts.dps.provision_only)
+  if (mock_mqtt_v5_configured() && !client->opts.dps.provision_only)
   {
-    az_iot_result r = apply_mock_next_bypass(client);
+    az_iot_result r = apply_mqtt_v5_mock_bypass(client);
     if (r != AZ_IOT_OK)
     {
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
-    /* host + client_id are set, session_role = HUB_NEXT → fall through
+    /* host + client_id are set, session_role = HUB_MQTT_V5 → fall through
      * to start_connect_attempt which will resolve the v5 factory. */
     r = start_connect_attempt(client);
     if (r != AZ_IOT_OK)
@@ -4265,7 +4265,7 @@ az_iot_result az_iot_connection_client_do_work(
     }
   }
 
-  /* Fail a stalled AEG presence (birth) handshake so a missing SUBACK or
+  /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
    * birth-ack can't wedge the client in CONNECTING forever. Reconnect when a
    * policy is configured (mirrors the .NET SDK, which disconnects and
    * retries), otherwise fault. */
@@ -5260,9 +5260,9 @@ size_t az_iot_connection_client__remove_subscriptions_for(
     return 0;
   }
   /* Withdraw each entry from the broker too, on both generations. This cannot
-   * touch AEG's device-wide ih/{device_id}/dev/# subscription: the presence
+   * touch MQTTv5's device-wide ih/{device_id}/dev/# subscription: the presence
    * handshake issues that one directly, not through this registry, so it has no
-   * owner and never appears in the loop below. On AEG, entries in this registry
+   * owner and never appears in the loop below. On MQTTv5, entries in this registry
    * are application custom topics; feature delivery uses the wildcard instead.
    * Withdrawing a custom filter leaves the wildcard -- and therefore every
    * feature's delivery -- untouched. */
@@ -5291,7 +5291,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
 }
 
 /* Drop persistent subscriptions that belong to a different hub generation than
- * the one now resolved. Without this, a device reassigned from Classic to AEG
+ * the one now resolved. Without this, a device reassigned from MQTTv3 to MQTTv5
  * would re-issue its $iothub/... filters at the new hub, which does not grant
  * them -- and once CONNECTED is gated on those SUBACKs, the session could never
  * come up and the application would never get the callback that would have
@@ -5535,9 +5535,9 @@ az_iot_result az_iot_connection_client_send_csr(
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
-  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_CLASSIC)
+  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* Hub-Next (AEG) path not defined yet */
+    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
   }
   if (client->csr_op.in_use)
   {

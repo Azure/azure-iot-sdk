@@ -1,23 +1,23 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# TODO — Dual Hub Support (Classic + Next)
+# TODO — Dual Hub Support (MQTTv3 + MQTTv5)
 
-Canonical pending-work tracker for IoT Hub Next (AEG) integration.
+Canonical pending-work tracker for MQTTv5 hub integration.
 
 ---
 
 ## Phase 1: DPS Bypass Mock Switch
 
-- [x] Add `AZ_IOT_HUB_NEXT_MOCK_ENDPOINT` env var check in `connection_client_open()`
+- [x] Add `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT` env var check in `connection_client_open()`
 - [x] Add `AZ_IOT_DEVICE_ID` env var to `sample_utils`
 - [x] Register both v3.1.1 and v5 factories in samples
 
-## Phase 2: Protocol Profile for Next
+## Phase 2: Protocol Profile for MQTTv5
 
-- [x] Extend `az_iot_protocol_profile` with Next-specific fields
-- [x] Implement `s_profile_next` in `protocol_profile.c`
-- [x] ~~Unit test: `profile_for_hub_next_role_is_next`~~ — moot: the whole
+- [x] Extend `az_iot_protocol_profile` with MQTTv5-specific fields
+- [x] Implement `s_profile_mqtt_v5` in `protocol_profile.c`
+- [x] ~~Unit test: `profile_for_hub_mqtt_v5_role_is_mqtt_v5`~~ — moot: the whole
   `protocol_profile` module was deleted in P4 once each generation's feature
   clients owned their own topics.
 
@@ -31,7 +31,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 - [x] Wire `session_present` from CONNACK into `EVT_CONNECTED` event — both versions. The v5 path
       came first; the v3.1.1 path now reports it too. That bit was previously recorded here as not
       needed, on the grounds that only the v5 presence/birth path consumes it. That reasoning no
-      longer holds: a Classic session connects with Clean Session 0 (Phase 4 below, and
+      longer holds: an MQTTv3 session connects with Clean Session 0 (Phase 4 below, and
       `docs/connection.md` section 3.2), so whether the broker resumed the session or silently
       started a fresh one is reported by the CONNACK and by nothing else. Nothing in the SDK
       branches on the value — it is surfaced for the application, which cannot otherwise see it.
@@ -66,7 +66,7 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
   attempt; it rides the CONNECT username as `correlationId` and the birth PUBLISH as MQTT 5
   Correlation Data, which is the identifier the presence protocol actually defines. A second UUID
   would identify nothing the service looks at.
-- [x] Set LWT in CONNECT options for HUB_NEXT — **the platform sets no Will, by design.**
+- [x] Set LWT in CONNECT options for HUB_MQTT_V5 — **the platform sets no Will, by design.**
   `az_iot_connection_client_options.lwt` exposes the Will to the application and is applied to the
   hub roles (never to DPS), with the Will Delay Interval and a close that carries DISCONNECT reason
   `0x04` when a Will is configured. The SDK sets no Will of its own: MQTT 5 allows exactly one Will
@@ -81,10 +81,10 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
   the fields already existed and the Paho adapter already honoured them; the gap was that the core
   set none of them. It does now, per role, with `session_continuity` and `session_expiry_seconds`
   overridable by the application on the hub roles (see `docs/connection.md` section 3.2).
-- [x] Send DISCONNECT with reason code 0x04 on close (HUB_NEXT only) — expressed as an additive,
+- [x] Send DISCONNECT with reason code 0x04 on close (HUB_MQTT_V5 only) — expressed as an additive,
   zero-safe `disconnect_reason_code` on `az_iot_mqtt_connect_options` rather than a new parameter or
   vtable slot, so no bring-your-own adapter's ABI changes and a zero keeps today's normal close. The
-  core sets it on HUB_NEXT only, and only when a Will is configured: 0x04 asks the broker to publish
+  core sets it on HUB_MQTT_V5 only, and only when a Will is configured: 0x04 asks the broker to publish
   the Will on an orderly close, which is meaningless when there is none. The reason code carries no
   protocol meaning for the platform (presence does not depend on a will message), so this exists to
   serve an application that configured its own Will.
@@ -92,14 +92,14 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 ## Phase 5: Feature Clients Dual-Mode
 
 ### Telemetry
-- [x] Add `telemetry_send_next()` path in `telemetry_client.c`
+- [x] Add `telemetry_send_mqtt_v5()` path in `telemetry_client.c`
 - [x] Test telemetry against mock hub (E2E verified)
 
 ### Direct Method
-- [x] Flavor-aware init: Next dispatches methods from the presence wildcard; Classic subscribes to `$iothub/methods/POST/#`
-- [x] Flavor-aware respond: publishes with correlation_data (Next) or topic-encoded `$rid` (Classic)
-- [x] E2E verified against mock Hub-Next (auto-trigger loops 4 methods continuously)
-- [x] MQTTv5: implement the AEG probe / exec / abandon phases (`common/Protos/directmethods.proto`)
+- [x] Flavor-aware init: MQTTv5 dispatches methods from the presence wildcard; MQTTv3 subscribes to `$iothub/methods/POST/#`
+- [x] Flavor-aware respond: publishes with correlation_data (MQTTv5) or topic-encoded `$rid` (MQTTv3)
+- [x] E2E verified against mock MQTTv5 (auto-trigger loops 4 methods continuously)
+- [x] MQTTv5: implement the MQTTv5 probe / exec / abandon phases (`common/Protos/directmethods.proto`)
 - [x] ~~Add nanopb (protobuf) dependency via FetchContent~~ **Rejected.** The six direct-method
       messages are two varints, three length-delimited fields and a two-arm oneof, so the wire
       format actually in use is a few hundred bytes of code (`src/mqttv5/direct_method_codec.c`,
@@ -116,10 +116,10 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
       the next probe or exec shows up.
 
 ### Twin
-- [x] Flavor-aware delivery (Next: presence wildcard + twin dispatch handlers; Classic: twin response/desired subscriptions)
-- [x] GET and PATCH reported use correlation_data for Next path
-- [x] Desired push handler for Next path
-- [x] E2E verified against mock Hub-Next
+- [x] Flavor-aware delivery (MQTTv5: presence wildcard + twin dispatch handlers; MQTTv3: twin response/desired subscriptions)
+- [x] GET and PATCH reported use correlation_data for MQTTv5 path
+- [x] Desired push handler for MQTTv5 path
+- [x] E2E verified against mock MQTTv5
 - [x] Split into `az_iot_mqttv3_twin_client` / `az_iot_mqttv5_twin_client`; MQTTv5 binds its inbound
       topics at connect instead of resolving the device id inside `init()`
 - [x] Desired-property subscriber registry collapsed to a single `set_desired_handler()`; its only
@@ -129,23 +129,23 @@ Canonical pending-work tracker for IoT Hub Next (AEG) integration.
 
 ### C2D
 - [x] `az_iot_c2d_client` feature client (header + implementation)
-- [x] Classic: `devices/{reg_id}/messages/devicebound/#` subscription with prefix-based dispatch
+- [x] MQTTv3: `devices/{reg_id}/messages/devicebound/#` subscription with prefix-based dispatch
 - [ ] MQTTv5: not supported by the service yet; the MQTTv5 client, its sample and tests were removed
 - [x] `c2d_receiver` sample using the feature client API (MQTTv3 IoT Hub only)
-- [ ] E2E verified against Classic IoT Hub
+- [ ] E2E verified against MQTTv3 IoT Hub
 - [ ] Design C2D strict-settlement state machine (accept/reject/abandon)
 
 ## Phase 6: Connection Client Integration
 
-- [x] Early mock-next detection in `connection_client_init()` (sets session_role + resolves device_id)
-- [ ] Wire session lifecycle after HUB_NEXT CONNACK
-- [ ] Skip `az_iot_hub_client_get_user_name()` for HUB_NEXT (no Classic username format)
+- [x] Early MQTTv5-mock detection in `connection_client_init()` (sets session_role + resolves device_id)
+- [ ] Wire session lifecycle after HUB_MQTT_V5 CONNACK
+- [ ] Skip `az_iot_hub_client_get_user_name()` for HUB_MQTT_V5 (no MQTTv3 username format)
 
 ## Phase 7: Infrastructure
 
 - [x] Enable `PAHO_WITH_SSL=ON` in CMake
 - [ ] Conformance suite v5 pass against Mosquitto
-- [ ] CI: add Next-mock integration test job
+- [ ] CI: add MQTTv5-mock integration test job
 - [x] Mock service auto-triggers: DM (loops forever), C2D (rotating payloads), Twin desired
 - [ ] Struct versioning (docs/struct_versioning.md): convert kind A-D structs; shared-library
       export, SOVERSION and ABI checks in CI.

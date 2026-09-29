@@ -108,9 +108,9 @@ static int setup(void** state)
   return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V5, AZ_IOT_MQTT_VERSION_5);
 }
 
-static int setup_classic(void** state)
+static int setup_mqtt_v3(void** state)
 {
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_CLASSIC, AZ_IOT_MQTT_VERSION_3_1_1);
+  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static int teardown(void** state)
@@ -143,7 +143,7 @@ static const az_iot_mock_call* find_publish(fixture* test, const char* topic)
   return NULL;
 }
 
-static void open_classic(fixture* test)
+static void open_mqtt_v3(fixture* test)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
@@ -238,10 +238,10 @@ static void init_contract(void** state)
   az_iot_mqttv5_telemetry_client_deinit(&test->telemetry);
 }
 
-static void init_rejects_classic_profile(void** state)
+static void init_rejects_mqtt_v3_profile(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_classic(test);
+  open_mqtt_v3(test);
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
   assert_int_equal(
@@ -557,7 +557,7 @@ static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** s
   assert_int_equal(log.count, 0);
 }
 
-/* The v5 path carries values as-is. Classic has to percent-encode the same
+/* The v5 path carries values as-is. MQTTv3 has to percent-encode the same
  * bytes because they go in the topic; borrowing that encoder here would corrupt
  * every value containing a reserved character. */
 static void values_are_not_encoded_on_the_v5_path(void** state)
@@ -661,7 +661,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_contract, setup, teardown),
-    cmocka_unit_test_setup_teardown(init_rejects_classic_profile, setup_classic, teardown),
+    cmocka_unit_test_setup_teardown(init_rejects_mqtt_v3_profile, setup_mqtt_v3, teardown),
     cmocka_unit_test_setup_teardown(lifecycle_is_deterministic, setup, teardown),
     cmocka_unit_test_setup_teardown(send_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(

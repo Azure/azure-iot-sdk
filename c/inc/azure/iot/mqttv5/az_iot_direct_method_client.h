@@ -177,7 +177,7 @@ extern "C"
     } _internal;
   } az_iot_mqttv5_direct_method_ready_slot;
 
-  /* IoT Hub Next / Event Grid direct methods (MQTT v5).
+  /* MQTTv5 direct methods (MQTT v5).
    *
    * Two flat topics, neither carrying a method name:
    *
@@ -237,7 +237,7 @@ extern "C"
    *
    * The connection need not be open: this records that it must resolve to the
    * MQTT v5 profile, and the topics are built when it connects and the
-   * assigned device id is known. A connection already known to be Classic -- a
+   * assigned device id is known. A connection already known to be MQTTv3 -- a
    * direct connection, or a DPS one past assignment -- is rejected here with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
    * the connection resolves, which fails it before it reports CONNECTED. The

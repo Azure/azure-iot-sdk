@@ -103,7 +103,7 @@ static az_iot_result telemetry_build(sample_state* state, az_iot_connection_prof
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
       result = az_iot_mqttv5_telemetry_client_init(&state->mqttv5, &state->connection_client);
       break;
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       result = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
       break;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
@@ -170,9 +170,9 @@ static void on_send_done(az_iot_result status, void* user_ctx)
 
 static az_iot_result send_one(sample_state* state, user_context* ctx)
 {
-  /* The same message on either generation. Classic URL-encodes every
+  /* The same message on either generation. MQTTv3 URL-encodes every
    * property into the topic ("$.ct" goes out as "%24.ct", "deg C" as
-   * "deg%20C"); AEG carries them as MQTT v5 user properties, byte for byte,
+   * "deg%20C"); MQTTv5 carries them as MQTT v5 user properties, byte for byte,
    * with $.ct mapped to the native content type. */
   static const uint8_t payload[] = "{\"temp\":23}";
   az_iot_telemetry_property props[] = {
@@ -243,7 +243,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub.
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub.
    * The connection picks the one the assigned hub needs. */
   if (az_iot_connection_client_register_mqtt_factory(
           &state.connection_client, az_iot_paho_factory_create_v3_1_1())

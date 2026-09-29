@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic direct methods (MQTT v3.1.1).
+/* MQTTv3 hub direct methods (MQTT v3.1.1).
  *
  *   Subscribe  "$iothub/methods/POST/#"
  *   Inbound    "$iothub/methods/POST/{methodName}/?$rid={rid}"
@@ -52,7 +52,7 @@
  *
  * Feature clients get no periodic tick, so this runs whenever a method message
  * arrives, which is exactly when the capacity it frees is about to be needed.
- * Nothing goes on the wire: Classic has no abandon message, and by here the
+ * Nothing goes on the wire: MQTTv3 has no abandon message, and by here the
  * service has stopped waiting for an answer anyway. */
 static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
 {
@@ -138,7 +138,7 @@ static bool request_acquire(
       out_request->_internal.owner = dm;
       out_request->_internal.slot = (uint32_t)i;
       out_request->_internal.seq = s->_internal.seq;
-      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
       *out_slot = s;
       return true;
     }
@@ -240,7 +240,7 @@ az_iot_result az_iot_mqttv3_direct_method_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -331,7 +331,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (request._internal.profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  if (request._internal.profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     AZ_IOT_LOG_ERROR("mqttv3_direct_method: this request was delivered by the mqttv5 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;

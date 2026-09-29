@@ -18,7 +18,7 @@ extern "C"
 {
 #endif
 
-/* IoT Hub Classic file upload.
+/* MQTTv3 hub file upload.
  *
  * The control plane -- request a blob SAS URI, then notify the hub of completion
  * -- is two HTTPS REST calls to the hub. This SDK ships no HTTP client by
@@ -37,10 +37,10 @@ extern "C"
  *
  * There is no mqttv5 counterpart. File upload is not carried on the MQTT v5 hub
  * for now, so rather than publish an API that cannot work there, this client
- * pins the Classic profile and a connection that resolves to MQTT v5 is refused
- * with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. When the AEG Files message
+ * pins the MQTTv3 profile and a connection that resolves to MQTT v5 is refused
+ * with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. When the MQTTv5 Files message
  * schema lands, an mqttv5 client is added beside this one -- the HTTP transport
- * hook and the buffers below stay Classic-only either way, which is why they
+ * hook and the buffers below stay MQTTv3-only either way, which is why they
  * live in this header rather than a shared one.
  */
 
@@ -169,7 +169,7 @@ extern "C"
   } az_iot_mqttv3_file_upload_client;
 
   /**
-   * @brief Initialize the IoT Hub Classic file upload client.
+   * @brief Initialize the MQTTv3 hub file upload client.
    *
    * Call after the connection has resolved its hub (for a DPS client, once it
    * reaches CONNECTED) so the hub address and device id are known. Neither is
@@ -183,7 +183,7 @@ extern "C"
    * is indistinguishable from a live one -- and would strand the generation
    * reference the live instance holds on @p conn.
    *
-   * Pins the connection to the Classic profile. A connection already known to be
+   * Pins the connection to the MQTTv3 profile. A connection already known to be
    * MQTT v5 -- a direct connection, or a DPS one past assignment -- is rejected
    * here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict
    * surfaces when the connection resolves, which fails it before it reports

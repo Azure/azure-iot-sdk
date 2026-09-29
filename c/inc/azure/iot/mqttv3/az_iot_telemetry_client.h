@@ -23,7 +23,7 @@ extern "C"
     } _internal;
   } az_iot_mqttv3_telemetry_client;
 
-  /* Records that the connection must resolve to the Classic profile; it need
+  /* Records that the connection must resolve to the MQTTv3 profile; it need
    * not be open yet. A connection already known to be MQTT_V5, or one an mqttv5
    * client is already attached to, is rejected with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. Otherwise a conflict fails the

@@ -3,10 +3,7 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
-using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
@@ -18,6 +15,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 
 namespace Microsoft.Azure.Iot.Device
 {
@@ -441,6 +439,7 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             // Nothing is going to bring this connection back, so stop anything that is waiting for it.
+            await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
             await MarkUnrecoverablyFaultedAsync(args.Exception);
         }
 

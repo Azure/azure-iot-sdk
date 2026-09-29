@@ -5,7 +5,7 @@
 
 ## Abstract
 
-This document tries bridge many needs regarding the clients for working with the new Azure IoT/AEG Hub, and yet providing an easy transition for customer from Azure IoT Hub (Classic).
+This document tries bridge many needs regarding the clients for working with the new Azure MQTTv5 hub, and yet providing an easy transition for customer from Azure MQTTv3 hub.
 
 > **Update (08/10/2026).** Everything below still holds: DPS remains a phase
 > *inside* `az_iot_connection_client`, there is no separate provisioning client,
@@ -15,17 +15,24 @@ This document tries bridge many needs regarding the clients for working with the
 > the application as `az_iot_hub_profile.connection_profile` via
 > `az_iot_connection_client_get_hub_profile()`, so the application can pick the
 > matching per-generation feature clients.
+>
+> The `HUB_VERSION` / `hub_version` numeric field below was the original
+> proposal and is **superseded**. The shipped contract is the DPS
+> `registrationState.connectionProfile` **string** -- `"classic"` (absent or
+> null resolves to it) or `"mqttV5"` -- deliberately an extensible union, which
+> a numeric version could not represent. See
+> [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h).
 
 ## Proposed Design
 
-Azure IoT Hub (Classic) and Device Provisioning Service support MQTTv3.1.1.
-The new Azure IoT/AEG Hub supports MQTTv5.
+Azure IoT Hub (MQTTv3) and Device Provisioning Service support MQTTv3.1.1.
+The new Azure MQTTv5 hub supports MQTTv5.
 
-Key new feature: the DPS will return a new flag in the provisioning result that signals which version of IoT Hub the client must connect to (Classic Hub vs IoT/AEG Hub).
+Key new feature: the DPS will return a new flag in the provisioning result that signals which version of IoT Hub the client must connect to (MQTTv3 Hub vs MQTTv5 hub).
 
 This would be the proposed design for the client to work with all these components:
 
-### Scenario 1: Provisioning to Azure IoT Hub (Classic)
+### Scenario 1: Provisioning to Azure MQTTv3 hub
 
 ```mermaid
 sequenceDiagram
@@ -40,22 +47,22 @@ sequenceDiagram
     Client->>IoT Hub: CONNECT (MQTT v3.1.1)<br/>with Issued Cert
 ```
 
-### Scenario 2: Provisioning to Azure IoT/AEG Hub
+### Scenario 2: Provisioning to Azure MQTTv5 hub
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant DPS
-    participant IoT/AEG Hub
+    participant MQTTv5 Hub
 
     Client->>DPS: REGISTER + CMS
-    DPS->>IoT/AEG Hub: PROVISION
-    IoT/AEG Hub-->>DPS: COMPLETED
-    DPS-->>Client: RESULT<br/>(IoT/AEG Hub FQDN, Device ID,<br/>HUB_VERSION=2, Issued Cert)
-    Client->>IoT/AEG Hub: CONNECT (MQTT v5)<br/>with Issued Cert
+    DPS->>MQTTv5 Hub: PROVISION
+    MQTTv5 Hub-->>DPS: COMPLETED
+    DPS-->>Client: RESULT<br/>(MQTTv5 Hub FQDN, Device ID,<br/>HUB_VERSION=2, Issued Cert)
+    Client->>MQTTv5 Hub: CONNECT (MQTT v5)<br/>with Issued Cert
 ```
 
-- The DPS service team must come with the considerations for how to route between hub_version=1 and hub_version=2. Likely at first only selected customers would have access to IoT/AEG Hub pools, so DPS must allow linking to those at the enrollment group-level.
+- The DPS service team must come with the considerations for how to route between hub_version=1 and hub_version=2. Likely at first only selected customers would have access to MQTTv5 hub pools, so DPS must allow linking to those at the enrollment group-level.
 
 - Adding a new `hub_version` (e.g.) field on the device registration result should be back-compatible with existing Azure IoT SDKs.
 
@@ -100,7 +107,7 @@ well-formed JSON **object** and nothing else, rejecting anything else with
 contract, and the alternative is emitting a body the service refuses at
 provisioning time, on a device in the field, with no clue as to why.
 
-`opts.model_id` is NOT announced here. It feeds the Classic MQTT username only,
+`opts.model_id` is NOT announced here. It feeds the MQTTv3 username only,
 and injecting it into the payload would have to merge with — or silently
 override — a `modelId` the caller's payload already carries. Put the model id in
 the payload when provisioning should see it, as above.

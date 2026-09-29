@@ -5,11 +5,15 @@ cmake_minimum_required(VERSION 3.21)
 
 project(azure-iot-sdk
     VERSION 0.0.1
-    DESCRIPTION "C99 client SDK for Azure IoT Hub (Classic + Next)"
+    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)"
     LANGUAGES C
 )
 
-set(CMAKE_C_STANDARD 99)
+# C99 is the baseline. Overridable (-DCMAKE_C_STANDARD=11|17|23) so CI can
+# check forward compatibility with later standards.
+if(NOT DEFINED CMAKE_C_STANDARD)
+    set(CMAKE_C_STANDARD 99)
+endif()
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -29,7 +33,7 @@ include(az_iot_coverage)
 
 # azure-sdk-for-c is a mandatory dependency.
 #   az::core                 — spans, JSON, log, contexts, result codes.
-#   az::iot::hub             — IoTHub-Classic MQTT topic build/parse.
+#   az::iot::hub             — MQTTv3 hub MQTT topic build/parse.
 #   az::iot::provisioning    — Azure DPS MQTT topic build/parse.
 # All three are MQTT-stack-agnostic; we feed their topic strings into our
 # adapter. Upstream is no longer published as a vcpkg port; the project's own
@@ -111,6 +115,10 @@ if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
     add_subdirectory(adapters/su/crypto_openssl)
 endif()
 
+if(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS)
+    add_subdirectory(adapters/su/crypto_mbedtls)
+endif()
+
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)
     add_subdirectory(adapters/cert_openssl)
 endif()
@@ -126,3 +134,5 @@ endif()
 
 # Declared last so it sees every instrumented target.
 az_iot_add_coverage_target()
+
+include(az_iot_install)

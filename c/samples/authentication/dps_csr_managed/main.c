@@ -10,7 +10,7 @@
  * 1. Authenticates to DPS with an X.509 bootstrap identity.
  * 2. Sends a CSR over the operational key in the register request.
  * 3. The managed provider persists the issued chain.
- * 4. Connects to the assigned Classic IoT Hub with the operational identity.
+ * 4. Connects to the assigned MQTTv3 IoT Hub with the operational identity.
  * 5. Sends telemetry over that connection and waits for send completion.
  *
  * AZ_IOT_DPS_REGISTRATION_PAYLOAD, if set, is sent alongside the CSR as the
@@ -233,7 +233,7 @@ int main(void)
       || az_iot_connection_client_set_registration_payload_callback(
              &connection_client, on_registration_payload, &ctx)
           != AZ_IOT_OK
-      /* DPS and Classic IoT Hub both use MQTT 3.1.1. */
+      /* DPS and MQTTv3 IoT Hub both use MQTT 3.1.1. */
       || az_iot_connection_client_register_mqtt_factory(
              &connection_client, az_iot_paho_factory_create_v3_1_1())
           != AZ_IOT_OK)
@@ -244,7 +244,7 @@ int main(void)
 
   if (az_iot_mqttv3_telemetry_client_init(&telemetry, &connection_client) != AZ_IOT_OK)
   {
-    fprintf(stderr, "[dps_csr] Classic hub telemetry client setup failed\n");
+    fprintf(stderr, "[dps_csr] MQTTv3 hub telemetry client setup failed\n");
     goto cleanup;
   }
   telemetry_initialized = true;

@@ -168,6 +168,37 @@ extern "C"
      */
     az_iot_result (*do_work)(void* ctx);
 
+    /**
+     * @brief REQUIRED. Stop waiting for the verdict of an accepted fetch.
+     *
+     * Called when the engine abandons @p operation on its deadline. The channel
+     * drops the outstanding request if it is that fetch, so a later request is
+     * not refused as busy and a late answer is never delivered; no verdict is
+     * reported for it. Required because verdicts carry no request identity: a
+     * late one would otherwise be taken for a newer request's.
+     *
+     * @param ctx       The channel's context.
+     * @param operation The fetch being abandoned; never AZ_IOT_SU_OP_REPORT_STATUS.
+     */
+    void (*cancel_update)(void* ctx, az_iot_su_operation operation);
+
+    /**
+     * @brief OPTIONAL. Serialize channel state that should survive a reboot
+     *        (e.g. ETags) into the engine's persisted blob. May be NULL.
+     *
+     * @param buf      Destination; opaque to the engine.
+     * @param cap      Capacity of @p buf; at most AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE.
+     * @param out_len  Bytes written; 0 when there is nothing to keep.
+     * @return AZ_IOT_OK, or an error to persist no channel state.
+     */
+    az_iot_result (*save_state)(void* ctx, uint8_t* buf, size_t cap, size_t* out_len);
+
+    /**
+     * @brief OPTIONAL. Restore what save_state() wrote, from az_iot_su_client_resume().
+     *        May be NULL. Invalid input MUST leave the channel state unchanged.
+     */
+    az_iot_result (*restore_state)(void* ctx, const uint8_t* buf, size_t len);
+
   } az_iot_su_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */
