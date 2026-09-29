@@ -44,11 +44,63 @@ Run a sample binary:
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
-GCC and Clang builds are hardened by default (stack protector, stack clash
-protection, CET, `_FORTIFY_SOURCE=2` in optimized builds, PIE, full RELRO,
-non-executable stack); see [cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake).
-`-DAZ_IOT_HARDENING=OFF` disables it. `eng/check-hardening.sh <build-dir>`
-verifies the resulting binaries.
+### Build hardening
+
+GCC and Clang builds are hardened by default (`AZ_IOT_HARDENING=ON`); see
+[cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake). MSVC builds are not
+affected.
+
+| Flag | Effect | When |
+|---|---|---|
+| `-fstack-protector-strong` | Stack canaries | Always |
+| `-fstack-clash-protection` | Stack clash probing | Always |
+| `-fcf-protection` | Control-flow enforcement (CET) | x86 only |
+| `-Wformat -Werror=format-security` | Non-literal format strings are errors | Always |
+| `-D_FORTIFY_SOURCE=2` | Checked libc calls | `Release`, `RelWithDebInfo`, `MinSizeRel` |
+| PIE, `-z relro -z now` | Position-independent code, read-only relocations | Always |
+| `-z noexecstack` | Non-executable stack | Always |
+
+Each flag is probed first and skipped if the toolchain does not support it.
+
+**Scope.** The flags apply to the SDK, its samples and tests, and the dependencies it
+fetches (azure-sdk-for-c, Paho). They are not exported: a parent project that adds this
+tree with `add_subdirectory()`/`FetchContent`, or consumes the installed package, keeps
+its own flags.
+
+**Turning it off.** It is all or nothing; individual flags cannot be removed through
+`CMAKE_C_FLAGS`, because the SDK's flags come later on the command line.
+
+- Command line: `cmake --preset linux-gcc-debug -DAZ_IOT_HARDENING=OFF`
+- Parent project, before adding the SDK:
+  ```cmake
+  set(AZ_IOT_HARDENING OFF)
+  add_subdirectory(azure-iot-sdk/c)
+  ```
+- Personal preset, in an untracked `CMakeUserPresets.json` next to `CMakePresets.json`:
+  ```json
+  {
+    "version": 6,
+    "configurePresets": [
+      {
+        "name": "linux-gcc-debug-relaxed",
+        "inherits": "linux-gcc-debug",
+        "binaryDir": "${sourceDir}/build/linux-gcc-debug-relaxed",
+        "cacheVariables": {
+          "AZ_IOT_HARDENING": "OFF",
+          "AZ_IOT_WARNINGS_AS_ERRORS": "OFF"
+        }
+      }
+    ]
+  }
+  ```
+
+`AZ_IOT_WARNINGS_AS_ERRORS=OFF` drops `-Werror`/`/WX` only; `-Werror=format-security`
+belongs to hardening. Package builds that inject their own hardening flags (e.g. Debian,
+Yocto) can set `AZ_IOT_HARDENING=OFF` to avoid duplicates.
+
+**Verifying.** `eng/check-hardening.sh <build-dir>` checks every ELF executable and
+shared library for PIE, RELRO, `BIND_NOW`, a non-executable stack and stack protector
+use. CI runs it on gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`).
 
 ## Install and consume
 
