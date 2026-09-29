@@ -1,0 +1,36 @@
+# Dependabot version updates. Security updates are enabled in the repository settings.
+#
+# Not covered here:
+# - c/deps/azure-sdk-for-c (git submodule): it must stay on the same release as the FetchContent
+#   tag in c/CMakeLists.txt (AZ_SDK_C_TAG). Dependabot would move it to the tip of the default
+#   branch.
+# - C dependencies fetched by CMake at configure time (azure-sdk-for-c, cmocka, Paho): Dependabot
+#   cannot see them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Let a new release age before it is proposed.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: [ '*' ]
+    labels: [ enhancement ]
+    commit-message:
+      prefix: '[CI]'
+
+  - package-ecosystem: nuget
+    directory: /dotnet
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      nuget:
+        patterns: [ '*' ]
+    labels: [ enhancement ]
+    commit-message:
+      prefix: '[.NET]'
