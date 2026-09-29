@@ -23,7 +23,8 @@ updates:
       prefix: '[CI]'
 
   - package-ecosystem: nuget
-    directory: /dotnet
+    # Recursive: Project.slnx does not list every project (e.g. the IotHubOnlySamples).
+    directories: [ '/dotnet/**/*' ]
     schedule:
       interval: weekly
     cooldown:
