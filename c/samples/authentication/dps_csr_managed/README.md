@@ -156,10 +156,8 @@ The chain length depends on the credential policy.
   **overwrites** it.
 - Every run registers again with a CSR over a new key. When DPS issues its
   certificate, both `AZ_IOT_OPERATIONAL_KEY` and `AZ_IOT_OPERATIONAL_CERT` are
-  replaced. If storing them fails, both are normally left as they were; in the
-  rare case the certificate was replaced but the key could not follow and the
-  old certificate could not be restored, the pair is not used and the device
-  falls back to the bootstrap identity.
+  replaced; if storing them fails, the previous pair stays in use. A run
+  stopped mid-update is completed or undone on the next start.
 
 ## Security notes
 

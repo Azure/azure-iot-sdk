@@ -269,18 +269,26 @@ static void discard_file(char* tmp)
 }
 
 /**
+ * @brief Rename @p from over @p to in one step, replacing a link at @p to
+ * rather than following it. @return true on success.
+ */
+static bool replace_file(const char* from, const char* to)
+{
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return rename(from, to) == 0;
+#endif
+}
+
+/**
  * @brief Rename staged file @p tmp over @p path in one step, replacing a link
  * at @p path rather than following it. Frees @p tmp; on failure removes it and
  * leaves @p path untouched.
  */
 static az_iot_result commit_file(char* tmp, const char* path)
 {
-#ifdef _WIN32
-  bool ok = MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  bool ok = rename(tmp, path) == 0;
-#endif
-  if (!ok)
+  if (!replace_file(tmp, path))
   {
     discard_file(tmp);
     return AZ_IOT_ERR_INTERNAL;
@@ -342,17 +350,20 @@ static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
 }
 
 /**
- * @brief Stage a copy of the file at @p path next to it (stage_bio). A missing
- * or empty file is not an error: *out_tmp is then NULL.
+ * @brief Stage a copy of the file at @p src next to @p dst (stage_bio).
+ *
+ * Only a missing file is treated as absent (*out_tmp NULL, AZ_IOT_OK); any other
+ * open or read failure is an error, so a partial copy is never staged.
  */
-static az_iot_result stage_copy(const char* path, char** out_tmp)
+static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp)
 {
   *out_tmp = NULL;
-  BIO* in = BIO_new_file(path, "rb");
+  BIO* in = BIO_new_file(src, "rb");
   if (!in)
   {
+    bool missing = ERR_GET_REASON(ERR_peek_last_error()) == BIO_R_NO_SUCH_FILE;
     ERR_clear_error();
-    return AZ_IOT_OK;
+    return missing ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
   }
   BIO* mem = BIO_new(BIO_s_mem());
   az_iot_result rc = mem ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
@@ -365,22 +376,29 @@ static az_iot_result stage_copy(const char* path, char** out_tmp)
       rc = AZ_IOT_ERR_INTERNAL;
     }
   }
+  if (rc == AZ_IOT_OK && (n < 0 || BIO_eof(in) != 1))
+  {
+    rc = AZ_IOT_ERR_INTERNAL;
+  }
   BIO_free(in);
   ERR_clear_error();
   if (rc == AZ_IOT_OK && BIO_pending(mem) > 0)
   {
-    rc = stage_bio(path, mem, out_tmp);
+    rc = stage_bio(dst, mem, out_tmp);
   }
   BIO_free(mem);
   return rc;
 }
 
+/** @brief Called per staged file; return true to stop the walk. */
+typedef bool (*staged_file_fn)(const char* staged, void* ctx);
+
 /**
- * @brief Remove temporary files stage_file() left next to @p path when a
- * process stopped between staging and committing: "<path>.aziot-XXXXXX" (6
- * alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp" on Windows. Best effort.
+ * @brief Call @p fn for each file stage_file() created next to @p path:
+ * "<path>.aziot-XXXXXX" (6 alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
+ * on Windows. Other names are never passed. Best effort.
  */
-static void remove_stale_temps(const char* path)
+static void for_each_staged(const char* path, staged_file_fn fn, void* ctx)
 {
   const char* slash = strrchr(path, '/');
 #ifdef _WIN32
@@ -409,6 +427,7 @@ static void remove_stale_temps(const char* path)
     return;
   }
   char* stale = (char*)malloc(dir_len + MAX_PATH + 1);
+  bool stop = false;
   do
   {
     const char* name = fd.cFileName;
@@ -424,9 +443,9 @@ static void remove_stale_temps(const char* path)
     {
       memcpy(stale, path, dir_len);
       memcpy(stale + dir_len, name, strlen(name) + 1);
-      (void)DeleteFileA(stale);
+      stop = fn(stale, ctx);
     }
-  } while (FindNextFileA(h, &fd));
+  } while (!stop && FindNextFileA(h, &fd));
   FindClose(h);
   free(stale);
 #else
@@ -448,7 +467,8 @@ static void remove_stale_temps(const char* path)
     d = opendir(dir);
   }
   struct dirent* e = NULL;
-  while (d && (e = readdir(d)) != NULL)
+  bool stop = false;
+  while (!stop && d && (e = readdir(d)) != NULL)
   {
     const char* name = e->d_name;
     bool match = strlen(name) == name_len && strncmp(name, base, base_len) == 0
@@ -461,7 +481,7 @@ static void remove_stale_temps(const char* path)
     {
       memcpy(stale, path, dir_len);
       memcpy(stale + dir_len, name, name_len + 1);
-      (void)unlink(stale);
+      stop = fn(stale, ctx);
     }
   }
   if (d)
@@ -472,6 +492,16 @@ static void remove_stale_temps(const char* path)
   free(stale);
 #endif
 }
+
+static bool delete_staged(const char* staged, void* ctx)
+{
+  (void)ctx;
+  (void)remove(staged);
+  return false;
+}
+
+/** @brief Remove files stage_file() left next to @p path (for_each_staged). */
+static void remove_stale_temps(const char* path) { for_each_staged(path, delete_staged, NULL); }
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
@@ -607,6 +637,83 @@ static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
   return ok;
 }
 
+/** @brief The chain file load() serves: normally the operational cert path. */
+static const char* served_cert(const az_iot_certificate_provider_managed* m)
+{
+  return m->served_cert_path ? m->served_cert_path : m->operational_cert_path;
+}
+
+/** @brief Stop serving a chain kept aside by a failed rollback, and delete it. */
+static void clear_served_cert(az_iot_certificate_provider_managed* m)
+{
+  if (m->served_cert_path)
+  {
+    (void)remove(m->served_cert_path);
+    free(m->served_cert_path);
+    m->served_cert_path = NULL;
+  }
+}
+
+typedef struct recovery_ctx
+{
+  const char* key_path;
+  const char* cert_path;
+  EVP_PKEY* key;
+  bool done;
+} recovery_ctx;
+
+/* Roll forward: a staged key certified by the chain in place was about to be
+ * renamed over the key file. */
+static bool recover_staged_key(const char* staged, void* vctx)
+{
+  recovery_ctx* c = (recovery_ctx*)vctx;
+  EVP_PKEY* k = load_key_file(staged);
+  if (k && operational_cert_is_valid(c->cert_path, k) && replace_file(staged, c->key_path))
+  {
+    EVP_PKEY_free(c->key);
+    c->key = k;
+    c->done = true;
+    return true;
+  }
+  EVP_PKEY_free(k);
+  return false;
+}
+
+/* Roll back: a staged chain certifying the key in place is the previous chain. */
+static bool recover_staged_chain(const char* staged, void* vctx)
+{
+  recovery_ctx* c = (recovery_ctx*)vctx;
+  if (c->key && operational_cert_is_valid(staged, c->key) && replace_file(staged, c->cert_path))
+  {
+    c->done = true;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * @brief Finish or undo a key rotation a stopped process left half-done, so the
+ * key and chain files match again.
+ *
+ * Only runs when the chain in place does not certify @p *key. Prefers the new
+ * pair (a staged key the chain certifies); otherwise restores a staged previous
+ * chain that certifies the key in place. May replace *key.
+ */
+static void recover_rotation(const char* key_path, const char* cert_path, EVP_PKEY** key)
+{
+  if (*key && operational_cert_is_valid(cert_path, *key))
+  {
+    return;
+  }
+  recovery_ctx c = { .key_path = key_path, .cert_path = cert_path, .key = *key, .done = false };
+  for_each_staged(key_path, recover_staged_key, &c);
+  if (!c.done)
+  {
+    for_each_staged(cert_path, recover_staged_chain, &c);
+  }
+  *key = c.key;
+}
+
 /* --------------------------------------------------------------------------
  * vtable hooks
  * ------------------------------------------------------------------------ */
@@ -635,7 +742,7 @@ static az_iot_result managed_load(
     {
       return AZ_IOT_ERR_NOT_FOUND;
     }
-    out->client_cert_path = m->operational_cert_path;
+    out->client_cert_path = served_cert(m);
     out->client_key_path = m->operational_key_path;
   }
   else
@@ -938,11 +1045,12 @@ static az_iot_result managed_store(
   }
   else if (rc == AZ_IOT_OK)
   {
-    /* Stage the new key, the new chain and a copy of the current chain (public
-     * data: no private key is ever copied). Rename the chain first, then the
-     * key. If the key rename fails, put the previous chain back, or remove the
-     * new one when there was none. If that fails too, stop serving the
-     * operational identity: the chain on disk no longer matches the key. */
+    /* Stage the new key, the new chain and a copy of the chain currently in
+     * use (public data: no private key is ever copied). Rename the chain
+     * first, then the key. If the key rename fails, put the previous chain
+     * back, or remove the new one when there was none. If that fails too,
+     * keep serving the previous chain from its staged copy, so the previous
+     * pair stays usable; init() puts it back on the next start. */
     char* key_tmp = NULL;
     char* cert_tmp = NULL;
     char* backup_tmp = NULL;
@@ -953,7 +1061,7 @@ static az_iot_result managed_store(
     }
     if (rc == AZ_IOT_OK)
     {
-      rc = stage_copy(m->operational_cert_path, &backup_tmp);
+      rc = stage_copy(served_cert(m), m->operational_cert_path, &backup_tmp);
     }
     if (rc == AZ_IOT_OK)
     {
@@ -966,12 +1074,21 @@ static az_iot_result managed_store(
       key_tmp = NULL;
       if (rc != AZ_IOT_OK)
       {
-        bool restored = backup_tmp ? commit_file(backup_tmp, m->operational_cert_path) == AZ_IOT_OK
-                                   : remove(m->operational_cert_path) == 0;
-        backup_tmp = NULL;
-        if (!restored)
+        if (backup_tmp && replace_file(backup_tmp, m->operational_cert_path))
         {
-          m->has_operational = false;
+          free(backup_tmp);
+          backup_tmp = NULL;
+          clear_served_cert(m);
+        }
+        else if (backup_tmp)
+        {
+          clear_served_cert(m);
+          m->served_cert_path = backup_tmp;
+          backup_tmp = NULL;
+        }
+        else if (remove(m->operational_cert_path) != 0)
+        {
+          m->has_operational = false; /* there was no previous chain to keep */
         }
       }
     }
@@ -989,6 +1106,7 @@ static az_iot_result managed_store(
 
   if (rc == AZ_IOT_OK)
   {
+    clear_served_cert(m);
     m->has_operational = true;
   }
   return rc;
@@ -1024,6 +1142,7 @@ void az_iot_certificate_provider_managed_deinit(az_iot_certificate_provider_mana
     EVP_PKEY_free((EVP_PKEY*)provider->operational_key);
   }
   EVP_PKEY_free((EVP_PKEY*)provider->pending_key);
+  free(provider->served_cert_path);
   free(provider->bootstrap_cert_path);
   free(provider->bootstrap_key_path);
   free(provider->trusted_ca_path);
@@ -1072,12 +1191,13 @@ az_iot_result az_iot_certificate_provider_managed_init(
     }
   }
 
-  /* Files a stopped process left staged next to the key and chain. */
+  /* Operational key: load if present on disk, else generate and persist. A
+   * rotation a stopped process left half-done is finished or undone first;
+   * then the files it staged are deleted. */
+  EVP_PKEY* key = load_key_file(provider->operational_key_path);
+  recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key);
   remove_stale_temps(provider->operational_key_path);
   remove_stale_temps(provider->operational_cert_path);
-
-  /* Operational key: load if present on disk, else generate and persist. */
-  EVP_PKEY* key = load_key_file(provider->operational_key_path);
   if (!key)
   {
     key = generate_key(provider->key_type);

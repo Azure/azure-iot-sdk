@@ -16,19 +16,17 @@
  *     process restarts. A store is refused unless every certificate in the
  *     chain parses and the leaf certifies the pending CSR key (which then
  *     replaces the operational key file) or the current operational key. A
- *     failed store keeps the previous key and certificate, except when the new
- *     chain is already in place and the key rename then fails and the previous
- *     chain cannot be put back, or the process stops between those renames:
- *     the operational identity is then no longer served (load() reports
- *     NOT_FOUND, also after a restart) rather than a mismatched pair. A
+ *     failed store keeps the previous key and certificate usable. If the
+ *     process stops between the chain and key renames, init() finishes or
+ *     undoes the rotation from the files it staged, so the pair matches. A
  *     pending key does not survive deinit or a restart: a chain for it
  *     arriving afterwards is refused; request a new CSR.
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
  * ("<path>.aziot-...") next to the destination, then renamed over it. init()
- * deletes such temporary files a stopped process left behind. The private key
- * is stored unencrypted: protect the directory accordingly.
+ * uses such files a stopped process left behind to recover, then deletes them.
+ * The private key is stored unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
  * with a TPM/HSM/secure element should implement their own provider with a
@@ -86,6 +84,7 @@ extern "C"
     char* operational_cert_path;
     void* operational_key; /* EVP_PKEY* (opaque) */
     void* pending_key; /* EVP_PKEY* of the last CSR, awaiting its chain (opaque) */
+    char* served_cert_path; /* previous chain kept aside after a failed rollback; NULL normally */
     int key_type;
     bool has_operational; /* issued cert present on disk */
     bool loaded;

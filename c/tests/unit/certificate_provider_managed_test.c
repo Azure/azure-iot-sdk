@@ -1077,10 +1077,107 @@ static void managed_writes_replace_a_link_instead_of_following_it(void** state)
   remove_test_files();
 }
 
-/* A chain that cannot be renamed into place changes nothing: the chain is
- * renamed first, so the key was never touched. A directory at the chain path
- * makes that rename fail. */
-static void managed_a_failed_chain_rename_changes_nothing(void** state)
+/* A previous chain that exists but cannot be read cannot be backed up, so a
+ * rotation is refused rather than committed without a way back. Permissions do
+ * not restrict root, so the test is skipped there. */
+static void managed_an_unreadable_previous_chain_blocks_rotation(void** state)
+{
+  (void)state;
+  if (geteuid() == 0)
+  {
+    skip();
+  }
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(old_key);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  assert_int_equal(0, chmod(OP_CERT, 0));
+
+  char* renewed = make_cert_base64(csr_key, 2);
+  assert_int_equal(AZ_IOT_ERR_INTERNAL, store_one(&prov, renewed));
+  assert_true(key_file_is(OP_KEY, old_key));
+  assert_non_null(prov.pending_key);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  assert_int_equal(0, chmod(OP_CERT, 0600));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, first);
+
+  free(on_disk);
+  free(renewed);
+  free(first);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(old_key);
+  remove_test_files();
+}
+
+#endif
+
+static void make_dir(const char* path)
+{
+#if defined(_WIN32)
+  assert_true(CreateDirectoryA(path, NULL) != 0);
+#else
+  assert_int_equal(0, mkdir(path, 0700));
+#endif
+}
+
+static void remove_dir(const char* path)
+{
+#if defined(_WIN32)
+  assert_true(RemoveDirectoryA(path) != 0);
+#else
+  assert_int_equal(0, rmdir(path));
+#endif
+}
+
+/* Names the provider gives staged files next to a path, and look-alikes it
+ * must leave alone. */
+#if defined(_WIN32)
+#define STAGED_1(p) p ".aziot-0123abcd.tmp"
+#define STAGED_2(p) p ".aziot-DEADBEEF.tmp"
+#define NOT_STAGED_1(p) p ".aziot-0123abc.tmp"
+#define NOT_STAGED_2(p) p ".aziot-0123abcg.tmp"
+#else
+#define STAGED_1(p) p ".aziot-abc123"
+#define STAGED_2(p) p ".aziot-ZZZZZZ"
+#define NOT_STAGED_1(p) p ".aziot-abc12"
+#define NOT_STAGED_2(p) p ".aziot-abc1234"
+#endif
+
+/* Write @p cert_b64 (base64 DER) to @p path as a PEM chain of one. */
+static void write_chain_file(const char* path, const char* cert_b64)
+{
+  FILE* f = fopen(path, "wb");
+  assert_non_null(f);
+  fputs("-----BEGIN CERTIFICATE-----\n", f);
+  for (size_t off = 0, n = strlen(cert_b64); off < n; off += 64)
+  {
+    size_t chunk = n - off < 64 ? n - off : 64;
+    assert_int_equal((int)chunk, (int)fwrite(cert_b64 + off, 1, chunk, f));
+    fputs("\n", f);
+  }
+  fputs("-----END CERTIFICATE-----\n", f);
+  assert_int_equal(0, fclose(f));
+}
+
+static void write_key_pem(const char* path, EVP_PKEY* key)
+{
+  BIO* b = BIO_new_file(path, "wb");
+  assert_non_null(b);
+  assert_int_equal(1, PEM_write_bio_PrivateKey(b, key, NULL, NULL, 0, NULL, NULL));
+  BIO_free(b);
+}
+
+/* A chain that cannot be replaced changes nothing, and the key is never
+ * touched. A directory at the chain path makes it unreplaceable. */
+static void managed_a_chain_that_cannot_be_replaced_changes_nothing(void** state)
 {
   (void)state;
   remove_test_files();
@@ -1090,7 +1187,7 @@ static void managed_a_failed_chain_rename_changes_nothing(void** state)
   EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
   assert_non_null(old_key);
   EVP_PKEY* csr_key = request_csr_key(&prov);
-  assert_int_equal(0, mkdir(OP_CERT, 0700));
+  make_dir(OP_CERT);
 
   char* cert = make_cert_base64(csr_key, 1);
   assert_int_equal(AZ_IOT_ERR_INTERNAL, store_one(&prov, cert));
@@ -1100,7 +1197,7 @@ static void managed_a_failed_chain_rename_changes_nothing(void** state)
   assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
-  assert_int_equal(0, rmdir(OP_CERT));
+  remove_dir(OP_CERT);
   free(cert);
   EVP_PKEY_free(csr_key);
   EVP_PKEY_free(old_key);
@@ -1123,7 +1220,7 @@ static void managed_a_failed_key_rename_restores_the_chain(void** state)
   assert_non_null(old_key);
   EVP_PKEY* csr_key = request_csr_key(&prov);
   assert_int_equal(0, remove(OP_KEY));
-  assert_int_equal(0, mkdir(OP_KEY, 0700));
+  make_dir(OP_KEY);
 
   char* renewed = make_cert_base64(csr_key, 2);
   assert_int_equal(AZ_IOT_ERR_INTERNAL, store_one(&prov, renewed));
@@ -1135,7 +1232,7 @@ static void managed_a_failed_key_rename_restores_the_chain(void** state)
   assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
-  assert_int_equal(0, rmdir(OP_KEY));
+  remove_dir(OP_KEY);
   free(on_disk);
   free(renewed);
   free(first);
@@ -1155,7 +1252,7 @@ static void managed_a_failed_key_rename_removes_a_first_chain(void** state)
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
   EVP_PKEY* csr_key = request_csr_key(&prov);
   assert_int_equal(0, remove(OP_KEY));
-  assert_int_equal(0, mkdir(OP_KEY, 0700));
+  make_dir(OP_KEY);
 
   char* cert = make_cert_base64(csr_key, 1);
   assert_int_equal(AZ_IOT_ERR_INTERNAL, store_one(&prov, cert));
@@ -1164,7 +1261,7 @@ static void managed_a_failed_key_rename_removes_a_first_chain(void** state)
   assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
-  assert_int_equal(0, rmdir(OP_KEY));
+  remove_dir(OP_KEY);
   free(cert);
   EVP_PKEY_free(csr_key);
   remove_test_files();
@@ -1183,10 +1280,9 @@ static void managed_init_removes_only_its_own_stale_temp_files(void** state)
 {
   (void)state;
   remove_test_files();
-  static const char* const stale[] = { OP_KEY ".aziot-abc123", OP_CERT ".aziot-ZZZZZZ" };
-  static const char* const kept[] = {
-    OP_KEY ".backup", OP_KEY ".aziot-abc12", OP_CERT ".aziot-abc1234", "x" OP_KEY ".aziot-abc123"
-  };
+  static const char* const stale[] = { STAGED_1(OP_KEY), STAGED_2(OP_CERT) };
+  static const char* const kept[]
+      = { OP_KEY ".backup", NOT_STAGED_1(OP_KEY), NOT_STAGED_2(OP_CERT), STAGED_1("x" OP_KEY) };
   for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); ++i)
   {
     touch(stale[i]);
@@ -1212,7 +1308,82 @@ static void managed_init_removes_only_its_own_stale_temp_files(void** state)
   }
   remove_test_files();
 }
-#endif
+
+/* A process stopped after renaming the new chain but before the key: init()
+ * renames the staged new key into place, so the new pair is used. */
+static void managed_init_finishes_a_rotation_stopped_after_the_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  EVP_PKEY* new_key = EVP_PKEY_dup((EVP_PKEY*)prov.pending_key);
+  assert_non_null(new_key);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* renewed = make_cert_base64(csr_key, 2);
+  write_chain_file(OP_CERT, renewed);
+  write_key_pem(STAGED_1(OP_KEY), new_key);
+  write_chain_file(STAGED_2(OP_CERT), first);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov2.operational_key, new_key));
+  assert_true(key_file_is(OP_KEY, new_key));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, renewed);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(renewed);
+  free(first);
+  EVP_PKEY_free(new_key);
+  EVP_PKEY_free(csr_key);
+  remove_test_files();
+}
+
+/* Same, but the staged new key is gone (it is never kept after a failed store):
+ * init() puts the staged previous chain back, so the previous pair is used. */
+static void managed_init_undoes_a_rotation_it_cannot_finish(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(old_key);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* renewed = make_cert_base64(csr_key, 2);
+  write_chain_file(OP_CERT, renewed);
+  write_chain_file(STAGED_1(OP_CERT), first);
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov2.operational_key, old_key));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, first);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(renewed);
+  free(first);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(old_key);
+  remove_test_files();
+}
 
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
@@ -1261,11 +1432,14 @@ int main(void)
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
-    cmocka_unit_test(managed_a_failed_chain_rename_changes_nothing),
+    cmocka_unit_test(managed_an_unreadable_previous_chain_blocks_rotation),
+#endif
+    cmocka_unit_test(managed_a_chain_that_cannot_be_replaced_changes_nothing),
     cmocka_unit_test(managed_a_failed_key_rename_restores_the_chain),
     cmocka_unit_test(managed_a_failed_key_rename_removes_a_first_chain),
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
-#endif
+    cmocka_unit_test(managed_init_finishes_a_rotation_stopped_after_the_chain),
+    cmocka_unit_test(managed_init_undoes_a_rotation_it_cannot_finish),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
