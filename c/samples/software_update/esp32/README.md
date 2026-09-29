@@ -171,8 +171,9 @@ I (...) su_esp32: checking for updates every 60 s
 ## Deploy an update
 
 1. Raise `SU_UPDATE_VERSION` in [`main/su_version.h`](main/su_version.h).
-2. `idf.py build`, producing `build/su_esp32.bin`.
-3. Import `build/su_esp32.bin` into Device Update as update
+2. `idf.py build`, producing `build/su_esp32.bin` (`build-secure/su_esp32.bin`
+   with the [security profile](#production-security-profile-optional)).
+3. Import that `.bin` into Device Update as update
    `SU_UPDATE_PROVIDER` / `SU_UPDATE_NAME` / `SU_UPDATE_VERSION`, with compatibility
    `manufacturer=Espressif`, `model=ESP32-WROOM`, and deploy it to the device.
 4. Do not flash this image. The device finds the deployment at its next check
@@ -244,6 +245,9 @@ revision. For production, layer these opt-in overlays on top of
    Erase the flash before the first flash of a profile: the partition table moves,
    and leftover data in the new NVS range can make `nvs_flash_init()` fail.
 
+   Replace `esp32` with your target (`esp32s3`, `esp32c3`, `esp32c6`), so its
+   `sdkconfig.secure.<target>` overlay is applied.
+
    ```sh
    SECURE=(-B build-secure -D SDKCONFIG=sdkconfig.production \
            -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse")
@@ -275,8 +279,9 @@ revision. For production, layer these opt-in overlays on top of
    The rehearsal writes eFuse changes to the `efuse_em` partition instead of the
    chip, and does not protect flash contents. Never ship it.
 
-5. Build update images with the same arguments and signing key. Unsigned or
-   wrongly signed images fail the OTA and boot checks.
+5. Build update images with the same arguments and signing key, and import
+   `build-secure/su_esp32.bin`, not `build/su_esp32.bin`. Unsigned or wrongly
+   signed images fail the OTA and boot checks.
 
 With Secure Boot v1, `idf.py flash` does not flash the bootloader: run
 `idf.py bootloader`, then the `esptool write-flash` command it prints, once. It is
