@@ -1,0 +1,179 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Builds the Yocto layer in c/platforms/yocto (azure-iot-sdk and its pkg-config
+# consumer) with bitbake for qemux86-64 on scarthgap, on every trigger.
+#
+# Shared state (SSTATE_DIR) is cached per poky commit. Without it bitbake builds
+# the cross toolchain first (about 45 minutes); with it, only this layer's
+# recipes build. Every run restores the newest entry it can see (its own
+# branch or pull request, then main) and saves a new one when it built
+# anything besides this layer's recipes, also when cancelled or timed out, so
+# the next run continues from there. Pull requests see main's entries.
+# The schedule keeps main's entry from expiring (7 days unused).
+#
+# A separate workflow from ci-c so ci-c's checks keep their duration.
+# The same `changes` pattern as ci-c: no workflow-level `paths:`, so the job
+# always reports a check run, skipped when nothing relevant changed.
+
+name: ci-c-yocto
+
+on:
+  push:
+    branches: [ main, 'dev/c' ]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1,4'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: detect changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      yocto: ${{ steps.filter.outputs.yocto }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Only what the recipe builds: tests other than tests/install,
+          # samples and docs are not part of it.
+          filters: |
+            yocto:
+              - 'c/CMakeLists.txt'
+              - 'c/cmake/**'
+              - 'c/inc/**'
+              - 'c/src/**'
+              - 'c/adapters/**'
+              - 'c/tests/install/**'
+              - 'c/platforms/yocto/**'
+              - 'LICENSE'
+              - '.github/workflows/ci-c-yocto.yml'
+
+  bitbake:
+    name: yocto / scarthgap / qemux86-64
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.yocto == 'true') }}
+    # Pinned: scarthgap's supported hosts include Ubuntu 24.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # bitbake clones this checkout; SRCREV must be reachable in it.
+          fetch-depth: 0
+
+      - name: Set paths
+        run: |
+          poky="$(sed -n '/^  poky:/,/^ *commit:/s/^ *commit: *//p' c/platforms/yocto/kas.yml)"
+          [[ "$poky" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no poky commit in kas.yml"; exit 1; }
+          {
+            echo "KAS_WORK_DIR=$RUNNER_TEMP/yocto"
+            echo "DL_DIR=$RUNNER_TEMP/yocto-downloads"
+            echo "SSTATE_DIR=$RUNNER_TEMP/yocto-sstate"
+            echo "SSTATE_CACHE_PREFIX=yocto-sstate-scarthgap-qemux86-64-$poky-"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore sstate
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/yocto-sstate
+          key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ env.SSTATE_CACHE_PREFIX }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gawk wget git diffstat unzip texinfo gcc build-essential \
+                                  chrpath socat cpio python3 python3-pip python3-pexpect \
+                                  xz-utils debianutils iputils-ping python3-git python3-jinja2 \
+                                  python3-subunit python3-websockets zstd lz4 file locales libacl1
+          sudo locale-gen en_US.UTF-8
+          # bitbake runs tasks in user namespaces, which AppArmor restricts on Ubuntu 24.04.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          pipx install kas==5.5
+
+      - name: Build this checkout, not the pinned SRCREV
+        run: |
+          mkdir -p "$KAS_WORK_DIR/build/conf" "$SSTATE_DIR"
+          cat > "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf" <<EOT
+          AZ_IOT_SDK_GIT_URI = "git://$GITHUB_WORKSPACE;protocol=file;nobranch=1"
+          SRCREV_sdk = "$(git rev-parse HEAD)"
+          EOT
+          cat "$KAS_WORK_DIR/build/conf/azure-iot-sdk-local.conf"
+          # This layer's recipes always build: restored from sstate, they would
+          # leave no packages-split or image directory for the checks below.
+          find "$SSTATE_DIR" -type f -name 'sstate:azure-iot-sdk*' -delete
+          # Objects of other recipes, to tell whether this run adds any.
+          find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l > "$RUNNER_TEMP/sstate-before"
+          echo "sstate objects restored: $(cat "$RUNNER_TEMP/sstate-before")"
+
+      - name: bitbake
+        id: bitbake
+        # Leaves time to save what was built.
+        timeout-minutes: 100
+        run: kas build c/platforms/yocto/kas.yml
+
+      - name: Check the packages
+        run: |
+          work=("$KAS_WORK_DIR"/build/tmp/work/*/azure-iot-sdk/*/packages-split)
+          test "${#work[@]}" -eq 1 && test -d "${work[0]}"
+          pkgs="${work[0]}"
+          find "$pkgs" -type f | sed "s|^$pkgs/||" | sort
+          test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure/iot/az_iot.h"
+          test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure-sdk-for-c/azure/core/az_span.h"
+          test -f "$pkgs/azure-iot-sdk-dev/usr/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
+          for c in core mqttv3 mqttv5 adapter_paho su_crypto_openssl certificate_provider_managed; do
+            test -f "$pkgs/azure-iot-sdk-dev/usr/lib/pkgconfig/azure-iot-sdk-$c.pc"
+          done
+          test -f "$pkgs/azure-iot-sdk-staticdev/usr/lib/libaz_iot_core.a"
+          test -f "$pkgs/azure-iot-sdk-staticdev/usr/lib/libpaho-mqtt3as.a"
+
+      - name: Run the pkg-config consumer
+        # qemux86-64 binaries run on the x86-64 runner with the recipe
+        # sysroot's own loader and libraries.
+        run: |
+          work=("$KAS_WORK_DIR"/build/tmp/work/*/azure-iot-sdk-pkgconfig-test/*)
+          test "${#work[@]}" -eq 1 && test -d "${work[0]}"
+          sysroot="${work[0]}/recipe-sysroot"
+          bins=("${work[0]}"/image/usr/bin/pkg_config_test_*)
+          # One per default component, plus the combined link.
+          test "${#bins[@]}" -eq 7
+          for b in "${bins[@]}"; do
+            echo "running ${b##*/}"
+            "$sysroot/lib/ld-linux-x86-64.so.2" --library-path "$sysroot/lib:$sysroot/usr/lib" "$b"
+          done
+
+      - name: New sstate to save?
+        id: sstate
+        if: always() && steps.bitbake.outcome != 'skipped'
+        run: |
+          before="$(cat "$RUNNER_TEMP/sstate-before")"
+          find "$SSTATE_DIR" -type f -name 'sstate:azure-iot-sdk*' -delete
+          after="$(find "$SSTATE_DIR" -type f ! -name 'sstate:azure-iot-sdk*' | wc -l)"
+          echo "sstate objects of other recipes: $before restored, $after now"
+          echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Also after a failure, cancellation or timeout: the next run continues.
+      - name: Save sstate
+        if: always() && steps.sstate.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/yocto-sstate
+          key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
