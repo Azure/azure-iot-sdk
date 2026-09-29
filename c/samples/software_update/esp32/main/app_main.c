@@ -187,8 +187,11 @@ static az_iot_result app_request_check(az_iot_su_client* su, bool registered, ui
 
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
+/* persist_state_fn is failing: the checkpoint a reboot needs is not stored. */
+static bool g_persist_failing;
 
-/** @brief Logs an abandoned operation; the poll loop asks again later. */
+/** @brief Logs abandoned operations (the poll loop asks again later) and tracks persist failures.
+ */
 static void on_su_event(const az_iot_su_event* event, void* ctx)
 {
   (void)ctx;
@@ -213,6 +216,15 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
     {
       g_retry_after_ms = event->service_error.retry_after_ms;
     }
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED)
+  {
+    ESP_LOGE(TAG, "NVS write failing; update reboot deferred");
+    g_persist_failing = true;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_RECOVERED)
+  {
+    g_persist_failing = false;
   }
 }
 
@@ -456,10 +468,10 @@ void app_main(void)
       }
     }
 
-    /* install_fn asked for a reboot to boot the freshly flashed image. The
-     * Software updates core has already persisted the workflow blob to NVS, so resume()
-     * picks it up after the restart. */
-    if (ota.reboot_pending)
+    /* install_fn asked for a reboot to boot the freshly flashed image. Wait
+     * while the NVS write is failing: resume() needs that record. If the client
+     * gives up it rolls the update back. */
+    if (ota.reboot_pending && !g_persist_failing)
     {
       ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
       vTaskDelay(pdMS_TO_TICKS(500));

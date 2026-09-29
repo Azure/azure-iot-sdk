@@ -768,10 +768,89 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&SU_I(client).crypto, file, su_read_file_adapter, &a);
 }
 
-/** @brief Minimum spacing, in milliseconds, of retries of a failed checkpoint write. */
-#define AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS 1000u
+/** @brief Delay, in milliseconds, before the first retry of a failed persist_state_fn write. */
+#define AZ_IOT_SU_PERSIST_RETRY_BASE_MS 1000u
+/** @brief Upper bound, in milliseconds, of the doubling retry delay. */
+#define AZ_IOT_SU_PERSIST_RETRY_MAX_MS 60000u
 
 static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
+static void dispatch_event(az_iot_su_client* client, const az_iot_su_event* event);
+
+/** @brief Whether AZ_IOT_SU_PERSIST_MAX_ATTEMPTS consecutive writes have failed. */
+static bool persist_gave_up(const az_iot_su_client* client)
+{
+  return SU_I(client).persist_failures >= (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS;
+}
+
+/** @brief Whether a failed write may be retried now. */
+static bool persist_retry_due(const az_iot_su_client* client)
+{
+  return !persist_gave_up(client) && az_iot_time_mono_ms() >= SU_I(client).persist_retry_ms;
+}
+
+/** @brief Raise AZ_IOT_SU_EVENT_PERSIST_FAILED or AZ_IOT_SU_EVENT_PERSIST_RECOVERED. */
+static void raise_persist(az_iot_su_client* client, bool failed, uint32_t attempts)
+{
+  az_iot_su_event event = {
+    ._internal_size = sizeof(az_iot_su_event),
+    .kind = failed ? AZ_IOT_SU_EVENT_PERSIST_FAILED : AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .operation = AZ_IOT_SU_OP_REPORT_STATUS,
+    .reason = failed ? AZ_IOT_ERR_INTERNAL : AZ_IOT_OK,
+    .service_error = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 },
+    .persist_attempts = attempts,
+    .persist_retrying = failed && attempts < (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS,
+  };
+  dispatch_event(client, &event);
+}
+
+/**
+ * @brief Call persist_state_fn and account for the result.
+ *
+ * A failure arms the next retry (doubling from AZ_IOT_SU_PERSIST_RETRY_BASE_MS,
+ * capped at AZ_IOT_SU_PERSIST_RETRY_MAX_MS) and raises PERSIST_FAILED on the
+ * first failure and on reaching AZ_IOT_SU_PERSIST_MAX_ATTEMPTS. A success
+ * after failures raises PERSIST_RECOVERED and resets the count.
+ *
+ * @return true when the hook succeeded.
+ */
+static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t len)
+{
+  az_iot_su_platform_hooks* h = &SU_I(client).hooks;
+  if (h->persist_state_fn(blob, len, h->user_ctx) == 0)
+  {
+    uint32_t failed = SU_I(client).persist_failures;
+    SU_I(client).persist_failures = 0;
+    if (failed > 0)
+    {
+      raise_persist(client, false, failed);
+    }
+    return true;
+  }
+
+  uint32_t n = SU_I(client).persist_failures;
+  if (n < UINT32_MAX)
+  {
+    SU_I(client).persist_failures = ++n;
+  }
+  uint32_t delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
+  if (n <= 16u)
+  {
+    delay = AZ_IOT_SU_PERSIST_RETRY_BASE_MS << (n - 1u);
+    if (delay > AZ_IOT_SU_PERSIST_RETRY_MAX_MS)
+    {
+      delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
+    }
+  }
+  SU_I(client).persist_retry_ms = az_iot_time_mono_ms() + delay;
+  AZ_IOT_LOG_ERRORF("su: persist_state_fn failed (%u consecutive)", (unsigned)n);
+  if (n == 1u || n == (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS)
+  {
+    raise_persist(client, true, n);
+  }
+  return false;
+}
 
 /**
  * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
@@ -779,8 +858,8 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
  * Both shipped loaders re-read the same record on every boot, so without this
  * a finished workflow is reloaded, re-applied and re-reported. Only issued when
  * a record is believed stored, to spare flash endurance; a failed write keeps
- * it believed stored and is retried from do_work() while Idle, at most every
- * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS, or at the next terminal transition.
+ * it believed stored and is retried from do_work() (see persist_write()), or
+ * at the next terminal transition.
  */
 static void clear_checkpoint(az_iot_su_client* client)
 {
@@ -789,17 +868,11 @@ static void clear_checkpoint(az_iot_su_client* client)
   {
     return;
   }
-  if (h->persist_state_fn(SU_I(client).persist_scratch, 0, h->user_ctx) == 0)
+  if (persist_write(client, SU_I(client).persist_scratch, 0))
   {
     SU_I(client).checkpoint_stored = false;
     SU_I(client).checkpoint_terminal = false;
     SU_I(client).checkpoint_superseded = false;
-  }
-  else
-  {
-    SU_I(client).checkpoint_clear_retry_ms
-        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
-    AZ_IOT_LOG_ERROR("su: failed to clear the persisted checkpoint; will retry");
   }
 }
 
@@ -2153,11 +2226,8 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal)
   p += 4u + (uint32_t)ch_len;
 
   wr_u32le(&blob[p], su_crc32(blob, p));
-  if (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) != 0)
+  if (!persist_write(client, blob, (size_t)p + 4u))
   {
-    SU_I(client).checkpoint_clear_retry_ms
-        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
-    AZ_IOT_LOG_ERROR("su: failed to persist the checkpoint; will retry");
     return AZ_IOT_ERR_INTERNAL;
   }
   SU_I(client).checkpoint_stored = true;
@@ -2559,6 +2629,25 @@ static void fail_workflow(az_iot_su_client* client)
   sync_checkpoint(client);
 }
 
+static void begin_rollback(az_iot_su_client* client, uint32_t restore_count);
+
+/**
+ * @brief Fail the workflow held at a reboot boundary whose checkpoint cannot be written.
+ *
+ * Rolls back every step that was backed up: the current one too when its
+ * install already ran (INSTALL_COMPLETE / APPLY_STARTED).
+ */
+static void fail_on_persist(az_iot_su_client* client)
+{
+  uint32_t step = SU_I(client).current_step;
+  bool installed = SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
+      || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED;
+  SU_I(client).checkpoint_pending = false;
+  result_step_failure(client, step, AZ_IOT_SU_FACILITY_PERSIST, 0);
+  begin_rollback(client, installed ? step + 1u : step);
+  (void)az_iot_su__report_state(client);
+}
+
 static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
 {
   /* Since backup/restore are non-blocking in practice (simulated or fast OTA
@@ -2604,26 +2693,34 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
    * resume the finished workflow or lose its report, so retry it rather than
    * wait for the next workflow. */
   if (SU_I(client).state == AZ_IOT_SU_STATE_IDLE && checkpoint_out_of_sync(client)
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
+      && persist_retry_due(client))
   {
     sync_checkpoint(client);
   }
 
   /* Retry failed checkpoint writes ahead of anything that needs the network,
-   * so storage recovery does not wait on connectivity. Every retry shares the
-   * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS spacing to spare flash endurance. */
-  if (SU_I(client).checkpoint_superseded
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
+   * so storage recovery does not wait on connectivity. Retries back off (see
+   * persist_write()) to spare flash endurance. */
+  if (SU_I(client).checkpoint_superseded && persist_retry_due(client))
   {
     clear_checkpoint(client);
   }
   bool running
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
-  if (SU_I(client).checkpoint_pending && running
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms
+  if (SU_I(client).checkpoint_pending && running && persist_retry_due(client)
       && su_persist(client, false) != AZ_IOT_ERR_INTERNAL)
   {
     SU_I(client).checkpoint_pending = false;
+  }
+  if (persist_gave_up(client))
+  {
+    /* The new workflow proceeds; a reboot before it ends may resume the old
+     * record, which the new workflowId supersedes again. */
+    SU_I(client).checkpoint_superseded = false;
+    if (SU_I(client).checkpoint_pending && running)
+    {
+      fail_on_persist(client);
+    }
   }
 
   /* A pending device-properties / startup report takes priority. */

@@ -126,7 +126,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 9 | Core update workflow | ✅ | — | — | — | — | done | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
 | 10 | Core update workflow | ✅ | — | — | — | — | done | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
 | 11 | Core update workflow | ✅ | — | — | — | — | done | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in software updates; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
-| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_su_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
+| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_su_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED`, `OPERATION_ABANDONED` and `PERSIST_FAILED` / `PERSIST_RECOVERED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
 | 13 | Core update workflow | ✅ | — | — | — | — | done | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_SU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
 | 15 | Download and integrity | ✅ | — | — | — | — | done | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
 | 16 | Download and integrity | ✅ | — | — | — | — | done | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
@@ -364,13 +364,14 @@ stateDiagram-v2
   Software updates input sets the flag and no local cancel API exists yet; a superseding `workflowId`
   restarts the workflow instead. Core never force-interrupts a hook.
 - **Application notification (✅)** — `az_iot_su_client_add_observer()` /
-  `remove_observer()`, matching the connection client's registry. Two event kinds:
+  `remove_observer()`, matching the connection client's registry. Event kinds:
   `WORKFLOW_STATE_CHANGED` carries the `az_iot_su_state`, replacing a polled
   `get_state()`; `OPERATION_ABANDONED` carries the operation and the reason, and is the
   only way an application learns the client has stopped trying. Both fetch entry points
   take a `timeout_ms` that bounds the wait, so a request that can never be served ends in
   `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT` instead of being retried for the life of
-  the client.
+  the client. `PERSIST_FAILED` / `PERSIST_RECOVERED` report `persist_state_fn` failures;
+  retries back off and stop after `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`.
 
 ### Remaining device-properties follow-ups
 

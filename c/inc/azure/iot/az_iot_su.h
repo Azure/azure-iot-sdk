@@ -66,6 +66,7 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_INSTALL 0x5u /* install_fn failure */
 #define AZ_IOT_SU_FACILITY_APPLY 0x6u /* apply_fn failure */
 #define AZ_IOT_SU_FACILITY_RESTORE 0x7u /* restore_fn failure (rollback failed) */
+#define AZ_IOT_SU_FACILITY_PERSIST 0x8u /* persist_state_fn kept failing at a reboot boundary */
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -128,6 +129,24 @@ extern "C"
 
 #ifndef AZ_IOT_SU_MAX_WORKFLOW_ID_LEN
 #define AZ_IOT_SU_MAX_WORKFLOW_ID_LEN 73 /* software updates service id: GUID-style, plus NUL */
+#endif
+
+/**
+ * @brief Consecutive failed persist_state_fn writes after which the client stops retrying.
+ *
+ * Retries are spaced 1 s, 2 s, 4 s, ... (at most 60 s). On reaching the limit
+ * AZ_IOT_SU_EVENT_PERSIST_FAILED is raised with `persist_retrying` false and:
+ * - a pending reboot checkpoint fails the workflow (rolled back, reported
+ *   FAILED with facility AZ_IOT_SU_FACILITY_PERSIST);
+ * - an unsent terminal report is no longer stored (it is still sent);
+ * - a new workflow waiting on the previous record's retirement proceeds.
+ * A later write is still attempted once when needed; a success resets the count.
+ */
+#ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
+#define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
+#endif
+#if AZ_IOT_SU_PERSIST_MAX_ATTEMPTS < 1
+#error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be at least 1"
 #endif
 
 /** @brief Largest blob passed to persist_state_fn; size storage for this. The format
@@ -243,9 +262,9 @@ extern "C"
      *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
      * so a later boot does not resume a workflow that has already ended. Return
-     * non-zero on failure; the client retries from do_work() at most once a
-     * second, without limit, holding the workflow at a reboot boundary until
-     * the write lands.
+     * non-zero on failure; the client raises AZ_IOT_SU_EVENT_PERSIST_FAILED and
+     * retries from do_work() with back-off, holding the workflow at a reboot
+     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
@@ -600,7 +619,19 @@ extern "C"
      * while. That is the intended behaviour, not a gap to work around: do not
      * drive a workflow from the reported state, and treat this event as
      * something to log rather than something to act on. */
-    AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+    AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
+
+    /* persist_state_fn failed. Raised on the first failure of an episode
+     * (`persist_retrying` true) and when AZ_IOT_SU_PERSIST_MAX_ATTEMPTS is
+     * reached (`persist_retrying` false); see that macro for what giving up
+     * does. Carries `state`, `reason` (AZ_IOT_ERR_INTERNAL) and
+     * `persist_attempts`. While retrying, the workflow is held at a reboot
+     * boundary: do not reboot the device. */
+    AZ_IOT_SU_EVENT_PERSIST_FAILED,
+
+    /* A persist_state_fn write succeeded after AZ_IOT_SU_EVENT_PERSIST_FAILED.
+     * Carries `state` and `persist_attempts` (the failures that preceded it). */
+    AZ_IOT_SU_EVENT_PERSIST_RECOVERED
   } az_iot_su_event_kind;
 
   /**
@@ -663,10 +694,14 @@ extern "C"
     az_iot_su_state state;
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. */
+    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
+
+    /* PERSIST_FAILED / PERSIST_RECOVERED only. */
+    uint32_t persist_attempts; /**< Consecutive failed writes. */
+    bool persist_retrying; /**< PERSIST_FAILED: whether the client retries. */
   } az_iot_su_event;
 
   /**
@@ -722,8 +757,10 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Earliest az_iot_time_mono_ms() for retrying any failed checkpoint write. */
-      uint64_t checkpoint_clear_retry_ms;
+      /** Earliest az_iot_time_mono_ms() for retrying a failed persist_state_fn write. */
+      uint64_t persist_retry_ms;
+      /** Consecutive failed persist_state_fn writes; 0 after any success. */
+      uint32_t persist_failures;
       /** The stored checkpoint is the terminal-report record, not a workflow position. */
       bool checkpoint_terminal;
       /** The active workflow's terminal report is not yet accepted; kept durable until it is. */

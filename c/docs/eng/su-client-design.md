@@ -247,6 +247,7 @@ defines a structured layout:
 | `0x5` | Install | `install_fn` failed |
 | `0x6` | Apply | `apply_fn` failed |
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
+| `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`) |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK
@@ -402,14 +403,25 @@ The byte layout is documented next to the serializer in
    terminal record; it clears it (a zero-length `persist_state_fn` write) once
    the report is final and when a new workflow supersedes it, so a later boot
    does not replay a finished workflow. If the terminal record cannot be
-   written, the stale blob is cleared instead. Every failed write is retried
-   from `do_work()` at most once a second, and at the next such transition. A
-   failed checkpoint write before a requested reboot holds the workflow at that
-   boundary (`INSTALL_COMPLETE`, or the next step's `DOWNLOAD_STARTED`) until
-   it lands. There is no retry limit and no event: the application sees
-   failures through its own `persist_state_fn` return values. Moving past a step
-   whose checkpoint is stored refreshes it to the next step. If the clear on
-   supersede fails, the new workflow waits until the old record is retired.
+   written, the stale blob is cleared instead. A failed checkpoint write before
+   a requested reboot holds the workflow at that boundary (`INSTALL_COMPLETE`,
+   or the next step's `DOWNLOAD_STARTED`); if the clear on supersede fails, the
+   new workflow waits. Moving past a step whose checkpoint is stored refreshes
+   it to the next step.
+6. **Write failures.** A failed `persist_state_fn` write raises
+   `AZ_IOT_SU_EVENT_PERSIST_FAILED` (first failure, `persist_retrying` true) and
+   is retried from `do_work()` after 1 s, 2 s, 4 s, … (at most 60 s). A success
+   raises `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`. After
+   `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` (default 5) consecutive failures the event
+   is raised again with `persist_retrying` false and retries stop:
+   - a held reboot boundary fails the workflow: rolled back, reported FAILED
+     with facility `0x8`;
+   - an unsent terminal report is no longer stored (it is still sent);
+   - a held new workflow proceeds.
+
+   A write needed later is still attempted once; a success resets the count.
+   While a failure is outstanding the application MUST NOT reboot for
+   `REBOOT_REQUIRED`: nothing would resume.
 
 > Persisting after **every** phase is OPTIONAL; the only MUST is to persist before
 > a reboot the agent itself requested (`REBOOT_REQUIRED`). Persisting at more
@@ -735,6 +747,9 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     that is the intended response, which is why the event carries the route:
  *     a lost status report is not a lost update check, and the onboarding and
  *     regular fetches are asked for separately.
+ *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
+ *     failing; PERSIST_FAILED again when the client gives up (see
+ *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one

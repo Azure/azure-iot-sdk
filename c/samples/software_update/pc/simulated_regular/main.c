@@ -239,6 +239,21 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       break;
+    case AZ_IOT_SU_EVENT_PERSIST_FAILED:
+    case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
+      if (SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, persist_retrying))
+      {
+        /* While a write is failing the workflow is held: do not reboot. */
+        fprintf(
+            stderr,
+            "Update state storage %s after %u failed write(s)%s\n",
+            event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED ? "failing" : "recovered",
+            (unsigned)event->persist_attempts,
+            (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED && !event->persist_retrying)
+                ? "; giving up"
+                : "");
+      }
+      break;
   }
 }
 
