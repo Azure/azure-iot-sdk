@@ -389,8 +389,8 @@ sequenceDiagram
 people) drift: twin, direct methods, C2D, telemetry, and especially **Software updates** can
 diverge in behavior, error mapping, or API shape. Software updates keeps this bounded by having
 **one** channel: the twin channel (Device Update for IoT Hub) is cut, and the software updates pull protocol,
-fronted by the DPS gateway, is the only channel that will ship — it is the
-implementation target, not yet built. Drift would therefore be drift in the
+fronted by the DPS gateway, is the only channel, implemented in
+[su_channel_dps.c](../../src/features/su/su_channel_dps.c). Drift would therefore be drift in the
 shared engine, which is exactly what the conformance suite has to catch.
 
 **Mitigations.**

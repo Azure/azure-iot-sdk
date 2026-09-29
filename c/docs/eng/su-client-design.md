@@ -1529,8 +1529,8 @@ target_link_libraries(az_iot_su
 
 ## 11. Implementation Phases
 
-> **Phases 0–6 are as-built history for the twin-channel-era client.** The forward plan is Phases 7–8
-> below.
+> **Phases 0–7 are as-built history** (0–6 for the twin-channel-era client). Phase 8 is implemented
+> except the root-key-package download: `rootKeyDownloadUrl` is parsed but not fetched.
 
 ### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
 

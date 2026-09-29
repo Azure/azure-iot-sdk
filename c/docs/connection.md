@@ -686,7 +686,7 @@ complete first.
 | Backoff computation and defaults | [reconnect.c](../src/core/reconnect.c) | implemented |
 | Certificate provider contract | [az_iot_certificate_provider.h](../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
-| Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [eng/client-separation.md](eng/client-separation.md) §2 | planned — blocked on the DPS api-version |
-| `su_core` / `az_iot_su_channel` split | [eng/client-separation.md](eng/client-separation.md) §8 | planned |
-| Software updates engine internals reused by software updates | [c/src/features/su](../src/features/su) | implemented (Device Update for IoT Hub API to be removed) |
-| Software updates device contract | [eng/su-spec.md](eng/su-spec.md) | planned — DPS fronts both flows |
+| Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h) | implemented |
+| `az_iot_su_channel` vtable, DPS channel | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [su_channel_dps.c](../src/features/su/su_channel_dps.c) | implemented |
+| Software updates engine internals reused by software updates | [c/src/features/su](../src/features/su) | implemented; the Device Update for IoT Hub twin-based API has been removed |
+| Software updates device contract | [eng/su-spec.md](eng/su-spec.md), [su_protocol.c](../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows |
