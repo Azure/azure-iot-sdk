@@ -39,6 +39,15 @@
 # The provision/destroy steps are the shared composite actions
 # Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-resources, pinned to a
 # tag, so every language pipeline runs the same provisioning code.
+#
+# Shared environment (temporary, opt-in)
+# --------------------------------------
+# When the repository variable E2E_SHARED_RG names a long-lived resource group
+# (one IoT Hub + linked DPS, file upload on, consumer groups e2e-0..e2e-9),
+# PULL REQUEST runs skip setup/teardown. Each leg instead claims its own DPS
+# enrollment there (c/eng/e2e-shared-env.ps1) and deletes it when done. Same
+# tests, no provisioning. Push and nightly runs always provision. Unset the
+# variable to return to per-run provisioning.
 
 name: ci-c-e2e
 
@@ -83,10 +92,14 @@ permissions:
 # independently, so teardown never depends on setup completing.
 env:
   E2E_RESOURCE_GROUP: CSDKE2EFast-${{ github.run_id }}-${{ github.run_attempt }}
+  # 'true' when this run uses the shared environment (see header). Job-level
+  # `if:` cannot read `env`, so the setup and teardown jobs repeat the expression.
+  E2E_SHARED: ${{ vars.E2E_SHARED_RG != '' && github.event_name == 'pull_request' }}
 
 jobs:
   setup:
     name: setup (provision)
+    if: ${{ !(vars.E2E_SHARED_RG != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -130,6 +143,8 @@ jobs:
   test:
     name: ${{ matrix.os }}
     needs: setup
+    # Runs after setup, or without it in shared mode (setup skipped).
+    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
     strategy:
       fail-fast: false
       # Both OSes run in parallel. Linux is the faster leg, but Windows is kept
@@ -192,10 +207,35 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
       - name: Download shared test config
+        if: env.E2E_SHARED != 'true'
         uses: actions/download-artifact@v4
         with:
           name: e2e-test-config
           path: test_config
+
+      - name: Azure Login via OIDC (shared environment)
+        if: env.E2E_SHARED == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Claim a device on the shared environment
+        if: env.E2E_SHARED == 'true'
+        shell: pwsh
+        env:
+          E2E_SHARED_RG: ${{ vars.E2E_SHARED_RG }}
+          E2E_REGISTRATION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}
+          E2E_DEVICE_INDEX: ${{ matrix.device-index }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Spread legs over consumer groups e2e-0..e2e-9: Event Hubs allows 5
+        # readers per partition per group, and each leg reads every partition.
+        run: |
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 2 + [int]$env:E2E_DEVICE_INDEX) % 10)
+          ./c/eng/e2e-shared-env.ps1 -Action Acquire -ResourceGroup $env:E2E_SHARED_RG `
+            -RegistrationId $env:E2E_REGISTRATION_ID -DeviceIndex ([int]$env:E2E_DEVICE_INDEX) `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
       - name: Run e2e
         shell: pwsh
@@ -415,13 +455,26 @@ jobs:
           path: c/coverage/e2e.json
           if-no-files-found: error
 
+      - name: Release the shared-environment device
+        # Also on failure/cancel. A leftover enrollment is harmless, so this never fails the job.
+        if: always() && env.E2E_SHARED == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          E2E_SHARED_RG: ${{ vars.E2E_SHARED_RG }}
+          E2E_REGISTRATION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}
+        run: |
+          ./c/eng/e2e-shared-env.ps1 -Action Release -ResourceGroup $env:E2E_SHARED_RG `
+            -RegistrationId $env:E2E_REGISTRATION_ID
+
   teardown:
     name: teardown (delete resources)
     needs: [setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
-    # down; the destroy action no-ops when the group was never created.
-    if: always()
+    # down; the destroy action no-ops when the group was never created. Skipped in
+    # shared mode: the shared group outlives the run.
+    if: ${{ always() && !(vars.E2E_SHARED_RG != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

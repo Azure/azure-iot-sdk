@@ -91,6 +91,10 @@ Service configuration (set by the provisioning config script):
 | `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
+| `IOTHUB_EVENTHUB_CONSUMER_GROUP` | consumer group to read (optional; default `$Default`) |
+
+The telemetry watcher only receives messages enqueued from 5 minutes before it
+starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
