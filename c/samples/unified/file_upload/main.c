@@ -151,13 +151,25 @@ static long https_request(
   if (content_type && content_type[0])
   {
     char h[128];
-    snprintf(h, sizeof(h), "Content-Type: %s", content_type);
+    int n = snprintf(h, sizeof(h), "Content-Type: %s", content_type);
+    if (n < 0 || (size_t)n >= sizeof(h))
+    {
+      curl_slist_free_all(headers);
+      curl_easy_cleanup(curl);
+      return -1;
+    }
     headers = curl_slist_append(headers, h);
   }
   if (authorization && authorization[0])
   {
     char h[576];
-    snprintf(h, sizeof(h), "Authorization: %s", authorization);
+    int n = snprintf(h, sizeof(h), "Authorization: %s", authorization);
+    if (n < 0 || (size_t)n >= sizeof(h))
+    {
+      curl_slist_free_all(headers);
+      curl_easy_cleanup(curl);
+      return -1;
+    }
     headers = curl_slist_append(headers, h);
   }
   if (extra_header && extra_header[0])
@@ -292,8 +304,13 @@ static void on_sas(
   u->sas_status = status;
   if (status == AZ_IOT_OK && blob_sas_uri && correlation_id)
   {
-    snprintf(u->sas_uri, sizeof(u->sas_uri), "%s", blob_sas_uri);
-    snprintf(u->correlation_id, sizeof(u->correlation_id), "%s", correlation_id);
+    int n1 = snprintf(u->sas_uri, sizeof(u->sas_uri), "%s", blob_sas_uri);
+    int n2 = snprintf(u->correlation_id, sizeof(u->correlation_id), "%s", correlation_id);
+    if (n1 < 0 || (size_t)n1 >= sizeof(u->sas_uri) || n2 < 0
+        || (size_t)n2 >= sizeof(u->correlation_id))
+    {
+      u->sas_status = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
   }
 }
 

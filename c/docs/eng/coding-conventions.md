@@ -42,6 +42,19 @@ The tree was reformatted wholesale in one commit, which is listed in
 once with `git config blame.ignoreRevsFile .git-blame-ignore-revs`; GitHub
 honours it automatically.
 
+## 0.1. clang-tidy must be clean
+
+```bash
+cmake -S c -B c/build/clang-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   # configure only
+bash c/eng/clang-tidy.sh c/build/clang-tidy                            # what CI runs
+```
+
+Checks and the reason for each exclusion are in [`c/.clang-tidy`](../../.clang-tidy);
+every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
+18.1.8 (`pipx install clang-tidy==18.1.8`). Ignore a return value with an
+explicit `(void)` cast. Suppress a false positive on its line with
+`/* NOLINTNEXTLINE(<check>): <reason> */`.
+
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
 `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`,

@@ -2363,7 +2363,7 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
     hex[i * 2u] = hexdigits[PRESENCE_HI_NIBBLE(c->presence.nonce[i])];
     hex[i * 2u + 1u] = hexdigits[PRESENCE_LO_NIBBLE(c->presence.nonce[i])];
   }
-  hex[PRESENCE_NONCE_LEN * 2u] = '\0';
+  hex[(size_t)PRESENCE_NONCE_LEN * 2u] = '\0';
 
   /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
    * string is percent-encoded too, which leaves today's digits-and-dots form

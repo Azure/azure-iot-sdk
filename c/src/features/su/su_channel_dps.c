@@ -1014,6 +1014,7 @@ static size_t put_etag(uint8_t* p, const char* etag)
 {
   size_t n = strlen(etag);
   p[0] = (uint8_t)n;
+  /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): length-prefixed, not NUL-terminated. */
   memcpy(p + 1, etag, n);
   return n + 1u;
 }

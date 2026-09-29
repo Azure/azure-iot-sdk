@@ -2382,7 +2382,7 @@ static void restore_step_results(
   SU_I(client).step_results_count = step_count;
   for (int32_t i = 0; i < step_count; ++i)
   {
-    const uint8_t* rec = &steps[(uint32_t)i * AZ_IOT_SU_PERSIST_STEP_RECORD];
+    const uint8_t* rec = &steps[(size_t)i * AZ_IOT_SU_PERSIST_STEP_RECORD];
     az_iot_su_step_result* sr = &SU_I(client).step_results[i];
     sr->outcome = (az_iot_su_outcome)rd_u32le(rec);
     sr->failure_origin = (az_iot_su_failure_origin)rd_u32le(rec + 4);

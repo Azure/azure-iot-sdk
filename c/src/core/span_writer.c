@@ -109,6 +109,7 @@ void az_iot_span_writer_append_str(az_iot_span_writer* writer, const char* value
   uint8_t* cursor = writer_reserve(writer, (int32_t)length);
   if (cursor != NULL)
   {
+    /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): spans are length-delimited. */
     memcpy(cursor, value, length);
   }
 }
