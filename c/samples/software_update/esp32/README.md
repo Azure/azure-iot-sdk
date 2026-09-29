@@ -207,7 +207,7 @@ revision. For production, layer these opt-in overlays on top of
 
 | Feature | Setting |
 |---|---|
-| Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0 |
+| Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0. ESP32-C3 needs rev v0.3 or later. |
 | Flash encryption | Release mode |
 | NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32, and every chip in the rehearsal); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
 | Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0x10000, for the larger bootloader; same A/B app slots |
@@ -235,7 +235,7 @@ revision. For production, layer these opt-in overlays on top of
 
    | Chip | `SDKCONFIG_DEFAULTS` |
    |---|---|
-   | ESP32 rev >= v3.0, ESP32-S3/C3/C6 | `sdkconfig.defaults;sdkconfig.secure` |
+   | ESP32 rev >= v3.0, ESP32-S3, ESP32-C3 rev >= v0.3, ESP32-C6 | `sdkconfig.defaults;sdkconfig.secure` |
    | ESP32 below rev v3.0 | `sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy` |
    | Rehearsal (any of the above) | append `;sdkconfig.secure_virtual_efuse` |
 
