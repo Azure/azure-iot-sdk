@@ -171,8 +171,10 @@ I (...) su_esp32: checking for updates every 60 s
 ## Deploy an update
 
 1. Raise `SU_UPDATE_VERSION` in [`main/su_version.h`](main/su_version.h).
-2. `idf.py build`, producing `build/su_esp32.bin` (`build-secure/su_esp32.bin`
-   with the [security profile](#production-security-profile-optional)).
+2. `idf.py build`, producing `build/su_esp32.bin`. For a device running the
+   [security profile](#production-security-profile-optional), build with the same
+   profile arguments and signing key instead, producing `build-secure/su_esp32.bin`:
+   `idf.py "${SECURE[@]}" build` (PowerShell: `idf.py @secure build`).
 3. Import that `.bin` into Device Update as update
    `SU_UPDATE_PROVIDER` / `SU_UPDATE_NAME` / `SU_UPDATE_VERSION`, with compatibility
    `manufacturer=Espressif`, `model=ESP32-WROOM`, and deploy it to the device.
@@ -279,13 +281,15 @@ revision. For production, layer these opt-in overlays on top of
    The rehearsal writes eFuse changes to the `efuse_em` partition instead of the
    chip, and does not protect flash contents. Never ship it.
 
-5. Build update images with the same arguments and signing key, and import
+5. Build update images with the same arguments and signing key:
+   `idf.py "${SECURE[@]}" build` (PowerShell: `idf.py @secure build`). Import
    `build-secure/su_esp32.bin`, not `build/su_esp32.bin`. Unsigned or wrongly
    signed images fail the OTA and boot checks.
 
-With Secure Boot v1, `idf.py flash` does not flash the bootloader: run
-`idf.py bootloader`, then the `esptool write-flash` command it prints, once. It is
-a one-time flash; the bootloader can never be changed afterwards. With Secure Boot
+With Secure Boot v1, `idf.py flash` does not flash the bootloader. With the legacy
+profile arguments from step 4, run `idf.py "${SECURE[@]}" bootloader` (PowerShell:
+`idf.py @secure bootloader`), then the `esptool write-flash` command it prints,
+once. It is a one-time flash; the bootloader can never be changed afterwards. With Secure Boot
 v2, `idf.py flash` includes the bootloader (`CONFIG_SECURE_BOOT_FLASH_BOOTLOADER_DEFAULT`).
 
 The profile follows ESP-IDF's
