@@ -1,0 +1,12 @@
+# ESP32 below chip revision v3.0: Secure Boot v1 instead of v2. Append after sdkconfig.secure:
+#
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy" build
+#
+# The key is ECDSA P-256:
+#   espsecure generate-signing-key --version 1 secure_boot_signing_key.pem
+# `idf.py flash` skips the bootloader: run `idf.py bootloader`, then the esptool command it prints.
+# One-time-flash mode: it can never be updated afterwards.
+CONFIG_ESP32_REV_MIN_0=y
+CONFIG_SECURE_BOOT_V1_ENABLED=y
+CONFIG_SECURE_BOOTLOADER_ONE_TIME_FLASH=y
+CONFIG_SECURE_SIGNED_APPS_ECDSA_SCHEME=y

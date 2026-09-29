@@ -1,0 +1,11 @@
+# Test the secure profile WITHOUT burning eFuses. Append after sdkconfig.secure
+# (and sdkconfig.secure_esp32_legacy, if used):
+#
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse" build
+#
+# eFuse writes go to the efuse_em partition instead of the chip. Flash contents are NOT
+# protected in this mode; it exercises the boot, signing and OTA flow only. Never ship it.
+# Release-mode flash encryption is unavailable with virtual eFuses, so development mode is used.
+CONFIG_EFUSE_VIRTUAL=y
+CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH=y
+CONFIG_SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT=y

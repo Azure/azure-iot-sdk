@@ -21,7 +21,11 @@ component (`components/azure-iot-sdk`).
 samples/software_update/esp32/
 ├── CMakeLists.txt              top-level ESP-IDF project
 ├── partitions.csv             A/B OTA partition table (ota_0 / ota_1 / otadata)
+├── partitions_secure.csv      same, plus nvs_keys / efuse_em (secure profile only)
 ├── sdkconfig.defaults          target, flash size, rollback, MQTT v5, mbedTLS
+├── sdkconfig.secure[.<target>] opt-in production security profile (off by default)
+├── sdkconfig.secure_esp32_legacy   ESP32 < rev v3.0: Secure Boot v1
+├── sdkconfig.secure_virtual_efuse  test the secure profile without burning eFuses
 ├── components/
 │   ├── azure-iot-sdk/          wraps this repo's src/ as an ESP-IDF component
 │   └── azure-sdk-for-c/        builds az_core + az_iot from the submodule
@@ -135,6 +139,64 @@ the next poll. Erasing NVS
 Once a matching deployment exists, the device picks it up at its next check
 (within `SU_POLL_INTERVAL_S`), downloads the image, flashes the inactive OTA
 slot, reboots, marks the new app valid, and reports the new version.
+
+## Production security profile (optional, off by default)
+
+The default build enables no eFuse-burning feature and runs on any ESP32 chip revision.
+For production, layer the opt-in profile on top of `sdkconfig.defaults`:
+
+| Feature | Setting |
+|---|---|
+| Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0 |
+| Flash encryption | release mode |
+| NVS encryption | HMAC-derived keys on ESP32-S3/C3/C6 (eFuse key block 2); keys in the encrypted `nvs_keys` partition on ESP32 |
+| Partition table | `partitions_secure.csv`, at 0xD000 for the larger bootloader; same A/B app slots |
+
+> **Irreversible.** The first boot of such an image burns eFuses. Download mode, JTAG and
+> reflashing become restricted, and a lost signing key means the device can no longer be
+> updated. Try it first with virtual eFuses, then on a spare board.
+
+1. Generate a signing key in this directory, once. Keep it private; it is git-ignored.
+   For production, ESP-IDF recommends generating it with OpenSSL or an HSM.
+
+   ```powershell
+   # Secure Boot v2 (ESP32 rev >= v3.0, ESP32-S3/C3/C6)
+   espsecure generate-signing-key --version 2 --scheme rsa3072 secure_boot_signing_key.pem
+   # Secure Boot v1 (ESP32 below rev v3.0)
+   espsecure generate-signing-key --version 1 secure_boot_signing_key.pem
+   ```
+
+2. Check the chip revision (`idf.py -p <PORT> efuse-summary` or the `esptool chip-id` banner).
+
+3. Rehearse without burning anything, then build the real profile. Use `idf.py fullclean`
+   when switching profiles.
+
+   | Chip | `SDKCONFIG_DEFAULTS` |
+   |---|---|
+   | ESP32 rev >= v3.0, ESP32-S3/C3/C6 | `sdkconfig.defaults;sdkconfig.secure` |
+   | ESP32 below rev v3.0 | `sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy` |
+   | Rehearsal (any of the above) | append `;sdkconfig.secure_virtual_efuse` |
+
+   ```powershell
+   idf.py fullclean
+   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse" build flash monitor
+   ```
+
+   The rehearsal writes eFuse changes to the `efuse_em` partition instead of the chip, and
+   does not protect flash contents. Never ship it.
+
+4. Update images (step 3 of the main flow) must be built with the same profile and signing
+   key. Unsigned or wrongly signed images fail the OTA and boot checks.
+
+With Secure Boot v1, `idf.py flash` does not flash the bootloader: run `idf.py bootloader`
+and then the `esptool write-flash` command it prints, once (one-time flash; the bootloader
+can never be changed afterwards). With Secure Boot v2, `idf.py flash` includes the bootloader
+(`CONFIG_SECURE_BOOT_FLASH_BOOTLOADER_DEFAULT`).
+
+The profile follows ESP-IDF's
+[security guide](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/security/security.html).
+The device certificate and key are still compiled into the image, and so are protected by
+flash encryption only.
 
 ## How the real OTA flow works
 

@@ -1,0 +1,3 @@
+# Secure Boot v2 on ESP32 requires chip revision v3.0 or later.
+# For older chips use sdkconfig.secure_esp32_legacy (Secure Boot v1).
+CONFIG_ESP32_REV_MIN_3=y
