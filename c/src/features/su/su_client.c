@@ -768,10 +768,90 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(&SU_I(client).crypto, file, su_read_file_adapter, &a);
 }
 
-/** @brief Minimum spacing, in milliseconds, of retries of a failed checkpoint write. */
-#define AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS 1000u
+/** @brief Delay, in milliseconds, before the first retry of a failed persist_state_fn write. */
+#define AZ_IOT_SU_PERSIST_RETRY_BASE_MS 1000u
+/** @brief Upper bound, in milliseconds, of the doubling retry delay. */
+#define AZ_IOT_SU_PERSIST_RETRY_MAX_MS 60000u
 
 static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
+static void dispatch_event(az_iot_su_client* client, const az_iot_su_event* event);
+
+/** @brief Whether persist_max_attempts consecutive writes have failed. */
+static bool persist_gave_up(const az_iot_su_client* client)
+{
+  return SU_I(client).persist_failures >= SU_I(client).persist_max_attempts;
+}
+
+/** @brief Whether a failed write may be retried now. */
+static bool persist_retry_due(const az_iot_su_client* client)
+{
+  return !persist_gave_up(client) && az_iot_time_mono_ms() >= SU_I(client).persist_retry_ms;
+}
+
+/** @brief Raise AZ_IOT_SU_EVENT_PERSIST_FAILED or AZ_IOT_SU_EVENT_PERSIST_RECOVERED. */
+static void raise_persist(az_iot_su_client* client, bool failed, uint32_t attempts)
+{
+  az_iot_su_event event = {
+    .kind = failed ? AZ_IOT_SU_EVENT_PERSIST_FAILED : AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .operation = AZ_IOT_SU_OP_REPORT_STATUS,
+    .reason = failed ? AZ_IOT_ERR_INTERNAL : AZ_IOT_OK,
+    .service_error = { .code = 0, .message = "", .tracking_id = "", .retry_after_ms = 0 },
+    .persist_attempts = attempts,
+    .persist_retrying = failed && attempts < SU_I(client).persist_max_attempts,
+  };
+  dispatch_event(client, &event);
+}
+
+/**
+ * @brief Call persist_state_fn and account for the result.
+ *
+ * A failure arms the next retry (doubling from AZ_IOT_SU_PERSIST_RETRY_BASE_MS,
+ * capped at AZ_IOT_SU_PERSIST_RETRY_MAX_MS) and raises PERSIST_FAILED on the
+ * first failure and on reaching AZ_IOT_SU_PERSIST_MAX_ATTEMPTS. A success
+ * after failures raises PERSIST_RECOVERED and resets the count.
+ *
+ * @return true when the hook succeeded.
+ */
+static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t len)
+{
+  az_iot_su_platform_hooks* h = &SU_I(client).hooks;
+  int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
+  if (rc == 0)
+  {
+    uint32_t failed = SU_I(client).persist_failures;
+    SU_I(client).persist_failures = 0;
+    if (failed > 0)
+    {
+      raise_persist(client, false, failed);
+    }
+    return true;
+  }
+
+  SU_I(client).persist_last_error = rc;
+  uint32_t n = SU_I(client).persist_failures;
+  if (n < UINT32_MAX)
+  {
+    SU_I(client).persist_failures = ++n;
+  }
+  uint32_t delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
+  if (n <= 16u)
+  {
+    delay = AZ_IOT_SU_PERSIST_RETRY_BASE_MS << (n - 1u);
+    if (delay > AZ_IOT_SU_PERSIST_RETRY_MAX_MS)
+    {
+      delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
+    }
+  }
+  SU_I(client).persist_retry_ms = az_iot_time_mono_ms() + delay;
+  AZ_IOT_LOG_ERRORF("su: persist_state_fn failed (%u consecutive)", (unsigned)n);
+  if (n == 1u || n == SU_I(client).persist_max_attempts)
+  {
+    raise_persist(client, true, n);
+  }
+  return false;
+}
 
 /**
  * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
@@ -779,8 +859,8 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
  * Both shipped loaders re-read the same record on every boot, so without this
  * a finished workflow is reloaded, re-applied and re-reported. Only issued when
  * a record is believed stored, to spare flash endurance; a failed write keeps
- * it believed stored and is retried from do_work() while Idle, at most every
- * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS, or at the next terminal transition.
+ * it believed stored and is retried from do_work() (see persist_write()), or
+ * at the next terminal transition.
  */
 static void clear_checkpoint(az_iot_su_client* client)
 {
@@ -789,17 +869,30 @@ static void clear_checkpoint(az_iot_su_client* client)
   {
     return;
   }
-  if (h->persist_state_fn(SU_I(client).persist_scratch, 0, h->user_ctx) == 0)
+  if (persist_write(client, SU_I(client).persist_scratch, 0))
   {
     SU_I(client).checkpoint_stored = false;
     SU_I(client).checkpoint_terminal = false;
     SU_I(client).checkpoint_superseded = false;
   }
-  else
+}
+
+/**
+ * @brief Retire a stale workflow-position record after the terminal write failed.
+ *
+ * Not counted as a persist attempt and raises no event: it belongs to the
+ * failed terminal write already counted, and must not spend the retry budget
+ * or report a recovery while the terminal record is still unwritten.
+ */
+static void clear_stale_checkpoint(az_iot_su_client* client)
+{
+  az_iot_su_platform_hooks* h = &SU_I(client).hooks;
+  if (SU_I(client).checkpoint_stored
+      && h->persist_state_fn(SU_I(client).persist_scratch, 0, h->user_ctx) == 0)
   {
-    SU_I(client).checkpoint_clear_retry_ms
-        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
-    AZ_IOT_LOG_ERROR("su: failed to clear the persisted checkpoint; will retry");
+    SU_I(client).checkpoint_stored = false;
+    SU_I(client).checkpoint_terminal = false;
+    SU_I(client).checkpoint_superseded = false;
   }
 }
 
@@ -826,17 +919,24 @@ static void sync_checkpoint(az_iot_su_client* client)
   {
     return;
   }
+  if (SU_I(client).terminal_write_failed && !persist_retry_due(client))
+  {
+    return;
+  }
   az_iot_result pr = su_persist(client, true);
+  SU_I(client).terminal_write_failed = (pr == AZ_IOT_ERR_INTERNAL);
   if (pr == AZ_IOT_OK)
   {
     return;
   }
-  clear_checkpoint(client);
-  if (pr != AZ_IOT_ERR_INTERNAL)
+  if (pr == AZ_IOT_ERR_INTERNAL)
   {
-    /* Not representable (e.g. no workflow id kept): the report stays in memory only. */
-    SU_I(client).report_owed = false;
+    clear_stale_checkpoint(client);
+    return;
   }
+  /* Not representable (e.g. no workflow id kept): the report stays in memory only. */
+  clear_checkpoint(client);
+  SU_I(client).report_owed = false;
 }
 
 /** @brief Whether storage differs from what sync_checkpoint() would leave there. */
@@ -850,12 +950,27 @@ static bool checkpoint_out_of_sync(const az_iot_su_client* client)
                                   : SU_I(client).checkpoint_stored;
 }
 
+/**
+ * @brief Steps to roll back for a workflow held at a reboot boundary.
+ *
+ * Every step before the current one, plus the current one when its install
+ * already ran (INSTALL_COMPLETE / APPLY_STARTED).
+ */
+static uint32_t held_restore_count(const az_iot_su_client* client)
+{
+  uint32_t step = SU_I(client).current_step;
+  bool installed = SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
+      || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED;
+  return installed ? step + 1u : step;
+}
+
 /** @brief Latch a terminal outcome whose report must survive a reboot until accepted. */
 static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
 {
   SU_I(client).pending_outcome = outcome;
   SU_I(client).report_owed = true;
   SU_I(client).checkpoint_terminal = false;
+  SU_I(client).terminal_write_failed = false;
 }
 
 /* Reset the workflow back to Idle, clearing the parsed request. */
@@ -1229,6 +1344,17 @@ static void process_update_metadata(
   if (check_request_strings(client, &probe) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("su: update payload has an undecodable string; ignored");
+    return;
+  }
+
+  /* A workflow held at a reboot boundary has installed a step the device has
+   * not rebooted into. It is not replaced until its checkpoint lands or the
+   * client gives up and rolls it back; the service offers the new workflow
+   * again on a later update check. */
+  if (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
+      && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
+  {
+    AZ_IOT_LOG_ERROR("su: new workflow ignored while one is held at a reboot boundary");
     return;
   }
 
@@ -1741,6 +1867,7 @@ static az_iot_result su_client_init_core(
   SU_I(client).channel.ctx = channel->ctx;
   SU_I(client).hooks = *options->hooks;
   SU_I(client).crypto = *options->crypto;
+  SU_I(client).persist_max_attempts = (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS;
   SU_I(client).device_properties_buffer = options->device_properties_buffer;
   SU_I(client).device_properties_buffer_size = options->device_properties_buffer_size;
   set_su_state(client, AZ_IOT_SU_STATE_IDLE);
@@ -2151,11 +2278,8 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal)
   p += 4u + (uint32_t)ch_len;
 
   wr_u32le(&blob[p], su_crc32(blob, p));
-  if (h->persist_state_fn(blob, (size_t)p + 4u, h->user_ctx) != 0)
+  if (!persist_write(client, blob, (size_t)p + 4u))
   {
-    SU_I(client).checkpoint_clear_retry_ms
-        = az_iot_time_mono_ms() + AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS;
-    AZ_IOT_LOG_ERROR("su: failed to persist the checkpoint; will retry");
     return AZ_IOT_ERR_INTERNAL;
   }
   SU_I(client).checkpoint_stored = true;
@@ -2557,26 +2681,71 @@ static void fail_workflow(az_iot_su_client* client)
   sync_checkpoint(client);
 }
 
-static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
+/**
+ * @brief Call restore_fn for steps [end-1 .. first], in reverse order.
+ *
+ * Best effort: a failed restore is recorded (facility AZ_IOT_SU_FACILITY_RESTORE)
+ * and earlier steps are still restored.
+ */
+static void restore_step_range(az_iot_su_client* client, uint32_t first, uint32_t end)
 {
   /* Since backup/restore are non-blocking in practice (simulated or fast OTA
-   * slot swaps), this increment performs the rollback synchronously. */
-  if (SU_I(client).hooks.restore_fn != NULL)
+   * slot swaps), this performs the rollback synchronously. */
+  if (SU_I(client).hooks.restore_fn == NULL)
   {
-    for (int32_t s = (int32_t)restore_count - 1; s >= 0; --s)
+    return;
+  }
+  for (int32_t s = (int32_t)end - 1; s >= (int32_t)first; --s)
+  {
+    int32_t rr = SU_I(client).hooks.restore_fn(
+        &SU_I(client).current_manifest, (uint32_t)s, SU_I(client).hooks.user_ctx);
+    if (rr != AZ_IOT_SU_RESULT_SUCCESS)
     {
-      int32_t rr = SU_I(client).hooks.restore_fn(
-          &SU_I(client).current_manifest, (uint32_t)s, SU_I(client).hooks.user_ctx);
-      if (rr != AZ_IOT_SU_RESULT_SUCCESS)
-      {
-        /* Record restore failure but continue restoring earlier steps. */
-        az_iot_su_client_install_result* r = &SU_I(client).install_result;
-        r->extended_result_code
-            = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, (uint32_t)rr);
-      }
+      az_iot_su_client_install_result* r = &SU_I(client).install_result;
+      r->extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, (uint32_t)rr);
     }
   }
+}
+
+static void begin_rollback(az_iot_su_client* client, uint32_t restore_count)
+{
+  restore_step_range(client, 0u, restore_count);
   fail_workflow(client);
+}
+
+/**
+ * @brief Roll back steps [first, end) whose undo is required, reporting when it cannot happen.
+ *
+ * Like restore_step_range(), but with no restore_fn the overall extended result
+ * is set to AZ_IOT_SU_FACILITY_RESTORE (sub-code 0) rather than implying a rollback.
+ */
+static void roll_back_installed(az_iot_su_client* client, uint32_t first, uint32_t end)
+{
+  if (end > first && SU_I(client).hooks.restore_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR("su: no restore_fn; the installed step is not rolled back");
+    SU_I(client).install_result.extended_result_code
+        = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, 0u);
+  }
+  restore_step_range(client, first, end);
+}
+
+/**
+ * @brief Fail the workflow held at a reboot boundary whose checkpoint cannot be written.
+ *
+ * Rolls back every step that was backed up (see held_restore_count()). When no
+ * restore_fn is set or a restore fails, the overall extended result carries
+ * AZ_IOT_SU_FACILITY_RESTORE (sub-code 0: no restore_fn).
+ */
+static void fail_on_persist(az_iot_su_client* client)
+{
+  uint32_t step = SU_I(client).current_step;
+  uint32_t count = held_restore_count(client);
+  SU_I(client).checkpoint_pending = false;
+  result_step_failure(client, step, AZ_IOT_SU_FACILITY_PERSIST, SU_I(client).persist_last_error);
+  roll_back_installed(client, 0u, count);
+  fail_workflow(client);
+  (void)az_iot_su__report_state(client);
 }
 
 az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
@@ -2602,26 +2771,36 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
    * resume the finished workflow or lose its report, so retry it rather than
    * wait for the next workflow. */
   if (SU_I(client).state == AZ_IOT_SU_STATE_IDLE && checkpoint_out_of_sync(client)
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
+      && persist_retry_due(client))
   {
     sync_checkpoint(client);
   }
 
   /* Retry failed checkpoint writes ahead of anything that needs the network,
-   * so storage recovery does not wait on connectivity. Every retry shares the
-   * AZ_IOT_SU_CHECKPOINT_CLEAR_RETRY_MS spacing to spare flash endurance. */
-  if (SU_I(client).checkpoint_superseded
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms)
+   * so storage recovery does not wait on connectivity. Retries back off (see
+   * persist_write()) to spare flash endurance. */
+  if (SU_I(client).checkpoint_superseded && persist_retry_due(client))
   {
     clear_checkpoint(client);
   }
   bool running
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
-  if (SU_I(client).checkpoint_pending && running
-      && az_iot_time_mono_ms() >= SU_I(client).checkpoint_clear_retry_ms
+  if (SU_I(client).checkpoint_pending && running && persist_retry_due(client)
       && su_persist(client, false) != AZ_IOT_ERR_INTERNAL)
   {
     SU_I(client).checkpoint_pending = false;
+  }
+  if (persist_gave_up(client))
+  {
+    /* The new workflow proceeds; a reboot before it ends may resume the old
+     * record, which the new workflowId supersedes again. */
+    SU_I(client).checkpoint_superseded = false;
+    if (SU_I(client).checkpoint_pending && running)
+    {
+      /* Reported there; a re-armed report goes out on the next tick. */
+      fail_on_persist(client);
+      return AZ_IOT_OK;
+    }
   }
 
   /* A pending device-properties / startup report takes priority. */
@@ -2649,26 +2828,35 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
    * across do_work iterations; does not preempt state-machine progress. */
   drive_pending_fetch(client);
 
+  /* Hold while a checkpoint write is outstanding. A superseded workflow's
+   * record would make a reboot resume it or re-send its report; a failed
+   * boundary write would let the workflow run a phase it could not resume.
+   * Checked before cancellation, which would otherwise abandon an installed
+   * step without rolling it back. */
+  if (SU_I(client).checkpoint_superseded
+      || (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
+          && SU_I(client).state != AZ_IOT_SU_STATE_FAILED))
+  {
+    return AZ_IOT_OK;
+  }
+
   /* Cancellation at a phase boundary returns immediately to Idle. FAILED is
    * excluded: its terminal outcome is already reported, and a late cancel would
    * report a second, conflicting one for the same workflow. */
   if (SU_I(client).cancel_requested && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
       && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
   {
+    /* The installed step not yet applied is undone: a reboot must not activate
+     * a canceled update. Completed steps are kept, as the report says. */
+    if (SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
+        || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED)
+    {
+      roll_back_installed(client, SU_I(client).current_step, SU_I(client).current_step + 1u);
+    }
     result_step_canceled(client);
     latch_terminal(client, AZ_IOT_SU_OUTCOME_CANCELED);
     reset_to_idle(client);
     (void)az_iot_su__report_state(client);
-    return AZ_IOT_OK;
-  }
-
-  /* Hold while a checkpoint write is outstanding. A superseded workflow's
-   * record would make a reboot resume it or re-send its report; a failed
-   * boundary write would let the workflow run a phase it could not resume. */
-  if (SU_I(client).checkpoint_superseded
-      || (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
-          && SU_I(client).state != AZ_IOT_SU_STATE_FAILED))
-  {
     return AZ_IOT_OK;
   }
 
