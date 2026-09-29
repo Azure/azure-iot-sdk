@@ -2362,9 +2362,9 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK;
   }
-  if ((size_t)end + 4u > blen)
+  if ((size_t)end + 4u != blen)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_OK; /* the CRC must be the last four bytes */
   }
   if (su_crc32(blob, end) != rd_u32le(&blob[end]))
   {

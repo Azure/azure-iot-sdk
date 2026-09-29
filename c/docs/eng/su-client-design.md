@@ -359,7 +359,7 @@ internal and may change between SDK versions.
 - **Versioned** — magic `"SUCP"` and a `u16` format version (currently 1). A
   record of any other magic or version is ignored. All integers are
   little-endian.
-- **Integrity-checked** — a trailing CRC-32 over the whole blob.
+- **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (cancel,
   have-request, report-owed), the raw request buffer (manifest, workflow id),
   the latched outcome, the overall and per-step results, the download URLs, the

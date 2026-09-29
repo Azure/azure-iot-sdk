@@ -3326,9 +3326,10 @@ static void a_malformed_terminal_record_is_ignored(void** state)
   uint32_t applied = wf + 4u + wf_len;
   assert_true(blob_u32(&good[applied]) > 0);
 
-  for (int c = 0; c < 5; ++c)
+  for (int c = 0; c < 6; ++c)
   {
     memcpy(fx->log.persist_blob, good, len);
+    fx->log.persist_len = len;
     uint8_t* b = fx->log.persist_blob;
     switch (c)
     {
@@ -3344,11 +3345,15 @@ static void a_malformed_terminal_record_is_ignored(void** state)
       case 3: /* not a terminal outcome */
         blob_put_u32(&b[40], AZ_IOT_SU_OUTCOME_IN_PROGRESS);
         break;
+      case 5: /* valid record followed by extra bytes */
+        memset(&b[len], 0xA5, 8u);
+        fx->log.persist_len = len + 8u;
+        break;
       default: /* corrupt payload */
         b[applied + 4u] ^= 0xFFu;
         break;
     }
-    if (c != 4)
+    if (c < 4)
     {
       blob_reseal(b, len);
     }
@@ -3362,6 +3367,61 @@ static void a_malformed_terminal_record_is_ignored(void** state)
     assert_int_equal(fresh->chan.report_count, 0);
     assert_int_equal(teardown(&fresh_state), 0);
   }
+}
+
+/* A failed checkpoint write after an apply-requested reboot holds the next
+ * step: no hook runs until the write lands, and a reboot then resumes there. */
+static void a_failed_apply_reboot_checkpoint_holds_the_next_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Step 0's apply asks for a reboot; the checkpoint written with it fails. */
+  fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  fx->log.persist_failures = 2;
+  inject_patch(fx, distinct_files_patch());
+  for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 1);
+  assert_false(fx->log.have_persist);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(fx->su._internal.current_step, 1);
+  assert_true(fx->su._internal.checkpoint_pending);
+  size_t ops = fx->log.op_count;
+
+  /* Held: no next-step hook runs, and retries are spaced. */
+  for (int i = 0; i < 5; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->log.op_count, ops);
+  assert_int_equal(fx->log.persist_calls, 1);
+  fx->su._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* fails again */
+  assert_int_equal(fx->log.op_count, ops);
+  assert_false(fx->log.have_persist);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+
+  /* The write lands, recording the next step. */
+  fx->su._internal.checkpoint_clear_retry_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_true(fx->log.have_persist);
+  assert_false(fx->su._internal.checkpoint_pending);
+  assert_int_equal(blob_u32(&fx->log.persist_blob[8]), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(blob_u32(&fx->log.persist_blob[12]), 1);
+
+  /* A reboot now resumes at that step and finishes. */
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(fresh->su._internal.current_step, 1);
+  pump(fresh, 60);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 1);
+  assert_string_equal(fresh->log.download_file_ids[0], "fa00000000000001");
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(teardown(&fresh_state), 0);
 }
 
 /* A failed checkpoint write is retried even while a report cannot be sent:
@@ -4871,6 +4931,8 @@ int main(void)
         a_failed_supersede_clear_holds_the_new_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_is_retried_while_a_report_is_pending, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_apply_reboot_checkpoint_holds_the_next_step, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unrepresentable_terminal_record_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
