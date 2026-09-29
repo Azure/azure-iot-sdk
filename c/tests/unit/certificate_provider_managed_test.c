@@ -863,6 +863,31 @@ static void managed_store_refuses_an_oversized_chain(void** state)
   remove_test_files();
 }
 
+/* An entry too large for the chain limit is refused before it is decoded. */
+static void managed_store_refuses_an_oversized_entry_before_decoding(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  /* Not base64: if decoded, the store fails with AZ_IOT_ERR_INTERNAL instead. */
+  const size_t big_len = 128u * 1024u;
+  uint8_t* big = malloc(big_len);
+  assert_non_null(big);
+  memset(big, '!', big_len);
+  az_span entry[1] = { az_span_create(big, (int32_t)big_len) };
+  az_iot_issued_certificate issued = { .certificates = entry, .count = 1 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  assert_false(prov.has_operational);
+
+  az_iot_certificate_provider_managed_deinit(&prov);
+  free(big);
+  remove_test_files();
+}
+
 /* A chain on disk that no longer matches the key (the key was replaced) is not
  * served as the operational identity after a restart. */
 static void managed_a_persisted_chain_for_another_key_is_not_used(void** state)
@@ -1114,6 +1139,7 @@ int main(void)
     cmocka_unit_test(managed_a_persisted_chain_with_trailing_whitespace_is_used),
     cmocka_unit_test(managed_an_oversized_persisted_chain_is_not_used),
     cmocka_unit_test(managed_store_refuses_an_oversized_chain),
+    cmocka_unit_test(managed_store_refuses_an_oversized_entry_before_decoding),
 #if defined(_WIN32)
     cmocka_unit_test(managed_written_files_have_an_owner_only_dacl),
 #endif

@@ -696,6 +696,16 @@ static az_iot_result managed_store(
       rc = AZ_IOT_ERR_INVALID_ARG; /* every issued entry must be a certificate */
       break;
     }
+    /* Refuse before decoding: an entry adds at least its decoded size (3 bytes
+     * per 4 of base64, less up to 2 of padding), so one that cannot fit in
+     * what is left of MANAGED_MAX_CHAIN_BYTES is never allocated. */
+    size_t used = BIO_ctrl_pending(mem);
+    if (used > MANAGED_MAX_CHAIN_BYTES
+        || ((size_t)len / 4u) * 3u > MANAGED_MAX_CHAIN_BYTES - used + 2u)
+    {
+      rc = AZ_IOT_ERR_INVALID_ARG;
+      break;
+    }
     if (!write_issued_cert(mem, az_span_ptr(cert), len))
     {
       rc = AZ_IOT_ERR_INTERNAL;
