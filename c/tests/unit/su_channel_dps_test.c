@@ -39,6 +39,7 @@
 
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 
 /* A registration response the provisioning parser accepts, used to prove the
  * channel's observer does not disturb the provisioning flow. */
@@ -124,7 +125,7 @@ static int setup(void** state)
   opts.dps.registration_id = "ut-device";
   /* Short so the advisory-expiry case is testable without a long wait. */
   opts.dps_hold_timeout_ms = 50;
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &fx->log),
@@ -1395,7 +1396,7 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 0; /* -> AZ_IOT_DPS_HOLD_TIMEOUT_MS */
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);

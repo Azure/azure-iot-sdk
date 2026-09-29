@@ -55,7 +55,7 @@ if (state != AZ_IOT_CONN_STATE_CONNECTED)
 }
 
 /* The connection now knows which hub generation it landed on. */
-az_iot_hub_profile hub = AZ_IOT_HUB_PROFILE_INIT;
+az_iot_hub_profile hub;
 az_iot_connection_client_get_hub_profile(&conn, &hub);
 
 if (hub.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
@@ -131,13 +131,10 @@ typedef enum
 
 typedef struct
 {
-  uint32_t _internal_size;              /* stamped by AZ_IOT_HUB_PROFILE_INIT */
   az_iot_connection_profile connection_profile;
   const char* connection_profile_raw;   /* verbatim wire string, ALWAYS populated */
   /* ... to be extended ... */
 } az_iot_hub_profile;
-
-#define AZ_IOT_HUB_PROFILE_INIT { ._internal_size = sizeof(az_iot_hub_profile) }
 
 az_iot_result az_iot_connection_client_get_hub_profile(
     const az_iot_connection_client* client,
@@ -151,12 +148,8 @@ actually said. Discarding it would convert a forward-compatible wire format into
 a lossy one at the library boundary — which is precisely the thing the spec
 authors went out of their way to avoid.
 
-Because the struct is caller-allocated and will grow, it uses the versioning
-pattern this repo already settled on in
-[struct_versioning.md](../struct_versioning.md): a size stamp as the first field,
-a mandatory initializer macro, and a library-side size check so a caller compiled
-against an older header is defaulted rather than misread. Doing that now, while
-it has two fields and no shipped callers, is the point.
+The struct may grow like any other public struct; see
+[struct_versioning.md](../struct_versioning.md).
 
 ### An unknown profile fails the connection
 
@@ -679,7 +672,6 @@ caller-readable event struct instead:
 ```c
 typedef struct
 {
-  uint32_t _internal_size;            /* stamped by the SDK producer */
   az_iot_connection_scope scope;      /* WHICH lifecycle: DPS or HUB. `state`
                                        * is meaningless without it. */
   az_iot_connection_state state;
@@ -695,7 +687,7 @@ typedef void (*az_iot_connection_state_callback)(
 ```
 
 Unlike `az_iot_hub_profile`, this struct is not caller-allocated and has no
-initializer macro. The SDK constructs it, stamps `_internal_size`, and keeps the
+initializer macro. The SDK constructs it and keeps the
 event and `profile` alive only until the synchronous callback returns. Callers
 copy values they need to retain.
 
@@ -712,11 +704,9 @@ distinct state, a distinct reason code, or a second callback:
   needs the assigned generation in order to rebuild. Everywhere else there is no
   resolved profile to report, and a NULL is a stronger statement than a stale
   copy of the last known value.
-- **It absorbs the next field without another break.** The same size-stamp
-  pattern as `az_iot_hub_profile` ([§2](#shape),
-  [struct_versioning.md](../struct_versioning.md)) lets the event grow — a
+- **It absorbs the next field without another break.** The event can grow — a
   reconnect attempt count, a disconnect detail — without changing the callback
-  signature again. Taking the break once, before there are shipped callers of
+  signature again ([struct_versioning.md](../struct_versioning.md)). Taking the break once, before there are shipped callers of
   the split API, is the point.
 
 This was a **breaking change to a public callback signature**, so it landed as
@@ -729,7 +719,7 @@ class of change that has broken `AZ_IOT_BUILD_E2E=ON` twice before; see
 [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)
 specified replacing `set_state_callback` with a shared observer registry and
 rich failure diagnostics. The registry has SHIPPED; the rich diagnostics have
-not. P1d settled their shared boundary: one size-stamped
+not. P1d settled their shared boundary: one
 `az_iot_connection_state_event` parameter. The registry registers callbacks of
 this signature unchanged, and future status fields append to this event
 rather than adding a second parameter. P1d does **not** build the registry,
@@ -1063,7 +1053,6 @@ exist today:
   support, and the one no current test covers
 - the DPS CONNECT username carries `api-version=2026-11-02-preview`
 - `get_hub_profile` before `CONNECTED` returns `AZ_IOT_ERR_NOT_CONNECTED`
-- an older-header caller (smaller `_internal_size`) is defaulted, not misread
 - MQTTv3 file upload with no HTTP transport supplied fails at init
 - file upload against an MQTT v5 connection fails at init with
   `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` (there is no MQTTv5 file upload client)
@@ -1087,7 +1076,7 @@ plus the conformance suites.
 | P1a | Request `2026-11-02-preview` for all DPS CONNECT sessions in the shared connection client without patching `azure-sdk-for-c` | — | **Implemented in this PR.** The pinned dependency and ESP-IDF submodule are unchanged; verify the platform-specific sample builds separately. |
 | P1b | `az_iot_hub_profile` + `get_hub_profile()` + `az_iot_connection_profile` + `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; parse `connectionProfile` in the existing ASSIGNED-payload walk | — | Additive: absent/null still resolves to `classic`; the `2026-11-02-preview` CONNECT version enables wire values when the service supplies them. `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` is not here — it lands in P2, with the first client that can reject a mismatch. |
 | P1c | Gate `CONNECTED` on subscriptions being SUBACKed ([AB#39366084](https://dev.azure.com/msazure/One/_workitems/edit/39366084)); tag each persistent-subscription entry with its generation and drop non-matching entries on reconnect *before* re-subscribing; add a remove path wired into every feature client's `deinit()` and into its partial-init unwind, UNSUBSCRIBE on both generations (a no-op on MQTTv5 once its redundant filters are gone); drop the five MQTTv5 filters already covered by `ih/{device_id}/dev/#` ([AB#39366086](https://dev.azure.com/msazure/One/_workitems/edit/39366086)); preserve SUBACK reason codes through the adapters behind a shared `az_iot_mqtt_suback_result()`, and tag each entry with its failure scope (`AZ_IOT_SUBSCRIPTION_FAILS_SESSION` / `_FAILS_SELF`) so a refusal ends the connection only for a feature client's own filter — terminally when the reason is deterministic — while a refused custom topic is reported to its owner and dropped ([§9](#the-profile-can-change-while-the-device-is-running)); bound the gate with a deadline | — | **Done across four PRs:** removal + generation tagging (#116), adapter reason-code preservation (#123), the gate + failure-scope policy + deadline (#124), and redundant MQTTv5 filter removal (#128). **P2 depends on all four parts**: §9's rebuild pattern is unsafe without the gate and impossible without removal. The generation tagging is not optional — without it the first two fixes deadlock each other on a profile change. |
-| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces and size-stamps the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
+| P1d | Turn the connection-state callback into the extensible `az_iot_connection_state_event` struct, carrying the resolved profile on `CONNECTED` ([§9](#the-profile-can-change-while-the-device-is-running)) | — | **Implemented.** The SDK produces the callback-lifetime event. `profile` is set on `CONNECTED`, and also on a profile-driven failure so the application can rebuild for the newly assigned generation. All samples, unit/integration suites and e2e agents use the new signature. |
 | P2 | Split the feature clients, one PR each: telemetry → c2d → direct methods → twin | P1b, **P1c**, P1d | **Done — all four clients split.** For local testing when DPS omits the profile, the absent/null development override above supplies `mqttV5` for MQTTv5 testing. Each client pins its generation at `_init()` and the connection checks the pin at connect ([§9](#9-pinning-the-generation-at-init)); topics are built through the connect-time bind callback. The direct-method split shipped the MQTTv5 client as a carry-over of the pre-split behaviour and a guard against mistaking a probe for an invocation; the MQTTv5 probe / exec / abandon handshake that [§4](#4-no-cross-generation-constructs-on-the-public-surface) assigns to MQTTv5 landed after it, and is the first place the two generations differ in protocol rather than only in topic shape. **The twin PR carried no software updates change at all:** the software updates cut landed first, so there was no `az_iot_su_client_init()` to repoint and software updates no longer consumes the twin desired-property registry ([§8](#8-device-update)) — which the twin split therefore deleted. Twin is also where the MQTTv5 bind callback stopped being cosmetic: the unified client resolved the device id inside `init()`, which cannot work for a DPS connection before assignment; MQTTv5 now binds its three `dev/twin/...` handlers at connect like every other MQTTv5 client. |
 | P3 | File upload redesign — HTTP transport becomes mqttv3-only | P1 | **Done.** Shipped smaller than planned: file upload was **cut from MQTTv5**, so there is no MQTTv5 client and none is manufactured. `az_iot_mqttv3_file_upload_client` owns the HTTPS control plane, the transport hook is now required at `init()`, and the client pins MQTTv3 — see [§4](#file-upload-is-mqttv3-only). This removed the last three `profile->flavor` branches in `c/src`, which is what P4 was waiting on. |
 | P4 | Delete `protocol_profile.c`'s flavor tables and the last `profile->flavor` branches | P2, P3 | **Done, and larger than scoped.** Once P2 and P3 moved every topic into the feature clients, nothing in `c/src` read *any* profile field — not just the flavor tables. `az_iot_connection_client__profile()` had no production caller left, and `mqtt_version` merely duplicated `az_iot_mqtt_required_version_for_role()`. So the whole module went rather than only the flavor half: `protocol_profile.{c,h}`, the accessor, and the `az_iot_hub_flavor` enum. The `protocol_profile_dispatch_test` suite was testing a dead table alongside live dispatch routing; it is now `dispatch_test`. |

@@ -27,7 +27,7 @@
  * regardless. If max_attempts > 0 is configured and reached, we transition to
  * FAULTED.
  */
-#include <stddef.h> /* offsetof, for the bounded write in get_hub_profile */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,6 +39,7 @@
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
+#include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/reconnect.h"
@@ -459,15 +460,17 @@ static void set_state_to(
   {
     return;
   }
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile profile = {
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3,
+    .connection_profile_raw = NULL,
+    .connection_profile_raw_truncated = false,
+  };
   az_iot_connection_error_detail detail = {
-    ._internal_size = sizeof(az_iot_connection_error_detail),
     .source = AZ_IOT_CONN_ERR_SRC_NONE,
     .code = 0,
     .message = AZ_SPAN_EMPTY,
   };
   az_iot_connection_state_event event = {
-    ._internal_size = sizeof(az_iot_connection_state_event),
     .scope = scope,
     .state = next,
     .reason = reason,
@@ -1427,49 +1430,17 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
  * wire value always wins, so enabling this cannot mask service rollout. */
 static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
 {
-  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF] = { 0 };
+  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
 
-#ifdef _WIN32
-  size_t needed = 0;
-  errno_t env_result = getenv_s(&needed, NULL, 0, DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (env_result != 0)
-  {
-    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-    return AZ_IOT_ERR_INTERNAL;
-  }
-  if (needed == 0)
-  {
-    return AZ_IOT_OK;
-  }
-  if (needed > sizeof(value))
+  if (az_iot_env_read(DPS_CONNECTION_PROFILE_OVERRIDE_ENV, value, sizeof(value)) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
     return AZ_IOT_ERR_INVALID_ARG;
-  }
-  env_result = getenv_s(&needed, value, sizeof(value), DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (env_result != 0)
-  {
-    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-    return AZ_IOT_ERR_INTERNAL;
   }
   if (value[0] == '\0')
   {
     return AZ_IOT_OK;
   }
-#else
-  const char* configured = getenv(DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (!is_nonempty_cstr(configured))
-  {
-    return AZ_IOT_OK;
-  }
-  size_t needed = strlen(configured) + 1u;
-  if (needed > sizeof(value))
-  {
-    AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  memcpy(value, configured, needed);
-#endif
 
   if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
       && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
@@ -1981,14 +1952,20 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
 
-  /* Populate TLS from certificate_provider if available. DPS uses the bootstrap
-   * identity; the operational cert (if any) is issued during this exchange. */
-  if (c->opts.certificate_provider)
+  /* TLS from certificate_provider. DPS uses the bootstrap identity; the
+   * operational cert (if any) is issued during this exchange. No provider, or
+   * a failed load(), fails the attempt rather than connecting in plaintext. */
+  if (!c->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("dps: no certificate provider; refusing to connect without TLS");
+    mc->iface->destroy(mc);
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
   {
     az_iot_certificate_material mat = { 0 };
-    if (c->opts.certificate_provider->vtable->load(
-            c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat)
-        == AZ_IOT_OK)
+    az_iot_result lr = c->opts.certificate_provider->vtable->load(
+        c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
+    if (lr == AZ_IOT_OK)
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, c->opts.certificate_provider);
       AZ_IOT_LOG_DEBUGF(
@@ -2007,12 +1984,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     }
     else
     {
-      AZ_IOT_LOG_ERROR("dps: certificate provider load() failed for the bootstrap identity");
+      AZ_IOT_LOG_ERRORF(
+          "dps: certificate provider load() failed for the bootstrap identity (%d)", (int)lr);
+      mc->iface->destroy(mc);
+      return lr;
     }
-  }
-  else
-  {
-    AZ_IOT_LOG_DEBUG("dps: no certificate provider configured; connecting without client TLS");
   }
 
   c->dps_mqtt = mc;
@@ -3122,11 +3098,17 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     copts.username = c->hub_username;
   }
 
-  /* Populate TLS from certificate_provider if available. Prefer the issued
-   * OPERATIONAL identity (from this DPS session, or persisted by the provider
-   * on a prior run, or supplied for a direct hub connection); fall back to the
-   * BOOTSTRAP identity when the provider has no operational cert yet. */
-  if (c->opts.certificate_provider)
+  /* TLS from certificate_provider. Prefer the issued OPERATIONAL identity (from
+   * this DPS session, or persisted by the provider on a prior run, or supplied
+   * for a direct hub connection); fall back to the BOOTSTRAP identity when the
+   * provider has no operational cert yet. No provider, or a failed load(),
+   * fails the attempt rather than connecting in plaintext. */
+  if (!c->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("connection: no certificate provider; refusing to connect without TLS");
+    mc->iface->destroy(mc);
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
@@ -3135,15 +3117,18 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
     }
-    if (lr == AZ_IOT_OK)
+    if (lr != AZ_IOT_OK)
     {
-      az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-      prov->vtable->release(prov, &mat);
-      if (cr != AZ_IOT_OK)
-      {
-        mc->iface->destroy(mc);
-        return cr;
-      }
+      AZ_IOT_LOG_ERRORF("connection: certificate provider load() failed (%d)", (int)lr);
+      mc->iface->destroy(mc);
+      return lr;
+    }
+    az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
+    prov->vtable->release(prov, &mat);
+    if (cr != AZ_IOT_OK)
+    {
+      mc->iface->destroy(mc);
+      return cr;
     }
   }
 
@@ -3199,32 +3184,18 @@ static void apply_deferred(az_iot_connection_client* c)
 /* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
  * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
  * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development.
- *
- * ALLOCATION NOTE: the Windows branch uses _dupenv_s (getenv is deprecated
- * under MSVC), which allocates; the buffer is freed in the same function, so
- * nothing is retained. This is the only allocation in the core state machine
- * and it is dev/test-only -- it runs solely when the mock env vars are set and
- * never on a production connect path. The non-Windows branch uses getenv and
- * does not allocate.
- *
- * az-iot-allow: free -- releases the _dupenv_s buffer in the same function */
+ * avoids the need for a real DPS service during local development. */
+#define MQTT_V5_MOCK_ENDPOINT_ENV "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT"
+#define MQTT_V5_MOCK_DEVICE_ID_ENV "AZ_IOT_DEVICE_ID"
+/** @brief Capacity for the mock endpoint ("host:port"). */
+#define MQTT_V5_MOCK_ENDPOINT_BUF 256
+
 static bool mock_mqtt_v5_configured(void)
 {
-#ifdef _WIN32
-  char* buf = NULL;
-  size_t len = 0;
-  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !is_nonempty_cstr(buf))
-  {
-    free(buf);
-    return false;
-  }
-  free(buf);
-  return true;
-#else
-  const char* val = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-  return is_nonempty_cstr(val);
-#endif
+  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
+  /* Too long still counts as set: the bypass then rejects it. */
+  return az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
+      || endpoint[0] != '\0';
 }
 
 /* Parse "host:port" into host string and port. Writes host into out_host
@@ -3260,40 +3231,19 @@ static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap
 
 static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 {
-  const char* endpoint;
-  const char* device_id;
+  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
+  char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
 
-#ifdef _WIN32
-  char* ep_buf = NULL;
-  char* id_buf = NULL;
-  size_t ep_len = 0, id_len = 0;
-  if (_dupenv_s(&ep_buf, &ep_len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !ep_buf)
+  if (az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
+      || az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf)) != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") != 0 || !is_nonempty_cstr(id_buf))
-  {
-    /* Fall back to DPS registration_id if AZ_IOT_DEVICE_ID not set. */
-    free(id_buf);
-    id_buf = NULL;
-  }
-  endpoint = ep_buf;
-  device_id = id_buf ? id_buf : c->opts.dps.registration_id;
-#else
-  endpoint = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-  device_id = getenv("AZ_IOT_DEVICE_ID");
-  if (!is_nonempty_cstr(device_id))
-  {
-    device_id = c->opts.dps.registration_id;
-  }
-#endif
+  /* Falls back to the DPS registration id when AZ_IOT_DEVICE_ID is unset. */
+  const char* device_id = id_buf[0] != '\0' ? id_buf : c->opts.dps.registration_id;
 
-  if (!is_nonempty_cstr(endpoint) || !is_nonempty_cstr(device_id))
+  if (endpoint[0] == '\0' || !is_nonempty_cstr(device_id))
   {
-#ifdef _WIN32
-    free(ep_buf);
-    free(id_buf);
-#endif
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -3325,10 +3275,6 @@ static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
         device_id);
   }
 
-#ifdef _WIN32
-  free(ep_buf);
-  free(id_buf);
-#endif
   return r;
 }
 
@@ -3388,21 +3334,9 @@ az_iot_result az_iot_connection_client_init(
   {
     client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
     /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
-    const char* dev_id = NULL;
-#ifdef _WIN32
-    char* id_buf = NULL;
-    size_t id_len = 0;
-    if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") == 0 && is_nonempty_cstr(id_buf))
-    {
-      dev_id = id_buf;
-    }
-#else
-    dev_id = getenv("AZ_IOT_DEVICE_ID");
-#endif
-    if (!is_nonempty_cstr(dev_id))
-    {
-      dev_id = client->opts.dps.registration_id;
-    }
+    char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
+    (void)az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf));
+    const char* dev_id = id_buf[0] != '\0' ? id_buf : client->opts.dps.registration_id;
     if (is_nonempty_cstr(dev_id))
     {
       (void)replace_owned_string(
@@ -3411,9 +3345,6 @@ az_iot_result az_iot_connection_client_init(
           &client->opts.client_id,
           dev_id);
     }
-#ifdef _WIN32
-    free(id_buf);
-#endif
   }
   else if (
       client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
@@ -3755,6 +3686,16 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
     }
   }
 
+  /* Every DPS and hub connection uses TLS, from the certificate provider.
+   * Checked first, so a missing provider is reported as such rather than as a
+   * missing capability below. */
+  if (!client->opts.certificate_provider)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
+                     "hub connection uses TLS");
+    return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
+  }
+
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
    * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
@@ -3812,7 +3753,6 @@ az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
    * adapter: the operational identity when it holds one, the bootstrap identity
    * otherwise. A provider that can supply neither yet is not rejected -- it may
    * become able to by the time the connect attempt runs. */
-  if (client->opts.certificate_provider)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
     if (p->vtable == NULL || p->vtable->load == NULL)
@@ -4689,21 +4629,6 @@ az_iot_result az_iot_connection_client_get_hub_profile(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* The size stamp is what makes this struct safe to grow. A zero stamp means
-   * the caller used `= {0}` instead of AZ_IOT_HUB_PROFILE_INIT, so the library
-   * cannot tell which fields it may write -- reject rather than guess. */
-  if (out_profile->_internal_size == 0)
-  {
-    AZ_IOT_LOG_ERROR("get_hub_profile: out_profile was not initialized with "
-                     "AZ_IOT_HUB_PROFILE_INIT");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* A caller built against a newer header than the library is the one case the
-   * size stamp cannot rescue: it would expect fields this build never writes. */
-  if (out_profile->_internal_size > sizeof(az_iot_hub_profile))
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
   /* Readable once connected, and also after a profile-driven failure -- that is
    * the case where an application most needs to see what the service said. */
   if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
@@ -4712,23 +4637,9 @@ az_iot_result az_iot_connection_client_get_hub_profile(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  /* Written field by field, bounded by the caller's stamp, so a caller compiled
-   * against an older (smaller) header is never written past. */
-  if (out_profile->_internal_size
-      >= offsetof(az_iot_hub_profile, connection_profile) + sizeof(out_profile->connection_profile))
-  {
-    out_profile->connection_profile = client->connection_profile;
-  }
-  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw)
-          + sizeof(out_profile->connection_profile_raw))
-  {
-    out_profile->connection_profile_raw = client->connection_profile_raw;
-  }
-  if (out_profile->_internal_size >= offsetof(az_iot_hub_profile, connection_profile_raw_truncated)
-          + sizeof(out_profile->connection_profile_raw_truncated))
-  {
-    out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
-  }
+  out_profile->connection_profile = client->connection_profile;
+  out_profile->connection_profile_raw = client->connection_profile_raw;
+  out_profile->connection_profile_raw_truncated = client->connection_profile_raw_truncated;
   return AZ_IOT_OK;
 }
 

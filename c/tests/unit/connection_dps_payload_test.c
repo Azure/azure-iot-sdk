@@ -22,6 +22,7 @@
 
 #include "azure/iot/az_iot_certificate_provider.h"
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/test_provider.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -151,7 +152,7 @@ static az_iot_connection_client_options fixture_options(payload_fixture* fx)
 /* init + register the mock factory + wire the state log. */
 static void fixture_init(payload_fixture* fx, const az_iot_connection_client_options* opts)
 {
-  assert_int_equal(az_iot_connection_client_init(&fx->conn.client_storage, opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn.client_storage, opts), AZ_IOT_OK);
   fx->conn.client = &fx->conn.client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(

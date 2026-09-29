@@ -33,6 +33,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 /* ------------------------------------------------------------------------- */
@@ -737,11 +738,6 @@ typedef struct
 static void on_event(const az_iot_su_event* event, void* user_ctx)
 {
   fixture* fx = (fixture*)user_ctx;
-  /* Every event the SDK raises carries its own size, so a callback compiled
-   * against an older header can tell which fields are present. Checked on
-   * every event rather than in one dedicated test: an absent or wrong stamp
-   * is a silent ABI break that every other assertion here would survive. */
-  assert_int_equal(event->_internal_size, (uint32_t)sizeof(*event));
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
     fx->abandoned_count++;
@@ -786,7 +782,7 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
 /* Counts events through a bare int, for the standalone-init case. */
 static void count_events(const az_iot_su_event* event, void* user_ctx)
 {
-  assert_int_equal(event->_internal_size, (uint32_t)sizeof(*event));
+  (void)event;
   (*(int*)user_ctx)++;
 }
 
@@ -850,7 +846,7 @@ static int setup(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
@@ -1790,7 +1786,7 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   copts.host = "broker.example";
   copts.port = 8883;
   copts.client_id = "ut-su-public";
-  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
@@ -1906,7 +1902,7 @@ static void device_properties_too_small_is_rejected(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device2";
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
   channel.ctx = &fc;
@@ -1986,7 +1982,7 @@ static void device_properties_buffer_size_matches_need(void** state)
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device3";
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
   channel.ctx = &fc;

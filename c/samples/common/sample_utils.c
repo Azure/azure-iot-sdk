@@ -268,8 +268,7 @@ az_iot_result sample_get_hub_profile(
     const az_iot_connection_client* client,
     az_iot_connection_profile* out_profile)
 {
-  /* Not `= {0}`: the SDK rejects a struct without the size stamp this sets. */
-  az_iot_hub_profile profile = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile profile;
 
   az_iot_result result = az_iot_connection_client_get_hub_profile(client, &profile);
   if (result != AZ_IOT_OK)

@@ -195,13 +195,6 @@ static bool g_persist_failing;
 static void on_su_event(const az_iot_su_event* event, void* ctx)
 {
   (void)ctx;
-  /* `service_error` is the last field read; an older library's shorter event
-   * is ignored rather than read past its end. */
-  if (event->_internal_size
-      < offsetof(az_iot_su_event, service_error) + sizeof(event->service_error))
-  {
-    return;
-  }
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
     ESP_LOGW(

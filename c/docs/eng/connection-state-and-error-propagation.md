@@ -91,7 +91,7 @@ a **rich status struct**.
 > not.**
 >
 > Client-separation phase P1d changed `az_iot_connection_state_callback` to take
-> one SDK-produced, size-stamped `az_iot_connection_state_event` carrying the
+> one SDK-produced `az_iot_connection_state_event` carrying the
 > resolved connection profile
 > ([client-separation.md section 9](client-separation.md#the-profile-can-change-while-the-device-is-running)).
 > The registry reuses that signature unchanged, which is why it did not have to
@@ -519,13 +519,12 @@ they need to retain.
 ### 4.3 Event and future status fields
 
 The first four fields are implemented. Rich classification and raw diagnostics
-append to the same size-stamped event; they do not introduce another callback
+append to the same event; they do not introduce another callback
 parameter or a nested status object:
 
 ```c
 typedef struct az_iot_connection_state_event
 {
-  uint32_t                    _internal_size;
   /* WHICH lifecycle this event is about. Shipped; see section 2.6. `state` is
    * meaningless without it. */
   az_iot_connection_scope     scope;
@@ -571,14 +570,10 @@ typedef struct az_iot_connection_state_event
   `reason` as the normalized `az_iot_result`, and two fields with the same name
   meaning different things is a trap regardless of layout.
 
-  **There is no prefix-compatibility constraint on this struct yet.** These
-  libraries are unreleased (`git tag` is empty) and every consumer of the event
-  is in this repository, so members are ordered for sense, not appended for
-  compatibility — `scope` sits beside `state` because the two are only
-  meaningful together (section 2.6). `_internal_size` is carried so that growth
-  becomes safe *after* the first release; it does not oblige append-only
-  ordering before it. Once a release exists, that flips and this paragraph
-  should be rewritten to say so.
+  **There is no prefix-compatibility constraint on this struct.** The SDK makes
+  no ABI guarantee ([struct_versioning.md](../struct_versioning.md)), so members
+  are ordered for sense, not appended for compatibility — `scope` sits beside
+  `state` because the two are only meaningful together (section 2.6).
 
 - **`is_retriable`** — included. Derivable from `reason`, but it directly answers
   "is the SDK going to keep trying?" without forcing the app to memorize the

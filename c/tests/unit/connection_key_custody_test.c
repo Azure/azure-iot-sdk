@@ -30,6 +30,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 
 /* ------------------------------------------------------------------------- */
 /* a provider whose material every case shapes for itself                    */
@@ -209,7 +210,7 @@ static void init_client(fixture* fx, bool with_dps)
     opts.host = "broker.example";
     opts.port = 8883;
   }
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->factory_registered = true;
@@ -576,7 +577,7 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->factory_registered = true;

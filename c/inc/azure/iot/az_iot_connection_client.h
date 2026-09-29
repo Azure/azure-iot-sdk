@@ -69,13 +69,10 @@ extern "C"
     AZ_IOT_SESSION_CONTINUITY_CLEAN = 2
   } az_iot_session_continuity;
 
-  /* Caller-allocated and expected to grow, so it carries a size stamp per
-   * docs/struct_versioning.md: a caller compiled against an older header is
-   * defaulted rather than misread. MUST be initialized with
-   * AZ_IOT_HUB_PROFILE_INIT -- a raw `= {0}` stamps size 0 and is rejected. */
+  /* Caller-allocated; az_iot_connection_client_get_hub_profile() fills every
+   * field. */
   typedef struct az_iot_hub_profile
   {
-    uint32_t _internal_size;
     az_iot_connection_profile connection_profile;
     /* The effective profile text, never NULL. When DPS supplies a string it is
      * verbatim, which keeps the extensible union from becoming lossy at the C
@@ -96,13 +93,6 @@ extern "C"
      * AZ_IOT_CONNECTION_PROFILE_RAW_BUF if a real profile ever needs the room. */
     bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
-
-#define AZ_IOT_HUB_PROFILE_INIT                                                              \
-  {                                                                                          \
-    ._internal_size = sizeof(az_iot_hub_profile),                                            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3, .connection_profile_raw = NULL, \
-    .connection_profile_raw_truncated = false,                                               \
-  }
 
   /* How the client retries a failed connection. Four numbers describe every
    * schedule the SDK can produce; the getters below name the three shapes
@@ -278,7 +268,16 @@ extern "C"
                            * update, which matches a device on the
                            * compatibility properties it sends with each
                            * update request. */
-    az_iot_certificate_provider* certificate_provider; /* required for X.509 auth */
+    /**
+     * @brief Source of the TLS material: trust anchors and, if any, the client
+     * identity. Required.
+     *
+     * Every DPS and hub connection uses TLS: open() refuses a client without a
+     * provider (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a connect attempt whose
+     * load() fails fails with the provider's error instead of connecting
+     * without TLS.
+     */
+    az_iot_certificate_provider* certificate_provider;
 
     /* How the client retries after a failure. See az_iot_reconnection_policy
      * for the fields and the getters that name the usual shapes.
@@ -612,9 +611,6 @@ extern "C"
   } az_iot_connection_state;
 
   /* SDK-produced, callback-lifetime view of a connection-state transition.
-   * The SDK stamps _internal_size; callers never initialize this struct. Future
-   * SDKs may append fields, so callbacks must check _internal_size before
-   * reading a field added after the version they were compiled against.
    *
    * `scope` says WHICH connection the event is about, and `state` is
    * meaningless without it: a device that provisions through DPS runs two
@@ -660,7 +656,6 @@ extern "C"
    */
   typedef struct az_iot_connection_error_detail
   {
-    uint32_t _internal_size;
     /** @brief What `code` means. _NONE when no code was available. */
     az_iot_connection_error_source source;
     /** @brief The code itself. 0 means "none supplied" and is ambiguous. */
@@ -672,7 +667,6 @@ extern "C"
 
   typedef struct az_iot_connection_state_event
   {
-    uint32_t _internal_size;
     /* Which lifecycle this event is about. Placed beside `state` because the
      * two are only meaningful together. */
     az_iot_connection_scope scope;
@@ -1467,10 +1461,7 @@ extern "C"
    * until provisioning completes. The one deliberate exception is a connection
    * that failed with AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED: the profile
    * remains readable there precisely so the offending value can be logged or
-   * reported.
-   *
-   * out_profile MUST have been initialized with AZ_IOT_HUB_PROFILE_INIT;
-   * an unstamped struct returns AZ_IOT_ERR_INVALID_ARG. */
+   * reported. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
       const az_iot_connection_client* client,
       az_iot_hub_profile* out_profile);

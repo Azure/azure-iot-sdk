@@ -467,6 +467,11 @@ Rules that apply to both clients:
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
   the operational credential is absent or uninitialized.
+- Every DPS and hub connection uses TLS. `open()` refuses a client with no `certificate_provider`
+  (`AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`), and a connect attempt whose `load()` fails fails with the
+  provider's error instead of connecting in plaintext. From `open()`, `open()` returns that error;
+  on a reconnect, the attempt is retried under the reconnection policy whatever the error (its
+  classification is reported, not acted on).
 - CSR-based DPS enrollment uses the `2026-11-02-preview` DPS API version and requires a
   caller-provided CSR payload buffer of at least `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes.
 

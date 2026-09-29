@@ -104,6 +104,7 @@ endfunction()
 # Test-support library: in-memory mqtt_iface mock used by multiple test exes.
 add_library(az_iot_test_support STATIC
     support/mock_mqtt_iface.c
+    support/test_provider.c
 )
 target_include_directories(az_iot_test_support PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -130,6 +131,12 @@ az_iot_add_cmocka_test(az_iot_tests_connection_reconnect unit/connection_reconne
 target_link_libraries(az_iot_tests_connection_reconnect PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_reconnect PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_env unit/env_test.c)
+target_include_directories(az_iot_tests_env PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99.
+    target_compile_definitions(az_iot_tests_env PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 az_iot_add_cmocka_test(az_iot_tests_connection_dps unit/connection_dps_test.c)
 target_link_libraries(az_iot_tests_connection_dps PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_dps PRIVATE
@@ -648,7 +655,7 @@ if(AZ_IOT_WITH_PAHO)
     target_include_directories(az_iot_reconnect_integration PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
     target_link_libraries(az_iot_reconnect_integration PRIVATE
-        az_iot_mqttv3 az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server)
+        az_iot_mqttv3 az_iot_adapter_paho az_iot_test_proxy az_iot_test_mqtt_server az_iot_test_support)
     if(UNIX)
         target_compile_definitions(az_iot_reconnect_integration PRIVATE
             _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
