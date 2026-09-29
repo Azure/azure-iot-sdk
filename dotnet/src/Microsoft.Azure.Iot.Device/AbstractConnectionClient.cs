@@ -259,10 +259,6 @@ namespace Microsoft.Azure.Iot.Device
             CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
-
-            Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
-            CurrentEndpoint = ConnectionEndpoint.None;
         }
 
         /// <summary>
