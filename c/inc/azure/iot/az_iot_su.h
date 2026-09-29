@@ -626,8 +626,10 @@ extern "C"
      * reached (`persist_retrying` false); with a limit of 1, once, with
      * `persist_retrying` false. See that macro for what giving up does.
      * Carries `state`, `reason` (AZ_IOT_ERR_INTERNAL) and `persist_attempts`.
-     * While retrying, the workflow is held at a reboot boundary: do not
-     * reboot the device. */
+     * Any write may fail: a reboot checkpoint, the terminal record, or the
+     * clear of a superseded record. Until PERSIST_RECOVERED, stored state may
+     * be missing or stale; a workflow at a reboot boundary is held there, so
+     * do not reboot the device. */
     AZ_IOT_SU_EVENT_PERSIST_FAILED,
 
     /* A persist_state_fn write succeeded after AZ_IOT_SU_EVENT_PERSIST_FAILED.

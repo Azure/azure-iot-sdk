@@ -115,7 +115,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 † Row 59 meets 9/28 only if the CI environment is provided by 9/28.
 
 **As of 9/29:** P0 rows 29, 38 and 56 are done; 54 is in review (#278); 59 is waiting on its
-environment. In review outside the matrix: bounded `persist_state_fn` retries with
+environment. Done outside the matrix: bounded `persist_state_fn` retries with
 `PERSIST_FAILED` / `PERSIST_RECOVERED` events (#293).
 
 
@@ -155,7 +155,7 @@ environment. In review outside the matrix: bounded `persist_state_fn` retries wi
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
 | 56 | Testing and conformance | ✅ | — | — | — | — | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
-| 38 | Software updates transport | ✅ | — | — | — | — | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` are unbounded (bounded and reported in review, #293). [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 38 | Software updates transport | ✅ | — | — | — | — | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` back off and stop after `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`, reported by `PERSIST_FAILED` / `PERSIST_RECOVERED` (#293). [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
