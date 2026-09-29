@@ -768,8 +768,34 @@ static void managed_a_chain_followed_by_other_text_is_refused(void** state)
   remove_test_files();
 }
 
-/* A persisted chain larger than the provider reads back is not used. A valid
- * chain padded with trailing whitespace is otherwise accepted. */
+/* A persisted chain padded with a little trailing whitespace is still used. */
+static void managed_a_persisted_chain_with_trailing_whitespace_is_used(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  FILE* fp = fopen(OP_CERT, "ab");
+  assert_non_null(fp);
+  assert_true(fputs("\n\n", fp) >= 0);
+  assert_int_equal(0, fclose(fp));
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(good);
+  remove_test_files();
+}
+
+/* A persisted chain larger than the provider reads back is not used. */
 static void managed_an_oversized_persisted_chain_is_not_used(void** state)
 {
   (void)state;
@@ -783,22 +809,14 @@ static void managed_an_oversized_persisted_chain_is_not_used(void** state)
   assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
   az_iot_certificate_provider_managed_deinit(&prov);
 
-  /* Control: a little trailing whitespace is fine. */
   FILE* fp = fopen(OP_CERT, "ab");
   assert_non_null(fp);
-  assert_true(fputs("\n\n", fp) >= 0);
-  assert_int_equal(0, fclose(fp));
-  az_iot_certificate_provider_managed check;
-  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&check, &opts));
-  assert_true(check.has_operational);
-  az_iot_certificate_provider_managed_deinit(&check);
-
-  fp = fopen(OP_CERT, "ab");
-  assert_non_null(fp);
-  for (int i = 0; i < 64 * 1024; ++i)
-  {
-    assert_true(fputc('\n', fp) != EOF);
-  }
+  const size_t pad_len = 64u * 1024u;
+  char* pad = malloc(pad_len);
+  assert_non_null(pad);
+  memset(pad, '\n', pad_len);
+  assert_true(fwrite(pad, 1, pad_len, fp) == pad_len);
+  free(pad);
   assert_int_equal(0, fclose(fp));
   az_iot_certificate_provider_managed prov2;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
@@ -1093,6 +1111,7 @@ int main(void)
     cmocka_unit_test(managed_store_refuses_a_chain_with_an_empty_entry),
     cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
     cmocka_unit_test(managed_a_chain_followed_by_other_text_is_refused),
+    cmocka_unit_test(managed_a_persisted_chain_with_trailing_whitespace_is_used),
     cmocka_unit_test(managed_an_oversized_persisted_chain_is_not_used),
     cmocka_unit_test(managed_store_refuses_an_oversized_chain),
 #if defined(_WIN32)
