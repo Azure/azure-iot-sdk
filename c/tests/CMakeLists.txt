@@ -131,6 +131,12 @@ az_iot_add_cmocka_test(az_iot_tests_connection_reconnect unit/connection_reconne
 target_link_libraries(az_iot_tests_connection_reconnect PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_reconnect PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_env unit/env_test.c)
+target_include_directories(az_iot_tests_env PRIVATE ${CMAKE_SOURCE_DIR}/src/core)
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99.
+    target_compile_definitions(az_iot_tests_env PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 az_iot_add_cmocka_test(az_iot_tests_connection_dps unit/connection_dps_test.c)
 target_link_libraries(az_iot_tests_connection_dps PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_dps PRIVATE

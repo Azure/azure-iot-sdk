@@ -155,9 +155,8 @@ static void on_connection_state_event_received(
 {
   sample_state* state = (sample_state*)user_ctx;
 
-  /* `reason` is the last field read here, and `scope` indexes an array. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
-      || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  /* `scope` indexes an array: ignore one this build does not know. */
+  if ((unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
   }
@@ -190,12 +189,6 @@ static void on_connection_state_event_received(
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
-
-  /* `service_error` is the last field read here. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
-  {
-    return;
-  }
 
   switch (event->kind)
   {

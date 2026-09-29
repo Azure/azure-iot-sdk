@@ -105,14 +105,18 @@ numbers that must land first · `Order` suggested sequence across remaining work
 target date (weekend dates moved to the next workday; `~` means not yet estimated), or
 `blocked` when something outside this repository gates it.
 
-`done` in the ETA column means the row is shipped or cut; those rows carry no priority,
-size or order.
+`done` in the ETA column means the row is shipped or cut. A row keeps the priority, size,
+dependencies and order it had when it was scheduled; rows finished before scheduling have none.
 
 **Targets:** P0 by **9/28** (fixed), everything else by **10/9**. See
 [Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
 velocity; three items cannot be dated, and row 59 holds its date only if its gate clears.
 
 † Row 59 meets 9/28 only if the CI environment is provided by 9/28.
+
+**As of 9/29:** P0 rows 29, 38 and 56 are done; 54 is in review (#278); 59 is waiting on its
+environment. In review outside the matrix: bounded `persist_state_fn` retries with
+`PERSIST_FAILED` / `PERSIST_RECOVERED` events (#293).
 
 
 | # | Category | Support | Pri | Size | Depends | Order | ETA | Details |
@@ -139,7 +143,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 26 | Install, apply, recovery | ✅ | — | — | — | — | done | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
 | 27 | Install, apply, recovery | ✅ | — | — | — | — | done | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
 | 28 | Install, apply, recovery | ✅ | — | — | — | — | done | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
-| 29 | Install, apply, recovery | ✅ | — | — | — | — | done | **Reboot coordination + resume** — persist-before-reboot (install- and apply-requested) + `resume()`; the blob carries the unsent terminal report, applied update id and ETags. [→](#e-install-apply-recovery) |
+| 29 | Install, apply, recovery | ✅ | P0 | M | — | 2 | done | **Reboot coordination + resume** — persist-before-reboot (install- and apply-requested) + `resume()`; the blob carries the unsent terminal report, applied update id and ETags. [→](#e-install-apply-recovery) |
 | 31 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/su/`. [→](#f-platform-and-crypto-adapters) |
 | 32 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_mbedtls` adapter** — factored into `adapters/su/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
 | 35 | Platform and crypto adapters | ✅ | — | — | — | — | done | **ESP32 platform adapter** — factored into `adapters/su/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
@@ -150,13 +154,13 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 45 | Software updates transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
-| 56 | Testing and conformance | ✅ | — | — | — | — | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
+| 56 | Testing and conformance | ✅ | P0 | S | — | 1 | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
+| 38 | Software updates transport | ✅ | P0 | S | 29 | 3 | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` are unbounded (bounded and reported in review, #293). [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
-| 38 | Software updates transport | 🟡 | P0 | S | 29 | 3 | 9/28 | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. NOT durable across a reboot: the persistence blob (v3) does not carry an unsent report, so a device that reboots mid-install loses it. [→](#g-software-updates-transport-via-the-dps-gateway) |
-| 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. [→](#j-library-and-agent-core-mode) |
-| 59 | Testing and conformance | 🟡 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su_offer` drives offered updates through the whole client (real crypto, download and report). Four scenarios pass against the service; three need their own staged offers, and `ci-c-e2e-adu` needs its environment. [→](#k-testing-and-conformance) |
+| 54 | Library / agent-core mode | 🔜 | P0 | M | — | 4 | 9/28 | **Library mode** — hand back a verified+parsed manifest; consumer drives their own state machine. In review (#278): `library_mode` option, `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` with the verified request and manifest, and `az_iot_su_client_report_status()`; breaking change to `az_iot_su_build_report()`. [→](#j-library-and-agent-core-mode) |
+| 59 | Testing and conformance | 🟡 | P0 | M | — | 5 | 9/28† | **E2E vs real software updates service** — `az_iot_tests_e2e_su_offer` drives offered updates through the whole client (real crypto, download and report). Four scenarios pass against the service; three need their own staged offers, and `ci-c-e2e-adu` needs its environment. Staging offers from a developer machine is also waiting on Device Update import and blob write rights in the test environment. [→](#k-testing-and-conformance) |
 | 49 | Delta and handlers | 🔜 | P1 | M | — | 6 | 9/30 | **Static step/download-handler registry** — name→fn "filter" (field-requested); static, in-process. [→](#i-delta-and-handlers) |
 | 51 | Delta and handlers | 🔜 | P1 | M | 49 | 7 | 10/1 | **Per-handler-type built-in handlers** — reference `apt`/`script`/`swupdate` handlers over the registry. [→](#i-delta-and-handlers) |
 | 52 | Delta and handlers | 🔜 | P1 | M | 49 | 8 | 10/2 | **Dynamic `ContentHandler` plugin loading** — optional `dlopen`/`LoadLibrary` registrar over the static registry (non-embedded); static registry stays the portable default. [→](#i-delta-and-handlers) |
@@ -165,7 +169,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 | 30 | Install, apply, recovery | 🟡 | P1 | M | 29 | 11 | 10/9 | **Health-check / auto-rollback after reboot (core)** — sample-only today; promote to core. [→](#e-install-apply-recovery) |
 | 34 | Platform and crypto adapters | 🔜 | P1 | L | — | 12 | 10/9 | **Linux platform adapter** — libcurl download / install cmd / file persist; factor from sample. [→](#f-platform-and-crypto-adapters) |
 | 40 | Software updates transport | 🟡 | P1 | M | — | 13 | 10/9 | **Bootstrap orchestration** — the pre-registration hold, the onboarding fetch and the report are in place, the hold is advisory (registration proceeds when it expires), and a queued request is bounded by `timeout_ms` so one that can never be served is abandoned rather than retried forever. The re-check **loop** is still absent: the engine issues one fetch per request. [→](#g-software-updates-transport-via-the-dps-gateway) |
-| 41 | Software updates transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_su_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll. [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 41 | Software updates transport | 🟡 | P1 | M | — | 14 | 10/9 | **Operational polling loop** — an on-demand provisioning session after registration exists, and the application picks the route with `az_iot_su_client_request_update()`. No cadence is owned by the SDK: the application decides when to poll; the `simulated_regular` PC sample and the ESP32 sample poll on a fixed interval. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 57 | Testing and conformance | 🔜 | P1 | M | — | 15 | 10/9 | **Adapter integration tests** — mock HTTP server + test manifest per adapter. [→](#k-testing-and-conformance) |
 | 33 | Platform and crypto adapters | 🟡 | P1 | S | — | — | blocked | **ESP32 sample port** — `samples/software_update/esp32` passes the connection client to `az_iot_su_client_init()`, asks on the onboarding route until it has connected to its hub (recorded in NVS) and on the regular route after, and polls every `SU_POLL_INTERVAL_S`. Builds with ESP-IDF v6.0; not run on a device since the port, and outside the CMake build, so nothing catches a regression. [→](#f-platform-and-crypto-adapters) |
 | 18 | Download and integrity | 🔜 | P2 | L | — | 16 | ~10/9 | **Delivery Optimization / peer cache** — offload download to a peer/CDN-cache provider behind the download seam; optional, default-off, direct-HTTPS fallback on constrained targets. [→](#c-download-and-integrity) |
@@ -388,8 +392,8 @@ handling should be reused rather than rebuilt. Remaining work is narrower:
    survive the return to Idle; order them against later workflow activity, and
    propagate the successfully applied ID into the cached identity for subsequent
    checks. Reuse the existing refused-report retry; it currently rebuilds from live
-   state rather than retaining a terminal snapshot. Reboot-durable reporting remains
-   a separate persistence concern.
+   state rather than retaining a terminal snapshot. The terminal report is now stored
+   and re-sent after a reboot (row 38).
 3. **Managed end-to-end evidence.** Test property replacement plus an explicit public
    request through the managed client and shipping channel, then verify operational
    convergence using a supported live-service fixture. Actual offered workflows also
@@ -530,7 +534,7 @@ Work items, in the order they were taken. Shipped (✅): **`su_core` + channel e
 twin-channel deletion** → **DPS update-check binding** (`GetDeviceUpdate` /
 `GetOnboardingDeviceUpdate`) → **reuse DPS device auth** (X.509) → **ETag/api-version +
 agent-info resend** → **advisory + load contracts** → **channel observes scoped connection
-state**. Partial (🟡): **`ReportDeviceUpdateStatus`** (not durable across a reboot),
+state** → **`ReportDeviceUpdateStatus`** (terminal report durable across a reboot). Partial (🟡):
 **bootstrap orchestration** (requests are bounded, but there is no re-check loop),
 **operational polling loop** (no SDK-owned cadence). Not started (🔜): **root key package
 download**. The per-row detail is in the matrix above.
@@ -600,7 +604,7 @@ Beyond the turnkey client, the SDK should be usable as the **vetted core** other
 full agent on. Provide a way to **validate + parse a manifest**, then let the consumer pick:
 
 - **Turnkey (✅):** the SDK drives the whole workflow (today's client).
-- **Library mode (🔜):** hand back a **filled, already-verified** manifest struct; the
+- **Library mode (🔜, in review: #278):** hand back a **filled, already-verified** manifest struct; the
   consumer drives download/install/apply/report on their own state machine, threading and
   extension model. Reuses the same trust code so nobody re-implements JWS/RS256/SHA-256.
   Detail: [su-client-design.md](su-client-design.md) Part C.

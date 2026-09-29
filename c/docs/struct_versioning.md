@@ -1,47 +1,44 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Struct Versioning: ABI Compatibility Across Library Versions
+# Struct versioning
 
-## The Problem
+## Policy
 
-`az_iot_telemetry_message` is **stack-allocated by the user** (e.g. `az_iot_telemetry_message msg = {0};`). Its layout is baked into the user's compiled `.o` at compile time.
+The SDK guarantees **source compatibility only**. There is no ABI guarantee
+between releases.
 
-### What breaks when v2 appends `some_new_prop`:
+Application and SDK each compile the layout of every public struct from the
+headers they were built with, whichever side allocates it (e.g. client and
+options structs by the application, state events by the SDK). A release may add
+fields to any public struct, which changes its size and layout. After any SDK update, recompile every
+application object against the new headers; relinking objects built against
+older headers is not supported.
 
-1. **`sizeof` mismatch** — The user app was compiled against v1 headers, so `sizeof(az_iot_telemetry_message)` is smaller than what the v2 library expects. The library reads past the end of the user's struct instance → **undefined behavior** (reads garbage or adjacent stack data for `some_new_prop`).
+| Linking | Effect |
+|---|---|
+| Static (default; embedded devices) | A deployed binary keeps the SDK it was linked with until it is rebuilt. |
+| Shared (`-DBUILD_SHARED_LIBS=ON`) | A replaced library is picked up at load time, so the application must be rebuilt with it. |
 
-2. **`{0}` doesn't zero the new field from the library's perspective** — Even if sizes happened to align (padding luck), the user never wrote to `some_new_prop`, so the library sees uninitialized memory it interprets as a valid value.
+## Shared libraries
 
-3. **`memcpy`/assignment of the struct** inside the library copies the wrong number of bytes if the lib uses its own `sizeof`.
+- `az_iot_core`, `az_iot_mqttv3` and `az_iot_mqttv5` build as shared libraries.
+  Adapters are always static.
+- azure-sdk-for-c is always static (position-independent in a shared build) and
+  a public dependency of `az_iot_core`, since its types are in our headers. On
+  Linux, `az_iot_mqttv3`/`az_iot_mqttv5` resolve it from `az_iot_core`; on
+  Windows, each DLL or executable calling it links its own copy. Copies are
+  independent: the SDK sets no azure-sdk-for-c global state (log or precondition
+  callbacks).
+- The full release version is in the soname (`libaz_iot_core.so.0.0.1`) and the
+  Windows DLL name (`az_iot_core-0.0.1.dll`). An application built against one
+  release fails to load with any other, instead of misreading struct layouts.
+- Windows: each DLL links the static CRT (`/MT`), so heap, `FILE*` and
+  environment are per module. The SDK API does not pass them across.
 
-4. **Arrays of the struct** have completely wrong stride; element N is at the wrong offset.
+## Adding a field
 
----
-
-## Bullet-proof mitigations
-
-| Technique | How it works |
-|-----------|-------------|
-| **Opaque allocation + init function** | Don't let the user declare the struct on the stack. Provide `az_iot_telemetry_message_create()`/`_init()` that returns a lib-allocated (or lib-sized) struct. User only holds a pointer. The library owns `sizeof`. |
-| **Versioned options pattern** | Add a `uint32_t _reserved` or `uint32_t version` as the first field. The init function stamps the struct size or version tag. The library checks this before reading any field added after v1. New fields default to safe values when version < current. |
-| **Builder API (no user-visible struct)** | Replace the struct with a builder handle:<br>`az_iot_telemetry_message_builder* b;`<br>`msg_builder_set_payload(b, ...);`<br>`msg_builder_set_content_type(b, ...);`<br>New fields are simply new setters — old apps never call them, defaults apply. |
-| **Embed struct size at call site** | Macro wraps the send call to pass `sizeof(msg)` as a hidden parameter. Library reads only up to that many bytes and defaults the rest:<br>`#define az_iot_mqttv3_telemetry_client_send(tc, msg, cb, ctx) \`<br>`  _az_iot_mqttv3_telemetry_client_send_v(tc, msg, sizeof(*(msg)), cb, ctx)` |
-| **Static assert on ABI version** | Ship a compile-time constant `AZ_IOT_ABI_VERSION` in the header. The library exports a symbol with the same name. A static-assert or link-time check (`_ABI_V2` symbol) ensures header ↔ .a agreement. Catches mismatch at build time rather than runtime. |
-| **Never extend; deprecate and replace** | Freeze `az_iot_telemetry_message` forever. If v2 needs more fields, introduce `az_iot_telemetry_message2` and a new `_send2()` entry point. Old apps keep working against the old struct/API. |
-
----
-
-## Recommended combination for this codebase
-
-Since the struct is currently passed as `const*` into `_send()`, the cheapest safe evolution path is:
-
-1. Add a **`uint32_t _internal_size;`** field at the top of the struct now (v1).
-2. Provide an **initializer macro** (replaces raw `= {0}`):
-   ```c
-   #define az_iot_TELEMETRY_MESSAGE_INIT \
-       { ._internal_size = sizeof(az_iot_telemetry_message) }
-   ```
-3. Inside `_send()`, compare `msg->_internal_size` against the library's own `sizeof`. If smaller → the user compiled against an older header → ignore/default any fields beyond that size.
-
-This is the pattern used by Win32 (`cbSize`), Vulkan (`sType`/`pNext`), and the Azure SDK for C (`_internal` fields). It requires no heap allocation, no builder ceremony, and catches the mismatch at runtime with a clean error rather than UB.
+- Append it and make zero mean the previous behaviour, so existing code that
+  zero-initializes the struct keeps its behaviour once recompiled.
+- Adapter-facing structs (`az_iot_mqtt_iface.h`) follow the same rule, so a
+  bring-your-own adapter keeps working once recompiled.

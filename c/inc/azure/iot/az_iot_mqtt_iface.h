@@ -134,12 +134,9 @@ extern "C"
 
   /* TLS credentials handed to an adapter on connect.
    *
-   * Fields are only ever APPENDED, never reordered or removed: the struct is
-   * populated by the SDK and read by the adapter, so an adapter compiled
-   * against an older copy of this header simply never reads the tail. New
-   * fields must therefore mean "not requested" when zero, which is what
-   * az_iot_mqtt_connect_options zero-initialization already yields (see
-   * docs/struct_versioning.md). */
+   * Populated by the SDK and read by the adapter. A new field must mean "not
+   * requested" when zero, so an adapter written before it keeps working once
+   * rebuilt (see docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
   {
     const char* trusted_ca_path; /* file or NULL for system store */
@@ -233,11 +230,9 @@ extern "C"
      *
      * It belongs to the connect options rather than to disconnect() because the
      * vtable is a published seam: adding a parameter to disconnect(), or a slot
-     * to az_iot_mqtt_iface, changes the ABI every bring-your-own adapter is
-     * compiled against, while a field appended here is the evolution this
-     * struct already documents -- an adapter built against an older header
-     * simply never reads it, and a zero leaves the behaviour that predates the
-     * field (see docs/struct_versioning.md).
+     * to az_iot_mqtt_iface, changes every bring-your-own adapter's source, while
+     * an adapter written before this field never reads it, and a zero leaves
+     * the behaviour that predates it (see docs/struct_versioning.md).
      *
      * 0 is AZ_IOT_MQTT_DISCONNECT_NORMAL, which is also what an MQTT 5
      * DISCONNECT with no reason code means, so zero-initialization keeps the
