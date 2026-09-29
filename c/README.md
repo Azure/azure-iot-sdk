@@ -46,7 +46,7 @@ Run a sample binary:
 
 ### Build hardening
 
-GCC and Clang builds are hardened by default (`AZ_IOT_HARDENING=ON`); see
+GCC and Clang builds are hardened by default (`AZ_IOT_ENABLE_HARDENING=ON`); see
 [cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake). MSVC builds are not
 affected.
 
@@ -70,10 +70,10 @@ its own flags.
 **Turning it off.** It is all or nothing; individual flags cannot be removed through
 `CMAKE_C_FLAGS`, because the SDK's flags come later on the command line.
 
-- Command line: `cmake --preset linux-gcc-debug -DAZ_IOT_HARDENING=OFF`
+- Command line: `cmake --preset linux-gcc-debug -DAZ_IOT_ENABLE_HARDENING=OFF`
 - Parent project, before adding the SDK:
   ```cmake
-  set(AZ_IOT_HARDENING OFF)
+  set(AZ_IOT_ENABLE_HARDENING OFF)
   add_subdirectory(azure-iot-sdk/c)
   ```
 - Personal preset, in an untracked `CMakeUserPresets.json` next to `CMakePresets.json`:
@@ -86,7 +86,7 @@ its own flags.
         "inherits": "linux-gcc-debug",
         "binaryDir": "${sourceDir}/build/linux-gcc-debug-relaxed",
         "cacheVariables": {
-          "AZ_IOT_HARDENING": "OFF",
+          "AZ_IOT_ENABLE_HARDENING": "OFF",
           "AZ_IOT_WARNINGS_AS_ERRORS": "OFF"
         }
       }
@@ -96,11 +96,14 @@ its own flags.
 
 `AZ_IOT_WARNINGS_AS_ERRORS=OFF` drops `-Werror`/`/WX` only; `-Werror=format-security`
 belongs to hardening. Package builds that inject their own hardening flags (e.g. Debian,
-Yocto) can set `AZ_IOT_HARDENING=OFF` to avoid duplicates.
+Yocto) can set `AZ_IOT_ENABLE_HARDENING=OFF` to avoid duplicates.
 
-**Verifying.** `eng/check-hardening.sh <build-dir>` checks every ELF executable and
-shared library for PIE, RELRO, `BIND_NOW`, a non-executable stack and stack protector
-use. CI runs it on gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`).
+**Verifying.** `eng/check-hardening.sh <build-dir>` fails any ELF executable or shared
+library without PIE (executables), RELRO, `BIND_NOW` or a non-executable stack. The stack
+protector check is weaker: it covers first-party executables only (not shared libraries),
+reports each one without a canary reference, and fails only if none has one; a binary with
+no function that needs a canary legitimately has none. CI runs it on gcc and clang, static
+and shared (`hardening-linux` in `ci-c.yml`).
 
 ## Install and consume
 

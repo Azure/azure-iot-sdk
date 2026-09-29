@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Compiler and linker hardening for GCC and Clang (AZ_IOT_HARDENING, default ON).
+# Compiler and linker hardening for GCC and Clang (AZ_IOT_ENABLE_HARDENING, default ON).
 #
 # Applied with add_compile_options()/add_link_options() from the top-level CMakeLists.txt before
 # any dependency is fetched, so azure-sdk-for-c, Paho, the SDK, samples and tests are all built
@@ -23,7 +23,7 @@ include(CheckCCompilerFlag)
 include(CheckLinkerFlag)
 include(CheckPIESupported)
 
-if(NOT AZ_IOT_HARDENING OR MSVC OR NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+if(NOT AZ_IOT_ENABLE_HARDENING OR MSVC OR NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     return()
 endif()
 
