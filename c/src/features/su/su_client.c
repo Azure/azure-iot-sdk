@@ -1332,7 +1332,6 @@ static void raise_abandoned(
     const az_iot_su_service_error* service_error)
 {
   az_iot_su_event event = {
-    ._internal_size = sizeof(az_iot_su_event),
     .kind = AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
     .state = SU_I(client).state,
     .previous_state = SU_I(client).state,
@@ -1371,7 +1370,6 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
   SU_I(client).state = next;
 
   az_iot_su_event event = {
-    ._internal_size = sizeof(az_iot_su_event),
     .kind = AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED,
     .state = next,
     .previous_state = previous,

@@ -1994,7 +1994,7 @@ static void dps_mqtt_v5_profile_connects_the_hub_over_v5(void** state)
   profile_finish_hub_leg(&pf, true);
   assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   assert_string_equal(hp.connection_profile_raw, "mqttV5");
@@ -2013,7 +2013,7 @@ static void dps_mqtt_v3_profile_connects_the_hub_over_v3_1_1(void** state)
   profile_finish_hub_leg(&pf, false);
   assert_int_equal(az_iot_test_last_state(&pf.log), AZ_IOT_CONN_STATE_CONNECTED);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
@@ -2029,14 +2029,12 @@ static void assert_state_event_contract(
   bool saw_connected = false;
   for (size_t i = 0; i < log->count; ++i)
   {
-    assert_int_equal(log->event_sizes[i], sizeof(az_iot_connection_state_event));
     /* HUB:CONNECTED only: DPS reaches CONNECTED at its SUBACK, before any
      * assignment exists to name a generation. */
     if (log->scopes[i] == AZ_IOT_CONN_SCOPE_HUB && log->states[i] == AZ_IOT_CONN_STATE_CONNECTED)
     {
       saw_connected = true;
       assert_true(log->profile_present[i]);
-      assert_int_equal(log->profile_sizes[i], sizeof(az_iot_hub_profile));
       assert_int_equal(log->profiles[i], expected_profile);
       assert_string_equal(log->profile_raw[i], expected_raw);
     }
@@ -2048,7 +2046,7 @@ static void assert_state_event_contract(
   assert_true(saw_connected);
 }
 
-static void mqtt_v3_state_events_are_stamped_and_profile_only_on_connected(void** state)
+static void mqtt_v3_state_events_carry_profile_only_on_connected(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
@@ -2061,7 +2059,7 @@ static void mqtt_v3_state_events_are_stamped_and_profile_only_on_connected(void*
   profile_fixture_close(&pf);
 }
 
-static void mqtt_v5_state_events_are_stamped_and_profile_only_on_connected(void** state)
+static void mqtt_v5_state_events_carry_profile_only_on_connected(void** state)
 {
   (void)state;
   profile_fixture pf = { 0 };
@@ -2086,7 +2084,7 @@ static void dps_absent_profile_defaults_to_mqtt_v3(void** state)
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
@@ -2105,7 +2103,7 @@ static void dps_null_profile_defaults_to_mqtt_v3(void** state)
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
 
@@ -2125,7 +2123,7 @@ static void dps_absent_profile_can_be_overridden_to_mqtt_v5(void** state)
   assert_hub_leg_used(&pf, pf.v5);
   profile_finish_hub_leg(&pf, true);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   assert_string_equal(hp.connection_profile_raw, "mqttV5");
@@ -2160,7 +2158,7 @@ static void dps_wire_profile_wins_over_the_development_override(void** state)
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
@@ -2178,7 +2176,7 @@ static void dps_mqtt_v3_development_override_is_accepted(void** state)
   assert_hub_leg_used(&pf, pf.v3);
   profile_finish_hub_leg(&pf, false);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(hp.connection_profile_raw, "classic");
@@ -2253,7 +2251,7 @@ static void dps_unknown_profile_is_still_reported_verbatim(void** state)
   profile_fixture_open(&pf);
   profile_assign(&pf, k_assigned_profile_unknown);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
   assert_string_equal(hp.connection_profile_raw, "mqttV9-quantum");
@@ -2274,7 +2272,7 @@ static void dps_overlong_profile_is_flagged_as_truncated(void** state)
   profile_fixture_open(&pf);
   profile_assign(&pf, k_assigned_profile_overlong);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_true(hp.connection_profile_raw_truncated);
   /* Unknown, so the connection fails closed rather than guessing a protocol. */
@@ -2303,40 +2301,8 @@ static void get_hub_profile_before_connected_is_rejected(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
 
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&c, &hp), AZ_IOT_ERR_NOT_CONNECTED);
-
-  az_iot_connection_client_deinit(&c);
-}
-
-/* The size stamp is what will let this struct grow without breaking callers, so
- * an unstamped `= {0}` has to be refused now -- while there are no shipped
- * callers -- rather than silently misread later. */
-static void get_hub_profile_rejects_an_unstamped_struct(void** state)
-{
-  (void)state;
-  az_iot_connection_client_options opts = dps_options();
-  az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
-
-  az_iot_hub_profile hp = { 0 }; /* the mistake this guard exists for */
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&c, &hp), AZ_IOT_ERR_INVALID_ARG);
-
-  az_iot_connection_client_deinit(&c);
-}
-
-/* A caller built against a newer header expects fields this build never writes;
- * reporting success would leave them reading uninitialized memory. */
-static void get_hub_profile_rejects_a_newer_caller_struct(void** state)
-{
-  (void)state;
-  az_iot_connection_client_options opts = dps_options();
-  az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
-
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
-  hp._internal_size = (uint32_t)(sizeof(az_iot_hub_profile) + 8u);
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&c, &hp), AZ_IOT_ERR_NOT_SUPPORTED);
 
   az_iot_connection_client_deinit(&c);
 }
@@ -2344,7 +2310,7 @@ static void get_hub_profile_rejects_a_newer_caller_struct(void** state)
 static void get_hub_profile_rejects_null_arguments(void** state)
 {
   (void)state;
-  az_iot_hub_profile hp = AZ_IOT_HUB_PROFILE_INIT;
+  az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(NULL, &hp), AZ_IOT_ERR_INVALID_ARG);
 
   az_iot_connection_client_options opts = dps_options();
@@ -3540,7 +3506,6 @@ static void a_dps_failure_carries_the_service_error_code_and_message(void** stat
 
   assert_int_equal(fx->log.reasons[i_fault], AZ_IOT_ERR_DPS);
   assert_true(fx->log.error_present[i_fault]);
-  assert_int_equal(fx->log.error_sizes[i_fault], sizeof(az_iot_connection_error_detail));
   assert_int_equal(fx->log.error_sources[i_fault], AZ_IOT_CONN_ERR_SRC_DPS);
   assert_int_equal(fx->log.error_codes[i_fault], 400207);
   assert_string_equal(fx->log.error_message[i_fault], "Custom allocation failed");
@@ -3998,8 +3963,8 @@ int main(void)
     /* connection profile */
     cmocka_unit_test(dps_mqtt_v5_profile_connects_the_hub_over_v5),
     cmocka_unit_test(dps_mqtt_v3_profile_connects_the_hub_over_v3_1_1),
-    cmocka_unit_test(mqtt_v3_state_events_are_stamped_and_profile_only_on_connected),
-    cmocka_unit_test(mqtt_v5_state_events_are_stamped_and_profile_only_on_connected),
+    cmocka_unit_test(mqtt_v3_state_events_carry_profile_only_on_connected),
+    cmocka_unit_test(mqtt_v5_state_events_carry_profile_only_on_connected),
     cmocka_unit_test(dps_absent_profile_defaults_to_mqtt_v3),
     cmocka_unit_test(dps_null_profile_defaults_to_mqtt_v3),
     cmocka_unit_test(dps_absent_profile_can_be_overridden_to_mqtt_v5),
@@ -4012,8 +3977,6 @@ int main(void)
     cmocka_unit_test(dps_unknown_profile_is_still_reported_verbatim),
     cmocka_unit_test(dps_overlong_profile_is_flagged_as_truncated),
     cmocka_unit_test(get_hub_profile_before_connected_is_rejected),
-    cmocka_unit_test(get_hub_profile_rejects_an_unstamped_struct),
-    cmocka_unit_test(get_hub_profile_rejects_a_newer_caller_struct),
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),

@@ -27,6 +27,11 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Windows finds DLLs next to the executable: keep them together.
+if(WIN32 AND BUILD_SHARED_LIBS AND NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+endif()
+
 include(az_iot_options)
 include(compiler_warnings)
 include(az_iot_coverage)
@@ -71,7 +76,20 @@ FetchContent_Declare(
     GIT_TAG        ${AZ_SDK_C_TAG}
     GIT_SHALLOW    TRUE
 )
+# Always static: az_core and its platform library depend on each other, which
+# CMake allows only between static libraries. Position-independent in a shared
+# build, so it links into our shared libraries.
+set(_az_iot_shared "${BUILD_SHARED_LIBS}")
+set(BUILD_SHARED_LIBS OFF)
+set(_az_iot_pic "${CMAKE_POSITION_INDEPENDENT_CODE}")
+if(_az_iot_shared)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 FetchContent_MakeAvailable(azure_sdk_for_c)
+set(BUILD_SHARED_LIBS "${_az_iot_shared}")
+set(CMAKE_POSITION_INDEPENDENT_CODE "${_az_iot_pic}")
+unset(_az_iot_shared)
+unset(_az_iot_pic)
 
 # Restore developer warnings for our own code.
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS OFF CACHE INTERNAL "")
