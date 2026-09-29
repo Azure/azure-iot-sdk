@@ -213,8 +213,9 @@ void az_iot_certificate_provider_managed_deinit(
     az_iot_certificate_provider_managed* provider);
 ```
 
-Behavior: `get_csr()` builds a PKCS#10 over the operational key with
-`CN=registration_id`; `store_issued_certificate()` writes to `issued_cert_pem_path` and
+Behavior: `get_csr()` builds a PKCS#10 over a new key with `CN=registration_id`, held in
+memory until its chain arrives; `store_issued_certificate()` then replaces the operational
+key and chain on disk together (a chain for the current key replaces only the chain) and
 flips `load()` to operational material; on init, if a valid non-expired issued cert
 already exists on disk it MAY present it immediately and skip enrollment (the rotation
 story).
