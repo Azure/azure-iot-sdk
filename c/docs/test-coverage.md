@@ -942,6 +942,11 @@ own, so they are unit-tested only.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
+| Environment | An unset variable reads as empty | — | unit | Done | [an_unset_variable_reads_as_empty](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/env_test.c) |
+|  | A value set by the application is read | Set in the test executable, read by the library. | unit | Done | [a_value_set_by_the_application_is_read](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/env_test.c) |
+|  | A value of cap minus one fits | — | unit | Done | [a_value_of_cap_minus_one_fits](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/env_test.c) |
+|  | A value of cap does not fit and reads as empty | `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. | unit | Done | [a_value_of_cap_does_not_fit_and_reads_as_empty](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/env_test.c) |
+|  | A changed value is read again | — | unit | Done | [a_changed_value_is_read_again](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/env_test.c) |
 | JSON string decode | Plain text is copied | — | unit | Done | [plain_text_is_copied](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
 |  | Every two-character escape decodes | — | unit | Done | [every_two_character_escape_decodes](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
 |  | Unicode escapes cover each UTF-8 width | 1-, 2- and 3-byte bounds. | unit | Done | [unicode_escapes_cover_each_utf8_width](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/json_string_test.c) |
