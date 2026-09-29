@@ -11,7 +11,7 @@
 HOMEPAGE = "https://github.com/Azure/azure-iot-sdk"
 
 AZ_IOT_SDK_GIT_URI ?= "git://github.com/Azure/azure-iot-sdk.git;protocol=https;branch=main"
-SRCREV_sdk ?= "f0f506fc1dd21d3fd1f315563ba097326a1a722d"
+SRCREV_sdk ?= "92a3a80baefae800e73d0e7faab28f7ccf416e06"
 
 SRC_URI = "${AZ_IOT_SDK_GIT_URI};name=sdk"
 SRCREV_FORMAT = "sdk"
