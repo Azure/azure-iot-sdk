@@ -4,7 +4,11 @@
 # (Secure Boot v2, flash encryption in release mode). Try it on a spare board, or first with
 # sdkconfig.secure_virtual_efuse, which burns nothing.
 #
-#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure" build
+#   idf.py -B build-secure -D SDKCONFIG=sdkconfig.production \
+#          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.secure" set-target <target>
+#
+# Use a separate SDKCONFIG: an existing sdkconfig takes precedence over these overlays.
+# See README.md, "Production security profile".
 #
 # ESP32 below chip revision v3.0 has no Secure Boot v2: also append sdkconfig.secure_esp32_legacy.
 # Target-specific settings are in sdkconfig.secure.<target>, which ESP-IDF applies automatically.

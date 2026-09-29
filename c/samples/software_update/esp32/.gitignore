@@ -7,3 +7,7 @@
 
 # Secure Boot signing key (sdkconfig.secure). Never commit it.
 /secure_boot_signing_key.pem
+# Security profile build (see README.md). Holds Wi-Fi and device settings.
+/sdkconfig.production
+/sdkconfig.production.old
+/build-secure/

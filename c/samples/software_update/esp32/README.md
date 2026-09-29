@@ -228,8 +228,7 @@ revision. For production, layer these opt-in overlays on top of
 2. Read the chip revision: `idf.py -p <PORT> efuse-summary`, or the
    `Chip is ... (revision vX.Y)` line printed by `esptool`.
 
-3. Select the overlays for the chip, rehearse, then build for real. Run
-   `idf.py fullclean` when switching profiles.
+3. Select the overlays for the chip.
 
    | Chip | `SDKCONFIG_DEFAULTS` |
    |---|---|
@@ -237,15 +236,40 @@ revision. For production, layer these opt-in overlays on top of
    | ESP32 below rev v3.0 | `sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy` |
    | Rehearsal (any of the above) | append `;sdkconfig.secure_virtual_efuse` |
 
+4. Build with its own `sdkconfig` and build directory. An existing `sdkconfig`
+   takes precedence over the overlays, so reusing the one from
+   [Build and flash](#build-and-flash) can silently build without them.
+   `set-target` creates `sdkconfig.production` from the overlays; enter the
+   [settings](#settings) again, then check the profile is active before flashing.
+
    ```sh
-   idf.py fullclean
-   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse" build flash monitor
+   SECURE=(-B build-secure -D SDKCONFIG=sdkconfig.production \
+           -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse")
+   idf.py "${SECURE[@]}" set-target esp32
+   idf.py "${SECURE[@]}" menuconfig
+   grep -E '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
+   idf.py "${SECURE[@]}" build flash monitor
    ```
+
+   PowerShell:
+
+   ```powershell
+   $secure = '-B', 'build-secure', '-D', 'SDKCONFIG=sdkconfig.production',
+             '-D', 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_virtual_efuse'
+   idf.py @secure set-target esp32
+   idf.py @secure menuconfig
+   Select-String '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
+   idf.py @secure build flash monitor
+   ```
+
+   To switch overlays, for example from the rehearsal to the real profile, delete
+   `build-secure` and `sdkconfig.production` and repeat this step. Both are
+   git-ignored.
 
    The rehearsal writes eFuse changes to the `efuse_em` partition instead of the
    chip, and does not protect flash contents. Never ship it.
 
-4. Build update images with the same profile and signing key. Unsigned or
+5. Build update images with the same arguments and signing key. Unsigned or
    wrongly signed images fail the OTA and boot checks.
 
 With Secure Boot v1, `idf.py flash` does not flash the bootloader: run

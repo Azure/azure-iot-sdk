@@ -1,6 +1,10 @@
 # ESP32 below chip revision v3.0: Secure Boot v1 instead of v2. Append after sdkconfig.secure:
 #
-#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy" build
+#   idf.py -B build-secure -D SDKCONFIG=sdkconfig.production \
+#          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.secure;sdkconfig.secure_esp32_legacy" set-target <target>
+#
+# Use a separate SDKCONFIG: an existing sdkconfig takes precedence over these overlays.
+# See README.md, "Production security profile".
 #
 # The key is ECDSA P-256:
 #   espsecure generate-signing-key --version 1 secure_boot_signing_key.pem
