@@ -16,8 +16,9 @@
 # --- Partition table with nvs_keys (and efuse_em for virtual eFuse testing) --
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_secure.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions_secure.csv"
-# Secure Boot and flash encryption enlarge the bootloader.
-CONFIG_PARTITION_TABLE_OFFSET=0xD000
+# Secure Boot and flash encryption enlarge the bootloader. At 0xD000 the signed ESP32 Secure Boot v2
+# bootloader fills its space exactly (0xC000); 0x10000 leaves 12 KB for growth.
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
 
 # --- Secure Boot v2 ----------------------------------------------------------
 # Generate the key once and keep it private (never commit it):

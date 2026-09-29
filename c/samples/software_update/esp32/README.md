@@ -210,7 +210,7 @@ revision. For production, layer these opt-in overlays on top of
 | Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0 |
 | Flash encryption | Release mode |
 | NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32, and every chip in the rehearsal); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
-| Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0xD000, for the larger bootloader; same A/B app slots |
+| Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0x10000, for the larger bootloader; same A/B app slots |
 
 > **Irreversible.** The first boot of such an image burns eFuses. Download mode,
 > JTAG and reflashing become restricted, and a lost signing key means the device

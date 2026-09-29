@@ -1,7 +1,7 @@
 # Partition table for the opt-in secure profile (sdkconfig.secure), 4 MB flash.
 #
 # Same A/B app slots as partitions.csv. Offsets are left to the generator, after the partition
-# table at 0xD000 (CONFIG_PARTITION_TABLE_OFFSET), which leaves room for the larger bootloader.
+# table at 0x10000 (CONFIG_PARTITION_TABLE_OFFSET), which leaves room for the larger bootloader.
 # nvs_keys holds the NVS encryption keys when they are protected by flash encryption.
 # efuse_em is used only with sdkconfig.secure_virtual_efuse.
 #
