@@ -33,8 +33,12 @@ repos:
 
 local_conf_header:
   azure-iot-sdk: |
-    INHERIT += "rm_work"
-    RM_WORK_EXCLUDE += "azure-iot-sdk azure-iot-sdk-pkgconfig-test"
+    # Build only what the two recipes need (about 900 tasks instead of 3000):
+    # rm_work would build the full runtime closure (kernel included), ptest
+    # the ptest dependencies, create-spdx the SPDX of every dependency.
+    DISTRO_FEATURES:remove = "ptest"
+    INHERIT:remove = "create-spdx"
+    PACKAGE_CLASSES = "package_ipk"
     # Any QA warning from this layer's recipes fails the build.
     ERROR_QA:append:pn-azure-iot-sdk = " ${WARN_QA}"
     ERROR_QA:append:pn-azure-iot-sdk-pkgconfig-test = " ${WARN_QA}"

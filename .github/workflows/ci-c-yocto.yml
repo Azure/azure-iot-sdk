@@ -5,7 +5,7 @@
 # consumer) with bitbake for qemux86-64 on scarthgap.
 #
 # A full bitbake without shared state builds the whole cross toolchain first
-# (about 3000 tasks, hours). So the shared state (SSTATE_DIR) is cached, one
+# (about 900 tasks, about an hour). So the shared state (SSTATE_DIR) is cached, one
 # entry per kas.yml, and pull requests are capped at 20 minutes:
 # - Pull request, cache present: full bitbake. Only this layer's recipes build.
 # - Pull request, no cache (e.g. kas.yml changed): bitbake parse, fetch and
@@ -174,8 +174,9 @@ jobs:
           kas shell c/platforms/yocto/kas.yml -c "
             bitbake azure-iot-sdk azure-iot-sdk-pkgconfig-test -c unpack &&
             bitbake-getvar -q -r azure-iot-sdk --value S > '$RUNNER_TEMP/recipe-S' &&
-            bitbake-getvar -q -r azure-iot-sdk --value EXTRA_OECMAKE > '$RUNNER_TEMP/recipe-EXTRA_OECMAKE'"
-          cat "$RUNNER_TEMP/recipe-S" "$RUNNER_TEMP/recipe-EXTRA_OECMAKE"
+            bitbake-getvar -q -r azure-iot-sdk --value EXTRA_OECMAKE > '$RUNNER_TEMP/recipe-EXTRA_OECMAKE' &&
+            bitbake-getvar -q -r azure-iot-sdk --value PACKAGECONFIG_CONFARGS > '$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS'"
+          cat "$RUNNER_TEMP/recipe-S" "$RUNNER_TEMP/recipe-EXTRA_OECMAKE" "$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS"
 
       - name: Host build of the unpacked recipe source
         if: steps.mode.outputs.full != 'true'
@@ -184,10 +185,12 @@ jobs:
           AZURE_SDK_DISABLE_AUTO_VCPKG: "1"
         run: |
           src="$(cat "$RUNNER_TEMP/recipe-S")"
+          # The CMake arguments bitbake passes: EXTRA_OECMAKE and the PACKAGECONFIG switches.
           read -ra args < "$RUNNER_TEMP/recipe-EXTRA_OECMAKE"
+          read -ra pkgconfig_args < "$RUNNER_TEMP/recipe-PACKAGECONFIG_CONFARGS"
           prefix="$RUNNER_TEMP/recipe-prefix"
           cmake -S "$src" -B "$RUNNER_TEMP/recipe-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$prefix" -DFETCHCONTENT_FULLY_DISCONNECTED=ON "${args[@]}"
+                -DCMAKE_INSTALL_PREFIX="$prefix" -DFETCHCONTENT_FULLY_DISCONNECTED=ON "${args[@]}" "${pkgconfig_args[@]}"
           cmake --build "$RUNNER_TEMP/recipe-build"
           cmake --install "$RUNNER_TEMP/recipe-build"
           pcdir="$(dirname "$(find "$prefix" -name azure-iot-sdk-core.pc)")"
