@@ -36,6 +36,7 @@ typedef struct su_simulation_control
   char* state_file; /**< SU_SIM_STATE_FILE: resume blob path. Owned. */
 
   int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED. */
+  int reboot_pending; /**< The requested reboot is still wanted; cleared by a rollback. */
   int persist_failed; /**< Nonzero when the last checkpoint write failed. */
 
   /** What is installed now. su_is_installed() answers ALREADY_INSTALLED for a

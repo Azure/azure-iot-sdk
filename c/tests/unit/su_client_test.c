@@ -222,6 +222,7 @@ typedef struct
   /* Persistence / resume. */
   int persist_failures; /* this many persist calls fail before one succeeds */
   int32_t persist_error; /* what a failing persist call returns; 0 means 1 */
+  int persist_blob_failures; /* this many non-empty writes fail; erases succeed */
   int persist_calls;
   uint8_t persist_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE];
   size_t persist_len;
@@ -426,6 +427,11 @@ static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
   {
     l->persist_failures--;
     return (l->persist_error != 0) ? l->persist_error : 1;
+  }
+  if (len > 0 && l->persist_blob_failures > 0)
+  {
+    l->persist_blob_failures--;
+    return 1;
   }
   if (len == 0)
   {
@@ -3695,52 +3701,194 @@ static void a_limit_of_one_gives_up_on_the_first_failure(void** state)
   assert_int_equal(fx->persist_failed_count, 1);
 }
 
-/* A workflow held at a reboot boundary by a failing checkpoint write is rolled
- * back when a new workflow supersedes it, at an install boundary and at the
- * next step after an apply-requested reboot. */
-static void superseding_a_held_workflow_rolls_it_back(void** state)
+/* Hold a distinct-files workflow at a reboot boundary with a checkpoint write
+ * that keeps failing: after install (INSTALL_COMPLETE, step 0) or after an
+ * apply that asked for a reboot (DOWNLOAD_STARTED, step 1). */
+static void hold_at_reboot_boundary(fixture* fx, bool apply_reboot)
 {
-  fixture* fx = (fixture*)*state;
-  const struct
+  if (apply_reboot)
   {
-    bool apply_reboot;
-    az_iot_su_state held;
-    uint32_t restored_step;
-  } cases[] = {
-    { false, AZ_IOT_SU_STATE_INSTALL_COMPLETE, 0u },
-    { true, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 0u },
-  };
-  for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c)
+    fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  }
+  else
+  {
+    fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  }
+  fx->log.persist_failures = 1000;
+  inject_patch(fx, distinct_files_patch());
+  for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_su_client_get_state(&fx->su),
+      apply_reboot ? AZ_IOT_SU_STATE_DOWNLOAD_STARTED : AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(fx->su._internal.current_step, apply_reboot ? 1u : 0u);
+  assert_true(fx->su._internal.checkpoint_pending);
+}
+
+/* A new workflow is not taken while one is held at a reboot boundary: nothing
+ * is rolled back or replaced. Once the checkpoint lands the held workflow
+ * finishes, and the new one is taken when offered again. */
+static void a_new_workflow_waits_for_a_held_workflow(void** state)
+{
+  (void)state;
+  for (int c = 0; c < 2; ++c)
   {
     void* st = NULL;
     assert_int_equal(setup(&st), 0);
-    fx = (fixture*)st;
-    if (cases[c].apply_reboot)
-    {
-      fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
-    }
-    else
-    {
-      fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
-    }
-    fx->log.persist_failures = 1000;
-    inject_patch(fx, distinct_files_patch());
-    for (int i = 0; i < 40 && fx->log.persist_calls == 0; ++i)
-    {
-      assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
-    }
-    assert_int_equal(az_iot_su_client_get_state(&fx->su), cases[c].held);
+    fixture* fx = (fixture*)st;
+    hold_at_reboot_boundary(fx, c == 1);
+    az_iot_su_state held = az_iot_su_client_get_state(&fx->su);
+    size_t ops = fx->log.op_count;
+
+    inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), held);
     assert_true(fx->su._internal.checkpoint_pending);
+    assert_int_equal(fx->log.op_count, ops);
+    assert_int_equal(count_ops(&fx->log, OP_RESTORE), 0);
+
+    /* Storage recovers: the held workflow resumes and completes. */
+    fx->log.persist_failures = 0;
+    fx->log.apply_result = AZ_IOT_SU_RESULT_SUCCESS;
+    fx->su._internal.persist_retry_ms = 0;
+    pump(fx, 60);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_string_equal(fx->chan.last_workflow_id, "distinct-files-deployment");
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
     assert_int_equal(count_ops(&fx->log, OP_RESTORE), 0);
 
     inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
-    assert_int_equal(count_ops(&fx->log, OP_RESTORE), 1);
-    assert_int_equal(fx->log.op_steps[fx->log.op_count - 1u], cases[c].restored_step);
-    assert_false(fx->su._internal.checkpoint_pending);
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
     assert_int_equal(teardown(&st), 0);
   }
+}
+
+/* Giving up at the apply-reboot boundary rolls back the applied steps only;
+ * the next step was never started. */
+static void giving_up_after_an_apply_reboot_restores_the_applied_steps(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  hold_at_reboot_boundary(fx, true);
+  while (az_iot_su_client_get_state(&fx->su) == AZ_IOT_SU_STATE_DOWNLOAD_STARTED)
+  {
+    persist_retry_now(fx);
+  }
+  assert_int_equal(count_ops(&fx->log, OP_RESTORE), 1);
+  assert_int_equal(fx->log.op_steps[fx->log.op_count - 1u], 0u);
+  assert_int_equal(fx->log.download_calls, 1); /* step 1 never downloaded */
+  pump(fx, 10);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal((uint32_t)fx->chan.last_step_results[1].extended_result_code >> 28, 0x8u);
+}
+
+/* A rollback that cannot happen is reported, not implied: without restore_fn
+ * the overall extended result is RESTORE/0; a failing restore_fn reports its
+ * own code. The step keeps the persist facility. */
+static void a_rollback_that_does_not_happen_is_reported(void** state)
+{
   (void)state;
+  for (int c = 0; c < 2; ++c)
+  {
+    void* st = NULL;
+    assert_int_equal(setup(&st), 0);
+    fixture* fx = (fixture*)st;
+    open_to_connected(fx);
+    if (c == 0)
+    {
+      fx->su._internal.hooks.restore_fn = NULL;
+    }
+    else
+    {
+      fx->log.restore_result = 0x33;
+    }
+    hold_at_reboot_boundary(fx, false);
+    while (az_iot_su_client_get_state(&fx->su) == AZ_IOT_SU_STATE_INSTALL_COMPLETE)
+    {
+      persist_retry_now(fx);
+    }
+    pump(fx, 10);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+    assert_string_equal(fx->chan.last_extended, (c == 0) ? "70000000" : "70000033");
+    assert_int_equal((uint32_t)fx->chan.last_step_results[0].extended_result_code >> 28, 0x8u);
+    assert_int_equal(teardown(&st), 0);
+  }
+}
+
+/* A cancel does not abandon a held workflow: it waits like everything else, and
+ * the give-up rollback runs as usual. */
+static void a_cancel_waits_for_a_held_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  hold_at_reboot_boundary(fx, false);
+  fx->su._internal.cancel_requested = true;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  while (az_iot_su_client_get_state(&fx->su) == AZ_IOT_SU_STATE_INSTALL_COMPLETE)
+  {
+    persist_retry_now(fx);
+  }
+  assert_int_equal(count_ops(&fx->log, OP_RESTORE), 1);
+  pump(fx, 10);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+}
+
+/* The terminal write of a resumed workflow (a position record is stored) that
+ * keeps failing counts one attempt per retry: the stale-record clear that
+ * follows it is neither counted nor reported, even when it succeeds. */
+static void a_failed_terminal_write_counts_once_with_a_stored_record(void** state)
+{
+  (void)state;
+  for (int c = 0; c < 2; ++c)
+  {
+    void* st = NULL;
+    assert_int_equal(setup(&st), 0);
+    fixture* fx = (fixture*)st;
+    open_to_connected(fx);
+    assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+    fx->chan.report_verdict_deferred = true;
+    fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+    inject_patch(fx, signed_patch());
+    pump_to_checkpoint(fx);
+    assert_true(fx->su._internal.checkpoint_stored);
+
+    /* c == 0: every write fails. c == 1: blob writes fail, erases succeed. */
+    fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+    if (c == 0)
+    {
+      fx->log.persist_failures = 1000;
+    }
+    else
+    {
+      fx->log.persist_blob_failures = 1000;
+    }
+    pump(fx, 40);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(fx->su._internal.persist_failures, 1u);
+    assert_int_equal(fx->persist_failed_count, 1);
+    if (c == 1)
+    {
+      assert_false(fx->log.have_persist); /* the stale record is gone */
+    }
+
+    /* Nothing is written before the retry is due. */
+    int calls = fx->log.persist_calls;
+    for (int i = 0; i < 5; ++i)
+    {
+      assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    }
+    assert_int_equal(fx->log.persist_calls, calls);
+
+    for (uint32_t n = 2; n <= SU_TEST_PERSIST_MAX_ATTEMPTS; ++n)
+    {
+      persist_retry_now(fx);
+      assert_int_equal(fx->su._internal.persist_failures, n);
+    }
+    assert_int_equal(fx->persist_failed_count, 2);
+    assert_false(fx->last_persist_retrying);
+    assert_int_equal(fx->persist_recovered_count, 0);
+    assert_int_equal(teardown(&st), 0);
+  }
 }
 
 static void multi_step_update_runs_every_step_in_order(void** state)
@@ -5235,7 +5383,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_limit_of_one_gives_up_on_the_first_failure, setup, teardown),
-    cmocka_unit_test_setup_teardown(superseding_a_held_workflow_rolls_it_back, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_workflow_waits_for_a_held_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        giving_up_after_an_apply_reboot_restores_the_applied_steps, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_rollback_that_does_not_happen_is_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_cancel_waits_for_a_held_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_terminal_write_counts_once_with_a_stored_record, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unrepresentable_terminal_record_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(

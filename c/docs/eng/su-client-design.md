@@ -415,15 +415,18 @@ The byte layout is documented next to the serializer in
    `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` (default 5) consecutive failures the event
    is raised again with `persist_retrying` false and retries stop (with a
    limit of 1, the first event already carries `persist_retrying` false):
-   - a held reboot boundary fails the workflow: rolled back, reported FAILED
-     with facility `0x8`;
+   - a held reboot boundary fails the workflow: `restore_fn` rolls it back and
+     it is reported FAILED with facility `0x8` on the step. With no
+     `restore_fn`, or a failed restore, the overall extended result carries
+     facility `0x7` (sub-code 0: no `restore_fn`): nothing was undone, and the
+     device may still boot the installed update;
    - an unsent terminal report is no longer stored (it is still sent);
    - a held new workflow proceeds.
 
    A write needed later is still attempted once; a success resets the count.
-   A new `workflowId` that arrives while a workflow is held at a reboot
-   boundary rolls that workflow back (`restore_fn`) before replacing it, so a
-   later reboot cannot activate the superseded update.
+   While a workflow is held at a reboot boundary, a new `workflowId` is ignored
+   (the service offers it again on a later check) and a cancel waits, so the
+   installed step is never abandoned without a rollback.
    While a failure is outstanding the application MUST NOT reboot for
    `REBOOT_REQUIRED`: nothing would resume.
 

@@ -136,12 +136,15 @@ extern "C"
  *
  * Retries are spaced 1 s, 2 s, 4 s, ... (at most 60 s). On reaching the limit
  * AZ_IOT_SU_EVENT_PERSIST_FAILED is raised with `persist_retrying` false and:
- * - a pending reboot checkpoint fails the workflow (rolled back, reported
- *   FAILED with facility AZ_IOT_SU_FACILITY_PERSIST);
+ * - a pending reboot checkpoint fails the workflow: restore_fn rolls it back
+ *   and it is reported FAILED with facility AZ_IOT_SU_FACILITY_PERSIST on the
+ *   step. If there is no restore_fn or a restore fails, the overall extended
+ *   result carries AZ_IOT_SU_FACILITY_RESTORE (sub-code 0: no restore_fn);
  * - an unsent terminal report is no longer stored (it is still sent);
  * - a new workflow waiting on the previous record's retirement proceeds.
  * A later write is still attempted once when needed; a success resets the count.
- * A new workflow that supersedes one held at a reboot boundary rolls it back first.
+ * While a workflow is held at a reboot boundary, a new workflow is ignored (the
+ * service offers it again) and a cancel waits.
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
