@@ -39,6 +39,7 @@
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/dispatch.h"
+#include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/reconnect.h"
@@ -1429,49 +1430,17 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
  * wire value always wins, so enabling this cannot mask service rollout. */
 static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
 {
-  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF] = { 0 };
+  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
 
-#ifdef _WIN32
-  size_t needed = 0;
-  errno_t env_result = getenv_s(&needed, NULL, 0, DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (env_result != 0)
-  {
-    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-    return AZ_IOT_ERR_INTERNAL;
-  }
-  if (needed == 0)
-  {
-    return AZ_IOT_OK;
-  }
-  if (needed > sizeof(value))
+  if (az_iot_env_read(DPS_CONNECTION_PROFILE_OVERRIDE_ENV, value, sizeof(value)) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
     return AZ_IOT_ERR_INVALID_ARG;
-  }
-  env_result = getenv_s(&needed, value, sizeof(value), DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (env_result != 0)
-  {
-    AZ_IOT_LOG_ERROR("dps: could not read " DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-    return AZ_IOT_ERR_INTERNAL;
   }
   if (value[0] == '\0')
   {
     return AZ_IOT_OK;
   }
-#else
-  const char* configured = getenv(DPS_CONNECTION_PROFILE_OVERRIDE_ENV);
-  if (!is_nonempty_cstr(configured))
-  {
-    return AZ_IOT_OK;
-  }
-  size_t needed = strlen(configured) + 1u;
-  if (needed > sizeof(value))
-  {
-    AZ_IOT_LOG_ERROR("dps: " DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  memcpy(value, configured, needed);
-#endif
 
   if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
       && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
@@ -3201,32 +3170,18 @@ static void apply_deferred(az_iot_connection_client* c)
 /* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
  * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
  * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development.
- *
- * ALLOCATION NOTE: the Windows branch uses _dupenv_s (getenv is deprecated
- * under MSVC), which allocates; the buffer is freed in the same function, so
- * nothing is retained. This is the only allocation in the core state machine
- * and it is dev/test-only -- it runs solely when the mock env vars are set and
- * never on a production connect path. The non-Windows branch uses getenv and
- * does not allocate.
- *
- * az-iot-allow: free -- releases the _dupenv_s buffer in the same function */
+ * avoids the need for a real DPS service during local development. */
+#define MQTT_V5_MOCK_ENDPOINT_ENV "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT"
+#define MQTT_V5_MOCK_DEVICE_ID_ENV "AZ_IOT_DEVICE_ID"
+/** @brief Capacity for the mock endpoint ("host:port"). */
+#define MQTT_V5_MOCK_ENDPOINT_BUF 256
+
 static bool mock_mqtt_v5_configured(void)
 {
-#ifdef _WIN32
-  char* buf = NULL;
-  size_t len = 0;
-  if (_dupenv_s(&buf, &len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !is_nonempty_cstr(buf))
-  {
-    free(buf);
-    return false;
-  }
-  free(buf);
-  return true;
-#else
-  const char* val = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-  return is_nonempty_cstr(val);
-#endif
+  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
+  /* Too long still counts as set: the bypass then rejects it. */
+  return az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
+      || endpoint[0] != '\0';
 }
 
 /* Parse "host:port" into host string and port. Writes host into out_host
@@ -3262,40 +3217,19 @@ static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap
 
 static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 {
-  const char* endpoint;
-  const char* device_id;
+  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
+  char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
 
-#ifdef _WIN32
-  char* ep_buf = NULL;
-  char* id_buf = NULL;
-  size_t ep_len = 0, id_len = 0;
-  if (_dupenv_s(&ep_buf, &ep_len, "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT") != 0 || !ep_buf)
+  if (az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
+      || az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf)) != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") != 0 || !is_nonempty_cstr(id_buf))
-  {
-    /* Fall back to DPS registration_id if AZ_IOT_DEVICE_ID not set. */
-    free(id_buf);
-    id_buf = NULL;
-  }
-  endpoint = ep_buf;
-  device_id = id_buf ? id_buf : c->opts.dps.registration_id;
-#else
-  endpoint = getenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-  device_id = getenv("AZ_IOT_DEVICE_ID");
-  if (!is_nonempty_cstr(device_id))
-  {
-    device_id = c->opts.dps.registration_id;
-  }
-#endif
+  /* Falls back to the DPS registration id when AZ_IOT_DEVICE_ID is unset. */
+  const char* device_id = id_buf[0] != '\0' ? id_buf : c->opts.dps.registration_id;
 
-  if (!is_nonempty_cstr(endpoint) || !is_nonempty_cstr(device_id))
+  if (endpoint[0] == '\0' || !is_nonempty_cstr(device_id))
   {
-#ifdef _WIN32
-    free(ep_buf);
-    free(id_buf);
-#endif
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -3327,10 +3261,6 @@ static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
         device_id);
   }
 
-#ifdef _WIN32
-  free(ep_buf);
-  free(id_buf);
-#endif
   return r;
 }
 
@@ -3390,21 +3320,9 @@ az_iot_result az_iot_connection_client_init(
   {
     client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
     /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
-    const char* dev_id = NULL;
-#ifdef _WIN32
-    char* id_buf = NULL;
-    size_t id_len = 0;
-    if (_dupenv_s(&id_buf, &id_len, "AZ_IOT_DEVICE_ID") == 0 && is_nonempty_cstr(id_buf))
-    {
-      dev_id = id_buf;
-    }
-#else
-    dev_id = getenv("AZ_IOT_DEVICE_ID");
-#endif
-    if (!is_nonempty_cstr(dev_id))
-    {
-      dev_id = client->opts.dps.registration_id;
-    }
+    char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
+    (void)az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf));
+    const char* dev_id = id_buf[0] != '\0' ? id_buf : client->opts.dps.registration_id;
     if (is_nonempty_cstr(dev_id))
     {
       (void)replace_owned_string(
@@ -3413,9 +3331,6 @@ az_iot_result az_iot_connection_client_init(
           &client->opts.client_id,
           dev_id);
     }
-#ifdef _WIN32
-    free(id_buf);
-#endif
   }
   else if (
       client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)

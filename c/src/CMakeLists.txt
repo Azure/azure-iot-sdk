@@ -9,6 +9,7 @@ add_library(az_iot_core
     core/connection_client.c
     core/cert_util.c
     core/reconnect.c
+    core/env.c
     core/dispatch.c
     core/proto3.c
     core/span_writer.c

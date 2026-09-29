@@ -10,33 +10,30 @@ between releases.
 
 Public structs are allocated by the application, so their size and layout are
 fixed when the application is compiled. A release may add fields to any public
-struct, which changes its size. An application must be rebuilt against the
-headers of the release it runs with.
+struct, which changes its size. After any SDK update, recompile every
+application object against the new headers; relinking objects built against
+older headers is not supported.
 
 | Linking | Effect |
 |---|---|
-| Static (default; embedded devices) | Application and library are always built together. Nothing to manage. |
-| Shared (`-DBUILD_SHARED_LIBS=ON`) | Updating the library requires rebuilding the application. |
+| Static (default; embedded devices) | A deployed binary keeps the SDK it was linked with until it is rebuilt. |
+| Shared (`-DBUILD_SHARED_LIBS=ON`) | A replaced library is picked up at load time, so the application must be rebuilt with it. |
 
 ## Shared libraries
 
 - `az_iot_core`, `az_iot_mqttv3` and `az_iot_mqttv5` build as shared libraries.
   Adapters are always static.
 - azure-sdk-for-c is always static (position-independent in a shared build) and
-  is linked into each shared library.
+  is linked into `az_iot_core` only.
 - The full release version is in the soname (`libaz_iot_core.so.0.0.1`) and the
   Windows DLL name (`az_iot_core-0.0.1.dll`). An application built against one
   release fails to load with any other, instead of misreading struct layouts.
+- Windows: each DLL links the static CRT (`/MT`), so heap, `FILE*` and
+  environment are per module. The SDK API does not pass them across.
 
 ## Adding a field
 
 - Append it and make zero mean the previous behaviour, so existing code that
-  zero-initializes the struct keeps its behaviour once rebuilt.
+  zero-initializes the struct keeps its behaviour once recompiled.
 - Adapter-facing structs (`az_iot_mqtt_iface.h`) follow the same rule, so a
-  bring-your-own adapter keeps working once rebuilt.
-
-## Possible future guarantee
-
-If needed, ABI stability can be added per patch series (e.g. `1.2.x`), as mbedTLS
-does: soname per minor version, and an ABI check (`abidiff`) in CI rejecting
-layout changes within a series.
+  bring-your-own adapter keeps working once recompiled.
