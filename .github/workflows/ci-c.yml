@@ -478,6 +478,8 @@ jobs:
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
   # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # Configured with one prefix and installed with `--prefix` to another: the
+  # installed files must use the install-time prefix.
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -518,6 +520,7 @@ jobs:
           mbedtls=""
           if [ -n "${{ matrix.mbedtls }}" ]; then mbedtls="$tmp/mbedtls"; fi
           {
+            echo "AZ_IOT_CONFIGURED_PREFIX=$tmp/az-iot-sdk-configured"
             echo "AZ_IOT_PREFIX=$tmp/az-iot-sdk"
             echo "AZ_IOT_CONSUMER=$tmp/install-test"
             echo "AZ_IOT_MBEDTLS=$mbedtls"
@@ -531,7 +534,7 @@ jobs:
         run: >
           cmake -S . -B build/install -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_INSTALL_PREFIX="$AZ_IOT_PREFIX"
+          -DCMAKE_INSTALL_PREFIX="$AZ_IOT_CONFIGURED_PREFIX"
           -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS"
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
@@ -542,7 +545,7 @@ jobs:
         run: ctest --test-dir build/install --output-on-failure --no-tests=error
 
       - name: Install
-        run: cmake --install build/install
+        run: cmake --install build/install --prefix "$AZ_IOT_PREFIX"
       - name: Check the installed tree
         run: |
           test -f "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
@@ -556,6 +559,11 @@ jobs:
             echo "::error::installed files reference the checkout ($ws)"
             exit 1
           fi
+          if grep -rIil -F "$AZ_IOT_CONFIGURED_PREFIX" "$AZ_IOT_PREFIX"; then
+            echo "::error::installed files reference the configure-time prefix"
+            exit 1
+          fi
+          test ! -e "$AZ_IOT_CONFIGURED_PREFIX"
           rm -rf build/install
 
       - name: Configure the consumer
