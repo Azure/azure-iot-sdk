@@ -105,8 +105,8 @@ numbers that must land first · `Order` suggested sequence across remaining work
 target date (weekend dates moved to the next workday; `~` means not yet estimated), or
 `blocked` when something outside this repository gates it.
 
-`done` in the ETA column means the row is shipped or cut; those rows carry no priority,
-size or order.
+`done` in the ETA column means the row is shipped or cut. A row keeps the priority, size,
+dependencies and order it had when it was scheduled; rows finished before scheduling have none.
 
 **Targets:** P0 by **9/28** (fixed), everything else by **10/9**. See
 [Feasibility](#feasibility-of-the-928--109-targets) — both targets are well above measured
@@ -143,7 +143,7 @@ environment. In review outside the matrix: bounded `persist_state_fn` retries wi
 | 26 | Install, apply, recovery | ✅ | — | — | — | — | done | **Install / Apply execution (core)** — chunkable `install_fn`/`apply_fn`, may request reboot. [→](#e-install-apply-recovery) |
 | 27 | Install, apply, recovery | ✅ | — | — | — | — | done | **Backup / Restore (rollback)** — optional `backup_fn`; reverse-order best-effort restore. [→](#e-install-apply-recovery) |
 | 28 | Install, apply, recovery | ✅ | — | — | — | — | done | **Partial-failure rollback (multi-step)** — mid-sequence failure rolls back applied steps. [→](#e-install-apply-recovery) |
-| 29 | Install, apply, recovery | ✅ | — | — | — | — | done | **Reboot coordination + resume** — persist-before-reboot (install- and apply-requested) + `resume()`; the blob carries the unsent terminal report, applied update id and ETags. [→](#e-install-apply-recovery) |
+| 29 | Install, apply, recovery | ✅ | P0 | M | — | 2 | done | **Reboot coordination + resume** — persist-before-reboot (install- and apply-requested) + `resume()`; the blob carries the unsent terminal report, applied update id and ETags. [→](#e-install-apply-recovery) |
 | 31 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_openssl` adapter** — RS256 + SHA-256, factored in `adapters/su/`. [→](#f-platform-and-crypto-adapters) |
 | 32 | Platform and crypto adapters | ✅ | — | — | — | — | done | **`crypto_mbedtls` adapter** — factored into `adapters/su/crypto_mbedtls/`. [→](#f-platform-and-crypto-adapters) |
 | 35 | Platform and crypto adapters | ✅ | — | — | — | — | done | **ESP32 platform adapter** — factored into `adapters/su/esp32/` (`esp_http_client` + `esp_ota` + NVS resume). [→](#f-platform-and-crypto-adapters) |
@@ -154,8 +154,8 @@ environment. In review outside the matrix: bounded `persist_state_fn` retries wi
 | 45 | Software updates transport | ✅ | — | — | — | — | done | **Advisory + load contracts** — the error classifier drives on the code, the device is the sole retrier, and `Retry-After` is honoured: it arrives as a response-topic query parameter, and the channel defers every publish until the delay elapses. [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
-| 56 | Testing and conformance | ✅ | — | — | — | — | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
-| 38 | Software updates transport | ✅ | — | — | — | — | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` are unbounded (bounded and reported in review, #293). [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 56 | Testing and conformance | ✅ | P0 | S | — | 1 | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
+| 38 | Software updates transport | ✅ | P0 | S | 29 | 3 | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` are unbounded (bounded and reported in review, #293). [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
