@@ -72,9 +72,10 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
   libraries. There is no ABI guarantee between releases: rebuild the application
   whenever the library is updated ([struct_versioning.md](docs/struct_versioning.md)).
 
-pkg-config (not MSVC): one `azure-iot-sdk-<component>.pc` per component. The
-libraries are static, so pass `--static`; OpenSSL's and mbedTLS's `.pc` files
-must be on `PKG_CONFIG_PATH`.
+pkg-config (not MSVC): one `azure-iot-sdk-<component>.pc` per component.
+Adapters are always static, so pass `--static` when using one; OpenSSL's and
+mbedTLS's `.pc` files must be on `PKG_CONFIG_PATH`. With shared libraries
+outside the loader's search path, set `LD_LIBRARY_PATH` or an rpath at run time.
 
 ```sh
 cc app.c $(pkg-config --static --cflags --libs azure-iot-sdk-mqttv3 azure-iot-sdk-adapter_paho)

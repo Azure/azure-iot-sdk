@@ -8,9 +8,10 @@
 The SDK guarantees **source compatibility only**. There is no ABI guarantee
 between releases.
 
-Public structs are allocated by the application, so their size and layout are
-fixed when the application is compiled. A release may add fields to any public
-struct, which changes its size. After any SDK update, recompile every
+Application and SDK each compile the layout of every public struct from the
+headers they were built with, whichever side allocates it (e.g. client and
+options structs by the application, state events by the SDK). A release may add
+fields to any public struct, which changes its size and layout. After any SDK update, recompile every
 application object against the new headers; relinking objects built against
 older headers is not supported.
 
