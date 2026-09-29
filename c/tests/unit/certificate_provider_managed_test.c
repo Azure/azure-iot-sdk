@@ -888,12 +888,21 @@ static void managed_a_chain_for_the_csr_key_rotates_the_key(void** state)
   assert_non_null(old_key);
   EVP_PKEY* csr_key = request_csr_key(&prov);
   char* cert = make_cert_base64(csr_key, 1);
+#if !defined(_WIN32)
+  /* The replacement is owner-only even if the old key file was not. */
+  assert_int_equal(0, chmod(OP_KEY, 0644));
+#endif
   assert_int_equal(AZ_IOT_OK, store_one(&prov, cert));
 
   assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, csr_key));
   assert_null(prov.pending_key);
   assert_true(key_file_is(OP_KEY, csr_key));
   assert_false(key_file_is(OP_KEY, old_key));
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(0, stat(OP_KEY, &st));
+  assert_int_equal(0600, st.st_mode & 0777);
+#endif
   assert_int_equal(0, count_temp_files());
   az_iot_certificate_provider_managed_deinit(&prov);
 
