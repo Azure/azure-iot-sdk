@@ -249,7 +249,8 @@ static az_iot_result provider_store(
     size_t len = (size_t)az_span_size(cert);
     if (len == 0)
     {
-      continue;
+      rc = AZ_IOT_ERR_INVALID_ARG; /* every issued entry must be a certificate */
+      break;
     }
     if (fputs(PEM_CERT_BEGIN, f) < 0 || fwrite(az_span_ptr(cert), 1, len, f) != len
         || fputs(PEM_CERT_END, f) < 0)

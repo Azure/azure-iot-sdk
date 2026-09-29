@@ -68,6 +68,10 @@
 /* Encoded length (excluding NUL) of base64 over `binary_len` bytes. */
 #define BASE64_ENCODED_LEN(binary_len) ((((binary_len) + 2) / 3) * 4)
 
+/* Largest chain file init() reads back. An issued chain is a few certificates
+ * of a few KB each; anything larger is refused rather than buffered. */
+#define MANAGED_MAX_CHAIN_BYTES (64u * 1024u)
+
 #ifdef _WIN32
 /* Owner-only DACL for written files: full access for the owner and SYSTEM,
  * protected from inheriting the directory's ACEs. */
@@ -374,8 +378,9 @@ static bool chain_matches_key(const char* data, size_t len, EVP_PKEY* key, size_
  * @brief True when @p path holds a certificate chain that passes
  * chain_matches_key() for @p key.
  *
- * An empty, partial or unparseable file, or one issued for a different key,
- * is not a usable identity: TLS would fail with it on every connect.
+ * An empty, partial or unparseable file, one issued for a different key, or
+ * one over MANAGED_MAX_CHAIN_BYTES is not a usable identity: TLS would fail
+ * with it on every connect.
  */
 static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
 {
@@ -384,9 +389,11 @@ static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
   bool ok = mem != NULL;
   char buf[1024];
   int n = 0;
+  size_t total = 0;
   while (ok && (n = BIO_read(in, buf, (int)sizeof(buf))) > 0)
   {
-    ok = BIO_write(mem, buf, n) == n;
+    total += (size_t)n;
+    ok = total <= MANAGED_MAX_CHAIN_BYTES && BIO_write(mem, buf, n) == n;
   }
   if (ok)
   {
