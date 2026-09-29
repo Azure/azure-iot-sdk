@@ -399,7 +399,7 @@ static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp
       rc = AZ_IOT_ERR_INTERNAL;
     }
   }
-  if (rc == AZ_IOT_OK && (n < 0 || BIO_eof(in) != 1))
+  if (rc == AZ_IOT_OK && (n < 0 || !BIO_eof(in)))
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
