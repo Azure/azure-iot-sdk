@@ -15,6 +15,7 @@
 
 #include "az_iot_certificate_provider_managed.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,7 @@
 #include <sddl.h>
 #else
 #include <errno.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -208,9 +210,16 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   }
   memcpy(tmp, path, path_len);
   memcpy(tmp + path_len, MANAGED_TMP_TEMPLATE, sizeof(MANAGED_TMP_TEMPLATE));
-  int fd = mkstemp(tmp); /* O_CREAT|O_EXCL, mode 0600 */
+  int fd = mkstemp(tmp); /* O_CREAT|O_EXCL; its 0600 is reduced by the umask */
   if (fd < 0)
   {
+    free(tmp);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) /* exactly 0600, whatever the umask */
+  {
+    (void)close(fd);
+    (void)unlink(tmp);
     free(tmp);
     return AZ_IOT_ERR_INTERNAL;
   }
@@ -270,19 +279,78 @@ static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 }
 
 /**
- * @brief True when @p b holds at least one PEM certificate, every one parses,
- * and the first (the leaf) certifies @p key.
+ * @brief Count the PEM certificate blocks in @p data, requiring that nothing
+ * but whitespace lies outside them.
  *
- * Reading stops at the first object that is not a certificate; the chain is
- * accepted only if that is the end of the input, so a malformed or truncated
- * entry anywhere in the chain rejects it.
+ * PEM_read_bio_X509() skips any text before a BEGIN line, so on its own it
+ * would accept a chain followed by unrelated bytes.
+ *
+ * @return The number of blocks, or 0 if there is other text or an unclosed
+ * block.
+ */
+static size_t count_pem_certificates(const char* data, size_t len)
+{
+  static const char begin[] = "-----BEGIN CERTIFICATE-----";
+  static const char end[] = "-----END CERTIFICATE-----";
+  size_t blocks = 0;
+  bool inside = false;
+  size_t pos = 0;
+  while (pos < len)
+  {
+    size_t eol = pos;
+    while (eol < len && data[eol] != '\n')
+    {
+      eol++;
+    }
+    size_t line_end = eol;
+    while (
+        line_end > pos
+        && (data[line_end - 1] == '\r' || data[line_end - 1] == ' ' || data[line_end - 1] == '\t'))
+    {
+      line_end--;
+    }
+    size_t line_len = line_end - pos;
+    const char* line = data + pos;
+    if (inside)
+    {
+      if (line_len == sizeof(end) - 1 && memcmp(line, end, line_len) == 0)
+      {
+        inside = false;
+        blocks++;
+      }
+    }
+    else if (line_len == sizeof(begin) - 1 && memcmp(line, begin, line_len) == 0)
+    {
+      inside = true;
+    }
+    else
+    {
+      for (size_t i = 0; i < line_len; ++i)
+      {
+        if (line[i] != ' ' && line[i] != '\t')
+        {
+          return 0;
+        }
+      }
+    }
+    pos = eol + 1;
+  }
+  return inside ? 0 : blocks;
+}
+
+/**
+ * @brief True when @p data is a PEM chain of at least one certificate with
+ * nothing else in it, every certificate parses, and the first (the leaf)
+ * certifies @p key.
  *
  * @param[out] out_count Certificates parsed; may be NULL.
  */
-static bool chain_matches_key(BIO* b, EVP_PKEY* key, size_t* out_count)
+static bool chain_matches_key(const char* data, size_t len, EVP_PKEY* key, size_t* out_count)
 {
   size_t count = 0;
-  bool ok = key != NULL;
+  size_t blocks = (data && len <= INT_MAX) ? count_pem_certificates(data, len) : 0;
+  BIO* b = blocks > 0 ? BIO_new_mem_buf(data, (int)len) : NULL;
+  bool ok = b != NULL && key != NULL;
   X509* cert = NULL;
   while (ok && (cert = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
   {
@@ -293,17 +361,13 @@ static bool chain_matches_key(BIO* b, EVP_PKEY* key, size_t* out_count)
     X509_free(cert);
     count++;
   }
-  unsigned long err = ERR_peek_last_error();
-  if (ok && !(ERR_GET_LIB(err) == ERR_LIB_PEM && ERR_GET_REASON(err) == PEM_R_NO_START_LINE))
-  {
-    ok = false;
-  }
+  BIO_free(b);
   ERR_clear_error();
   if (out_count)
   {
     *out_count = count;
   }
-  return ok && count > 0;
+  return ok && count == blocks;
 }
 
 /**
@@ -315,14 +379,24 @@ static bool chain_matches_key(BIO* b, EVP_PKEY* key, size_t* out_count)
  */
 static bool operational_cert_is_valid(const char* path, EVP_PKEY* key)
 {
-  BIO* b = BIO_new_file(path, "rb");
-  if (!b)
+  BIO* in = BIO_new_file(path, "rb");
+  BIO* mem = in ? BIO_new(BIO_s_mem()) : NULL;
+  bool ok = mem != NULL;
+  char buf[1024];
+  int n = 0;
+  while (ok && (n = BIO_read(in, buf, (int)sizeof(buf))) > 0)
   {
-    ERR_clear_error();
-    return false;
+    ok = BIO_write(mem, buf, n) == n;
   }
-  bool ok = chain_matches_key(b, key, NULL);
-  BIO_free(b);
+  if (ok)
+  {
+    char* data = NULL;
+    long len = BIO_get_mem_data(mem, &data);
+    ok = n == 0 && len > 0 && chain_matches_key(data, (size_t)len, key, NULL);
+  }
+  BIO_free(mem);
+  BIO_free(in);
+  ERR_clear_error();
   return ok;
 }
 
@@ -627,14 +701,13 @@ static az_iot_result managed_store(
   {
     char* data = NULL;
     long data_len = BIO_get_mem_data(mem, &data);
-    BIO* check = (data_len > 0) ? BIO_new_mem_buf(data, (int)data_len) : NULL;
     size_t parsed = 0;
-    if (!check || !chain_matches_key(check, (EVP_PKEY*)m->operational_key, &parsed)
+    if (data_len <= 0
+        || !chain_matches_key(data, (size_t)data_len, (EVP_PKEY*)m->operational_key, &parsed)
         || parsed != written)
     {
       rc = AZ_IOT_ERR_INVALID_ARG;
     }
-    BIO_free(check);
   }
   if (rc == AZ_IOT_OK)
   {
