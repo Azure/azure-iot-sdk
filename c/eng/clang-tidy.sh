@@ -28,6 +28,8 @@ mapfile -t files < <(jq -r '.[].file' "${db}" \
 echo "$("${tidy}" --version | grep -m1 -i version)"
 echo "clang-tidy: ${#files[@]} translation units"
 
-# One process per file; --quiet drops the per-file "N warnings generated" noise.
+# One process per file. The "N warnings generated" lines count diagnostics outside the header
+# filter; drop them. pipefail keeps xargs' exit status (123 when any file has a finding).
 printf '%s\0' "${files[@]}" \
-    | xargs -0 -P "$(nproc)" -n 1 "${tidy}" -p "${build_dir}" --quiet
+    | xargs -0 -P "$(nproc)" -n 1 "${tidy}" -p "${build_dir}" --quiet 2>&1 \
+    | { grep -vE '^[0-9]+ warnings? generated\.$' || true; }

@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -87,6 +87,7 @@ jobs:
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy
