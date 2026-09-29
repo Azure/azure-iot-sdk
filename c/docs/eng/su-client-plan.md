@@ -115,7 +115,7 @@ velocity; three items cannot be dated, and row 59 holds its date only if its gat
 † Row 59 meets 9/28 only if the CI environment is provided by 9/28.
 
 **As of 9/29:** P0 rows 29, 38 and 56 are done; 54 is in review (#278); 59 is waiting on its
-environment. In review outside the matrix: bounded `persist_state_fn` retries with
+environment. Done outside the matrix: bounded `persist_state_fn` retries with
 `PERSIST_FAILED` / `PERSIST_RECOVERED` events (#293).
 
 
@@ -130,7 +130,7 @@ environment. In review outside the matrix: bounded `persist_state_fn` retries wi
 | 9 | Core update workflow | ✅ | — | — | — | — | done | **Multi-step (composite) updates** — per-step Download→Backup→Install→Apply loop. [→](#b-core-update-workflow) |
 | 10 | Core update workflow | ✅ | — | — | — | — | done | **Per-step result reporting** — `resultCode`/`extendedResultCode`/`stepResults`, each entry carrying its own `outcome` and `failureOrigin`. [→](#b-core-update-workflow) |
 | 11 | Core update workflow | ✅ | — | — | — | — | done | **Replacement / duplicate detection** — keyed on `workflowId` alone, the sole correlation key in software updates; `retryTimestamp` is gone. [→](#b-core-update-workflow) |
-| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_su_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED` and `OPERATION_ABANDONED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
+| 12 | Core update workflow | ✅ | — | — | — | — | done | **Application event notification** — `az_iot_su_client_add_observer()` / `remove_observer()`, dispatching `WORKFLOW_STATE_CHANGED`, `OPERATION_ABANDONED` and `PERSIST_FAILED` / `PERSIST_RECOVERED`. Replaced polling `get_state()` as the way an application follows a workflow, and is the only way it learns an operation was given up on. [→](#b-core-update-workflow) |
 | 13 | Core update workflow | ✅ | — | — | — | — | done | **Bounded requests** — `request_update()` / `request_onboarding_update()` take a `timeout_ms`; on expiry the request is abandoned and reported as `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT`. `AZ_IOT_SU_REQUEST_NO_TIMEOUT` keeps the old unbounded behaviour. [→](#b-core-update-workflow) |
 | 15 | Download and integrity | ✅ | — | — | — | — | done | **File download from manifest URLs** — resolves `fileUrls`, drives `download_fn`. [→](#c-download-and-integrity) |
 | 16 | Download and integrity | ✅ | — | — | — | — | done | **Chunked / streaming download** — `download_fn` may return `IN_PROGRESS`. [→](#c-download-and-integrity) |
@@ -155,7 +155,7 @@ environment. In review outside the matrix: bounded `persist_state_fn` retries wi
 | 53 | Library / agent-core mode | ✅ | — | — | — | — | done | **Turnkey client** — SDK drives verify→install→report (the shipping client). [→](#j-library-and-agent-core-mode) |
 | 55 | Testing and conformance | ✅ | — | — | — | — | done | **Phase-1 unit tests** — cmocka state-machine coverage. [→](#k-testing-and-conformance) |
 | 56 | Testing and conformance | ✅ | P0 | S | — | 1 | done | **Crypto vector tests** — committed known-good/bad RS256 + SHA-256 vectors and a signed chain, run against every crypto adapter (OpenSSL; mbedTLS 3.6 LTS, 4.1 LTS, 4.2). [→](#k-testing-and-conformance) |
-| 38 | Software updates transport | ✅ | P0 | S | 29 | 3 | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` are unbounded (bounded and reported in review, #293). [→](#g-software-updates-transport-via-the-dps-gateway) |
+| 38 | Software updates transport | ✅ | P0 | S | 29 | 3 | done | **`reportUpdateStatus`** — `workflowId` + install result, idempotent, retried while the client lives. The terminal report is stored before it is sent and re-sent by `resume()` after a reboot; in-progress reports are not stored. Retries of a failing `persist_state_fn` back off and stop after `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`, reported by `PERSIST_FAILED` / `PERSIST_RECOVERED` (#293). [→](#g-software-updates-transport-via-the-dps-gateway) |
 | 2 | Foundation | ❌ | — | — | — | — | done | **Software updates as a twin desired-property subscriber** — twin-channel-only wiring; removed with the twin channel. The twin client's subscriber registry itself stays (it serves the twin feature). [→](#a-foundation) |
 | 7 | Core update workflow | ❌ | — | — | — | — | done | **Startup + reconnect re-reporting / initial twin GET** — no subscription and no unsolicited offer in software updates; the device polls instead. [→](#b-core-update-workflow) |
 | 36 | Software updates transport | ❌ | — | — | — | — | done | **Twin (Device Update for IoT Hub) delivery + reporting** — the twin channel is removed, not kept behind a flag. [→](#what-device-update-for-iot-hub-is-cut-means) |
@@ -368,13 +368,14 @@ stateDiagram-v2
   Software updates input sets the flag and no local cancel API exists yet; a superseding `workflowId`
   restarts the workflow instead. Core never force-interrupts a hook.
 - **Application notification (✅)** — `az_iot_su_client_add_observer()` /
-  `remove_observer()`, matching the connection client's registry. Two event kinds:
+  `remove_observer()`, matching the connection client's registry. Event kinds:
   `WORKFLOW_STATE_CHANGED` carries the `az_iot_su_state`, replacing a polled
   `get_state()`; `OPERATION_ABANDONED` carries the operation and the reason, and is the
   only way an application learns the client has stopped trying. Both fetch entry points
   take a `timeout_ms` that bounds the wait, so a request that can never be served ends in
   `OPERATION_ABANDONED` with `AZ_IOT_ERR_TIMEOUT` instead of being retried for the life of
-  the client.
+  the client. `PERSIST_FAILED` / `PERSIST_RECOVERED` report `persist_state_fn` failures;
+  retries back off and stop after `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`.
 
 ### Remaining device-properties follow-ups
 

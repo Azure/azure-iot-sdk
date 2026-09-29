@@ -174,6 +174,7 @@ int32_t su_install(const az_iot_su_client_update_manifest* manifest, uint32_t st
   if (s->reboot && !s->reboot_signalled)
   {
     s->reboot_signalled = 1;
+    s->reboot_pending = 1;
     printf("  [install] step %u -> REBOOT_REQUIRED (SU_SIM_REBOOT)\n", step);
     return AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
   }
@@ -207,7 +208,8 @@ int32_t su_apply(const az_iot_su_client_update_manifest* manifest, uint32_t step
 int32_t su_restore(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
 {
   (void)manifest;
-  (void)user_ctx;
+  su_simulation_control* s = (su_simulation_control*)user_ctx;
+  s->reboot_pending = 0; /* rolled back: the requested reboot is no longer wanted */
   printf("  [restore] step %u (rollback) [simulated]\n", step);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
