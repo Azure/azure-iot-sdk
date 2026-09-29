@@ -1446,6 +1446,9 @@ static void on_dps_op_cert(
 /* Init a DPS client with request_operational_certificate over @p prov, drive it
  * through registration and deliver an ASSIGNED response carrying a two-cert
  * chain. The client is left initialized; the caller deinits it. */
+/* ASSIGNED response drive_dps_csr_assignment() injects; NULL = a valid one. */
+static const char* g_dps_resp = NULL;
+
 static void drive_dps_csr_assignment(
     az_iot_connection_client* client,
     uint8_t* csr_buf,
@@ -1516,6 +1519,10 @@ static void drive_dps_csr_assignment(
                      "\"registrationState\":{\"registrationId\":\"ut-device\","
                      "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
                      "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  if (g_dps_resp)
+  {
+    resp = g_dps_resp;
+  }
   assert_true(az_iot_mock_mqtt_client_inject_message(
       dps,
       "$dps/registrations/res/200/?$rid=1",
@@ -1559,6 +1566,32 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   assert_int_equal((int)g_dps_op_cert_chain, 2);
   assert_int_equal(g_dps_store_calls_at_cb, 1);
   assert_int_equal(g_dps_op_cert_store_result, AZ_IOT_OK);
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A truncated ASSIGNED payload never reaches the provider; the registration
+ * fails. */
+static void dps_a_truncated_assignment_is_not_stored(void** state)
+{
+  (void)state;
+
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  g_dps_resp = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+               "\"registrationState\":{\"registrationId\":\"ut-device\","
+               "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+               "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]";
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, true);
+  g_dps_resp = NULL;
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(g_dps_op_cert_count, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
 
   az_iot_connection_client_deinit(&client);
 }
@@ -1940,6 +1973,8 @@ typedef struct renew_cb_ctx
   size_t issued_count;
   az_iot_result store_status;
   int store_calls_at_cb;
+  int failed;
+  az_iot_result failed_status;
   renew_provider* prov;
 } renew_cb_ctx;
 
@@ -1953,6 +1988,11 @@ static void on_renew_evt(const az_iot_csr_event* evt, void* uc)
     t->issued_count = evt->issued ? evt->issued->count : 0;
     t->store_status = evt->store_status;
     t->store_calls_at_cb = t->prov ? t->prov->store_calls : -1;
+  }
+  else if (evt->kind == AZ_IOT_CSR_FAILED)
+  {
+    t->failed++;
+    t->failed_status = evt->status;
   }
 }
 
@@ -2083,6 +2123,42 @@ static void a_provider_csr_chain_is_stored_and_used_on_the_next_connect(void** s
   assert_session_untouched(&rf);
 
   assert_string_equal(renew_reconnect(&rf), "operational-cert.pem");
+  az_iot_connection_client_deinit(&rf.client);
+}
+
+/* A truncated or malformed 200 is a failed renewal: nothing reaches the
+ * provider and the session is kept. */
+static void a_malformed_credentials_response_is_not_stored(void** state)
+{
+  (void)state;
+  static const char* const k_bad[] = {
+    "{\"certificates\":[\"TEEF\"",
+    "{\"certificates\":[\"TEEF\"]",
+    "{\"certificates\":[\"TEEF\"]}x",
+  };
+  renew_fixture rf;
+  renew_provider prov = { .base.vtable = &k_renew_vtable };
+  renew_cb_ctx tc = { .prov = &prov };
+  renew_connect(&rf, &prov);
+
+  for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client_send_csr(&rf.client, NULL, "req-bad", NULL, on_renew_evt, &tc),
+        AZ_IOT_OK);
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        rf.hub,
+        "$iothub/credentials/res/200/?$rid=req-bad",
+        (const uint8_t*)k_bad[i],
+        strlen(k_bad[i]),
+        AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(&rf.client, 0);
+    assert_int_equal(tc.failed, (int)i + 1);
+    assert_int_equal(tc.failed_status, AZ_IOT_ERR_PROTOCOL);
+  }
+  assert_int_equal(tc.issued, 0);
+  assert_int_equal(prov.store_calls, 0);
+  assert_session_untouched(&rf);
   az_iot_connection_client_deinit(&rf.client);
 }
 
@@ -2729,6 +2805,7 @@ int main(void)
         hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+    cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_callback_that_unregisters_itself_still_handles_the_chain),
     cmocka_unit_test(open_rejects_operational_cert_without_release_or_store),
@@ -2736,6 +2813,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
     cmocka_unit_test(a_provider_csr_chain_is_stored_and_used_on_the_next_connect),
+    cmocka_unit_test(a_malformed_credentials_response_is_not_stored),
     cmocka_unit_test(a_failed_store_keeps_the_session_and_the_previous_credential),
     cmocka_unit_test(an_application_csr_chain_is_not_stored),
     cmocka_unit_test(send_csr_without_a_csr_needs_a_provider_that_can_renew),

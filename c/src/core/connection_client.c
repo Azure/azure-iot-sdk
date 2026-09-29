@@ -1536,6 +1536,11 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
  * does not surface this field, so we walk the raw payload with az_json. */
 static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)
 {
+  /* A truncated or malformed payload never reaches the provider. */
+  if (!az_iot_cert_util_json_is_complete(payload))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
   az_json_reader jr;
   az_iot_result entered = dps_enter_registration_state(&jr, payload);
   if (entered != AZ_IOT_OK)
@@ -5466,7 +5471,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     size_t count = 0;
     az_iot_result rc = AZ_IOT_ERR_PROTOCOL;
     az_json_reader jr;
-    if (az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
+    /* A truncated or malformed response is never treated as ISSUED. */
+    if (az_iot_cert_util_json_is_complete(payload)
+        && az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
         && az_result_succeeded(az_json_reader_next_token(&jr))
         && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
