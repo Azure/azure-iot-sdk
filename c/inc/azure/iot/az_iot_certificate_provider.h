@@ -88,15 +88,9 @@ extern "C"
 
   typedef struct az_iot_certificate_provider az_iot_certificate_provider;
 
-/* Vtable ABI version (D1). The client checks this before calling any hook added
- * after v1; a provider MUST set vtable->version to the value it was built with. */
-#define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 2u
-
   typedef struct az_iot_certificate_provider_vtable
   {
-    uint32_t version; /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
-
-    /* v1 core. load() returns credential material for the requested role. */
+    /* Required. load() returns credential material for the requested role. */
     az_iot_result (*load)(
         az_iot_certificate_provider* self,
         az_iot_cert_role role,
@@ -104,7 +98,7 @@ extern "C"
     void (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
     void (*deinit)(az_iot_certificate_provider* self);
 
-    /* v2 CSR enrollment (optional; NULL get_csr => enrollment not supported). */
+    /* CSR enrollment and renewal (optional; NULL get_csr => not supported). */
     az_iot_result (*get_csr)(
         az_iot_certificate_provider* self,
         const char* subject_common_name,
@@ -125,17 +119,16 @@ extern "C"
         az_iot_certificate_provider* self,
         const az_iot_issued_certificate* issued);
 
-    /* v2 non-extractable key custody (optional; D8). When present the TLS
+    /* Non-extractable key custody (optional; D8). When present the TLS
      * adapter calls sign() instead of reading a private key: signs the
      * caller-provided digest, writing up to out_sig_cap bytes and setting
      * *out_sig_len.
      *
      * The connection client forwards this to the adapter (through
-     * az_iot_mqtt_tls_options::sign) when vtable->version >= 2 and the slot is
-     * set. It is the route for stacks with no engine/provider abstraction;
-     * Paho is not one of them -- it exposes no TLS key callback and refuses a
-     * sign()-only credential -- so this needs a BYO adapter. Use
-     * client_key_uri + crypto_engine_id with Paho. */
+     * az_iot_mqtt_tls_options::sign) when the slot is set. It is the route for stacks with no
+     * engine/provider abstraction; Paho is not one of them -- it exposes no TLS key callback and
+     * refuses a sign()-only credential -- so this needs a BYO adapter. Use client_key_uri +
+     * crypto_engine_id with Paho. */
     az_iot_result (*sign)(
         az_iot_certificate_provider* self,
         const uint8_t* digest,

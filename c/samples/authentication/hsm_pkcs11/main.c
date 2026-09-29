@@ -164,7 +164,6 @@ static void hsm_release(az_iot_certificate_provider* self, az_iot_certificate_ma
 static void hsm_deinit(az_iot_certificate_provider* self) { (void)self; }
 
 static const az_iot_certificate_provider_vtable k_hsm_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = hsm_load,
   .release = hsm_release,
   .deinit = hsm_deinit,

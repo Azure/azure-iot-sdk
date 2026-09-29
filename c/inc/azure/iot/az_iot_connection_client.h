@@ -97,11 +97,12 @@ extern "C"
     bool connection_profile_raw_truncated;
   } az_iot_hub_profile;
 
-#define AZ_IOT_HUB_PROFILE_INIT                                                              \
-  {                                                                                          \
-    ._internal_size = sizeof(az_iot_hub_profile),                                            \
-    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3, .connection_profile_raw = NULL, \
-    .connection_profile_raw_truncated = false,                                               \
+#define AZ_IOT_HUB_PROFILE_INIT                              \
+  {                                                          \
+    ._internal_size = sizeof(az_iot_hub_profile),            \
+    .connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3, \
+    .connection_profile_raw = NULL,                          \
+    .connection_profile_raw_truncated = false,               \
   }
 
   /* How the client retries a failed connection. Four numbers describe every
@@ -337,8 +338,7 @@ extern "C"
                                              * from the certificate_provider during DPS
                                              * registration and connect to the assigned
                                              * hub with the issued operational cert.
-                                             * Requires a provider whose vtable
-                                             * (version >= 2) has get_csr,
+                                             * Requires a provider with get_csr,
                                              * release_csr and
                                              * store_issued_certificate; open()
                                              * returns AZ_IOT_ERR_NOT_SUPPORTED
@@ -1480,9 +1480,8 @@ extern "C"
    * @p csr NULL, a resubmit carries a new CSR from get_csr().
    * @param replace NULL, or "*" / a request id to supersede an active hub-side op.
    * @return AZ_IOT_ERR_BUSY while an operation is in flight;
-   * AZ_IOT_ERR_NOT_SUPPORTED when @p csr is NULL and the provider's vtable is
-   * below version 2 or lacks get_csr, release_csr or store_issued_certificate,
-   * or on an MQTTv5 session.
+   * AZ_IOT_ERR_NOT_SUPPORTED when @p csr is NULL and the provider lacks get_csr,
+   * release_csr or store_issued_certificate, or on an MQTTv5 session.
    */
   AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
       az_iot_connection_client* client,

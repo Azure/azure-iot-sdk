@@ -115,7 +115,6 @@ static void pem_deinit_vtable(az_iot_certificate_provider* self)
 }
 
 static const az_iot_certificate_provider_vtable s_pem_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = pem_load,
   .release = pem_release,
   .deinit = pem_deinit_vtable,

@@ -289,7 +289,6 @@ static void provider_deinit_vtable(az_iot_certificate_provider* self)
 }
 
 static const az_iot_certificate_provider_vtable s_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = provider_load,
   .release = provider_release,
   .deinit = provider_deinit_vtable,

@@ -1313,7 +1313,7 @@ static void hub_mqtt_v5_birth_ack_truncated_payload_is_safe(void** state)
 }
 
 /* D2: request_operational_certificate requires a certificate_provider whose
- * vtable exposes get_csr (ABI version >= 2). open() must reject otherwise. */
+ * vtable exposes get_csr. open() must reject otherwise. */
 static void open_rejects_operational_cert_without_csr_provider(void** state)
 {
   (void)state;
@@ -1330,11 +1330,9 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c1);
 
-  /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;
+  /* Case 2: a provider that does not implement get_csr (all hooks NULL;
    * open() rejects before any hook is invoked). */
-  static const az_iot_certificate_provider_vtable no_csr_vtable = {
-    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
-  };
+  static const az_iot_certificate_provider_vtable no_csr_vtable = { 0 };
   az_iot_certificate_provider prov = { .vtable = &no_csr_vtable };
   opts.certificate_provider = &prov;
 
@@ -1414,7 +1412,6 @@ static az_iot_result fake_store(
   return f->store_rc;
 }
 static const az_iot_certificate_provider_vtable k_fake_csr_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = fake_csr_load,
   .release = fake_csr_release,
   .deinit = fake_csr_destroy,
@@ -1598,7 +1595,6 @@ static void open_rejects_operational_cert_without_release_or_store(void** state)
 {
   (void)state;
   static const az_iot_certificate_provider_vtable no_store = {
-    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load = fake_csr_load,
     .release = fake_csr_release,
     .deinit = fake_csr_destroy,
@@ -1606,7 +1602,6 @@ static void open_rejects_operational_cert_without_release_or_store(void** state)
     .release_csr = fake_release_csr,
   };
   static const az_iot_certificate_provider_vtable no_release_csr = {
-    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
     .load = fake_csr_load,
     .release = fake_csr_release,
     .deinit = fake_csr_destroy,
@@ -1914,7 +1909,6 @@ static az_iot_result renew_store(
 }
 
 static const az_iot_certificate_provider_vtable k_renew_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = renew_load,
   .release = fake_csr_release,
   .deinit = fake_csr_destroy,
@@ -1925,23 +1919,19 @@ static const az_iot_certificate_provider_vtable k_renew_vtable = {
 
 /* Can store but not produce a CSR. */
 static const az_iot_certificate_provider_vtable k_renew_vtable_no_csr = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = renew_load,
   .release = fake_csr_release,
   .deinit = fake_csr_destroy,
   .store_issued_certificate = renew_store,
 };
 
-/* v1 vtable: the CSR and store slots are beyond what the provider declares, so
- * the client must not call them even though they are populated here. */
-static const az_iot_certificate_provider_vtable k_renew_vtable_v1 = {
-  .version = 1u,
+/* Can produce a CSR but not store the chain. */
+static const az_iot_certificate_provider_vtable k_renew_vtable_no_store = {
   .load = renew_load,
   .release = fake_csr_release,
   .deinit = fake_csr_destroy,
   .get_csr = renew_get_csr,
   .release_csr = renew_release_csr,
-  .store_issued_certificate = renew_store,
 };
 
 typedef struct renew_cb_ctx
@@ -2157,10 +2147,10 @@ static void send_csr_without_a_csr_needs_a_provider_that_can_renew(void** state)
 {
   (void)state;
   renew_fixture rf;
-  renew_provider v1 = { .base.vtable = &k_renew_vtable_v1 };
-  renew_connect(&rf, &v1);
-  assert_send_csr_without_csr_refused(&rf, &v1);
-  assert_int_equal(v1.get_csr_calls, 0);
+  renew_provider no_store = { .base.vtable = &k_renew_vtable_no_store };
+  renew_connect(&rf, &no_store);
+  assert_send_csr_without_csr_refused(&rf, &no_store);
+  assert_int_equal(no_store.get_csr_calls, 0);
   az_iot_connection_client_deinit(&rf.client);
 
   renew_provider no_csr = { .base.vtable = &k_renew_vtable_no_csr };

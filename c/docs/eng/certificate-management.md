@@ -10,7 +10,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## Status
 
-Implemented. The certificate-provider vtable is versioned to v2 with the
+Implemented. The certificate-provider vtable has the
 role-aware `load()`, CSR hooks (`get_csr`/`release_csr`) and issued-cert storage;
 the connection client performs DPS CSR enrollment (opt-in via
 `dps.request_operational_certificate`) and MQTTv3 hub runtime renewal
@@ -501,14 +501,13 @@ dying inside the handshake with no useful diagnostic:
 All nine open questions are resolved below (recommendations accepted 07/03/2026). The
 platform matrix we must support — **file/pinned · compiled-in image · OS keystore ·
 HSM/TPM/secure-element (PKCS#11) · remote/cloud key** — pushes four items from
-"maybe/later" to **v1**: the vtable version field (D1), the key-reference + `sign()` hook
+"maybe/later" to **v1**: the full vtable (D1), the key-reference + `sign()` hook
 (D8), Hub-side renewal (D7), and the layered ownership model (D9).
 
-1. **Vtable ABI — use a `version` field (not append + NULL-check).** A `uint32_t version`
-   is the first vtable member; the client gates new slots on it. Once HSM *vendors* ship
-   providers compiled against a different SDK version than the app, reading past a shorter
-   vtable is UB. One-time cost, every future hook safe. *Supersedes the "append +
-   NULL-check" note in Change 2.*
+1. **Vtable ABI — no `version` field (revised).** First planned as a `uint32_t version`
+   the client would gate new slots on. Dropped before the first release: every hook ships
+   in the first vtable, optional hooks are NULL-checked, and a provider is built against
+   the same headers as the SDK it links with. Any later ABI change is a breaking release.
 2. **Opt-in — explicit `bool request_operational_certificate` + capability check.** A
    provider may support CSR yet a given connection may already hold a valid operational
    cert. Explicit flag; return `AZ_IOT_ERR_NOT_SUPPORTED` when the provider lacks
@@ -576,27 +575,23 @@ typedef enum
     AZ_IOT_CRED_OPERATIONAL      /* DPS/Hub-issued operational cert, once held  */
 } az_iot_cert_role;
 
-#define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 2u
-
 typedef struct az_iot_certificate_provider_vtable
 {
-    uint32_t version;   /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
-
-    /* v1 core */
+    /* core */
     az_iot_result (*load)(az_iot_certificate_provider* self,
                           az_iot_cert_role role,                 /* D3 */
                           az_iot_certificate_material* out_material);
     void          (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
     void          (*deinit)(az_iot_certificate_provider* self);
 
-    /* v2 CSR enrollment (optional; NULL get_csr => not supported) */
+    /* CSR enrollment (optional; NULL get_csr => not supported) */
     az_iot_result (*get_csr)(az_iot_certificate_provider* self,
                              const char* subject_common_name,
                              az_iot_certificate_signing_request* out_csr);
     void          (*release_csr)(az_iot_certificate_provider* self, az_iot_certificate_signing_request* csr);
     az_iot_result (*store_issued_certificate)(az_iot_certificate_provider* self, const az_iot_issued_certificate* issued);
 
-    /* v2 non-extractable key custody (optional; D8). When present the TLS
+    /* non-extractable key custody (optional; D8). When present the TLS
      * adapter calls sign() instead of reading a private key. */
     az_iot_result (*sign)(az_iot_certificate_provider* self,
                           const uint8_t* digest, size_t digest_len,

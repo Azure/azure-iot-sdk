@@ -39,7 +39,6 @@ static void embedded_release(
 static void embedded_destroy(az_iot_certificate_provider* self) { (void)self; }
 
 static const az_iot_certificate_provider_vtable k_embedded_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = embedded_load,
   .release = embedded_release,
   .deinit = embedded_destroy,

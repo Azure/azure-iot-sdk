@@ -119,7 +119,6 @@ static void managed_init_generates_key_and_valid_csr(void** state)
   az_iot_certificate_provider_managed prov;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
   assert_non_null(prov.base.vtable);
-  assert_int_equal(AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION, prov.base.vtable->version);
 
   /* CSR carries the requested CN and is self-consistent (verifies with its
    * own public key). */
@@ -814,18 +813,18 @@ static bool has_owner_only_dacl(const char* path)
   }
   SECURITY_DESCRIPTOR_CONTROL control = 0;
   DWORD revision = 0;
-  ACL_SIZE_INFORMATION info;
+  ACL_SIZE_INFORMATION info = { 0 };
   bool ok = dacl != NULL && GetSecurityDescriptorControl(sd, &control, &revision)
       && (control & SE_DACL_PROTECTED) != 0
       && GetAclInformation(dacl, &info, (DWORD)sizeof(info), AclSizeInformation)
       && info.AceCount == 2;
 
   BYTE owner_rights[SECURITY_MAX_SID_SIZE];
-  BYTE system[SECURITY_MAX_SID_SIZE];
+  BYTE system_sid[SECURITY_MAX_SID_SIZE];
   DWORD n1 = (DWORD)sizeof(owner_rights);
-  DWORD n2 = (DWORD)sizeof(system);
+  DWORD n2 = (DWORD)sizeof(system_sid);
   ok = ok && CreateWellKnownSid(WinCreatorOwnerRightsSid, NULL, owner_rights, &n1)
-      && CreateWellKnownSid(WinLocalSystemSid, NULL, system, &n2);
+      && CreateWellKnownSid(WinLocalSystemSid, NULL, system_sid, &n2);
   bool saw_owner = false;
   bool saw_system = false;
   for (DWORD i = 0; ok && i < info.AceCount; ++i)
@@ -838,7 +837,7 @@ static bool has_owner_only_dacl(const char* path)
     {
       saw_owner = true;
     }
-    else if (ok && EqualSid(sid, system))
+    else if (ok && EqualSid(sid, system_sid))
     {
       saw_system = true;
     }

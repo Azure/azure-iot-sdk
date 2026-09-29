@@ -171,7 +171,6 @@ static void my_destroy(az_iot_certificate_provider* self)
 }
 
 static const az_iot_certificate_provider_vtable s_my_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = my_load,
   .release = my_release,
   .deinit = my_destroy,

@@ -107,7 +107,6 @@ static az_iot_result csr_provider_store(
 }
 
 static const az_iot_certificate_provider_vtable k_csr_vtable = {
-  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
   .load = csr_provider_load,
   .release = csr_provider_release,
   .deinit = csr_provider_deinit,
