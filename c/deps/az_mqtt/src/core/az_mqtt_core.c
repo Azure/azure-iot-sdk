@@ -195,73 +195,81 @@ static az_result _read_packet(
   return AZ_OK;
 }
 
-az_result _az_mqtt_core_connect(
-    az_mqtt_core* core,
-    int32_t timeout_ms,
-    int32_t connect_size,
-    _az_mqtt_core_dispatch_fn dispatch)
+az_result _az_mqtt_core_connect_start(az_mqtt_core* core, int32_t timeout_ms)
 {
-  int64_t const deadline = _deadline(timeout_ms);
   _S(core).recv_buf_pos = 0;
   _S(core).ping_outstanding = false;
+  _S(core).connect_sent = false;
+  _S(core).timer_ms = _deadline(timeout_ms);
   _S(core).state = AZ_MQTT_CLIENT_STATE_CONNECTING;
 
-  // TCP/TLS connect, bounded by the same deadline as the CONNACK.
   az_result rc = az_mqtt_transport_connect_start(
       _S(core).transport, _S(core).hostname, _S(core).port, _S(core).tls_options);
-  while (rc == AZ_OK)
-  {
-    rc = az_mqtt_transport_connect_poll(_S(core).transport, _remaining(deadline));
-    if (rc == AZ_OK)
-    {
-      break;
-    }
-    if (rc == AZ_MQTT_ERROR_TIMEOUT && _remaining(deadline) != 0)
-    {
-      rc = AZ_OK; // Woke early; keep polling until the deadline.
-    }
-  }
-
-  if (az_result_succeeded(rc))
-  {
-    rc = _az_mqtt_core_send(core, az_span_slice_to_end(_S(core).send_buffer, connect_size));
-  }
-
-  if (az_result_succeeded(rc))
-  {
-    az_mqtt_packet_type type;
-    uint8_t flags;
-    az_span body;
-    int32_t packet_size;
-
-    uint32_t const generation = _S(core).session_generation;
-    rc = _read_packet(core, deadline, &type, &flags, &body, &packet_size);
-    if (az_result_succeeded(rc))
-    {
-      rc = type == AZ_MQTT_PACKET_TYPE_CONNACK ? dispatch(core, type, flags, body)
-                                               : AZ_MQTT_ERROR_PROTOCOL;
-      if (_S(core).session_generation != generation)
-      {
-        // The CONNACK callback ended the session (and may have started another): leave it be.
-        return _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTED ? AZ_OK
-                                                                 : AZ_MQTT_ERROR_NOT_CONNECTED;
-      }
-      _consume_recv(core, packet_size);
-    }
-    if (az_result_succeeded(rc) && _S(core).state != AZ_MQTT_CLIENT_STATE_CONNECTED)
-    {
-      rc = AZ_MQTT_ERROR_NOT_CONNECTED; // CONNACK refused; the callback got the reason.
-    }
-  }
-
   if (az_result_failed(rc))
   {
     _az_mqtt_core_close(core, rc);
+  }
+  return rc;
+}
+
+az_result _az_mqtt_core_connect_wait(az_mqtt_core* core, _az_mqtt_core_dispatch_fn dispatch)
+{
+  uint32_t const generation = _S(core).session_generation;
+  az_result rc = AZ_OK;
+  while (az_result_succeeded(rc) && _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTING
+         && _S(core).session_generation == generation)
+  {
+    rc = _az_mqtt_core_process_loop(core, -1, dispatch);
+  }
+  if (az_result_failed(rc))
+  {
+    return rc;
+  }
+  return _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTED ? AZ_OK : AZ_MQTT_ERROR_NOT_CONNECTED;
+}
+
+/** @brief Whether the connect deadline has passed. */
+static bool _connect_expired(az_mqtt_core const* core) { return _remaining(_S(core).timer_ms) == 0; }
+
+/**
+ * @brief CONNECTING: progress the transport connect and send CONNECT once it is up.
+ *
+ * @param[in,out] deadline_ms Wait deadline; lowered to the connect deadline.
+ */
+static az_result _service_connect(az_mqtt_core* core, int64_t* deadline_ms)
+{
+  int64_t const connect_deadline = _S(core).timer_ms;
+  if (connect_deadline >= 0 && (*deadline_ms < 0 || connect_deadline < *deadline_ms))
+  {
+    *deadline_ms = connect_deadline;
+  }
+  if (_S(core).connect_sent)
+  {
+    return AZ_OK;
+  }
+
+  az_result rc = az_mqtt_transport_connect_poll(_S(core).transport, _remaining(*deadline_ms));
+  if (rc == AZ_MQTT_ERROR_TIMEOUT)
+  {
+    return _connect_expired(core) ? rc : AZ_OK; // Not up yet.
+  }
+  if (az_result_failed(rc))
+  {
     return rc;
   }
 
-  _S(core).last_receive_time_ms = _get_clock_ms();
-  return AZ_OK;
+  // Send the CONNECT encoded at the start of the send buffer.
+  az_span packet = _S(core).send_buffer;
+  az_mqtt_packet_type type;
+  uint8_t flags;
+  int32_t remaining_length;
+  rc = _az_mqtt_decode_fixed_header(&packet, &type, &flags, &remaining_length);
+  if (az_result_succeeded(rc))
+  {
+    rc = _az_mqtt_core_send(core, az_span_slice_to_end(packet, remaining_length));
+  }
+  _S(core).connect_sent = az_result_succeeded(rc);
+  return rc;
 }
 
 /**
@@ -284,7 +292,7 @@ static az_result _service_keep_alive(
 
   if (_S(core).ping_outstanding)
   {
-    int64_t const waited = now - _S(core).ping_sent_time_ms;
+    int64_t const waited = now - _S(core).timer_ms;
     if (waited >= keep_alive_ms)
     {
       return AZ_MQTT_ERROR_KEEP_ALIVE_TIMEOUT;
@@ -310,7 +318,7 @@ static az_result _service_keep_alive(
   {
     // The response window starts once the PINGREQ is out, not before a slow send.
     _S(core).ping_outstanding = true;
-    _S(core).ping_sent_time_ms = _get_clock_ms();
+    _S(core).timer_ms = _get_clock_ms();
     *out_next_ms = (int32_t)keep_alive_ms;
   }
   return rc;
@@ -342,11 +350,23 @@ az_result _az_mqtt_core_process_loop(
   }
   int64_t deadline = _deadline(wait_ms);
 
+  if (_S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTING)
+  {
+    rc = _service_connect(core, &deadline);
+    if (az_result_failed(rc))
+    {
+      _az_mqtt_core_close(core, rc);
+      return rc;
+    }
+  }
+
   // Handle every complete packet already available, up to a bound.
-  for (int i = 0;
-       i < _AZ_MQTT_MAX_PACKETS_PER_LOOP && _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTED;
+  for (int i = 0; i < _AZ_MQTT_MAX_PACKETS_PER_LOOP
+       && (_S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTED
+           || (_S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTING && _S(core).connect_sent));
        i++)
   {
+    bool const connecting = _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTING;
     az_mqtt_packet_type type;
     uint8_t flags;
     az_span body;
@@ -354,14 +374,16 @@ az_result _az_mqtt_core_process_loop(
 
     uint32_t const generation = _S(core).session_generation;
     rc = _read_packet(core, deadline, &type, &flags, &body, &packet_size);
-    if (rc == AZ_MQTT_ERROR_TIMEOUT)
+    if (rc == AZ_MQTT_ERROR_TIMEOUT && !(connecting && _connect_expired(core)))
     {
       rc = AZ_OK;
       break;
     }
     if (az_result_succeeded(rc))
     {
-      rc = dispatch(core, type, flags, body);
+      // While connecting, only a CONNACK is valid.
+      rc = connecting && type != AZ_MQTT_PACKET_TYPE_CONNACK ? AZ_MQTT_ERROR_PROTOCOL
+                                                             : dispatch(core, type, flags, body);
       if (_S(core).session_generation != generation)
       {
         // A callback ended this session, and may have connected a new one whose
@@ -369,11 +391,19 @@ az_result _az_mqtt_core_process_loop(
         return az_result_failed(rc) ? rc : AZ_OK;
       }
       _consume_recv(core, packet_size);
+      if (az_result_succeeded(rc) && _S(core).state == AZ_MQTT_CLIENT_STATE_CONNECTING)
+      {
+        rc = AZ_MQTT_ERROR_NOT_CONNECTED; // CONNACK refused; the callback got the reason.
+      }
     }
     if (az_result_failed(rc))
     {
       _az_mqtt_core_close(core, rc);
       return rc;
+    }
+    if (connecting)
+    {
+      break; // Connected: later packets belong to the next call.
     }
     deadline = _get_clock_ms(); // Only what is already there from now on.
   }

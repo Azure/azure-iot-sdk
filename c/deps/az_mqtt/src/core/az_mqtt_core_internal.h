@@ -33,20 +33,30 @@ typedef az_result (*_az_mqtt_core_dispatch_fn)(
     az_span body);
 
 /**
- * @brief Open the transport, send the CONNECT already encoded at the start of
- * the send buffer (@p connect_size bytes) and dispatch the CONNACK.
+ * @brief Start connecting: state CONNECTING, transport connect started.
  *
- * @p dispatch sets state CONNECTED (and keep_alive_seconds) on acceptance.
- * @return AZ_OK once connected; AZ_MQTT_ERROR_NOT_CONNECTED if the CONNACK
- * refused; else the failure. The session is closed on any failure.
+ * The CONNECT packet must already be encoded at the start of the send buffer;
+ * it stays there until sent (nothing else uses the send buffer while
+ * CONNECTING). _az_mqtt_core_process_loop() then completes the transport
+ * connect, sends CONNECT and dispatches the CONNACK; its dispatch sets state
+ * CONNECTED (and keep_alive_seconds) on acceptance. @p timeout_ms (-1: none)
+ * bounds the whole sequence. The session is closed on failure.
  */
-AZ_NODISCARD az_result _az_mqtt_core_connect(
-    az_mqtt_core* core,
-    int32_t timeout_ms,
-    int32_t connect_size,
-    _az_mqtt_core_dispatch_fn dispatch);
+AZ_NODISCARD az_result _az_mqtt_core_connect_start(az_mqtt_core* core, int32_t timeout_ms);
 
-/** @brief Keep-alive and dispatch of received packets; see az_mqtt5_client_process_loop(). */
+/**
+ * @brief Run the process loop until a started connect completes.
+ *
+ * @return AZ_OK once connected; AZ_MQTT_ERROR_NOT_CONNECTED if the CONNACK
+ * refused or a callback ended the session; else the failure.
+ */
+AZ_NODISCARD az_result
+_az_mqtt_core_connect_wait(az_mqtt_core* core, _az_mqtt_core_dispatch_fn dispatch);
+
+/**
+ * @brief Keep-alive, connect progress and dispatch of received packets; see
+ * az_mqtt5_client_process_loop().
+ */
 AZ_NODISCARD az_result _az_mqtt_core_process_loop(
     az_mqtt_core* core,
     int32_t timeout_ms,

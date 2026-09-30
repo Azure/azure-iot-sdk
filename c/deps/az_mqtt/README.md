@@ -16,6 +16,8 @@ the [Azure SDK for C](https://github.com/Azure/azure-sdk-for-c) span and platfor
 - Both can be linked into one program: they share one core.
 - Each API carries only its own protocol's fields: `az_mqtt3_*` types have no MQTT 5.0 properties.
 - TLS: OpenSSL or mbedTLS (POSIX), Schannel (Windows), or none.
+- Connect is blocking (`az_mqttN_client_connect`) or not (`az_mqttN_client_connect_start`, then
+  `az_mqttN_client_process_loop` until CONNECTED; only name resolution may block).
 
 ```c
 #include <az_mqtt5/az_mqtt5_client.h>   /* or az_mqtt3/az_mqtt3_client.h */

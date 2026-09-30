@@ -39,7 +39,8 @@ struct az_mqtt_core
     _az_mqtt_core_on_closed_fn on_closed;
     int64_t last_send_time_ms;
     int64_t last_receive_time_ms;
-    int64_t ping_sent_time_ms;
+    /** @brief CONNECTED: when the outstanding PINGREQ was sent. CONNECTING: connect deadline (-1: none). */
+    int64_t timer_ms;
     /** @brief Bytes buffered in receive_buffer. */
     int32_t recv_buf_pos;
     /** @brief Bumped whenever a session ends; guards against callbacks that reconnect. */
@@ -51,6 +52,8 @@ struct az_mqtt_core
     uint16_t keep_alive_seconds;
     /** @brief A PINGREQ is awaiting its PINGRESP (or any other packet). */
     bool ping_outstanding;
+    /** @brief CONNECTING: the transport is up and CONNECT was sent. */
+    bool connect_sent;
   } _internal;
 };
 

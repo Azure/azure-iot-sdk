@@ -347,6 +347,91 @@ static void connect_to_a_silent_peer_times_out(void** state)
   _teardown(&f);
 }
 
+/** @brief Pump connect_start's connect with process_loop(0); each call must return promptly. */
+static az_result _pump_connect(fixture* f, int budget_ms)
+{
+  az_result rc = AZ_OK;
+  int64_t const end = _now_ms() + budget_ms;
+  while (az_result_succeeded(rc)
+         && AZ_MQTT_T(client_get_state)(&f->client) == AZ_MQTT_CLIENT_STATE_CONNECTING
+         && _now_ms() < end)
+  {
+    int64_t const t0 = _now_ms();
+    rc = AZ_MQTT_T(client_process_loop)(&f->client, 0);
+    assert_true(_now_ms() - t0 < 200);
+    _sleep_ms(5);
+  }
+  return rc;
+}
+
+static void a_started_connect_completes_in_process_loop(void** state)
+{
+  (void)state;
+  test_server_options so = _plain();
+  fixture f;
+  _setup(&f, &so, 30);
+  assert_int_equal(AZ_MQTT_T(client_connect_start)(&f.client, 3000), AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_get_state)(&f.client), AZ_MQTT_CLIENT_STATE_CONNECTING);
+  assert_int_equal(AZ_MQTT_T(client_connect_start)(&f.client, 3000), AZ_MQTT_ERROR_INVALID_STATE);
+  assert_int_equal(_pump_connect(&f, 3000), AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_get_state)(&f.client), AZ_MQTT_CLIENT_STATE_CONNECTED);
+  assert_int_equal(g.connacks, 1);
+  assert_int_equal(g.closed, 0);
+  _teardown(&f);
+}
+
+static void a_started_connect_to_a_silent_peer_times_out(void** state)
+{
+  (void)state;
+  test_server_options so = _plain();
+  so.behavior = TEST_SERVER_SILENT;
+  fixture f;
+  _setup(&f, &so, 30);
+  int64_t const start = _now_ms();
+  assert_int_equal(AZ_MQTT_T(client_connect_start)(&f.client, 500), AZ_OK);
+  assert_int_equal(_pump_connect(&f, 5000), AZ_MQTT_ERROR_TIMEOUT);
+  int64_t const elapsed = _now_ms() - start;
+  assert_true(elapsed >= 450 && elapsed < 2000);
+  assert_int_equal(AZ_MQTT_T(client_get_state)(&f.client), AZ_MQTT_CLIENT_STATE_DISCONNECTED);
+  assert_int_equal(g.connacks, 0);
+  assert_int_equal(g.closed, 1);
+  assert_int_equal(g.closed_reason, AZ_MQTT_ERROR_TIMEOUT);
+  _teardown(&f);
+}
+
+static void a_started_connect_reports_a_refused_connack(void** state)
+{
+  (void)state;
+  test_server_options so = _plain();
+  so.connack_code = AZ_MQTT_TEST_VERSION == 5 ? 0x87 : 0x05;
+  fixture f;
+  _setup(&f, &so, 30);
+  assert_int_equal(AZ_MQTT_T(client_connect_start)(&f.client, 3000), AZ_OK);
+  assert_int_equal(_pump_connect(&f, 3000), AZ_MQTT_ERROR_NOT_CONNECTED);
+  assert_int_equal(g.connacks, 1);
+  assert_int_equal(g.connack_reason, so.connack_code);
+  assert_int_equal(g.closed, 1);
+  assert_int_equal(g.closed_reason, AZ_MQTT_ERROR_NOT_CONNECTED);
+  _teardown(&f);
+}
+
+static void disconnect_cancels_a_started_connect(void** state)
+{
+  (void)state;
+  test_server_options so = _plain();
+  so.behavior = TEST_SERVER_SILENT;
+  fixture f;
+  _setup(&f, &so, 30);
+  assert_int_equal(AZ_MQTT_T(client_connect_start)(&f.client, 5000), AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_process_loop)(&f.client, 0), AZ_OK);
+  assert_int_equal(AZ_MQTT_TEST_DISCONNECT(&f.client), AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_get_state)(&f.client), AZ_MQTT_CLIENT_STATE_DISCONNECTED);
+  assert_int_equal(g.closed, 1);
+  assert_int_equal(g.closed_reason, AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_process_loop)(&f.client, 0), AZ_MQTT_ERROR_NOT_CONNECTED);
+  _teardown(&f);
+}
+
 static void reconnect_after_a_lost_session_works(void** state)
 {
   (void)state;
@@ -532,6 +617,10 @@ int main(void)
     cmocka_unit_test(one_process_loop_drains_a_burst),
     cmocka_unit_test(a_local_disconnect_reports_closed_once),
     cmocka_unit_test(connect_to_a_silent_peer_times_out),
+    cmocka_unit_test(a_started_connect_completes_in_process_loop),
+    cmocka_unit_test(a_started_connect_to_a_silent_peer_times_out),
+    cmocka_unit_test(a_started_connect_reports_a_refused_connack),
+    cmocka_unit_test(disconnect_cancels_a_started_connect),
     cmocka_unit_test(reconnect_after_a_lost_session_works),
     cmocka_unit_test(a_refused_connack_code_is_reported_verbatim),
     cmocka_unit_test(suback_reason_codes_never_exceed_the_buffer),

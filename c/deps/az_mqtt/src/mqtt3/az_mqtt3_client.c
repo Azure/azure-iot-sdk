@@ -198,7 +198,7 @@ az_mqtt3_client_init(az_mqtt3_client* client, az_mqtt3_client_options const* opt
   return AZ_OK;
 }
 
-AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t timeout_ms)
+AZ_NODISCARD az_result az_mqtt3_client_connect_start(az_mqtt3_client* client, int32_t timeout_ms)
 {
   _az_PRECONDITION_NOT_NULL(client);
 
@@ -207,17 +207,21 @@ AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t 
     return AZ_MQTT_ERROR_INVALID_STATE;
   }
 
+  // Encoded now; the core sends it once the transport is up.
   az_span send_buf = _SEND_BUFFER(client);
   az_result rc = az_mqtt3_codec_encode_connect(&send_buf, &client->_internal.connect_options);
   if (az_result_failed(rc))
   {
     return rc;
   }
-  return _az_mqtt_core_connect(
-      &client->_internal.core,
-      timeout_ms,
-      az_span_size(_SEND_BUFFER(client)) - az_span_size(send_buf),
-      _dispatch_packet);
+  return _az_mqtt_core_connect_start(&client->_internal.core, timeout_ms);
+}
+
+AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t timeout_ms)
+{
+  az_result rc = az_mqtt3_client_connect_start(client, timeout_ms);
+  return az_result_succeeded(rc) ? _az_mqtt_core_connect_wait(&client->_internal.core, _dispatch_packet)
+                                 : rc;
 }
 
 AZ_NODISCARD az_result az_mqtt3_client_process_loop(az_mqtt3_client* client, int32_t timeout_ms)

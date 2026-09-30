@@ -20,6 +20,7 @@ Treat one az_mqtt3_client / az_mqtt5_client instance as single-thread-owned unle
 
 - One dedicated thread owns the client and is the only code path that calls:
   - az_mqtt{3,5}_client_connect
+  - az_mqtt{3,5}_client_connect_start
   - az_mqtt{3,5}_client_process_loop
   - az_mqtt{3,5}_client_publish
   - az_mqtt{3,5}_client_subscribe

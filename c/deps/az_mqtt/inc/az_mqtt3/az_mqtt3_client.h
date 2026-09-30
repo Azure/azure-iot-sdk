@@ -136,16 +136,41 @@ az_mqtt3_client_init(az_mqtt3_client* client, az_mqtt3_client_options const* opt
  * @brief Connect to the broker (TCP + optional TLS + MQTT CONNECT).
  *
  * Blocks until the CONNACK arrives; @p timeout_ms bounds the whole sequence
- * (AZ_MQTT_ERROR_TIMEOUT). A refused CONNACK returns AZ_MQTT_ERROR_NOT_CONNECTED
- * after on_connack reports its return code.
+ * (AZ_MQTT_ERROR_TIMEOUT; -1: no bound). A refused CONNACK returns
+ * AZ_MQTT_ERROR_NOT_CONNECTED after on_connack reports its return code.
+ * Equivalent to az_mqtt3_client_connect_start() followed by
+ * az_mqtt3_client_process_loop() until the state leaves CONNECTING.
+ *
+ * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
  */
 AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t timeout_ms);
+
+/**
+ * @brief Start connecting without waiting.
+ *
+ * Returns once the TCP connect has started; only name resolution may block
+ * (see az_mqtt_transport_connect_start()). az_mqtt3_client_process_loop() then
+ * completes the TCP/TLS connect, sends CONNECT and handles the CONNACK, each call
+ * waiting no longer than its own timeout. The state is CONNECTING until an
+ * accepted CONNACK makes it CONNECTED (on_connack runs first).
+ *
+ * @p timeout_ms bounds the whole sequence (-1: no bound). If it expires, the
+ * CONNACK refuses, or anything fails, the session ends: process_loop returns the
+ * result (AZ_MQTT_ERROR_TIMEOUT, AZ_MQTT_ERROR_NOT_CONNECTED, ...) and
+ * on_connection_closed reports it. az_mqtt3_client_disconnect() cancels.
+ *
+ * @retval AZ_OK Started.
+ * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
+ */
+AZ_NODISCARD az_result
+az_mqtt3_client_connect_start(az_mqtt3_client* client, int32_t timeout_ms);
 
 /**
  * @brief Run the I/O processing loop once.
  *
  * Handles every complete packet available (up to a bound), dispatches
- * callbacks, and sends PINGREQ when due. Returns early when keep-alive needs
+ * callbacks, and sends PINGREQ when due. While CONNECTING, also progresses the
+ * connect (see az_mqtt3_client_connect_start()). Returns early when keep-alive needs
  * attention, so a long @p timeout_ms never delays a PINGREQ.
  *
  * Any failure ends the session: the transport is closed, the state becomes

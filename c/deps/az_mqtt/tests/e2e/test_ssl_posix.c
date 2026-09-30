@@ -18,6 +18,7 @@
 #include "test_common.h"
 
 #include <string.h>
+#include <time.h>
 
 #ifndef E2E_CA_CERT_PATH
 #error "E2E_CA_CERT_PATH must be defined by CMake for TLS tests"
@@ -80,10 +81,42 @@ static void test_tls_connect_and_disconnect_posix(void** state)
   assert_int_equal(rc, AZ_OK);
 }
 
+/** @brief connect_start + process_loop(0): the TLS handshake spans several calls. */
+static void test_tls_started_connect_posix(void** state)
+{
+  (void)state;
+  reset_state();
+
+  AZ_MQTT_T(client) client;
+  az_result rc = init_tls_client(&client, AZ_SPAN_FROM_STR("test-tls-posix-02"));
+  assert_int_equal(rc, AZ_OK);
+
+  rc = AZ_MQTT_T(client_connect_start)(&client, 5000);
+  assert_int_equal(rc, AZ_OK);
+  int calls = 0;
+  while (az_result_succeeded(rc)
+         && AZ_MQTT_T(client_get_state)(&client) == AZ_MQTT_CLIENT_STATE_CONNECTING && calls < 1000)
+  {
+    rc = AZ_MQTT_T(client_process_loop)(&client, 0);
+    calls++;
+    struct timespec const pause = { 0, 5 * 1000 * 1000 };
+    nanosleep(&pause, NULL);
+  }
+  assert_int_equal(rc, AZ_OK);
+  assert_int_equal(AZ_MQTT_T(client_get_state)(&client), AZ_MQTT_CLIENT_STATE_CONNECTED);
+  assert_true(calls > 1);
+  assert_true(s_connack_received);
+  assert_int_equal(s_connack_reason, AZ_MQTT_TEST_CONNACK_ACCEPTED);
+
+  rc = AZ_MQTT_TEST_DISCONNECT(&client);
+  assert_int_equal(rc, AZ_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_tls_connect_and_disconnect_posix),
+    cmocka_unit_test(test_tls_started_connect_posix),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);
