@@ -16,6 +16,7 @@ function(az_iot_apply_warnings target)
         if(AZ_IOT_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
+        az_iot_apply_hardening(${target})
     else()
         target_compile_options(${target} PRIVATE
             -Wall

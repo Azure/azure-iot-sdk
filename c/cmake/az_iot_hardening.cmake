@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Compiler and linker hardening for GCC and Clang (AZ_IOT_ENABLE_HARDENING, default ON).
+# Compiler and linker hardening for GCC, Clang and MSVC (AZ_IOT_ENABLE_HARDENING, default ON).
 #
 # Applied with add_compile_options()/add_link_options() from the top-level CMakeLists.txt before
 # any dependency is fetched, so azure-sdk-for-c, Paho, the SDK, samples and tests are all built
@@ -17,13 +17,46 @@
 #   PIE, -z relro -z now          read-only relocations after start-up
 #   -z noexecstack                non-executable stack
 #
-# eng/check-hardening.sh verifies the resulting ELF executables.
+# MSVC (/GS, /DYNAMICBASE, /NXCOMPAT and /HIGHENTROPYVA are already the toolchain defaults):
+#   /guard:cf                     Control Flow Guard, compiler and linker
+#   /CETCOMPAT                    CET shadow stack compatible (x64 linker only)
+#   /sdl                          security warnings as errors; first-party targets only (see
+#                                 az_iot_apply_hardening), as fetched dependencies are not clean
+#
+# eng/check-hardening.sh verifies the resulting ELF or PE binaries.
 
 include(CheckCCompilerFlag)
 include(CheckLinkerFlag)
 include(CheckPIESupported)
 
-if(NOT AZ_IOT_ENABLE_HARDENING OR MSVC OR NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+# Per-target hardening for first-party targets; called from az_iot_apply_warnings().
+function(az_iot_apply_hardening target)
+    if(AZ_IOT_ENABLE_HARDENING AND MSVC AND AZ_IOT_HAS_sdl)
+        target_compile_options(${target} PRIVATE /sdl)
+    endif()
+endfunction()
+
+if(NOT AZ_IOT_ENABLE_HARDENING)
+    return()
+endif()
+
+if(MSVC)
+    check_c_compiler_flag(/sdl AZ_IOT_HAS_sdl)
+    check_c_compiler_flag(/guard:cf AZ_IOT_HAS_guard_cf)
+    if(AZ_IOT_HAS_guard_cf)
+        add_compile_options(/guard:cf)
+        add_link_options(/guard:cf)
+    endif()
+    if(CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+        check_linker_flag(C /CETCOMPAT AZ_IOT_HAS_cetcompat)
+        if(AZ_IOT_HAS_cetcompat)
+            add_link_options(/CETCOMPAT)
+        endif()
+    endif()
+    return()
+endif()
+
+if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     return()
 endif()
 

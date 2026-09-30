@@ -582,6 +582,42 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
+  # MSVC counterpart: /guard:cf, /CETCOMPAT and /sdl, checked with dumpbin.
+  hardening-windows:
+    name: windows-msvc${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: [ 'OFF', 'ON' ]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Configure
+        run: >
+          cmake -S . -B build/hardening -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/hardening
+      - name: Check binaries
+        run: bash eng/check-hardening.sh build/hardening
+      - name: Unit tests
+        run: ctest --test-dir build/hardening --output-on-failure
+
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
   #
