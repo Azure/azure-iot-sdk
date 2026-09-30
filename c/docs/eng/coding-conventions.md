@@ -51,9 +51,13 @@ bash c/eng/clang-tidy.sh c/build/clang-tidy                            # what CI
 
 Checks and the reason for each exclusion are in [`c/.clang-tidy`](../../.clang-tidy);
 every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
-18.1.8 (`pipx install clang-tidy==18.1.8`). Ignore a return value with an
-explicit `(void)` cast. Suppress a false positive on its line with
-`/* NOLINTNEXTLINE(<check>): <reason> */`.
+18.1.8 (`pipx install clang-tidy==18.1.8`).
+
+- `cert-err33-c` (ignored libc result): cast to `(void)` when ignoring it is
+  deliberate. This does not work for `AZ_NODISCARD` functions: gcc still warns
+  (see §5), so handle their result.
+- False positive: `/* NOLINTNEXTLINE(<check>): <reason> */` on the line
+  immediately before the one diagnosed.
 
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
