@@ -5,7 +5,7 @@
 
 C99 client SDK for the Azure MQTTv3 hub and the MQTTv5 hub.
 
-> Status: **early bootstrap**. See [docs/design.md](docs/design.md) for the architecture and [docs/devnotes.md](docs/devnotes.md) for original design discussion notes.
+> Status: **early bootstrap**. See [docs/architecture.md](docs/architecture.md) for the architecture and [docs/connecting.md](docs/connecting.md) for connecting a device.
 
 ## Highlights
 

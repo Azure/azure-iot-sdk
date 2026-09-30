@@ -1306,7 +1306,7 @@ static void publish_after_disconnect_is_rejected(void** state)
  * The core does NOT act on it today: it is retried like any other CONNACK
  * failure. These two tests pin the SHIPPING behaviour so that implementing
  * re-provisioning is a deliberate, test-visible change rather than a silent
- * one. See docs/test-coverage.md ("known gaps"). */
+ * one. */
 static void identity_rejection_faults_when_reconnect_is_disabled(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;

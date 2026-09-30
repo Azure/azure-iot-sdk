@@ -465,9 +465,8 @@ extern "C"
    * @brief Terminal and non-terminal outcomes a device reports for a workflow.
    *
    * These are the values the service accepts on the status-report operation.
-   * `SKIPPED` replaces the Device Update for IoT Hub accept/reject acknowledgement: an engine that
-   * declines a deployment reports it rather than answering a protocol-level
-   * "reject".
+   * An engine that declines a deployment reports `SKIPPED`; there is no
+   * protocol-level accept/reject acknowledgement.
    */
   typedef enum az_iot_su_outcome
   {
@@ -521,9 +520,7 @@ extern "C"
   /**
    * @brief The structured result the engine hands a channel.
    *
-   * `workflow_id` alone is the correlation key: reporting is idempotent on it,
-   * and the Device Update for IoT Hub `retryTimestamp` half of the old composite key does not exist
-   * here.
+   * `workflow_id` alone is the correlation key: reporting is idempotent on it.
    *
    * `installed_update_id` means "what is installed on the device *now*", not
    * "what this workflow is about". It is therefore the previously installed
@@ -1140,7 +1137,7 @@ extern "C"
    * hidden allocation, and (where they verify) are fail-closed. The managed
    * az_iot_su_client is implemented in terms of the same internal cores, so both
    * modes share one copy of the security-critical path. See
-   * docs/eng/su-client-design.md §5.3.
+   * docs/eng/software-updates.md §5.3.
    */
 
   /**

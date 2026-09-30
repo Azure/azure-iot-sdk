@@ -8,7 +8,7 @@
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
- * See the companion README.md and docs/eng/su-client-design.md.
+ * See the companion README.md and docs/eng/software-updates.md.
  *
  * ONBOARDING ROUTE ONLY: a day-0 device, with no device record yet, asks with
  * az_iot_su_client_request_onboarding_update(). A device that has already

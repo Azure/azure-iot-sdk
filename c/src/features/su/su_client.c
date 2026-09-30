@@ -2893,9 +2893,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      /* Already installed: under Device Update for IoT Hub this was a protocol-level reject (406).
-       * There is no accept/reject acknowledgement here, so it is reported as a
-       * SKIPPED outcome instead. */
+      /* Already installed. There is no accept/reject acknowledgement, so it is
+       * reported as a SKIPPED outcome. */
       int32_t inst = (h->is_installed_fn != NULL)
           ? h->is_installed_fn(&SU_I(client).current_manifest, h->user_ctx)
           : AZ_IOT_SU_RESULT_SUCCESS;
