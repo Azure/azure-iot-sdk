@@ -62,12 +62,15 @@ every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
 ## 0.2. MSVC `/analyze` must be clean
 
 ```pwsh
-cmake -S c -B c/build/msvc-analyze -G Ninja -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF
-cmake --build c/build/msvc-analyze    # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
+cmake -S c -B c/build/msvc-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF `
+  -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_RUST_MQTT=ON
+cmake --build c/build/msvc-analyze -- -k 0   # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
 ```
 
 From a Visual Studio developer shell. Findings (`C6xxx`) are errors in `src`,
-`adapters` and `samples`. Suppress a false positive on the line before it with
+`adapters` and `samples`; `-k 0` reports every failing file. CI does not analyze the
+mbedTLS software updates crypto adapter (no mbedTLS on its Windows runners). Suppress a false positive on the line before it with
 `#pragma warning(suppress : <number>) /* <reason> */`, inside `#ifdef _MSC_VER`.
 
 ## 1. Build strings with `az_iot_span_writer`, not the C library
