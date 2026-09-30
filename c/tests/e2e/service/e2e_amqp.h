@@ -29,12 +29,13 @@ extern "C"
 #endif
 
 #define E2E_AMQP_MAX_PARTITIONS 32
-#define E2E_AMQP_CAPTURE_MAX 16
+#define E2E_AMQP_CAPTURE_MAX 64
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
 
   /* A telemetry watcher: an AMQP connection to the IoT Hub Event Hub-compatible
    * endpoint with one receiver link per partition. Received message bodies are
-   * captured into a small ring so the test can poll for a correlation marker.
+   * captured into a ring (newest overwrite oldest) so the test can poll for a
+   * correlation marker, even on a hub other runs are sending to.
    *
    * The struct is large (frame + per-partition buffers) and therefore intended to
    * be heap-allocated as part of the owning service object. */
@@ -53,6 +54,7 @@ extern "C"
     /* Capture ring of recently received bodies (NUL-terminated for substring search). */
     char captured[E2E_AMQP_CAPTURE_MAX][E2E_AMQP_CAPTURE_BODY_MAX];
     int captured_count;
+    int captured_next; /* ring slot the next body is written to */
 
     /* Backing storage referenced by the az_amqp objects above. */
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -61,19 +63,28 @@ extern "C"
     az_amqp_link* link_slots[E2E_AMQP_MAX_PARTITIONS + 2];
     uint8_t cbs_reply_buffer[1024];
     uint8_t recv_buffers[E2E_AMQP_MAX_PARTITIONS][2048];
-    char source_addr[E2E_AMQP_MAX_PARTITIONS][192];
+    char source_addr[E2E_AMQP_MAX_PARTITIONS][256];
     char link_name[E2E_AMQP_MAX_PARTITIONS][32];
     char audience_buffer[256];
+    uint8_t filter_buffer[256];
   } e2e_amqp_telemetry;
 
-  /* Connect to @p eh_host:5671, CBS-authorize @p sas_token against the entity, and
-   * attach one earliest-position receiver to each of @p partition_count partitions.
-   * On failure, returns false and (when non-NULL) points @p err_out at a static
-   * message. */
+  /**
+   * @brief Connects to @p eh_host:5671, CBS-authorizes @p sas_token against the entity and
+   * attaches one receiver per partition.
+   *
+   * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
+   * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
+   * 0 reads from the start of the stream.
+   * @param[out] err_out When non-NULL, set to a static message on failure.
+   * @return true on success.
+   */
   bool e2e_amqp_telemetry_begin(
       e2e_amqp_telemetry* t,
       const char* eh_host,
       const char* entity_path,
+      const char* consumer_group,
+      int64_t enqueued_after_ms,
       const char* sas_token,
       int partition_count,
       const char** err_out);

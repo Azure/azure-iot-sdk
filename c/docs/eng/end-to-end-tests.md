@@ -91,6 +91,10 @@ Service configuration (set by the provisioning config script):
 | `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
+| `IOTHUB_EVENTHUB_CONSUMER_GROUP` | consumer group to read (optional; default `$Default`) |
+
+The telemetry watcher only receives messages enqueued from 5 minutes before it
+starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
@@ -199,6 +203,15 @@ failure, or a runner that dies before teardown.
 The two `test` legs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a leg fails — or if the run is cancelled — so resources
 are never leaked.
+
+**Shared environment (temporary, opt-in).** When repository variable
+`E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
+long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
+X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1)),
+so there is nothing to clean up. Inputs are repository secrets
+`E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
+(`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
+upload with notifications. Push and nightly runs always provision.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch
