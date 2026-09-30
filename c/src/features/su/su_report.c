@@ -238,7 +238,7 @@ static bool bounded_span(const char* value, az_span* out)
   return true;
 }
 
-az_iot_result az_iot_su_build_report(
+AZ_NODISCARD az_iot_result az_iot_su_build_report(
     const az_iot_su_device_properties* device_properties,
     const az_iot_su_client_install_result* result,
     const az_iot_su_client_update_request* request,

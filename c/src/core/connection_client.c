@@ -3291,7 +3291,7 @@ static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_connection_client_options az_iot_connection_client_options_default(void)
+AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
   /* 0, not 8883: the port is derived from the transport at connect time, so a
@@ -3315,7 +3315,7 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
   return opts;
 }
 
-az_iot_result az_iot_connection_client_init(
+AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
 {
@@ -3429,7 +3429,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
    */
 }
 
-az_iot_result az_iot_connection_client_register_mqtt_factory(
+AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
     az_iot_connection_client* client,
     const az_iot_mqtt_factory* factory)
 {
@@ -3643,7 +3643,7 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
+AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
 {
   if (!client)
   {
@@ -4630,7 +4630,7 @@ const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_
   return client ? client->opts.host : NULL;
 }
 
-az_iot_result az_iot_connection_client_get_hub_profile(
+AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
     const az_iot_connection_client* client,
     az_iot_hub_profile* out_profile)
 {
@@ -5442,7 +5442,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 }
 
-az_iot_result az_iot_connection_client_send_csr(
+AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
     const az_iot_certificate_signing_request* csr,
     const char* request_id,
@@ -5566,7 +5566,7 @@ az_iot_result az_iot_connection_client_send_csr(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
+AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
 {
   if (!client)
   {

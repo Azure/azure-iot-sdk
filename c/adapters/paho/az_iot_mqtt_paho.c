@@ -176,7 +176,14 @@ static void q_free(queued_event* n)
   {
     for (size_t i = 0; i < n->user_props_count; ++i)
     {
+#ifdef _MSC_VER
+      /* C6001: entries below user_props_count are always set (extract_v5_props). */
+#pragma warning(suppress : 6001)
+#endif
       free((void*)n->user_props[i].key);
+#ifdef _MSC_VER
+#pragma warning(suppress : 6001)
+#endif
       free((void*)n->user_props[i].value);
     }
     free(n->user_props);
