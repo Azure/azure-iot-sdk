@@ -280,7 +280,7 @@ static az_iot_result build_request_url(
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv3_file_upload_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_init(
     az_iot_mqttv3_file_upload_client* client,
     az_iot_connection_client* conn,
     const az_iot_file_upload_http_transport* http_transport)
@@ -339,7 +339,7 @@ void az_iot_mqttv3_file_upload_client_deinit(az_iot_mqttv3_file_upload_client* c
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
     az_iot_mqttv3_file_upload_client* client,
     const char* blob_name,
     az_iot_file_upload_sas_callback cb,
@@ -446,7 +446,7 @@ az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
     az_iot_mqttv3_file_upload_client* client,
     const char* correlation_id,
     bool is_success,

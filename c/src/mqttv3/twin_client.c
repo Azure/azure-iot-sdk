@@ -422,9 +422,8 @@ static az_iot_result build_request_topic(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv3_twin_client_init(
-    az_iot_mqttv3_twin_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
@@ -505,7 +504,7 @@ void az_iot_mqttv3_twin_client_deinit(az_iot_mqttv3_twin_client* client)
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_mqttv3_twin_client_get(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_get(
     az_iot_mqttv3_twin_client* twin,
     az_iot_twin_get_callback cb,
     void* user_ctx)
@@ -555,7 +554,7 @@ az_iot_result az_iot_mqttv3_twin_client_get(
   return r;
 }
 
-az_iot_result az_iot_mqttv3_twin_client_patch_reported(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_patch_reported(
     az_iot_mqttv3_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,

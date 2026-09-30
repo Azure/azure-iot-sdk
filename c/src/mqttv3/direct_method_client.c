@@ -230,7 +230,7 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
   DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
 }
 
-az_iot_result az_iot_mqttv3_direct_method_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
     az_iot_mqttv3_direct_method_client* client,
     az_iot_connection_client* conn)
 {

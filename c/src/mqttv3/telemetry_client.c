@@ -16,7 +16,7 @@
 
 #define AZ_IOT_MQTTV3_TELEMETRY_TOPIC_MAX 512
 
-az_iot_result az_iot_mqttv3_telemetry_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_init(
     az_iot_mqttv3_telemetry_client* client,
     az_iot_connection_client* conn)
 {
@@ -84,7 +84,7 @@ static az_iot_result build_topic(
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
-az_iot_result az_iot_mqttv3_telemetry_client_send(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
     az_iot_mqttv3_telemetry_client* client,
     const az_iot_telemetry_message* message,
     az_iot_telemetry_send_callback callback,

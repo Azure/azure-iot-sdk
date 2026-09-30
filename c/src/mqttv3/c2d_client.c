@@ -198,9 +198,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
       conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
 }
 
-az_iot_result az_iot_mqttv3_c2d_client_init(
-    az_iot_mqttv3_c2d_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv3_c2d_client_init(az_iot_mqttv3_c2d_client* client, az_iot_connection_client* conn)
 {
   if (!client || !conn)
   {

@@ -795,9 +795,8 @@ static void withdraw_registrations(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv5_twin_client_init(
-    az_iot_mqttv5_twin_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
@@ -856,7 +855,7 @@ void az_iot_mqttv5_twin_client_deinit(az_iot_mqttv5_twin_client* client)
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_mqttv5_twin_get_options az_iot_mqttv5_twin_get_options_default(void)
+AZ_NODISCARD az_iot_mqttv5_twin_get_options az_iot_mqttv5_twin_get_options_default(void)
 {
   az_iot_mqttv5_twin_get_options opts;
   memset(&opts, 0, sizeof(opts));
@@ -885,7 +884,7 @@ static az_iot_result submit_request(
   return r;
 }
 
-az_iot_result az_iot_mqttv5_twin_client_get(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_get(
     az_iot_mqttv5_twin_client* twin,
     az_iot_mqttv5_twin_get_callback cb,
     void* user_ctx)
@@ -894,7 +893,7 @@ az_iot_result az_iot_mqttv5_twin_client_get(
   return az_iot_mqttv5_twin_client_get_with_options(twin, &opts, cb, user_ctx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_get_with_options(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_get_with_options(
     az_iot_mqttv5_twin_client* twin,
     const az_iot_mqttv5_twin_get_options* opts,
     az_iot_mqttv5_twin_get_callback cb,
@@ -925,7 +924,7 @@ az_iot_result az_iot_mqttv5_twin_client_get_with_options(
   return submit_request(twin, TWIN_PENDING_GET, TWIN_TYPE_GET, body, body_len, idx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_patch_reported(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_patch_reported(
     az_iot_mqttv5_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
@@ -940,7 +939,7 @@ az_iot_result az_iot_mqttv5_twin_client_patch_reported(
       twin, TI(twin).reported_properties_service_version, patch, patch_len, cb, user_ctx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
     az_iot_mqttv5_twin_client* twin,
     uint64_t if_match,
     const uint8_t* patch,

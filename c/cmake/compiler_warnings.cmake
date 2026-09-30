@@ -16,6 +16,13 @@ function(az_iot_apply_warnings target)
         if(AZ_IOT_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
+        if(AZ_IOT_ENABLE_MSVC_ANALYZE)
+            # External (SYSTEM) headers, e.g. azure-sdk-for-c, are not analyzed. Stack warning
+            # (C6262) at 64 KiB, not 16: SDK clients embed fixed buffers and samples keep them
+            # on main()'s stack.
+            target_compile_options(${target} PRIVATE
+                /analyze /analyze:external- /analyze:stacksize65536)
+        endif()
         az_iot_apply_hardening(${target})
     else()
         target_compile_options(${target} PRIVATE

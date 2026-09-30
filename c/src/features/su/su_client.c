@@ -74,7 +74,8 @@ typedef char az_iot_su_channel_storage_is_large_enough
 /* ------------------------------------------------------------------------- */
 /* device-properties cache                                                   */
 /* ------------------------------------------------------------------------- */
-size_t az_iot_su_device_properties_buffer_size(const az_iot_su_device_properties* device_properties)
+AZ_NODISCARD size_t
+az_iot_su_device_properties_buffer_size(const az_iot_su_device_properties* device_properties)
 {
   az_iot_su_device_properties_snapshot snapshot;
   return az_iot_su__prepare_device_properties(device_properties, &snapshot) == AZ_IOT_OK
@@ -1830,7 +1831,7 @@ static void drive_pending_fetch(az_iot_su_client* client)
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_su_client_config_options az_iot_su_client_config_options_default(void)
+AZ_NODISCARD az_iot_su_client_config_options az_iot_su_client_config_options_default(void)
 {
   az_iot_su_client_config_options opts = { 0 };
   return opts;
@@ -1927,7 +1928,7 @@ az_iot_result az_iot_su_client__initialize_with_channel(
   return su_client_init_core(client, channel, options);
 }
 
-az_iot_result az_iot_su_client_init(
+AZ_NODISCARD az_iot_result az_iot_su_client_init(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
     const az_iot_su_client_config_options* options)
@@ -2401,7 +2402,7 @@ static void restore_channel_state(az_iot_su_client* client, const uint8_t* src, 
   }
 }
 
-az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
+AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
 {
   if (client == NULL)
   {
@@ -3187,9 +3188,8 @@ az_iot_result az_iot_su_client_remove_observer(
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
-az_iot_result az_iot_su_client_request_onboarding_update(
-    az_iot_su_client* client,
-    uint32_t timeout_ms)
+AZ_NODISCARD az_iot_result
+az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
   if (client == NULL)
   {
@@ -3200,7 +3200,8 @@ az_iot_result az_iot_su_client_request_onboarding_update(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
+AZ_NODISCARD az_iot_result
+az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
   if (client == NULL)
   {
@@ -3211,7 +3212,7 @@ az_iot_result az_iot_su_client_request_update(az_iot_su_client* client, uint32_t
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_su_client_update_device_properties(
+AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
     az_iot_su_client* client,
     const az_iot_su_device_properties* device_properties)
 {
@@ -3253,7 +3254,7 @@ az_iot_result az_iot_su_client_update_device_properties(
 /* agent core-library API (library mode / bring-your-own state machine)      */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_su_parse_update_request(
+AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
     const az_iot_su_crypto_hooks* crypto,
     const az_iot_su_root_key* root_keys,
@@ -3321,7 +3322,7 @@ az_iot_result az_iot_su_parse_update_request(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_su_verify_file_hash(
+AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
     const az_iot_su_client_update_manifest_file* file,
     const az_iot_su_crypto_hooks* crypto,
     az_iot_su_read_chunk_callback read_chunk,
