@@ -70,7 +70,8 @@ cmake --build c/build/msvc-analyze -- -k 0   # what CI runs (ci-c-static-analysi
 
 From a Visual Studio developer shell. Findings (`C6xxx`) are errors in `src`,
 `adapters` and `samples`; `-k 0` reports every failing file. CI does not analyze the
-mbedTLS software updates crypto adapter (no mbedTLS on its Windows runners). Suppress a false positive on the line before it with
+mbedTLS software updates crypto adapter or the file upload sample's libcurl HTTPS path
+(no mbedTLS or libcurl on its Windows runners); clang-tidy covers both on Linux. Suppress a false positive on the line before it with
 `#pragma warning(suppress : <number>) /* <reason> */`, inside `#ifdef _MSC_VER`.
 
 ## 1. Build strings with `az_iot_span_writer`, not the C library
