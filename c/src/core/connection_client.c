@@ -1820,6 +1820,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
           c->dps_pending_retry_after_secs = resp.retry_after_seconds;
+          /* The parsed verdict first, on its own line: the raw body below can
+           * exceed AZ_IOT_LOG_MESSAGE_MAX and be cut before errorMessage. */
+          AZ_IOT_LOG_ERRORF(
+              "dps register: errorCode=%ld errorMessage=%.*s",
+              (long)resp.registration_state.extended_error_code,
+              (int)az_span_size(resp.registration_state.error_message),
+              (const char*)az_span_ptr(resp.registration_state.error_message));
           AZ_IOT_LOG_ERRORF(
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
