@@ -29,18 +29,10 @@ implementation: Paho takes its client key as a file path and exposes no
 than connecting without a client key. That route is for BYO adapters. The
 `rust_mqtt` adapter has no TLS credential handling at all and is not covered.
 
-Realizes the "cert management" open question in `docs/design.md` (§4.3) and the
-flow in `docs/dps-integration.md` ("REGISTER + CMS" → "RESULT (… Issued Cert)").
-
 ## Abstract
 
-Today the C connection client uses a single, static X.509 certificate for both the
-DPS connection and the IoT Hub connection. The pluggable `az_iot_certificate_provider`
-hook only *loads* pre-existing PEM material; nothing generates a certificate signing
-request (CSR), sends one to DPS, or consumes an issued certificate.
-
-This document designs the API to add **CSR-based certificate management** (a.k.a.
-operational-certificate enrollment): the device keeps a **bootstrap identity cert** to
+This document describes **CSR-based certificate management** (operational-certificate
+enrollment): the device keeps a **bootstrap identity cert** to
 authenticate to DPS, sends a **CSR** in the registration request, receives an **issued
 operational cert** from the DPS-linked CA, and connects to the assigned Hub with that
 operational cert. The private key for the operational cert never leaves the device.
@@ -288,7 +280,7 @@ gains `op_key` / `op_cert` paths. Everything else (factory registration, `open()
 
 ---
 
-## Runtime Hub-side certificate renewal (parity with C#)
+## Runtime Hub-side certificate renewal
 
 DPS-time enrollment (above) issues the *first* operational cert. To **renew** before
 expiry without re-provisioning through DPS, the C# SDK exposes a device-initiated,
@@ -315,12 +307,7 @@ Hub-side CSR over MQTT — this design should mirror it.
   | `503001` | Service unavailable | **yes** (5s initial) |
   | `500001` | Server error | **yes** (5min initial) |
 
-  > **Note:** the reference implementation's spec doc (`csr-scenarions.md`, generated from
-  > a 2026-01-30 test run) lists an *older* set (`400004/400006/400037/409004/412001`)
-  > that disagrees with the shipping code (`400040`/`409005`). Treat the code + API
-  > version above as authoritative and confirm against the service before freezing.
-- **MQTTv5**: not defined yet (C# throws `NotImplementedException` for the MQTTv5
-  path); MQTT v5 topic shape TBD.
+- **MQTTv5**: hub-side renewal is not supported.
 
 Proposed C surface (callback-driven to fit the single-threaded `do_work()` model):
 
@@ -363,69 +350,6 @@ Two integration options, mirroring the two ownership models:
 - **Provider-owned (this design):** the client calls `get_csr()` /
   `store_issued_certificate()` around the exchange and re-`load()`s, so renewal is
   transparent (same seam as the DPS path).
-
----
-
-## Cross-SDK alignment (C# / `dotnet/`)
-
-The C# SDK already ships a `CertificateManagement/` module
-(`dotnet/src/Microsoft.Azure.Devices.Client/ConnectionClient.cs`,
-`.../CertificateManagement/CertificateSigningOperation.cs`). It is broader than the v1
-proposed here — it has **both** CSR paths:
-
-1. **DPS provisioning-time CSR** — `ProvisioningSettings.ProvisioningCertificateSigningRequest`
-   → register body `{ "csr": … }` → result `issuedCertificateChain` → surfaced as
-   `ConnectionContext.IssuedClientCertificates`. Same flow as this doc. *(Currently only
-   half-wired in C#: `ConnectionClient.ProvisionAsync` hardcodes `csr = null` — a TODO on
-   their side — but the API and models exist.)*
-2. **Runtime Hub-side renewal** — `SendCertificateSigningRequestAsync` (see previous
-   section). This doc adds `az_iot_connection_client_send_csr()` to match.
-
-**Ownership model differs** — the biggest divergence to decide on:
-
-| Aspect | C# SDK (`dotnet/`) | This design (C) |
-|---|---|---|
-| Generates the CSR | **App** (`CertificateRequest`) | **Provider** (`get_csr`) |
-| Holds the private key | App, inside `X509Certificate2` (may be HSM via CNG) | Provider (TPM/HSM/file behind vtable) |
-| Persists the issued cert | App (writes files) | Provider (`store_issued_certificate`) |
-| Cert swap after issuance | Explicit disconnect + rebuild auth + reconnect | Transparent (`load()` returns operational) |
-| Request idempotency | `RequestId` + `Replace="*"` | `request_id` + `replace` (renewal path) |
-| CSR encoding | base64 DER | base64 DER (corrected) |
-| Issued shape | chain | chain (corrected) |
-
-C# is *data-in/data-out* (app owns crypto; SDK is a transport); this design is
-*provider-owns-crypto* (the vtable hides key custody), which suits C/embedded HSM/TPM.
-Recommendation: **keep the provider seam** but (a) match the wire contract (done above),
-(b) add the runtime-renewal API, and (c) optionally also expose the app-owned entry point
-for parity (see decision 9).
-
-### Reference implementation & lessons applied
-
-The **most complete** implementation is the legacy `azure-iot-sdk-csharp` repo on branch
-`feature/iot-csr-preview` (not the newer `dotnet/` in this repo, which is still partial):
-it ships **both** DPS issuance and Hub re-issuance with full error handling, a 26-scenario
-spec (`iothub/device/src/csr-scenarions.md`), and MQTT-handler unit tests. Treat it as the
-behavioral reference. Concrete fixes this C design adopts where that implementation left
-gaps:
-
-1. **Cancellation + local timeout.** C# checks the token only at submit time and never
-   registers it against the pending operation, so `Completed` can hang until the
-   service-side `operationExpires` (~12h). Our `send_csr` MUST support cancel/timeout via
-   `do_work()` and fail the callback with `AZ_IOT_ERR_TIMEOUT`.
-2. **SUBACK before PUBLISH.** C# writes the `$iothub/credentials/res/#` subscribe packet
-   without awaiting the SUBACK before publishing the CSR — the first response can be lost
-   (its own spec flags "send before subscribe → no response"). Our flow subscribes, waits
-   for SUBACK, then publishes.
-3. **Client-side CSR validation.** C# only null/empty-checks; validate base64 and the
-   **≤8KB** limit locally to fail fast instead of round-tripping a `400040`.
-4. **Auto-populate the device id.** C# requires the app to pass `id` and rejects a
-   mismatch with the authenticated identity. The C client already knows the connected
-   `client_id`, so it fills the `"id"` field itself.
-5. **Deterministic handler cleanup.** C# removes its inbound delegate only when
-   `Completed` finishes, leaking it (and its captured state) on a stuck 202. Our single
-   pending-CSR slot is cleared on ACCEPTED-timeout, ISSUED, and FAILED alike.
-6. **Pinned error codes.** Use the `2025-08-01-preview` table above (not the older spec
-   codes); only the transient set drives retry.
 
 ---
 
@@ -636,87 +560,30 @@ non-extractable-key custody, and CSR — the three axes this feature needs.
 
 ## Samples
 
-All scenarios above get a dedicated, single-purpose sample under a new cross-cutting
-**`samples/authentication/`** group (auth is orthogonal to the feature clients like
-`unified/telemetry`, `mqttv5/telemetry`, ...). Each sample reuses `samples/common/sample_utils` and
-differs only in the credential-setup block, so they stay small and diff-able.
+Under [`samples/authentication/`](../../samples/authentication/README.md). Each sample reuses
+`samples/common/sample_utils` and differs only in the credential setup.
 
-```
-samples/authentication/
-  README.md                    scenario matrix: provider x flow x platform
-  dps_csr_managed/             SHIPS - D9 provider-owned: `managed` provider, DPS issuance
-  hub_renew/                   SHIPS - D7 provider-owned transparent renewal
-  custom_certificate_provider/ SHIPS - D9 app-owned: app builds the CSR, data-in/out
-  hsm_pkcs11/                  SHIPS - D8 key-reference URI (non-extractable), Paho, either hub generation
-  hsm_sign_callback/           SHIPS - D8 provider sign() hook (stack without an engine)
-  custom_provider_template/    SHIPS - fork-me stub (mirrors legacy custom_hsm_example)
-
-  x509_file/                   planned - baseline covered today by the feature samples,
-                               so it has no folder of its own
-  x509_in_image/               planned - static cert compiled-in as const PEM
-  dps_csr_app_owned/           planned - narrower cut of custom_certificate_provider
-  hub_renew_app_owned/         planned - D7 app-owned explicit disconnect/reconnect
-  hub_renew_recovery/          planned - resubmit same request_id; 409005 -> replace="*"
-  os_keystore/                 planned - optional, platform-gated (Windows cert store)
-```
-
-`README.md` carries a matrix mapping each folder to: credential source (file / image /
-HSM / app), flow (static / DPS-issue / hub-renew), ownership model (provider / app), and
-supported platforms. CI builds every sample that exists; the `planned` rows above are the
-outstanding ones and none of them is a D8 scenario.
+| Sample | Shows |
+| --- | --- |
+| `dps_csr_managed/` | D9 provider-owned: the `managed` provider, DPS issuance |
+| `hub_renew/` | D7 provider-owned, transparent hub renewal |
+| `custom_certificate_provider/` | D9 app-owned: the application builds the CSR (data-in/out) |
+| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho, either hub generation |
+| `hsm_sign_callback/` | D8 provider `sign()` hook |
+| `custom_provider_template/` | A starting point for a custom provider |
 
 ## E2E tests
 
-Every CSR scenario needs an e2e test. The fixture is
-[`iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx) — `scripts/Azure.Iot.Sdk.Test.psm1`
-already provides most of the scaffolding:
+In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e2e.yml) and
+[`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml). See
+[end-to-end-tests.md](end-to-end-tests.md).
 
-- **Reuse (exists):** `New-X509CertificateSigningRequest`, `New-Certificate` (CA-signing
-  with a signature generator), RSA/ECDSA key gen + PEM export, `DpsX509EnrollmentGroupInfo`,
-  root-CA handling (`RootCaCertificates` / `AddRootCaCertificate`), `LinkedIotHubs`.
-- **Add (new):** enrollment-group config with a **linked CA enabled for operational-cert
-  issuance**; provision a **MQTTv5/P-SKU hub** with cert issuance on API `2025-08-01-preview`.
-- **Done:** SoftHSM2 for the PKCS#11 custody tests. The e2e legs run on GitHub-hosted
-  runners rather than a Docker image, so it is provisioned per job:
-  [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a token, imports the
-  device key CI already generates, **deletes the on-disk copy**, and prints the URI.
-  [`eng/setup-pkcs11-provider.sh`](../../eng/setup-pkcs11-provider.sh) builds the OpenSSL
-  provider the handshake signs through — from source, and pinned, because the provider has
-  to register a DECODER for its own key-reference PEM and distributions lag (Ubuntu 24.04
-  packages 0.3, which does not; 0.5 is the floor). The Linux e2e leg and the coverage job
-  both use the pair.
+| Group | Test | Build option |
+| --- | --- | --- |
+| DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
+| Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
 
-Scenario coverage (mirrors `csr-scenarions.md` where applicable):
-
-| Group | Cases |
-|---|---|
-| **DPS issuance** | happy path (CSR → `issuedCertificateChain` → connect w/ operational cert); CN ≠ registration id → reject; enrollment without CSR (chain null) |
-| **Hub renewal** | happy path `202`→`200` then reconnect; CSR validation (empty / >8KB / bad base64 / malformed PKCS#10); device-id mismatch; `replace=<rid>` / `replace="*"` / replace-not-found (`412001`); conflict `409005` then resolve; subscription persistence (unsub after 202, resubscribe, `clean_session`); reconnect mid-op → resubmit same `request_id`; throttling `429002/429003` transient retry |
-| **Storage / custody** | run DPS-issue + hub-renew with (a) file `managed` provider, (b) app-owned data-in/out, (c) *CI-gated* PKCS#11 via SoftHSM — **(c) written, bring-up not finished**: [`e2e_custody_test.c`](../../tests/e2e/tests/e2e_custody_test.c) provisions through DPS, connects, sends telemetry the service side observes, and reconnects, all with a key that only exists inside the token. It runs on the nightly schedule and on demand, not on pull requests, until a nightly comes back green. The handshake used to end in Paho's `TCP/TLS connect failure` with no OpenSSL reason reaching the log; the reason is now logged, and it was `error:40800054:pkcs11:p11prov_GetOperationState:...:Error returned by C_GetOperationState`. The PKCS#11 provider offers digests as well as key operations, so it was servicing the TLS handshake transcript hash; TLS 1.2 duplicates that digest context, the provider duplicates it with `C_GetOperationState`, and SoftHSM2 does not support that on a digest session. TLS 1.3 does not duplicate the context, which is why the same credential worked against one endpoint and failed against another. `eng/setup-softhsm.sh` now emits an OpenSSL configuration that activates the provider alongside the default one, and exports `OPENSSL_CONF`. Verified against a **live IoT Hub** over TLS 1.2 with the device key held only in a SoftHSM2 token: a provider loaded at run time by the adapter fails with the error above, a configuration-activated provider reaches CONNECTED — 3 runs each, with a plain-PEM control connecting over the same path to show the rig itself was sound. `pkcs11-module-quirks = no-deinit` is required with it: without that line the client connects and then crashes when OpenSSL tears the provider down. Blocking the provider's digest operations is kept as a precaution for tokens that advertise digests, but is inert on SoftHSM2 and is not what fixes the handshake. The mechanism itself is pinned by the unit-level custody suite, which drives the same adapter code against a real SoftHSM2 token and feeds the result to `SSL_CTX_use_PrivateKey_file` — verbatim what Paho does. Hub-renewal with an in-token key is separately outstanding: it needs a CSR signed inside the token, which is the integrator's `get_csr()`. |
-
-The device side exercises each via the matching `samples/authentication/*` binary (or a
-dedicated e2e test app), driven by the in-process all-C e2e suite (`tests/e2e`).
-
-## Version
-
-- 07/01/2026: Created by ewertons.
-- 07/02/2026: Added cross-SDK alignment (C# / `dotnet/`), runtime Hub-side renewal, and
-  device certificate storage methods (incl. HSM/TPM key reference); corrected the DPS
-  wire format (`csr` base64 DER, `issuedCertificateChain`). By ewertons.
-- 07/02/2026: Reviewed the complete reference implementation (`azure-iot-sdk-csharp`
-  `feature/iot-csr-preview`); pinned the Hub-renewal error-code table to API
-  `2025-08-01-preview` + transient set, and added "Reference implementation & lessons
-  applied". By ewertons.
-- 07/03/2026: Resolved all open questions into **Decisions** (D1–D9); added the legacy
-  `azure-iot-sdk-c` HSM comparison, a consolidated provider interface, and **Samples** and
-  **E2E tests** plans. By ewertons.
-- 07/03/2026: Rebased the cert work onto `main` (independent of the drop-`_t` rename); doc
-  and code use `main`'s `_t` naming. Foundation (versioned provider vtable) verified on
-  MSVC. By ewertons.
-- 08/30/2026: Implemented D8 end to end for the Paho adapter: key-reference fields and the
-  `sign()` hook now reach the adapter on both connect paths,
-  `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` rejects a credential that cannot sign, and the
-  handshake signs inside a PKCS#11 / TPM token. Added `samples/authentication/hsm_pkcs11`
-  (later split into `hsm_pkcs11_mqttv3` / `hsm_pkcs11_mqttv5`) and `hsm_sign_callback`, the
-  SoftHSM2 provisioning script, and unit + e2e custody suites. Corrected **Status**, the
-  storage-methods gap, **D8**, **Samples** and **E2E tests** to match. By ewertons.
+[`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
+device key, deletes the on-disk copy and prints the key URI.
+[`eng/setup-pkcs11-provider.sh`](../../eng/setup-pkcs11-provider.sh) builds the pinned OpenSSL
+PKCS#11 provider (0.5 or later is required; it registers a decoder for its own key-reference PEM).
