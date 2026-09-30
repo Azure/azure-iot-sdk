@@ -11,7 +11,7 @@ the difference between the two `main.c` files is exactly the feature.
 
 - Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
 - The whole feature is `copts.proxy.host` and `copts.proxy.port`, plus optional Basic credentials.
-- TLS is unaffected: it runs end to end with the service inside the tunnel. The proxy sees only ciphertext, and certificate and hostname validation are unchanged.
+- TLS runs end to end with the service inside the tunnel: the proxy cannot read or alter the IoT traffic, and certificate and hostname validation are unchanged. The proxy does see the destination host and port of each `CONNECT`, and the optional Basic credentials, which reach the proxy in clear text. Use proxy credentials only on a network you trust.
 - Applies to the DPS connect as well as the hub connect.
 - If the proxy cannot be reached, the connect fails. The SDK never falls back to a direct connection.
 - Stays on TCP (8883 through the tunnel). Combine with [`websockets`](../websockets/README.md) for a network that also only passes 443.

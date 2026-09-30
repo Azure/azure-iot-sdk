@@ -79,7 +79,13 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
   C++* workload, or the
   [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
 - [CMake 3.21+](https://cmake.org/download/) (bundled with Visual Studio).
-- OpenSSL 3.0+ visible to CMake, for example `vcpkg install openssl:x64-windows`.
+- OpenSSL 3.0+ visible to CMake, either:
+  - the Win64 installer from [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
+    (CMake finds its default install folder; otherwise add `-DOPENSSL_ROOT_DIR=<folder>`), or
+  - vcpkg, through the manifest in `c/vcpkg.json`: add
+    `-DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_MANIFEST_FEATURES=paho`
+    to the configure command. vcpkg then builds OpenSSL itself; `vcpkg install` alone is not
+    enough.
 - Run the build from a *Developer PowerShell for VS 2022*.
 
 ## Configuration

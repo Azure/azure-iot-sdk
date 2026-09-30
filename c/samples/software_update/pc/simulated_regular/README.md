@@ -126,7 +126,7 @@ available — both are on by default).
 
 ### Prerequisites
 
-The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c, vcpkg)
+The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c)
 automatically, so you only need a toolchain, CMake, and OpenSSL on the host.
 
 **Linux** (Debian/Ubuntu package names shown; adjust for your distro):
@@ -154,7 +154,7 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 - **[CMake 3.21+](https://cmake.org/download/)** — bundled with Visual Studio, or
   install standalone and ensure `cmake` is on `PATH`.
 - **OpenSSL 3.0+** — install [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
-  (or `vcpkg install openssl:x64-windows`) so CMake's `find_package(OpenSSL 3.0)`
+  (or vcpkg; see [Build tools](../../../README.md#build-tools)) so CMake's `find_package(OpenSSL 3.0)`
   succeeds. Without it the software updates crypto adapter — and therefore this sample — is
   skipped.
 - **Git** to clone the repo and let CMake fetch dependencies.

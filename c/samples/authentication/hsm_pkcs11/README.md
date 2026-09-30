@@ -53,7 +53,7 @@ sample expects. They are test helpers, not a production setup.
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Device certificate (PEM file). A certificate is public, so it stays a file. |
 | `AZ_IOT_CLIENT_KEY_URI` | yes | Key reference, e.g. `pkcs11:token=aziot;object=device-key;type=private`. |
-| `AZ_IOT_CRYPTO_ENGINE_ID` | yes | OpenSSL provider id that owns the key: `pkcs11` or `tpm2`. |
+| `AZ_IOT_CRYPTO_ENGINE_ID` | no | OpenSSL provider id that owns the key, e.g. `tpm2`. Default `pkcs11`. |
 | `AZ_IOT_TRUSTED_CA` | no | CA bundle (PEM file) for the DPS and IoT Hub server certificates. Default: the system store. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 | `AZ_IOT_PAHO_TRACE` | no | Set to enable Paho MQTT trace and verbose OpenSSL TLS errors. |

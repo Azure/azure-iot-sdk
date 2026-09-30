@@ -76,8 +76,17 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_unified_file_up
 .\build\windows-msvc-debug\samples\unified\Debug\az_iot_sample_file_upload.exe
 ```
 
-The upload needs **libcurl**. Linux: install `libcurl4-openssl-dev` (Debian/Ubuntu). Windows:
-`vcpkg install curl`. Without it, configure prints
+The upload needs **libcurl**. Linux: install `libcurl4-openssl-dev` (Debian/Ubuntu). Windows: use
+vcpkg through the manifest in `c/vcpkg.json` by adding these to the configure command (vcpkg
+then builds libcurl and OpenSSL; `vcpkg install curl` alone is not enough):
+
+```powershell
+cmake --preset windows-msvc-debug `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  "-DVCPKG_MANIFEST_FEATURES=paho;curl"
+```
+
+Without libcurl, configure prints
 `az_iot_sample_unified_file_upload: libcurl not found; building without the HTTPS upload path.`
 and the sample connects but cannot upload.
 

@@ -100,7 +100,7 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_csr_manag
 ```
 
 On Windows, use the `windows-msvc-debug` preset and make OpenSSL 3 visible to CMake
-(for example through vcpkg; see [`c/CMakePresets.json`](../../../CMakePresets.json)).
+(see [Build tools](../../README.md#build-tools)).
 
 The target exists only when OpenSSL 3.0+ is found and the Paho adapter is enabled
 (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`). Otherwise `--target`
