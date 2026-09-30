@@ -210,11 +210,13 @@ revision. For production, layer these opt-in overlays on top of
 | Secure Boot | v2 (RSA-3072); v1 (ECDSA P-256) on ESP32 below rev v3.0. ESP32-C3 needs rev v0.3 or later. |
 | Flash encryption | Release mode |
 | NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32, and every chip in the rehearsal); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
+| UART download mode | Disabled on ESP32 rev v3.0+: no serial flashing afterwards, updates are OTA only. Secure download mode on ESP32-S3/C3/C6. Stays enabled on ESP32 below rev v3.0 (not supported there). |
 | Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0x10000, for the larger bootloader; same A/B app slots |
 
-> **Irreversible.** The first boot of such an image burns eFuses. Download mode,
-> JTAG and reflashing become restricted, and a lost signing key means the device
-> can no longer be updated. Rehearse with virtual eFuses first, then use a spare
+> **Irreversible.** The first boot of such an image burns eFuses. JTAG is
+> disabled and download mode is disabled or restricted (see above). On ESP32
+> rev v3.0+ the device can then only be updated over the air, and a lost signing
+> key means it can no longer be updated at all. Rehearse with virtual eFuses first, then use a spare
 > board.
 
 1. Generate a signing key in this directory, once. Keep it private; it is
@@ -276,10 +278,11 @@ revision. For production, layer these opt-in overlays on top of
    `build-secure` and `sdkconfig.production` and repeat this step, including the
    erase. Both are git-ignored. Do not erase a device the real profile has booted
    on: Secure Boot and flash encryption stay enabled in eFuse, so it would no
-   longer boot, and serial flashing is restricted.
+   longer boot, and serial flashing is disabled or restricted.
 
    The rehearsal writes eFuse changes to the `efuse_em` partition instead of the
-   chip, and does not protect flash contents. Never ship it.
+   chip, and does not protect flash contents. Never ship it. Download mode stays
+   usable, so the board can be erased and reflashed.
 
 5. Build update images with the same arguments and signing key:
    `idf.py "${SECURE[@]}" build` (PowerShell: `idf.py @secure build`). Import

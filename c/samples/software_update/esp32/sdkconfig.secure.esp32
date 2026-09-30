@@ -1,3 +1,8 @@
 # Secure Boot v2 on ESP32 requires chip revision v3.0 or later.
 # For older chips use sdkconfig.secure_esp32_legacy (Secure Boot v1).
 CONFIG_ESP32_REV_MIN_3=y
+
+# Permanently disable UART ROM download mode (ESP32 has no secure download mode).
+# Serial flashing is no longer possible after the first boot; updates are OTA only.
+# Not available below rev v3.0, so the legacy profile keeps download mode enabled.
+CONFIG_SECURE_DISABLE_ROM_DL_MODE=y
