@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Telemetry through an HTTP proxy (`unified/proxy`)
+# Telemetry through an HTTP proxy
 
 [`unified/telemetry`](../telemetry/README.md), with every MQTT session tunnelled through an HTTP
 `CONNECT` proxy, for networks where a proxy is the only way out. Everything else is identical, so

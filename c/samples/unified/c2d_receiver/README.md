@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Cloud-to-device messages (`unified/c2d_receiver`)
+# Cloud-to-device messages
 
 Receives cloud-to-device (C2D) messages for about 60 seconds and prints each one with its
 properties. C2D is an **mqttv3** IoT Hub feature; there is no mqttv5 counterpart.

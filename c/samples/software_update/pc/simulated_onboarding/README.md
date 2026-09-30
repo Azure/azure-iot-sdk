@@ -104,7 +104,7 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 # $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = '<dps-global-endpoint>'
 ```
 
-> Manifest signature verification works out of the box: the sample uses
+> Manifest signatures are verified against Microsoft's root keys: the sample uses
 > `az_iot_su_microsoft_root_keys()`, Microsoft's published software updates production roots
 > compiled into the SDK — see [Root keys](#root-keys) below.
 

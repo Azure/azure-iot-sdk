@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Telemetry over WebSockets (`unified/websockets`)
+# Telemetry over WebSockets
 
 [`unified/telemetry`](../telemetry/README.md), carried as MQTT inside WebSockets on port 443
 instead of MQTT over TCP on 8883, for networks that only pass HTTP(S) ports. Everything else is

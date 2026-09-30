@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Direct methods answered later (mqttv5) (`mqttv5/direct_method_slow_responder`)
+# Direct methods, deferred response, mqttv5 only
 
 Provisions through DPS, connects to an mqttv5 IoT Hub, and answers the direct method `slowEcho`
 about 2 seconds **after** the handler returned, for work that does not fit inside a callback. Read

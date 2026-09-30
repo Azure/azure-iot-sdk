@@ -1,13 +1,14 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# DPS certificate issuance with your own provider (`authentication/custom_certificate_provider`)
+# DPS-issued certificate, CSR built by the application
 
 The same flow as [`dps_csr_managed`](../dps_csr_managed/README.md): authenticate to DPS with the
 bootstrap certificate, send a CSR with the registration, save the issued operational chain, and
 connect to the assigned hub with it. The difference is who owns the crypto: here the certificate
-provider is application code in [`samples/common`](../../common/sample_cert_provider.c), ready to
-copy and adapt.
+provider is sample application code in [`samples/common`](../../common/sample_cert_provider.c),
+showing how an application implements the provider interface. It is sample code, not a production
+component.
 
 ## Sample features
 
@@ -104,7 +105,7 @@ Exit code 0 when the hub connection was reached; the last line says with which i
 
 | What | Code |
 | --- | --- |
-| The provider (copy this) | [`sample_cert_provider.c`](../../common/sample_cert_provider.c), `sample_cert_provider_init()` |
+| The provider | [`sample_cert_provider.c`](../../common/sample_cert_provider.c), `sample_cert_provider_init()` |
 | Platform CSR code | [`sample_csr_openssl.c`](../../common/sample_csr_openssl.c), [`sample_csr_cng.c`](../../common/sample_csr_cng.c) |
 | Opt in to issuance | `copts.dps.request_operational_certificate = true` and `copts.csr_payload_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()`, `on_operational_cert()` |

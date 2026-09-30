@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# DPS certificate issuance from a CSR (`dps_csr_managed`)
+# DPS-issued certificate, CSR built by the SDK
 
 The device proves itself to DPS with a **bootstrap** X.509 certificate, sends a
 certificate signing request (CSR) with its registration, and connects to IoT Hub

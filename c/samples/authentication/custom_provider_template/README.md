@@ -1,9 +1,9 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Certificate provider template (`authentication/custom_provider_template`)
+# Certificate provider template
 
-A minimal starting point for your own `az_iot_certificate_provider`, for a TPM, HSM, secure
+A minimal skeleton of an `az_iot_certificate_provider`, for a TPM, HSM, secure
 element or OS keystore that the shipped providers do not cover. It needs no crypto library and
 does not connect: `main()` calls the provider interface so the wiring compiles and runs.
 
@@ -14,7 +14,7 @@ does not connect: `main()` calls the provider interface so the wiring compiles a
 -   - `get_csr()`: produce a PKCS#10 CSR (base64 DER) over the device key.
 -   - `store_issued_certificate()`: persist the issued chain.
 -   - `sign()`: sign with a non-extractable key. When you implement it, leave the PEM key fields empty in `load()`; see [`hsm_sign_callback`](../hsm_sign_callback/README.md) and [`hsm_pkcs11`](../hsm_pkcs11/README.md) for which route your adapter supports.
-- For a complete, working provider, see [`custom_certificate_provider`](../custom_certificate_provider/README.md).
+- For a provider that builds a real CSR, see [`custom_certificate_provider`](../custom_certificate_provider/README.md).
 - Platforms: Linux and Windows.
 
 ## Service requirements

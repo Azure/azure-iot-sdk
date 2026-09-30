@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Direct methods (mqttv5) (`mqttv5/direct_method_responder`)
+# Direct methods, mqttv5 only
 
 Provisions through DPS, connects to an mqttv5 IoT Hub, and answers the direct method `echo` from
 inside the handler for about 60 seconds. [`unified/direct_method_responder`](../../unified/direct_method_responder/README.md)

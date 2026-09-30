@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Telemetry (mqttv5) (`mqttv5/telemetry`)
+# Telemetry, mqttv5 only
 
 Provisions through DPS, connects to an mqttv5 IoT Hub, sends one telemetry message, and closes.
 A device that must serve either hub generation should follow

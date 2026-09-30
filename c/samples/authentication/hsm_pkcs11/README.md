@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Non-extractable key in a PKCS#11 token or TPM (`authentication/hsm_pkcs11`)
+# Hardware-held key through PKCS#11
 
 Provisions through DPS and connects with a device private key that **never leaves the hardware**.
 The certificate provider hands the SDK a key *reference* (an RFC 7512 `pkcs11:` URI plus the id of

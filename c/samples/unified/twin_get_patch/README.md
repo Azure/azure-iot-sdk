@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Device twin (`unified/twin_get_patch`)
+# Device twin
 
 On every connect, requests the device twin (GET) and reports a property
 (`{"sample":"hello"}`, PATCH); in between it prints desired-property updates. Runs about 60 seconds,

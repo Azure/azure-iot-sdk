@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# File upload (`unified/file_upload`)
+# File upload
 
 Uploads a small text file (`sample-data/test.txt`) to the Azure Storage account linked to the
 IoT Hub, then notifies the hub. File upload is an **mqttv3** IoT Hub feature; there is no mqttv5

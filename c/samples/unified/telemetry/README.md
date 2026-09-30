@@ -1,11 +1,13 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Telemetry (`unified/telemetry`)
+# Telemetry
 
 Sends a telemetry message (`{"temp":23}`) every 5 seconds for about 60 seconds, to whichever
-IoT Hub DPS assigns the device. This is the shortest example of the pattern every `unified/`
-sample follows; read it first. For an mqttv5-only device, see
+IoT Hub DPS assigns the device. It is the shortest example of the build-before-open pattern that
+most `unified/` samples follow; read it first. [`connect_first`](../connect_first/README.md)
+builds after connecting instead, and [`c2d_receiver`](../c2d_receiver/README.md) and
+[`file_upload`](../file_upload/README.md) serve mqttv3 only. For an mqttv5-only device, see
 [`mqttv5/telemetry`](../../mqttv5/telemetry/README.md).
 
 ## Sample features

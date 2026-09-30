@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Operational certificate renewal over IoT Hub (`authentication/hub_renew`)
+# Certificate renewal over IoT Hub
 
 Connects to the IoT Hub DPS assigns, requests a renewed operational certificate **from the hub**
 with a certificate signing request (CSR), saves the new chain, and reconnects with it. Renewal over

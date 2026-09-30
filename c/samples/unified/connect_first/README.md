@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Telemetry, building after connect (`unified/connect_first`)
+# Telemetry, client built after connecting
 
 [`unified/telemetry`](../telemetry/README.md), built the conservative way: the connection is
 opened with **no** feature client attached. Once `CONNECTED`, the sample reads the assigned

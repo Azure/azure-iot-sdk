@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Device twin (mqttv5) (`mqttv5/twin_get_patch`)
+# Device twin, mqttv5 only
 
 Provisions through DPS, connects to an mqttv5 IoT Hub, requests the device twin (GET), reports
 a property (PATCH), and closes. For a device that must serve either generation, see

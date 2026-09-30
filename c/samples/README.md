@@ -17,7 +17,7 @@ run it, and what to expect.
 
 | Sample | What it shows |
 | --- | --- |
-| [unified/telemetry](unified/telemetry/README.md) | Telemetry to either hub generation. **Start here**: the pattern every `unified/` sample follows. |
+| [unified/telemetry](unified/telemetry/README.md) | Telemetry to either hub generation. **Start here**: the build-before-open pattern most `unified/` samples follow. |
 | [unified/connect_first](unified/connect_first/README.md) | The same, building the client after connecting, from the assigned generation. |
 | [unified/twin_get_patch](unified/twin_get_patch/README.md) | Device twin: GET, reported PATCH, desired updates. |
 | [unified/direct_method_responder](unified/direct_method_responder/README.md) | Direct methods answered inside the handler. |
@@ -31,11 +31,11 @@ run it, and what to expect.
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
 | [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/README.md) | Direct methods answered later, on an mqttv5 hub. |
 | [authentication/dps_csr_managed](authentication/dps_csr_managed/README.md) | DPS issues an operational certificate from a CSR. |
-| [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with a provider you copy and adapt. |
+| [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with the CSR built by application code. |
 | [authentication/hub_renew](authentication/hub_renew/README.md) | Renew the operational certificate over an mqttv3 hub. |
 | [authentication/hsm_pkcs11](authentication/hsm_pkcs11/README.md) | Private key in a PKCS#11 token or TPM. |
 | [authentication/hsm_sign_callback](authentication/hsm_sign_callback/README.md) | Private key reachable only through a `sign()` callback. |
-| [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Template for your own certificate provider. |
+| [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Skeleton of a certificate provider. |
 | [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
@@ -46,8 +46,17 @@ DPS returns the hub's connection profile with the assignment, and it can change 
 runs: a device moved to another hub re-provisions and may land on the other generation. A feature
 client pins its generation at `init()`. If DPS assigns the other one, the connection stops with
 `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and the state event carries
-the assigned profile. The `unified/` samples then destroy their clients, build the other
-generation's, and call `close()` and `open()`. See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
+the assigned profile. The `unified/` samples respond in one of three ways:
+
+- `telemetry`, `twin_get_patch`, `direct_method_responder`, `direct_method_slow_responder`,
+  `websockets`, `proxy`: build their clients before `open()`; on a mismatch they destroy them,
+  build the other generation's, and call `close()` and `open()`.
+- `connect_first`: opens with no feature client, builds once `CONNECTED` from the assigned profile,
+  and on a later mismatch destroys the client and reopens without one.
+- `c2d_receiver`, `file_upload`: mqttv3 features with no mqttv5 counterpart. On an mqttv5
+  assignment they report it and exit 1.
+
+See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
 
 ## Prerequisites
 

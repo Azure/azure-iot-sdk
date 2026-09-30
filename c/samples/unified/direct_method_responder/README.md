@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Direct methods (`unified/direct_method_responder`)
+# Direct methods
 
 Answers the direct method `echo` from inside the handler, returning the request payload with
 status 200. Runs about 60 seconds, on whichever IoT Hub DPS assigns. For an mqttv5-only device,

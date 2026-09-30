@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Non-extractable key through a sign() callback (`authentication/hsm_sign_callback`)
+# Hardware-held key through a sign() callback
 
 For a secure element whose key cannot be named by a URI and whose TLS stack has no OpenSSL
 provider for it: the only operation available is "sign these bytes". The certificate provider

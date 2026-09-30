@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# Direct methods, answered later (`unified/direct_method_slow_responder`)
+# Direct methods, deferred response
 
 Answers the direct method `slowEcho` **after** the handler returned, for work that does not fit
 inside a callback: the handler keeps the request, and the pump loop answers about 2 seconds later
