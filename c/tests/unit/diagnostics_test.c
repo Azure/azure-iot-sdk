@@ -245,7 +245,17 @@ static void version_string_matches_the_header_macros(void** state)
   assert_non_null(az_iot_version_string());
   assert_string_equal(az_iot_version_string(), AZ_IOT_VERSION_STRING);
 
-  char expected[32];
+  char expected[64];
+#ifdef AZ_IOT_VERSION_PRERELEASE
+  snprintf(
+      expected,
+      sizeof(expected),
+      "%d.%d.%d-%s",
+      AZ_IOT_VERSION_MAJOR,
+      AZ_IOT_VERSION_MINOR,
+      AZ_IOT_VERSION_PATCH,
+      AZ_IOT_VERSION_PRERELEASE);
+#else
   snprintf(
       expected,
       sizeof(expected),
@@ -253,6 +263,7 @@ static void version_string_matches_the_header_macros(void** state)
       AZ_IOT_VERSION_MAJOR,
       AZ_IOT_VERSION_MINOR,
       AZ_IOT_VERSION_PATCH);
+#endif
   assert_string_equal(az_iot_version_string(), expected);
 }
 
