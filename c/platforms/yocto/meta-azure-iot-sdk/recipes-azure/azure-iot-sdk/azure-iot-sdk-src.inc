@@ -16,5 +16,6 @@ SRCREV_sdk ?= "92a3a80baefae800e73d0e7faab28f7ccf416e06"
 SRC_URI = "${AZ_IOT_SDK_GIT_URI};name=sdk"
 SRCREV_FORMAT = "sdk"
 
-# Matches project(azure-iot-sdk VERSION ...) in c/CMakeLists.txt.
-PV = "0.0.1+git"
+# AZ_IOT_VERSION_STRING (c/inc/azure/iot/az_iot_version.h), "-" -> "~" so a
+# pre-release sorts before its release.
+PV = "1.0.0~preview+git"
