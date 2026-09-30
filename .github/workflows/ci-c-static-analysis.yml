@@ -1,0 +1,93 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Static analysis of first-party C code (src, adapters, samples).
+#   clang-tidy: clang static analyzer, bugprone, CERT and misc checks; config in c/.clang-tidy.
+name: ci-c-static-analysis
+
+on:
+  push:
+    branches: [ main ]
+  # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
+  # no check, which would block a required check. The `changes` job below skips work instead.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: c
+
+jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # dorny/paths-filter lists PR files through the API.
+    outputs:
+      c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            c:
+              - 'c/**'
+              - '!c/**/*.md'
+            common:
+              - 'common/**'
+              - '!common/**/*.md'
+            workflow:
+              - '.github/workflows/ci-c-static-analysis.yml'
+
+  clang-tidy:
+    name: clang-tidy
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Pinned: findings change between releases. Keep in sync with c/.clang-tidy
+      # (cert-err33-c.CheckedFunctions is this release's default list).
+      CLANG_TIDY_VERSION: 18.1.8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install deps
+        # Every optional component whose dependencies the runner can provide is configured, so
+        # its sources are analyzed: libssl (Paho TLS, key custody, software updates OpenSSL
+        # crypto, managed certificate provider), libcurl (file upload sample), mbedTLS below.
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+          pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
+
+      - name: Build mbedTLS
+        run: bash eng/install-mbedtls.sh 3.6.7 "$RUNNER_TEMP/mbedtls"
+
+      - name: Configure
+        # Configure only: clang-tidy needs compile_commands.json, not a build.
+        run: >
+          cmake -S . -B build/clang-tidy -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
+          -DAZ_IOT_BUILD_TESTS=OFF
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+
+      - name: clang-tidy
+        run: bash eng/clang-tidy.sh build/clang-tidy
