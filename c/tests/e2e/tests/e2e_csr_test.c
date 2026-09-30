@@ -71,7 +71,8 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
         "[e2e-csr] DPS error %ld: %.*s\n",
         (long)event->error->code,
         (int)az_span_size(event->error->message),
-        (const char*)az_span_ptr(event->error->message));
+        az_span_size(event->error->message) > 0 ? (const char*)az_span_ptr(event->error->message)
+                                                : "");
   }
 
   /* Hub lifecycle only: the provisioning session reports on its own scope,
