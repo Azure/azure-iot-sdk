@@ -235,13 +235,21 @@ Test #N: az_iot_conformance_mymqtt_v5 ........   Passed
 
 ### 4.4 — What the suite actually exercises
 
-Today the suites cover the iface contract end-to-end:
+The cases are in [tests/conformance/az_iot_conformance.c](../tests/conformance/az_iot_conformance.c). They cover:
 
-1. **`connect_disconnect_roundtrip`** — fresh client connects, observes `EVT_CONNECTED(OK)`, disconnects cleanly.
-2. **`publish_subscribe_roundtrip`** — subscribe to a unique topic with QoS 1, observe `EVT_SUBSCRIBE_ACK(OK)`, publish a known payload, receive it back via `EVT_MESSAGE`, validate topic + payload bytes.
-3. **`disconnect_without_connect_is_rejected`** — calling `disconnect` on a never-connected client must not return `az_iot_OK`.
+- **Lifecycle:** connect/disconnect, reuse after disconnect, disconnect without connect, keep-alive,
+  and server- and client-initiated disconnects.
+- **Messaging:** publish/subscribe round trips, refused SUBSCRIBE and PUBLISH, truncated PUBLISH,
+  unknown packet ids, and MQTT 5 properties in both directions.
+- **Network faults** (through a test proxy): refused, unresolvable and black-holed endpoints,
+  network drops, fragmentation, latency, bandwidth limits and stalled links.
+- **Session terms:** clean-session flag, session expiry (MQTT 5 only), Will, DISCONNECT reason
+  code, session-present.
+- **TLS** (with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`): server certificate validation (trusted,
+  untrusted, expired, hostname mismatch) and mutual TLS.
+- **Egress:** a WebSocket request is never downgraded, and an unreachable proxy is never bypassed.
 
-More tests will be added as the SDK grows (reconnect semantics, large payloads, retained messages, MQTTv5 properties, malformed-input handling, etc.). Re-running the suite after each SDK upgrade is the recommended way to catch regressions in your adapter.
+Re-run the suite after each SDK upgrade to catch regressions in your adapter.
 
 The suite also holds every adapter to the safety half of the optional features, whatever it declares:
 
@@ -251,8 +259,6 @@ The suite also holds every adapter to the safety half of the optional features, 
 ### 4.5 — Declaring optional capabilities
 
 If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly.
-
-> **Renamed:** `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY` is now `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` (same bit, same proof). There is no alias: change the name to the route you implement. If you implement the callback route, that build error is the point — you want `_SIGN`, which the old single capability could never prove.
 
 Non-extractable key custody has **two independent routes**, and `az_iot_mqtt_tls_options` says you may implement either, both or neither. They are separate capabilities, so declare only what you implement:
 
@@ -336,4 +342,4 @@ If your v5 adapter does not propagate these properties, the feature clients will
 - Iface header: [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)
 - Reference adapter: [adapters/paho/](../adapters/paho/)
 - Conformance suite: [tests/conformance/](../tests/conformance/)
-- Architecture overview: [docs/design.md](design.md)
+- Architecture overview: [architecture.md](architecture.md)

@@ -5218,7 +5218,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
  * would re-issue its $iothub/... filters at the new hub, which does not grant
  * them -- and once CONNECTED is gated on those SUBACKs, the session could never
  * come up and the application would never get the callback that would have
- * removed them. See docs/eng/client-separation.md section 9. */
+ * removed them. See docs/eng/connection-c.md section 5.3. */
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
   for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)

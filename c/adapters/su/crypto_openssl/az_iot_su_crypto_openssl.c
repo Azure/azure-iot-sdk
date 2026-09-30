@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* OpenSSL 3.0+ implementation of the software updates crypto primitive hooks. See the header
- * and docs/eng/su-client-design.md §6 for the hooks-only design rationale.
+ * and docs/eng/software-updates.md §6 for the hooks-only design rationale.
  *
  * Uses only the public OpenSSL 3.0 EVP / OSSL_PARAM APIs (no deprecated
  * low-level RSA_* / SHA256_* calls), so it builds clean against OpenSSL 3.x. */
