@@ -17,8 +17,15 @@ set(_az_iot_ver_expected "${_az_iot_ver_MAJOR}.${_az_iot_ver_MINOR}.${_az_iot_ve
 if(DEFINED _az_iot_ver_PRERELEASE)
     string(APPEND _az_iot_ver_expected "-${_az_iot_ver_PRERELEASE}")
 endif()
-if(NOT _az_iot_ver_STRING MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
-   OR NOT _az_iot_ver_STRING STREQUAL _az_iot_ver_expected)
+# SemVer 2.0.0 without build metadata; keep in sync with eng/check-version.sh.
+set(_az_iot_ver_num "(0|[1-9][0-9]*)")
+set(_az_iot_ver_id "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
+if(NOT _az_iot_ver_STRING MATCHES
+   "^${_az_iot_ver_num}\\.${_az_iot_ver_num}\\.${_az_iot_ver_num}(-${_az_iot_ver_id}(\\.${_az_iot_ver_id})*)?$")
+    message(FATAL_ERROR "az_iot_version.h: AZ_IOT_VERSION_STRING \"${_az_iot_ver_STRING}\" "
+        "is not a valid SemVer MAJOR.MINOR.PATCH[-PRERELEASE].")
+endif()
+if(NOT _az_iot_ver_STRING STREQUAL _az_iot_ver_expected)
     message(FATAL_ERROR "az_iot_version.h: AZ_IOT_VERSION_STRING \"${_az_iot_ver_STRING}\" "
         "does not match the component macros (\"${_az_iot_ver_expected}\").")
 endif()

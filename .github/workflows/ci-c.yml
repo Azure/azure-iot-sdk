@@ -712,8 +712,9 @@ jobs:
         # Linux must fail to load when only another release is present.
         if: matrix.shared == 'ON'
         run: |
-          ver=$(sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)")$/\1/p' \
-            "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config-version.cmake")
+          # Full version, pre-release label included; the CMake package version is numeric only.
+          ver=$(sed -n 's/^#define AZ_IOT_VERSION_STRING "\([^"]*\)".*/\1/p' \
+            "$AZ_IOT_PREFIX/include/azure/iot/az_iot_version.h")
           test -n "$ver"
           exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
           if [ "$RUNNER_OS" = "Windows" ]; then

@@ -31,8 +31,12 @@ if [ -n "${prerelease}" ]; then
     expected="${expected}-${prerelease}"
 fi
 
-if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-    fail "AZ_IOT_VERSION_STRING '${version}' is not MAJOR.MINOR.PATCH[-PRERELEASE]"
+# SemVer 2.0.0 without build metadata; keep in sync with CMakeLists.txt.
+num='(0|[1-9][0-9]*)'
+id='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+semver="^${num}\.${num}\.${num}(-${id}(\.${id})*)?$"
+if ! [[ "${version}" =~ ${semver} ]]; then
+    fail "AZ_IOT_VERSION_STRING '${version}' is not a valid SemVer MAJOR.MINOR.PATCH[-PRERELEASE]"
 fi
 if [ "${version}" != "${expected}" ]; then
     fail "AZ_IOT_VERSION_STRING '${version}' does not match the component macros ('${expected}')"
