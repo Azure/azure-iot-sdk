@@ -164,8 +164,8 @@ The chain length depends on the credential policy.
   process umask (world-readable under the common `022`). Run with `umask 077` or
   keep the files in a directory only the device user can read.
 - For keys that must not exist as files, see
-  [`hsm_pkcs11`](../README.md#hsm_pkcs11) and
-  [`custom_certificate_provider`](../README.md#custom_certificate_provider).
+  [`hsm_pkcs11`](../hsm_pkcs11/README.md) and
+  [`custom_certificate_provider`](../custom_certificate_provider/README.md).
 - The step 1 certificates are for testing only.
 
 ## Troubleshooting

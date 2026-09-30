@@ -3,109 +3,110 @@
 
 # C SDK samples
 
-## Layout
+Every sample has a README next to its source with what it shows, what it needs, how to build and
+run it, and what to expect.
+
+## Choose a sample
 
 | Folder | Serves | Use when |
 | --- | --- | --- |
-| [unified/](unified/) | MQTTv3 (MQTT v3.1.1) **or** MQTTv5 (MQTT v5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
-| [mqttv5/](mqttv5/) | MQTTv5 only | The device is known to be on an MQTTv5 hub. |
-| [authentication/](authentication/) | Either generation | Certificate providers, CSR enrollment, non-extractable keys. See its [README](authentication/README.md). |
-| [software_update/](software_update/) | Either generation | Software Update agent. See [pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md), [pc/simulated_regular](software_update/pc/simulated_regular/README.md) and [esp32](software_update/esp32/README.md). |
-| [common/](common/) | — | Shared helpers (`sample_utils`, certificate provider, CSR backends). |
+| [`unified/`](unified/) | mqttv3 (MQTT 3.1.1) **or** mqttv5 (MQTT 5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
+| [`mqttv5/`](mqttv5/) | mqttv5 only | The device is known to be on an mqttv5 hub. |
+| [`authentication/`](authentication/README.md) | Either | Certificate providers, certificates issued by DPS, renewal, keys in hardware. |
+| [`software_update/`](software_update/) | Either | Software updates agent. |
 
-There is no MQTTv3-only group: the unified samples cover MQTTv3 hubs. The
-MQTTv3 IoT Hub only features, C2D and file upload, are in `unified/` and report MQTTv5 hubs.
+| Sample | What it shows |
+| --- | --- |
+| [unified/telemetry](unified/telemetry/README.md) | Telemetry to either hub generation. **Start here**: the pattern every `unified/` sample follows. |
+| [unified/connect_first](unified/connect_first/README.md) | The same, building the client after connecting, from the assigned generation. |
+| [unified/twin_get_patch](unified/twin_get_patch/README.md) | Device twin: GET, reported PATCH, desired updates. |
+| [unified/direct_method_responder](unified/direct_method_responder/README.md) | Direct methods answered inside the handler. |
+| [unified/direct_method_slow_responder](unified/direct_method_slow_responder/README.md) | Direct methods answered after the handler returned. |
+| [unified/c2d_receiver](unified/c2d_receiver/README.md) | Cloud-to-device messages (mqttv3 only). |
+| [unified/file_upload](unified/file_upload/README.md) | File upload to Azure Storage (mqttv3 only). |
+| [unified/websockets](unified/websockets/README.md) | Telemetry over MQTT over WebSockets (port 443). |
+| [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
+| [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
+| [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
+| [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
+| [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/README.md) | Direct methods answered later, on an mqttv5 hub. |
+| [authentication/dps_csr_managed](authentication/dps_csr_managed/README.md) | DPS issues an operational certificate from a CSR. |
+| [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with a provider you copy and adapt. |
+| [authentication/hub_renew](authentication/hub_renew/README.md) | Renew the operational certificate over an mqttv3 hub. |
+| [authentication/hsm_pkcs11](authentication/hsm_pkcs11/README.md) | Private key in a PKCS#11 token or TPM. |
+| [authentication/hsm_sign_callback](authentication/hsm_sign_callback/README.md) | Private key reachable only through a `sign()` callback. |
+| [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Template for your own certificate provider. |
+| [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
+| [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
+| [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
-## How a unified sample works
+## How a unified sample handles the hub generation
 
-The hub generation comes from the `connectionProfile` DPS returns with the
-assignment, and it can change while a device runs: a device moved to another
-hub re-provisions and may land on the other generation. A feature client pins
-its generation at `init()`; DPS assigning the other one stops the connection
-with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and
-the state event carries the assigned profile.
-
-The unified samples, except `connect_first`, `c2d_receiver` and `file_upload` (below):
-
-1. Registers **both** Paho adapters (`az_iot_paho_factory_create_v3_1_1()` and
-   `az_iot_paho_factory_create_v5()`).
-2. Builds its `az_iot_mqttv3_*` feature clients **before** `open()`, assuming
-   MQTTv3 (what DPS assigns when it names no profile).
-3. On a profile mismatch -- first connect, or a later move in either
-   direction -- destroys them, builds the `az_iot_mqttv5_*` or `az_iot_mqttv3_*`
-   ones for the profile the event carries, then calls `close()` and `open()`.
-   In-flight operations of the old clients are lost.
-
-[unified/connect_first](unified/connect_first/main.c) shows the conservative
-alternative: open with no feature client, read the profile with
-`az_iot_connection_client_get_hub_profile()` once `CONNECTED`, then build. It
-handles later moves the same way. `unified/file_upload` builds this way too,
-since its client needs the assigned hub at `init()`.
-
-The MQTTv5 samples build theirs before `open()` and do not rebuild: an assignment
-to an MQTTv3 hub fails. A profile this SDK does not know fails the connection
-with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
-
-[unified/telemetry](unified/telemetry/main.c) is the shortest example; read it
-first.
+DPS returns the hub's connection profile with the assignment, and it can change while a device
+runs: a device moved to another hub re-provisions and may land on the other generation. A feature
+client pins its generation at `init()`. If DPS assigns the other one, the connection stops with
+`AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and the state event carries
+the assigned profile. The `unified/` samples then destroy their clients, build the other
+generation's, and call `close()` and `open()`. See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
 
 ## Prerequisites
 
-- A DPS instance, a linked IoT Hub, and an X.509 enrollment for the device.
-- Device certificate, private key and trusted CA as PEM files.
+### Azure
+
+The samples provision through the Azure IoT Hub Device Provisioning Service (DPS) with an X.509
+certificate. Each README lists what else it needs. For an mqttv3 hub,
+[Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509)
+walks through creating the DPS instance, the linked IoT Hub and the enrollment.
+
+### Build tools
+
+The build fetches Paho MQTT C and azure-sdk-for-c itself.
+
+**Linux** (Debian/Ubuntu package names):
+
+```sh
+sudo apt-get update
+sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-certificates pkg-config
+```
+
+- A C99 compiler (GCC or Clang), CMake 3.21+, Ninja.
+- OpenSSL 3.0+ development files (`libssl-dev`), for TLS and for the samples that need OpenSSL.
+- `/etc/ssl/certs/ca-certificates.crt` (from `ca-certificates`) works as `AZ_IOT_TRUSTED_CA`.
+
+**Windows:**
+
+- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop development with
+  C++* workload, or the
+  [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
+- [CMake 3.21+](https://cmake.org/download/) (bundled with Visual Studio).
+- OpenSSL 3.0+ visible to CMake, for example `vcpkg install openssl:x64-windows`.
+- Run the build from a *Developer PowerShell for VS 2022*.
 
 ## Configuration
 
-The unified and MQTTv5 samples read these; the authentication samples add or
-replace some (see [authentication/README.md](authentication/README.md)):
+The `unified/` and `mqttv5/` samples read:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope |
-| `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID |
-| `AZ_IOT_CLIENT_CERT` | yes | Device certificate (PEM path) |
-| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM path) |
-| `AZ_IOT_TRUSTED_CA` | yes | Trusted CA (PEM path) |
-| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | DPS endpoint; default `global.azure-devices-provisioning.net` |
+| `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
+| `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
+| `AZ_IOT_CLIENT_CERT` | yes | Device certificate chain (PEM file, leaf first). |
+| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
+| `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates. |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 
-If a required variable is unset, the sample names it and exits non-zero.
-Per-sample extras are documented in each sample's header comment.
+A sample with a missing required variable names it and exits 1. Other samples add or replace
+variables; their READMEs list them.
 
-Development only: while DPS does not return `connectionProfile`, the assignment
-resolves to MQTTv3. Set `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE=mqttV5` (or
-`classic`) to supply one; a value sent by DPS always wins.
+## Build
 
-## Build and run
+From the repository's `c/` directory, all samples at once:
 
 ```sh
 cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug
-./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
-Samples need `AZ_IOT_WITH_PAHO=ON` (the default). As in the .NET SDK, a sample
-has the same name in both folders: `<folder>/<name>` builds CMake target
-`az_iot_sample_<folder>_<name>` into `<build>/samples/<folder>/az_iot_sample_<name>`.
-Authentication samples land in `<build>/samples/authentication/`.
-
-## Samples
-
-| Sample | What it shows |
-| --- | --- |
-| [unified/telemetry](unified/telemetry/) | The unified shape: build before `open()`, rebuild on reassignment, send every 5 s for ~60 s. |
-| [unified/connect_first](unified/connect_first/) | The conservative shape: build after `CONNECTED`, from the profile read then. |
-| [unified/twin_get_patch](unified/twin_get_patch/) | Twin GET and reported PATCH on every connect, desired updates. MQTTv5 returns sections separately and reports a patch verdict. |
-| [unified/direct_method_responder](unified/direct_method_responder/) | Inline direct-method answers. MQTTv3 routes every name to one handler; MQTTv5 declares methods and probes first. |
-| [unified/direct_method_slow_responder](unified/direct_method_slow_responder/) | Answering after the handler returned, against the device's timeout (MQTTv3) or the caller's (MQTTv5). |
-| [unified/c2d_receiver](unified/c2d_receiver/) | Cloud-to-device messages. MQTTv3 IoT Hub only; on MQTTv5 it says so and exits non-zero. |
-| [unified/file_upload](unified/file_upload/) | SAS-URI request, blob PUT via libcurl, completion notification. MQTTv3 only; on MQTTv5 it says so and exits non-zero. One-shot. |
-| [unified/websockets](unified/websockets/) | unified/telemetry over MQTT-over-WebSockets (443). |
-| [unified/proxy](unified/proxy/) | unified/telemetry through an HTTP CONNECT proxy. |
-| [mqttv5/telemetry](mqttv5/telemetry/) | Telemetry on MQTTv5. |
-| [mqttv5/twin_get_patch](mqttv5/twin_get_patch/) | Twin on MQTTv5. |
-| [mqttv5/direct_method_responder](mqttv5/direct_method_responder/) | Direct methods on MQTTv5, with a probe handler. |
-| [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/) | Deferred direct-method answers on MQTTv5. |
-| [authentication](authentication/) | Certificate providers, CSR enrollment, operational certificates, key custody. |
-| [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/) | Software Update on the onboarding route, for a day-0 device; no IoT Hub needed. Simulated install. |
-| [software_update/pc/simulated_regular](software_update/pc/simulated_regular/) | Software Update on the regular route, polled, for a registered device. Simulated install. |
-| [software_update/esp32](software_update/esp32/) | Software Update with a real OTA install on an ESP32 (ESP-IDF). Onboarding route until registered, regular after. |
+Use `windows-msvc-debug` on Windows. Each README gives the single-sample target and the path of
+the binary: `build/<preset>/samples/<folder>/` (Windows: `.../<folder>/Debug/`). Samples need the
+Paho adapter (`AZ_IOT_WITH_PAHO=ON`, the default).
