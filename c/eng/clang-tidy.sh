@@ -20,6 +20,8 @@ db="${build_dir}/compile_commands.json"
 
 [ -f "${db}" ] || { echo "${db} not found" 1>&2; exit 1; }
 command -v "${tidy}" >/dev/null || { echo "${tidy} not found" 1>&2; exit 1; }
+command -v jq >/dev/null || { echo "jq not found" 1>&2; exit 1; }
+jobs="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
 # Literal prefix match: the checkout path may contain regex metacharacters.
 mapfile -t files < <(jq -r --arg root "${root_dir}/" \
@@ -27,11 +29,11 @@ mapfile -t files < <(jq -r --arg root "${root_dir}/" \
     "${db}" | sort -u)
 [ "${#files[@]}" -gt 0 ] || { echo "no first-party sources in ${db}" 1>&2; exit 1; }
 
-echo "$("${tidy}" --version | grep -m1 -i version)"
+"${tidy}" --version | grep -m1 -i version
 echo "clang-tidy: ${#files[@]} translation units"
 
 # One process per file. The "N warnings generated" lines count diagnostics outside the header
 # filter; drop them. pipefail keeps xargs' exit status (123 when any file has a finding).
 printf '%s\0' "${files[@]}" \
-    | xargs -0 -P "$(nproc)" -n 1 "${tidy}" -p "${build_dir}" --quiet 2>&1 \
+    | xargs -0 -P "${jobs}" -n 1 "${tidy}" -p "${build_dir}" --quiet 2>&1 \
     | { grep -vE '^[0-9]+ warnings? generated\.$' || true; }

@@ -1009,6 +1009,13 @@ typedef char az_iot_su_channel_dps_state_fits
          ? 1
          : -1];
 
+/* Each length is one byte. */
+typedef char az_iot_su_channel_dps_etag_len_fits
+    [(sizeof(((az_iot_su_channel_dps*)0)->agent_info_etag) - 1u <= UINT8_MAX
+      && sizeof(((az_iot_su_channel_dps*)0)->service_config_etag) - 1u <= UINT8_MAX)
+         ? 1
+         : -1];
+
 /** @brief Write one length-prefixed ETag at @p p. @return Bytes written. */
 static size_t put_etag(uint8_t* p, const char* etag)
 {

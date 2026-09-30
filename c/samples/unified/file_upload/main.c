@@ -124,6 +124,27 @@ static size_t on_curl_write(char* ptr, size_t size, size_t nmemb, void* userdata
   return chunk; /* report full consumption so curl does not abort the transfer */
 }
 
+/* Append "name: value" (or value alone when name is NULL) to *list. On failure *list
+ * is unchanged and still owned by the caller. Returns false if the header does not
+ * fit or curl cannot allocate. */
+static bool append_header(struct curl_slist** list, const char* name, const char* value)
+{
+  char h[576];
+  int n = (name != NULL) ? snprintf(h, sizeof(h), "%s: %s", name, value)
+                         : snprintf(h, sizeof(h), "%s", value);
+  if (n < 0 || (size_t)n >= sizeof(h))
+  {
+    return false;
+  }
+  struct curl_slist* appended = curl_slist_append(*list, h);
+  if (appended == NULL)
+  {
+    return false;
+  }
+  *list = appended;
+  return true;
+}
+
 /* Perform one HTTPS request with libcurl. Returns the HTTP status code, or -1 on
  * a transport failure. When client_cert/client_key are non-NULL, mutual-TLS auth
  * is used (required for the IoT Hub REST calls). */
@@ -148,33 +169,14 @@ static long https_request(
   }
 
   struct curl_slist* headers = NULL;
-  if (content_type && content_type[0])
+  if ((content_type && content_type[0] && !append_header(&headers, "Content-Type", content_type))
+      || (authorization && authorization[0]
+          && !append_header(&headers, "Authorization", authorization))
+      || (extra_header && extra_header[0] && !append_header(&headers, NULL, extra_header)))
   {
-    char h[128];
-    int n = snprintf(h, sizeof(h), "Content-Type: %s", content_type);
-    if (n < 0 || (size_t)n >= sizeof(h))
-    {
-      curl_slist_free_all(headers);
-      curl_easy_cleanup(curl);
-      return -1;
-    }
-    headers = curl_slist_append(headers, h);
-  }
-  if (authorization && authorization[0])
-  {
-    char h[576];
-    int n = snprintf(h, sizeof(h), "Authorization: %s", authorization);
-    if (n < 0 || (size_t)n >= sizeof(h))
-    {
-      curl_slist_free_all(headers);
-      curl_easy_cleanup(curl);
-      return -1;
-    }
-    headers = curl_slist_append(headers, h);
-  }
-  if (extra_header && extra_header[0])
-  {
-    headers = curl_slist_append(headers, extra_header);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return -1;
   }
 
   response_sink sink = { resp, resp_cap, 0 };
