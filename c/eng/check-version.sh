@@ -5,6 +5,7 @@
 # Checks that every copy of the SDK version matches AZ_IOT_VERSION_STRING in
 # inc/azure/iot/az_iot_version.h. With a tag argument (e.g. c/1.0.0-preview),
 # also checks the tag and that CHANGELOG.md has a dated entry for it.
+# The Yocto PV is excluded: it tracks SRCREV_sdk, which lags main.
 # Dependency-free so it can run in the conventions job before configuring.
 #
 # Usage: eng/check-version.sh [c/<version>]
@@ -45,12 +46,6 @@ fi
 vcpkg_version="$(sed -n -E 's/^ *"version-semver": "([^"]*)".*/\1/p' "${root_dir}/vcpkg.json")"
 if [ "${vcpkg_version}" != "${version}" ]; then
     fail "vcpkg.json version-semver '${vcpkg_version}' != '${version}'"
-fi
-
-yocto_inc="${root_dir}/platforms/yocto/meta-azure-iot-sdk/recipes-azure/azure-iot-sdk/azure-iot-sdk-src.inc"
-yocto_pv="$(sed -n -E 's/^PV = "([^"]*)\+git"$/\1/p' "${yocto_inc}")"
-if [ "${yocto_pv}" != "${version/-/\~}" ]; then
-    fail "Yocto PV '${yocto_pv}+git' != '${version/-/\~}+git'"
 fi
 
 changelog_top="$(sed -n -E 's/^## ([^ ]+) .*/\1/p' "${root_dir}/CHANGELOG.md" | head -n 1)"
