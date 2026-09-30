@@ -213,9 +213,16 @@ so there is nothing to clean up. Inputs are repository secrets
 (`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
 upload with notifications. Push and nightly runs always provision.
 
+[`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
+keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
+(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
+cannot reuse the one above. Each run issues a bootstrap device with
+`e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
+CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+device endpoint.
+
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch
-> until its environment exists). See [Software updates e2e](#software-updates-e2e).
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -261,17 +268,8 @@ Every variable is required; a missing one fails the suite or the scenario that n
 
 `https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
 
-Measured against the service:
-
-- A workflow is offered again after its terminal report.
-- Re-sending the identical terminal report is accepted.
-- A different terminal outcome for the same workflow is rejected with 409000 `REPORT_CONFLICT`.
-  A SKIPPED report after SUCCEEDED was accepted, and a later SUCCEEDED was still accepted.
-
-Placeholders (`E2E-PLACEHOLDER`) mark what is not done: the workflow's environment and
-triggers, test root keys pinned in `e2e_su_test_roots.c` instead of fetched at run time, the job
-status expected for a SKIPPED report, the run lookup for a continuous onboarding job, and
-scenarios for the operational route, multi-step updates and reboot/resume.
+Test root keys are pinned in `e2e_su_test_roots.c`. Not yet covered: the operational route,
+multi-step updates, and reboot/resume.
 
 ---
 

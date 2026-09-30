@@ -39,7 +39,7 @@ extern "C"
    * On the wire `connectionProfile` is a STRING and an extensible union -- the
    * service contract says future hub capabilities pass through without a
    * breaking change. A closed C enum cannot represent that, which is why the
-   * verbatim string is carried alongside it. See docs/eng/client-separation.md. */
+   * verbatim string is carried alongside it. See docs/eng/connection-c.md section 4. */
   typedef enum az_iot_connection_profile
   {
     AZ_IOT_CONNECTION_PROFILE_MQTT_V3 = 0, /* "classic" -- also the absent/null default */
@@ -518,7 +518,7 @@ extern "C"
      *
      * The SDK sets NO default Will: the topic and payload are an application
      * (or protocol) decision, and this client does not have one to make. See
-     * docs/connection.md.
+     * docs/connecting.md.
      *
      * The buffers are borrowed, like every other pointer on this struct, and
      * must outlive the client.
@@ -741,7 +741,7 @@ extern "C"
 
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
-   * See docs/eng/client-separation.md section 9. */
+   * See docs/eng/connection-c.md section 9.3. */
   typedef enum az_iot_subscription_failure_scope
   {
     /* The registering client cannot work without this filter, so a refusal ends
@@ -1038,7 +1038,7 @@ extern "C"
       const void* owner;
       /* The generation this filter was built for. A reconnect that resolves a
        * different profile drops it instead of re-issuing a filter the new hub
-       * will not recognise -- see docs/eng/client-separation.md section 9. */
+       * will not recognise -- see docs/eng/connection-c.md section 5.3. */
       az_iot_connection_profile profile;
       /* Whether a refusal ends the session or only this subscription. */
       az_iot_subscription_failure_scope failure_scope;

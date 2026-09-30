@@ -1,30 +1,32 @@
-# Software updates client — Design & Implementation Plan
+# Software updates client
+
+Design of the software updates feature client (`az_iot_su.h`): the device contract it speaks, the
+engine, the public API, the crypto and platform hooks, and how it is tested.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
-> **Status: Software updates is implemented; the Device Update for IoT Hub device-twin channel has been removed.**
-> Delivery and reporting go through the `az_iot_su_channel` vtable. The only channel is software updates,
-> over the device's DPS connection ([su-spec.md](su-spec.md)). See
-> [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) for the decision of
-> record. Phases 0–6 (§11) are as-built history.
+> **Status:** implemented. Delivery and reporting go through the `az_iot_su_channel` vtable; the
+> only channel runs over the device's DPS session (§2). Gaps are listed in §11. Where the update
+> checks sit in the connection lifecycle is in
+> [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented).
 
 ## 1. Overview
 
-The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements the on-device side of the Azure Device Update protocol. It is layered into a transport-independent engine (manifest parsing, signature verification, root keys, payload integrity, the download → backup → install → apply → restore state machine, reboot/resume persistence) plus an **`az_iot_su_channel`** vtable that carries delivery and reporting. The only channel is **Software updates** — the device-initiated pull protocol fronted by the DPS gateway ([su-spec.md](su-spec.md)). The engine does not depend on `az_iot_twin_client`.
+The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements the on-device side of the Azure Device Update protocol. It is layered into a transport-independent engine (manifest parsing, signature verification, root keys, payload integrity, the download → backup → install → apply → restore state machine, reboot/resume persistence) plus an **`az_iot_su_channel`** vtable that carries delivery and reporting. The only channel is **Software updates** — the device-initiated pull protocol fronted by the DPS gateway (§2).
 
 ### Requirements
 
 - The software updates client MUST implement the software updates workflow state machine (Idle → Download → Install → Apply, with Backup/Restore on failure).
-- The software updates engine (`su_core`) MUST NOT depend on any transport type. Delivery and reporting MUST be reached only through the `az_iot_su_channel` vtable, so the engine is testable against a fake channel and the gateway is a channel parameter rather than a constant.
+- The software updates engine MUST NOT depend on any transport type. Delivery and reporting MUST be reached only through the `az_iot_su_channel` vtable, so the engine is testable against a fake channel and the gateway is a channel parameter rather than a constant.
 - The software updates client MUST verify update manifests cryptographically (JWS signature chain, SHA-256 payload hashes) before proceeding with any download.
 - The software updates client MUST provide **platform abstraction hooks** so customers can plug their own download, install, apply, backup, and restore routines.
-- Pre-built platform adapters SHOULD be shipped for **Linux** and **ESP32** (in `adapters/su/`, not in core `src/`).
+- Pre-built platform adapters live in `adapters/su/`, not in core `src/` (ESP32 today).
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
-- The software updates client MUST report update state and results to the cloud. The wire shape is channel-specific: `ReportDeviceUpdateStatus` for software updates (see [su-spec.md](su-spec.md)). The engine emits a structured result; the channel serializes it.
+- The software updates client MUST report update state and results to the cloud. The wire shape is channel-specific: `reportUpdateStatus` (§2). The engine emits a structured result; the channel serializes it.
 - The software updates client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
 - The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own software updates agent and state machine on top of the SDK's vetted trust code. (See §5.3.)
 
-### Non-Goals (for this phase)
+### Non-goals
 
 - Delta/differential downloads.
 - Diagnostics/log-upload interface.
@@ -36,33 +38,120 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 
 ---
 
-## 2. Leveraging azure-sdk-for-c
+## 2. Device contract
 
-The `azure-sdk-for-c` dependency (already fetched via CMake FetchContent) includes an **Software updates client module** (`az_iot_su_client`) that provides:
+The device checks for updates and reports results through **DPS**, reusing its DPS credential
+(X.509) and session. DPS passes each request through to the update service and returns its answer;
+it keeps no per-device state. The device never talks to the update service directly, and there is
+no subscription and no unsolicited offer: the agent polls.
 
-| Capability | Function |
-|-----------|----------|
-| Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
-| Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
+API version: `2026-11-02-preview`. Public REST definition:
+[Azure/azure-rest-api-specs#44617](https://github.com/Azure/azure-rest-api-specs/pull/44617).
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportStatus` body is built by the channel.
+### Operations
 
-**What azure-sdk-for-c does NOT provide:**
-- State machine / workflow orchestration.
-- JWS signature verification.
-- Any network I/O (download, MQTT).
-- Platform hooks for install/apply/backup/restore.
+| Operation | When |
+| --- | --- |
+| `requestOnboardingUpdates` | **Before** registration: a day-zero device that has no device record yet. |
+| `requestSoftwareUpdates` | **After** registration (operational). |
+| `reportUpdateStatus` | After an install attempt, on either route. Required. |
 
-### Strategy: Reuse, Don't Reimplement
+The device selects the route by which operation it calls. The SDK sends them over the device's DPS
+MQTT session:
 
-Our `su_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_su_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
+```
+PUBLISH   $dps/registrations/POST/{operation}/?$rid={request_id}
+SUBSCRIBE $dps/registrations/res/#
+```
 
-1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
-2. **JWS verification** — via customer-provided crypto hooks.
-3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
-4. **Platform hooks** — the vtable for download, install, apply, etc.
+The same operations exist as HTTPS POSTs on the DPS device endpoint
+(`/{idScope}/registrations/{registrationId}/{operation}?api-version=...`); the SDK does not use them.
 
-This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
+### Onboarding flow
+
+```mermaid
+sequenceDiagram
+    participant Dev as Device (SDK)
+    participant DPS as DPS
+    participant SVC as Update service
+    loop until "no update"
+      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
+      DPS->>SVC: pass-through
+      SVC-->>DPS: serviceConfiguration [+ updateMetadata]
+      DPS-->>Dev: 200 (no updateMetadata = no update)
+      alt update available
+        Dev->>Dev: verify signature, download fileUrls, install
+        Dev->>DPS: reportUpdateStatus (workflowId, result)
+        DPS-->>Dev: 200
+      end
+    end
+    Dev->>DPS: Register (unchanged)
+    DPS-->>Dev: IoT Hub assignment
+```
+
+- The check is **advisory**: if it fails, the device registers anyway.
+- The agent re-checks after each successful install, so updates can chain before registration.
+- Onboarding progress is recorded on the onboarding update job, not on a device record, since the
+  device has none yet.
+
+The operational route polls `requestSoftwareUpdates` with the same shapes.
+
+### Request (both fetches)
+
+- `agentInfo`: `{ agentSdkVersion, agentProfile, compatibilityProperties }`. `agentProfile` is an
+  opaque capability id; `compatibilityProperties` is 1–5 key/value pairs. The service combines
+  them into the device class. Required unless a still-current `agentInfoEtag` is sent; onboarding
+  always requires it.
+- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`.
+- `agentInfoEtag`, `serviceConfigEtag`: optional; let the service skip unchanged data.
+
+### Response
+
+- `serviceConfiguration.rootKeyDownloadUrl`: the root-key package for signature verification.
+  Omitted when the sent `serviceConfigEtag` is still current.
+- `serviceConfigEtag`, `agentInfoEtag`: always present.
+- `updateMetadata`: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`, present
+  only when an update applies. **Omitted means "no update"** (HTTP 200, not an error).
+
+### Report
+
+`{ workflowId, installedUpdateId, installResult }`, where `installResult` is
+`{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails, stepResults }`:
+
+- `outcome`: `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELED` or `SKIPPED`.
+- `extendedResultCodes`: comma-separated hex.
+- `stepResults`: `{ step_0, step_1, … }`, each with `outcome`, `failureOrigin`, `resultCode`,
+  `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports; complete in
+  terminal reports when the manifest has steps.
+
+Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
+rejected with `409 REPORT_CONFLICT`.
+
+### Trust
+
+- `updateManifestSignature` is a nested JWS (RS256), verified against the root-key package: root
+  key → SJWK signing key → manifest hash. Root-key rotation and `disabledSigningKeys` revocation
+  are part of the package format.
+- `fileUrls` are **not** covered by the signature. Payload integrity comes from the per-file hashes
+  inside the signed manifest.
+- Binding the account id into the signature is not supported: the service returns no `accountId`.
+
+### Errors
+
+Act on the machine-readable `error.code`, never on the HTTP status.
+
+| Case | Code / status | Device action |
+| --- | --- | --- |
+| No update | 200, `updateMetadata` omitted | Nothing to apply. Not an error. |
+| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured". Do not retry. |
+| Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
+| Service configuration stale | 400 `OUTDATED_SERVICE_CONFIG` | Retry without `serviceConfigEtag`. |
+| Throttled | 429 + `Retry-After` | Wait, then retry. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
+| Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
+
+**The device is the only retrier**: DPS makes one attempt per hop. Reports are durable writes,
+retried until acknowledged.
 
 ---
 
@@ -73,7 +162,7 @@ the platform hooks.
 
 ```mermaid
 flowchart TB
-    MAIN2["main / do_work loop"] --> CORE["su_core<br/>state machine · verify · persistence"]
+    MAIN2["main / do_work loop"] --> CORE["engine<br/>state machine · verify · persistence"]
     CORE --> CH["az_iot_su_channel (vtable)"]
     CH --> V2["Software updates channel<br/>Get(Onboarding)DeviceUpdate · ReportDeviceUpdateStatus<br/>over the device's DPS connection"]
     CH --> FAKE["test fake channel"]
@@ -199,7 +288,7 @@ The design (full API in [§5.2](#52-device-properties-api)):
 `update_device_properties`, and `do_work` MUST run on the same thread or be
 externally serialized (e.g. one mutex guarding all SDK calls). The deep-copy
 gives clean **ownership** (no dangling pointer into caller memory), not
-cross-thread safety. SDK-wide thread-safety is a separate future effort.
+cross-thread safety. The SDK is single-threaded; callers serialize access.
 
 ### Duplicate vs. Replacement Detection
 
@@ -326,7 +415,7 @@ In-progress reports omit `installResult.stepResults`, even after some steps
 have completed. Terminal reports include the map when the manifest has steps,
 keyed `step_0`, `step_1`, …; every entry carries `outcome`, `failureOrigin`,
 `resultCode`, and `extendedResultCodes` (plus optional `resultDetails`). Field
-rules are in [su-spec.md](su-spec.md).
+rules are in §2.
 
 ### Cancellation
 
@@ -904,9 +993,6 @@ az_iot_result az_iot_su_client_update_device_properties(
 > the previous accepted properties. The specified 1-5 compatibility KVP limit includes
 > supplied manufacturer/model keys, not `agentProfile`; an installed ID must be absent
 > or a complete nonempty triple.
-> The managed upstream-shaped view/serialized-ID cache described below has been removed;
-> the standalone legacy formatter is retained. The twin re-report/reconnect sequence
-> below is historical and is not proof of runtime software updates fetch scheduling.
 > The application explicitly requests each check and chooses its route. The
 > property setter refreshes the caches, but does not itself queue a fetch.
 
@@ -1032,7 +1118,7 @@ az_iot_result az_iot_su_verify_file_hash(
 /**
  * Build the report payload from the consumer's own outcome data, without the
  * state machine. Emits the upstream agent-state JSON today; the software updates
- * reportStatus body is built by the channel (see su-spec.md).
+ * reportUpdateStatus body is built by the channel (see §2).
  */
 az_iot_result az_iot_su_build_report(
     const az_iot_su_device_properties* device_properties,
@@ -1085,7 +1171,7 @@ plus one-shot and incremental SHA-256 — and **Software updates core owns all o
 | Root-key store, `kid` resolution | **core** (see §7) |
 | Revocation enforcement (disabled kids) | **core** |
 | `alg` validation (MUST be `RS256`) | **core** |
-| Root Key Package verify/apply | **core** (future; see §7) |
+| Root Key Package verify/apply | **core** (not implemented; see §11) |
 | RSA-PKCS1-v1_5/SHA-256 signature math | **hook** (`verify_rs256_fn`) |
 | SHA-256 digest | **hook** (`sha256_*`) |
 
@@ -1218,16 +1304,11 @@ keys are supplied than the store can hold.
   enabling: (a) loading keys from a config file or NVS, (b) provisioning keys at
   manufacturing, (c) private deployment keys.
 
-### Stale / Day0 Devices — Deferred to software updates Service Design
+### Stale devices
 
-A device that sits unpowered for years may boot with root keys that have since
-been rotated or revoked (the software updates "Day0" scenario). The on-device trust-bootstrap
-solution for this case is **left to the software updates service team's design** and is not
-specified here.
-
-v1 ships a fixed root-key store (compiled-in Microsoft defaults or
-caller-supplied keys) updated via firmware; runtime Root Key Package rotation
-remains future/pending (§11).
+A device that sits unpowered for a long time may boot with root keys that have since been rotated
+or revoked. The root-key store is fixed at `init` and changes only with firmware; runtime root-key
+package rotation is not implemented (§11).
 
 ---
 
@@ -1247,212 +1328,50 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 4. **Sample code clarity** — Samples in `samples/` pick an adapter and wire it to the core. The sample IS the integration point, not the library.
 
-5. **Build system simplicity** — Platform adapters MUST be OPTIONAL CMake targets. `add_subdirectory(adapters/su/linux)` only when building for Linux. There MUST NOT be `#ifdef __linux__` conditionals in the core.
+5. **Build system simplicity** — Platform adapters MUST be OPTIONAL CMake targets. There MUST NOT be platform `#ifdef` conditionals in the core.
 
 ### What goes where
 
 | Location | Contains | Links to |
 |----------|----------|----------|
-| `src/features/su/` | State machine, software updates channel, step orchestration | `az_iot_connection_client`, `azure-sdk-for-c` |
+| `src/features/su/` | Engine, software updates channel, wire codec, report assembly, Microsoft root keys | `az_iot_connection_client`, `azure-sdk-for-c` |
 | `adapters/su/crypto_mbedtls/` | `verify_rs256_fn`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/su/crypto_openssl/` | `verify_rs256_fn`, `sha256_*` using OpenSSL | OpenSSL |
-| `adapters/su/linux/` | `download_fn` (libcurl), `install_fn` (exec), `persist_state_fn` (file I/O) | libcurl, POSIX |
-| `adapters/su/esp32/` | `download_fn` (esp_http_client), `install_fn` (esp_ota), `persist_state_fn` (NVS) | ESP-IDF |
-| `samples/su_linux/` | Wires Linux adapter + OpenSSL crypto + main loop | All of the above |
-| `samples/su_esp32/` | Wires ESP32 adapter + mbedTLS crypto + FreeRTOS loop | All of the above |
+| `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence) | ESP-IDF |
+| `samples/software_update/` | Samples that wire a crypto adapter, platform hooks and the main loop | All of the above |
 
-### 8.1 Sample Applications
+There is no Linux platform adapter; the PC samples implement their own hooks.
 
-Two samples demonstrate the feature client at opposite ends of the spectrum:
-`su_linux` is a **simulation** that exercises the full protocol and state machine
-with *no real firmware risk*, while `su_esp32` performs a **real OTA** on device.
-Both share the same wiring shape — connection client + software updates client + crypto
-hooks + platform hooks + a non-blocking `do_work` loop (§10.2) — differing only in
-the platform-hook implementations they install.
+### 8.1 Samples
 
-#### `samples/su_linux/` — Mock download & update (simulation)
+| Sample | Shows |
+|--------|-------|
+| [`pc/simulated_onboarding`](../../samples/software_update/pc/simulated_onboarding/README.md) | The onboarding route on a device with no IoT Hub (`dps.provision_only`), with simulated install. |
+| [`pc/simulated_regular`](../../samples/software_update/pc/simulated_regular/README.md) | The operational route, polled, on a registered device, with simulated install. |
+| [`esp32`](../../samples/software_update/esp32/README.md) | A real OTA install on ESP32: onboarding route until registered, operational after. |
 
-**Goal:** run the *entire* software updates workflow end to end against a real IoT Hub / software updates
-deployment, but with platform hooks that **simulate** download and install
-instead of touching real firmware. This makes it safe to run on a dev box, in CI,
-and as a learning/reference harness.
-
-What is real vs. mocked:
-
-| Concern | su_linux behavior |
-|---------|--------------------|
-| Connection, update check, manifest receipt, status reporting | **Real** — talks to a real DPS/Device Update instance via the Paho adapter. |
-| Manifest JWS verification | **Real** — uses the OpenSSL crypto adapter and real root keys, so signature checks genuinely run. |
-| `download_fn` | **Mocked** — instead of fetching the payload URL, it synthesizes bytes of the manifest-declared size and feeds them through the **real** `sha256_*` hooks. To exercise both paths it can either (a) generate bytes that hash to the manifest value (success), or (b) corrupt one byte to drive the facility-`0x3` hash-mismatch path on demand (env-selectable). |
-| `install_fn` / `apply_fn` | **Mocked** — log "installing step N", optionally `sleep` to simulate work, return `SUCCESS` (or `REBOOT_REQUIRED` when `SU_SIM_REBOOT=1`, to exercise persist/resume). |
-| `backup_fn` / `restore_fn` | **Mocked** — log only; `restore` lets the rollback path be observed. |
-| `is_installed_fn` | Compares against a **fake installed version** held in a local file so re-deployments and "already installed" short-circuits can be demonstrated. |
-| `persist_state_fn` / `load_state_fn` | **Real-ish** — read/write the §4 resume blob to a file under a temp dir, so `resume()` can be exercised by killing and restarting the process. |
-
-Behavior knobs (environment variables, all optional):
-
-- `SU_SIM_FAIL_STEP=<n>` — force `install_fn` to fail at step *n* to exercise
-  per-step result accumulation + reverse-order rollback.
-- `SU_SIM_HASH_MISMATCH=1` — corrupt the synthesized payload to drive the
-  download hash-verification failure path.
-- `SU_SIM_REBOOT=1` — return `REBOOT_REQUIRED` from `apply_fn`; the sample
-  persists, then re-execs itself and calls `resume()` to continue.
-- `SU_SIM_DELAY_MS=<ms>` — per-chunk delay to make chunked progress observable.
-
-```c
-/* samples/su_linux/main.c (sketch) */
-int main(void)
-{
-    /* 1. connection (real, via Paho) */
-    az_iot_connection_client_init(&conn, /* DPS/device creds from env */ ...);
-
-    /* 2. real crypto (OpenSSL) + real Microsoft root keys */
-    az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
-    size_t rk_count;
-    const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&rk_count);
-
-    /* 3. SIMULATED platform hooks (this sample's whole point) */
-    az_iot_su_platform_hooks hooks = su_sim_hooks();  /* defined in this sample */
-
-    az_iot_su_device_properties properties = { .manufacturer = "Contoso",
-                                             .model = "SU-Sim",
-                                             .installed_update_id = { "Contoso", "SU-Sim", "1.0.0" } };
-    uint8_t properties_cache[256];
-    az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
-    su_opts.hooks = &hooks;
-    su_opts.crypto = &crypto;
-    su_opts.root_keys = root_keys;
-    su_opts.root_key_count = rk_count;
-    su_opts.device_properties = &properties;
-    su_opts.device_properties_buffer = properties_cache;
-    su_opts.device_properties_buffer_size = sizeof properties_cache;
-    az_iot_su_client_init(&su, &conn, &su_opts);
-
-    az_iot_connection_client_open(&conn);
-    az_iot_su_client_resume(&su);   /* continue if a prior run persisted state */
-    az_iot_su_client_request_onboarding_update(&su, 30000);
-
-    while (running) {
-        az_iot_connection_client_do_work(&conn);
-        az_iot_su_client_do_work(&su);
-        platform_sleep_ms(100);
-    }
-}
-```
-
-#### `samples/su_esp32/` — Real over-the-air update
-
-**Goal:** a production-shaped reference that performs a **real** firmware update on
-ESP32 using the ESP-IDF OTA subsystem. This is the sample a customer adapts for an
-actual device.
-
-What is real:
-
-| Concern | su_esp32 behavior |
-|---------|--------------------|
-| Connection, update check, status reporting | **Real** via the device's MQTT path. |
-| Manifest JWS verification | **Real** — mbedTLS crypto adapter + root keys. |
-| `download_fn` | **Real** — `esp_http_client` streams the payload URL in chunks, feeding each chunk through the `sha256_*` hooks; returns `IN_PROGRESS` between chunks so the loop stays responsive and the TLS/MQTT keepalive is serviced. |
-| `install_fn` | **Real** — writes the downloaded image into the inactive OTA partition via `esp_ota_begin/_write/_end`. |
-| `apply_fn` | **Real** — `esp_ota_set_boot_partition()` then returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`. |
-| `is_installed_fn` | Compares the running partition's app version (`esp_app_get_description()`) to the manifest's `installedCriteria`. |
-| `backup_fn` / `restore_fn` | The A/B partition scheme **is** the backup: `restore` rolls back by marking the previous partition valid (`esp_ota_mark_app_invalid_rollback_and_reboot()` semantics). |
-| `persist_state_fn` / `load_state_fn` | **Real** — the §4 resume blob is stored in **NVS**, surviving the reboot that `apply_fn` triggers. |
-
-Update lifecycle on device:
-
-```mermaid
-sequenceDiagram
-    participant App as su_esp32 task
-    participant SU as su_client
-    participant OTA as esp_ota / NVS
-
-    App->>SU: do_work() … (manifest verified)
-    SU->>OTA: download_fn → esp_http_client (chunked, hashed)
-    SU->>OTA: install_fn → esp_ota_write(inactive partition)
-    SU->>OTA: apply_fn → set_boot_partition, persist blob to NVS
-    SU-->>App: REBOOT_REQUIRED
-    App->>OTA: esp_restart()
-    Note over App,OTA: device reboots into new image
-    App->>SU: resume() ← load blob from NVS
-    SU->>OTA: is_installed_fn confirms new version
-    SU->>SU: report success (result_code 700), mark image valid
-```
-
-The sample runs the same non-blocking loop (§10.2) from a FreeRTOS task, yielding
-between `do_work` calls so the IDF event loop, Wi‑Fi, and TLS keepalive continue to
-run. On first successful boot of the new image it MUST confirm health and mark the
-OTA image valid (cancelling the automatic rollback), then report success.
+The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
+install; their READMEs list the simulation knobs.
 
 ---
 
 ## 9. Source Layout
 
-> As built, `src/features/su/` holds the engine (`su_client.c`), the software updates channel
-> (`su_channel_dps.c`), its wire codec (`su_protocol.c`), the structured-result assembly
-> (`su_report.c`) and the Microsoft root keys; the `su_core/` + `channels/` split was not
-> taken. Unit tests live in `tests/unit/su_*_test.c` against a fake channel.
-
 ```
-inc/azure/iot/
-├── az_iot_su.h                           ← public API (our feature client)
-
+inc/azure/iot/az_iot_su.h        public API
 src/features/su/
-├── su_client.c                           ← state machine, step dispatch, persistence
-├── su_channel_dps.c                      ← software updates channel over the DPS session
-├── su_protocol.c                         ← software updates request/response codec
-├── su_report.c                           ← structured result for the channel
-├── su_root_keys_microsoft.c              ← compiled-in Microsoft root keys
-└── internal/
-    └── su_internal.h                     ← internal structs, forward decls
-    (sources are compiled into the az_iot_core target via src/CMakeLists.txt)
-
-adapters/su/
-├── crypto_mbedtls/
-│   ├── az_iot_su_crypto_mbedtls.c
-│   ├── az_iot_su_crypto_mbedtls.h
-│   └── CMakeLists.txt
-├── crypto_openssl/
-│   ├── az_iot_su_crypto_openssl.c
-│   ├── az_iot_su_crypto_openssl.h
-│   └── CMakeLists.txt
-├── linux/
-│   ├── az_iot_su_platform_linux.c
-│   ├── az_iot_su_platform_linux.h
-│   └── CMakeLists.txt
-├── esp32/
-│   ├── az_iot_su_platform_esp32.c
-│   ├── az_iot_su_platform_esp32.h
-│   └── CMakeLists.txt
-└── CMakeLists.txt
-
-tests/unit/su/
-├── test_su_state_machine.c               ← state transitions, multi-step, cancel, reboot
-├── test_su_step_orchestration.c          ← multi-step iteration, partial failure, restore
-├── test_su_manifest_verify.c             ← two-level JWS chain via verify_rs256_fn (§15 L1)
-├── test_su_payload_hash.c                ← streaming sha256 verify, mismatch abort
-├── test_su_persistence.c                 ← resume blob round-trip + re-entry phases
-├── test_su_device_properties.c                ← deep-copy ownership, coalesced re-report
-└── CMakeLists.txt
-
-tests/support/
-├── mock_su_platform_hooks.{c,h}          ← scriptable platform-hook double
-└── mock_su_crypto_hooks.{c,h}            ← deterministic verify_rs256_fn + sha256
-
-tests/conformance/su/
-├── az_iot_su_conformance.{c,h}           ← reusable host-only adapter conformance suite (§15 L3)
-└── CMakeLists.txt
-
-samples/su_linux/
-├── main.c                                 ← wires real conn/crypto + simulated platform hooks
-├── su_sim_hooks.c                        ← mock download/install/apply/backup/restore/persist
-└── CMakeLists.txt
-
-samples/su_esp32/
-├── main.c                                 ← FreeRTOS task: real esp_http_client + esp_ota OTA
-├── su_esp32_hooks.c                      ← real download/install/apply + NVS persistence
-└── CMakeLists.txt
+├── su_client.c                  engine: state machine, step dispatch, persistence
+├── su_channel_dps.c             software updates channel over the DPS session
+├── su_protocol.c                request/response codec
+├── su_report.c                  structured result for the channel
+├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
+└── internal/                    internal headers
+adapters/su/{crypto_mbedtls,crypto_openssl,esp32}/
+tests/unit/su_*_test.c           unit tests against a fake channel
+tests/e2e/                       software updates e2e suites (see §15)
 ```
+
+The sources compile into the `az_iot_core` target.
 
 ---
 
@@ -1505,176 +1424,17 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 - Service watchdog timers.
 - Handle sensor readings or user interactions.
 
-### 10.3 CMake Integration
+## 11. Not yet implemented
 
-```cmake
-# src/features/su/CMakeLists.txt
-add_library(az_iot_su
-    su_client.c
-    su_channel_dps.c
-    su_protocol.c
-    su_report.c
-    su_root_keys_microsoft.c
-)
-
-target_link_libraries(az_iot_su
-    PRIVATE az_iot_core        # connection_client
-    PRIVATE az::iot            # azure-sdk-for-c software updates parsing
-    PRIVATE az::core           # JSON, spans
-)
-# The core library MUST NOT link any crypto dependency — provided via hooks at runtime
-```
-
----
-
-## 11. Implementation Phases
-
-> **Phases 0–7 are as-built history** (0–6 for the twin-channel-era client). Phase 8 is partly
-> implemented. Not done: the root-key-package download (`rootKeyDownloadUrl` is parsed, not
-> fetched); an SDK-driven bootstrap re-check and operational polling loop (the application requests
-> each check); the software updates conformance suite.
-
-### Phase 0: Connection State & Error-Propagation Foundation (Prerequisite)
-
-**Deliverables** (specified in
-[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
-- ~~Replace the single `set_state_callback` with the shared observer registry
-  (public + internal registration, two-pass dispatch, compile-time capacity).~~
-  **DONE** -- `az_iot_connection_client_add_state_observer()` (public) and
-  `az_iot_connection_client__add_state_observer()` (internal) ship the registry;
-  the single setter is removed.
-- Extend `az_iot_connection_state_event` with `az_iot_conn_reason` +
-  `az_iot_error_source`; wire `protocol_code`/`transport_code` from the MQTT
-  iface.
-- Lifecycle guards: `DEINITIALIZING` notification, poison-magic re-init guard,
-  `AZ_IOT_ERR_DETACHED`, feature-client self-detach.
-- Unit tests for dispatch ordering, reentrancy guard, and detach safety.
-
-**Dependencies:** `az_iot_connection_client`, `az_iot_mqtt_iface`.
-
-### Phase 1: Twin Client Multi-Subscriber & Core State Machine
-
-> As-built history. The twin subscription, twin reporting and reported-property formatting listed
-> here were removed in Phase 7.
-
-**Deliverables:**
-- Extend `az_iot_twin_client` with the desired-property subscriber registry
-  (public + internal registration, two-pass dispatch, compile-time capacity,
-  reentrancy guard); remove `set_desired_callback`.
-- `az_iot_su_client` struct, init/deinit, do_work.
-- Device-properties cache (deep-copied struct + `update_device_properties()`),
-  startup/reconnect/manual reporting, feature-client state observer registration.
-- State machine (all transitions, cancellation, error handling, multi-step iteration).
-- Integration with azure-sdk-for-c for parsing and reported-property formatting.
-- Unit tests for state machine transitions (mock hooks).
-
-**Dependencies:** Phase 0; `az_iot_twin_client` (extend), `azure-sdk-for-c` `az_iot_su_client`.
-
-### Phase 2: Crypto Adapters (mbedTLS + OpenSSL)
-
-**Deliverables:**
-- `adapters/su/crypto_mbedtls/` — `verify_rs256_fn` + SHA-256
-  (`sha256_fn`, `sha256_init_fn`, `sha256_update_fn`, `sha256_final_fn`).
-- `adapters/su/crypto_openssl/` — same primitive interface, OpenSSL backend.
-- Unit tests with known-good/known-bad RS256 vectors and SHA-256 vectors.
-- Contract tests proving hooks are primitive-only (no JWS parsing required in
-  adapters).
-
-**Dependencies:** mbedTLS, OpenSSL (build-time selection per adapter).
-
-### Phase 3: Linux Platform Adapter
-
-**Deliverables:**
-- `adapters/su/linux/` — libcurl download (chunked, streaming hash), configurable install command, file-based state persistence.
-- Integration test (mock HTTP server, test manifest).
-- Sample: `samples/su_linux/` — **simulation** sample (real conn/crypto +
-  mocked download/install) with env-selectable failure/rollback/reboot paths
-  (§8.1). Safe to run in CI; does not touch real firmware.
-
-**Dependencies:** libcurl, POSIX.
-
-### Phase 4: ESP32 Platform Adapter
-
-**Deliverables:**
-- `adapters/su/esp32/` — esp_http_client download (chunked), esp_ota install/apply, NVS state persistence.
-- Sample: `samples/su_esp32/` — **real OTA** sample performing an actual
-  on-device firmware update (esp_http_client + esp_ota + NVS-backed resume across
-  the apply reboot), run from a FreeRTOS task (§8.1).
-
-**Dependencies:** ESP-IDF.
-
-### Phase 5: Reboot Coordination & Resume
-
-**Deliverables:**
-- State serialization/deserialization for reboot survival (the versioned,
-  CRC-checked, little-endian blob format in §4 "Persistence & Resume Blob
-  Format").
-- `az_iot_su_client_resume()` logic: blob validation, state rehydration,
-  replacement detection (workflow id + `manifest_sha256`), phase-boundary
-  re-entry, and post-completion blob clearing.
-- Integration with `persist_state_fn` / `load_state_fn`.
-- Tests simulating power-cycle mid-update (each re-entry phase) and a
-  superseding deployment arriving across the reboot.
-
-### Phase 6: End-to-End Validation
-
-**Deliverables:**
-- Reusable host-only **Software updates conformance suite** (`az_iot_su_conformance`, §15 L3)
-  covering all protocol states and single/multi-step manifests.
-- End-to-end test against the real Azure Device Update service, gated behind
-  `AZ_IOT_SU_E2E` (§15 L4) so it never runs on the fast PR path.
-- Documentation and migration guide from the reference agent.
-
-> Testing is **not** confined to Phase 6. Per §15, L1 unit tests land **with the
-> code in each phase** (state machine in Phase 1, crypto vectors in Phase 2,
-> adapter integration in Phases 3–4, persistence/resume in Phase 5). Phase 6 adds
-> the reusable conformance suite and the gated cloud E2E on top.
-
-### Phase 7: `su_core` Extraction + Channel Vtable, and the Device Update for IoT Hub Cut
-
-> Done: the channel vtable and the twin removal landed. The directory split was not taken (§9).
-
-**Deliverables:**
-- Split `src/features/su/` into a transport-free `su_core` (state machine, verification, root
-  keys, integrity, multi-step, persistence/resume) and an `az_iot_su_channel` vtable for delivery
-  and reporting. The engine takes a manifest string and returns a structured result.
-- Salvage the platform-hook halves of the two software updates samples into `adapters/su/` **before** the
-  removal, so the real install/apply/download references survive.
-- Remove the twin channel: the `az_iot_twin_client*` parameter and the five twin call sites,
-  desired-property deployment handling, the accept/reject acknowledgement, reported-property agent
-  state and device-properties reporting, the initial twin GET and the software updates reconnect re-report.
-  `su_state_reporter.c` goes with it.
-- Re-point the engine unit tests at `su_core` + a fake channel; delete the twin wire-shape tests.
-
-**Dependencies:** Phases 1–5. **This is a public header break, taken deliberately and without a
-deprecation window**.
-
-### Phase 8: Software updates channel (DPS-fronted)
-
-**Deliverables:**
-- The three device-update operations over the device's existing DPS connection and auth
-  (X.509 first): `GetOnboardingDeviceUpdate`, `GetDeviceUpdate`, `ReportDeviceUpdateStatus`.
-- `agentInfo` + `installedUpdateId` on every fetch; `serviceConfiguration` + `updateMetadata`
-  parsing; `agentInfoEtag` / `serviceConfigEtag` handling incl. the resend codes.
-- Root-key-package fetch from `serviceConfiguration.rootKeyDownloadUrl`, verified by the existing
-  chain.
-- Bootstrap orchestration (update → report → re-check loop, then `Register`; advisory, never
-  blocking) and the operational polling loop, with durable, idempotent reporting keyed on
-  `workflowId` — including a persisted unsent report across reboot.
-- Error handling driven by the machine-readable error code, `Retry-After` honoured, device as the
-  sole retrier.
-- software-updates-shaped unit tests plus the conformance suite (§15 L3) written against this contract.
-
-**Dependencies:** Phase 7; the DPS transport; [su-spec.md](su-spec.md) (DRAFT contract).
-
-### Future / Pending (Not in Initial Implementation)
-
-- Root Key Package runtime rotation (fetch + verify + apply).
-- Threshold-signature continuity policy for key-rollover packages.
-- Persisted runtime key store updates independent of firmware upgrades.
-
-These are explicitly deferred. Initial implementation uses a root-key store fixed
-at `init` (compiled-in Microsoft defaults or caller-supplied keys).
+- **Root-key package download.** `rootKeyDownloadUrl` is parsed but not fetched. The root-key store
+  is fixed at `init` (compiled-in Microsoft defaults or caller-supplied keys) and changes only with
+  firmware.
+- **Runtime root-key rotation**, threshold-signature continuity across key rollover, and a
+  persisted runtime key store.
+- **SDK-driven checks.** The application requests every update check and picks its route; the SDK
+  runs no polling cadence or post-install re-check of its own.
+- **An operational channel over the IoT Hub connection.** Both routes run over DPS.
+- **A reusable conformance suite** for customer platform and crypto hooks.
 
 ---
 
@@ -1684,7 +1444,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 |---------|------------|
 | Manifest tampering | Core MUST parse JWS/SJWK, enforce `alg == RS256`, and verify both signatures via `verify_rs256_fn` before any download |
 | Payload corruption/MITM | The client MUST verify SHA-256 hashes (streaming) from the signed manifest |
-| Key compromise | v1 MUST support per-root disable/revocation in the in-memory key store; runtime Root Key Package rotation is deferred (future/pending) |
+| Key compromise | v1 MUST support per-root disable/revocation in the in-memory key store; runtime Root Key Package rotation is not implemented (§11) |
 | Privilege escalation | The SDK MUST NOT assume root; privilege management is the platform hook's responsibility |
 | Rollback attacks | `is_installed_fn` MUST perform version comparison; the service controls deployment targeting |
 | Memory safety | The core state machine MUST NOT perform dynamic allocation; all buffers MUST be caller-provided or static |
@@ -1698,7 +1458,7 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | Chunked vs blocking download | **Both.** `download_fn` MUST return `IN_PROGRESS` for chunked (re-invoked next do_work) or `SUCCESS` for blocking completion. Adapters MAY choose their model. |
-| 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is tracked as future/pending (not in v1). |
+| 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
 | 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256_fn`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
 | 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
@@ -1706,7 +1466,34 @@ at `init` (compiled-in Microsoft defaults or caller-supplied keys).
 
 ---
 
-## 14. Dependency Gap Analysis: azure-sdk-for-c
+## 14. The azure-sdk-for-c dependency
+
+`azure-sdk-for-c` (fetched at a pinned tag) includes a Device Update client module that provides:
+
+| Capability | Function |
+|-----------|----------|
+| Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
+| Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
+
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportStatus` body is built by the channel.
+
+**What azure-sdk-for-c does NOT provide:**
+- State machine / workflow orchestration.
+- JWS signature verification.
+- Any network I/O (download, MQTT).
+- Platform hooks for install/apply/backup/restore.
+
+### Strategy: Reuse, Don't Reimplement
+
+Our `su_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_su_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
+
+1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
+2. **JWS verification** — via customer-provided crypto hooks.
+3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
+4. **Platform hooks** — the vtable for download, install, apply, etc.
+
+This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
+
 
 ### What azure-sdk-for-c Provides (Sufficient As-Is)
 
@@ -1734,78 +1521,13 @@ target_compile_definitions(az_iot_su PRIVATE
 )
 ```
 
-### Required Change: Forward-Compatible Step Parsing
+### Known limitation: strict step parsing
 
-**Problem:** The step-level JSON parser in `az_iot_adu_client_parse_update_manifest()` returns `AZ_ERROR_JSON_INVALID_STATE` for any unrecognized property name within `instructions.steps[]` objects and within `handlerProperties`. If the software updates service adds new fields in future manifest versions, parsing will fail.
-
-**Impact:** Breaking change when service evolves. Violates the robustness principle.
-
-**Fix (in azure-sdk-for-c `sdk/src/azure/iot/az_iot_adu_client.c`):**
-
-Replace the strict rejection in the step-parsing loop:
-
-```c
-// Current (line ~658, inside steps[] object parsing):
-else
-{
-    return AZ_ERROR_JSON_INVALID_STATE;
-}
-
-// Proposed (forward-compatible — skip unknown properties):
-else
-{
-    _az_RETURN_IF_FAILED(az_json_reader_next_token(ref_json_reader));
-    _az_RETURN_IF_FAILED(az_json_reader_skip_children(ref_json_reader));
-}
-```
-
-The same pattern MUST be applied to the `handlerProperties` object parser (currently only recognizes `installedCriteria` and rejects anything else).
-
-**Note:** The top-level manifest parser already uses this tolerant pattern (`property_parsed = false` → skip). The fix is making nested parsers consistent.
-
-#### Delivery Mechanism — Decision
-
-azure-sdk-for-c is consumed read-only, pinned to release tag **1.5.0** via
-`FetchContent` for reproducible builds ([CMakeLists.txt](../../CMakeLists.txt)). We
-do **not** edit the fetched source tree in place (it is regenerated on a clean
-build and is not under our version control). The options considered:
-
-| Option | Mechanism | Verdict |
-|--------|-----------|---------|
-| **A. Upstream the fix + tag bump** | Open a PR against `Azure/azure-sdk-for-c`, then bump `AZ_SDK_C_TAG` to the release that carries it. | **Chosen — the real fix.** |
-| B. Local patch via `PATCH_COMMAND` | Apply a tracked `.patch` during `FetchContent_Declare`, mirroring [cmake/patch_cmocka_symlink.cmake](../../cmake/patch_cmocka_symlink.cmake). | **Short-lived bridge only**, used solely to unblock development until A lands. |
-| C. Vendor/fork the file | Copy `az_iot_adu_client.c` into our tree and compile our copy. | Rejected — duplicates upstream, silently drifts from future fixes, large surface. |
-
-**Decision: upstream the fix (A). We will not carry a patch indefinitely.**
-
-The committed plan is to land the parser change in `Azure/azure-sdk-for-c` and
-consume it via a normal `AZ_SDK_C_TAG` bump. A local patch (B) is permitted
-**only** as a temporary bridge so software updates work isn't blocked on upstream release
-cadence — it is explicitly not a standing strategy.
-
-1. **Upstream the fix (the actual deliverable).** PR the nested step /
-   `handlerProperties` parsers to skip unknown properties (consistent with the
-   already-tolerant top-level parser). When it ships in a release, bump
-   `AZ_SDK_C_TAG` and **remove any bridge patch**.
-2. **Optional interim bridge (delete on merge).** If development needs the fix
-   before the upstream release, add `cmake/patch_az_iot_su_forward_compat.cmake`
-   (idempotent, like the cmocka one) as the `azure_sdk_for_c` `PATCH_COMMAND`. If
-   added, it MUST:
-   - be **idempotent** — guard with a reverse-apply check (e.g.
-     `git apply --reverse --check` / a sentinel grep) so reconfigures and warm
-     `_deps` caches don't fail or double-apply;
-   - patch **both** the `steps[]` loop and the `handlerProperties` loop;
-   - fail configure loudly if the target lines are absent, so the tag bump that
-     carries the upstream fix forces us to delete the now-obsolete patch instead
-     of silently leaving a dead seam.
-3. **Pin discipline.** Any bridge patch is valid only for the exact pinned tag;
-   it MUST encode the tag it was authored against, and bumping `AZ_SDK_C_TAG` MUST
-   re-validate or retire it. The end state has **no** patch — only the upstreamed
-   fix and the bumped tag.
-
-This keeps the dependency reproducible, avoids a vendored fork, and treats any
-local patch as a self-deleting stopgap rather than a permanent maintenance
-burden.
+`az_iot_adu_client_parse_update_manifest()` rejects any unrecognized property inside
+`instructions.steps[]` and inside `handlerProperties` with `AZ_ERROR_JSON_INVALID_STATE`, while the
+top-level parser skips unknown properties. A service-side addition to a step would therefore fail
+manifest parsing. The fix belongs upstream (skip unknown properties, as the top-level parser does),
+consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the dependency.
 
 ### Not Supported in azure-sdk-for-c (Matches Our Non-Goals)
 
@@ -1823,7 +1545,7 @@ burden.
 | Workflow state machine & orchestration | Our `su_client.c` |
 | JWS signature verification | Our `su_client.c` (parsing/orchestration) + `verify_rs256_fn` crypto hook (RSA math) |
 | SHA-256 hash computation & verification | Our `su_client.c` (compare) + `sha256_*` crypto hooks (digest) |
-| Root key store, `kid` resolution & revocation | Our `su_client.c` (core-owned; runtime rotation deferred, §7) |
+| Root key store, `kid` resolution & revocation | Our `su_client.c` (core-owned; runtime rotation not implemented, §11) |
 | File download (HTTP/HTTPS) | Platform adapter hooks |
 | Install/Apply/Backup/Restore execution | Platform adapter hooks |
 | Update check, delivery & status reporting | Our `su_channel_dps.c` (software updates over the DPS session) |
@@ -1833,163 +1555,45 @@ burden.
 
 ---
 
-## 15. Test & Conformance Strategy
+## 15. Tests
 
-Software updates' value is correctness under adversarial and failure conditions, so testing is
-a first-class part of the design, not an afterthought. The strategy is **layered**:
-host-only deterministic tests cover the vast majority of behavior, and only the
-top layer requires real cloud/network resources. This mirrors the existing repo
-conventions (cmocka via `az_iot_add_cmocka_test`, in-memory mocks in
-`tests/support/`, and a reusable, broker-gated conformance library in
-`tests/conformance/`).
+Every external effect is a hook, so the engine is tested on the host with no network.
 
-### Test Pyramid
+| Layer | Where | What |
+| --- | --- | --- |
+| Unit | `tests/unit/su_client_test.c` | The engine against a fake channel and scripted platform and crypto hooks: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
+| Unit | `tests/unit/su_channel_dps_test.c`, `tests/unit/su_protocol_test.c` | The DPS channel against the connection client, and the wire codec. |
+| Crypto adapters | `tests/unit/su_crypto_mbedtls_test.c`, `tests/unit/su_crypto_openssl_test.c` | Known-answer RS256 and SHA-256 vectors through the real library. |
+| End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
-```mermaid
-graph TD
-    E2E["L4 — E2E against real software updates service (gated, few)"]
-    CONF["L3 — software updates conformance suite (reusable, host-only)"]
-    INT["L2 — Integration: adapters vs. fakes (per-adapter)"]
-    UNIT["L1 — Unit: state machine, parsing, crypto vectors (host-only, many)"]
-    UNIT --> INT --> CONF --> E2E
-```
+Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own
+workflow ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)), started manually.
 
-### L1 — Unit (host-only, no network, no real crypto)
-
-The core (`src/features/su/`) is fully testable on the host because every
-external effect is a hook. Tests drive `do_work()` step-by-step and assert state
-transitions and the structured reports handed to the channel.
-
-Test doubles required (new, under `tests/support/`):
-
-| Double | Purpose |
-|--------|---------|
-| `mock_su_platform_hooks` | Scriptable `download/install/apply/backup/restore/is_installed/persist/load` — each returns a queued result (`SUCCESS`/`IN_PROGRESS`/`REBOOT_REQUIRED`/`FAILURE`) and records the call. Mirrors `mock_mqtt_iface`'s record-and-script model. |
-| `mock_su_crypto_hooks` | Deterministic `verify_rs256_fn` (scripted valid/invalid) + real-or-stub `sha256_*`. Lets manifest-auth tests run with **no** crypto library linked. |
-| fake channel | Injects `updateMetadata` payloads through the channel's update callback and captures reports. As built in `tests/unit/su_client_test.c`. |
-
-Coverage targets (one cmocka exe per file, matching §9 layout):
-
-- `test_su_state_machine.c` — every transition in §4; happy path, already-installed skip,
-  verification-gating failure (Stage 1 reject ⇒ no download), cancel at each phase
-  boundary, `is_installed_fn` short-circuit (`ALREADY_INSTALLED`).
-- `test_su_step_orchestration.c` — multi-step iteration, per-step result
-  accumulation, partial-failure **reverse-order** rollback (and `restore_fn`
-  failure → best-effort continuation), `installedUpdateId` unchanged after
-  rollback.
-- `test_su_manifest_verify.c` — two-level JWS chain via `verify_rs256_fn`: good
-  chain passes; bad SJWK sig, bad manifest sig, unknown/`disabled` `kid`, and
-  `alg != RS256` each fail with facility `0x1` and **no** download.
-- `test_su_payload_hash.c` — streaming `sha256_*` over chunked download; hash
-  mismatch aborts with facility `0x3`; constant-time compare.
-- `test_su_persistence.c` — round-trip serialize/deserialize of the §4 blob;
-  CRC/magic/version rejection ⇒ clean restart; each `resume()` re-entry phase;
-  replacement detection (different workflow id / `manifest_sha256`) discards
-  resumed state; blob cleared on completion.
-- `test_su_device_properties.c` — deep-copy ownership (mutate/free caller struct after
-  `init`), `update_device_properties()` coalescing, reconnect re-report.
-
-Known-answer vectors (committed as test fixtures, no network):
-- A signed v5 manifest + matching SJWK + root key (valid), plus tampered variants.
-- File payloads with known SHA-256 digests.
-
-### L2 — Integration (per adapter, fakes for the outside world)
-
-Each shipped adapter is tested against a fake of its dependency, not the cloud:
-
-- **Crypto adapters** (`crypto_mbedtls`, `crypto_openssl`) — run the *same*
-  known-answer RS256/SHA-256 vectors through the real library so we prove the
-  primitive wiring, independent of software updates orchestration.
-- **Linux platform adapter** — `download_fn` against a **local mock HTTP server**
-  serving a fixture file; `persist_state_fn`/`load_state_fn` against a temp file;
-  `install_fn` against a no-op/echo command. (Already noted in Phase 3.)
-- **ESP32 platform adapter** — host-buildable portions tested with esp-idf host
-  mocks where available; on-target smoke left to Phase 4 hardware runs.
-
-### L3 — software updates Conformance Suite (reusable, host-only)
-
-Mirroring the MQTT-iface conformance library, ship a reusable
-`az_iot_su_conformance` static library that validates **any**
-`az_iot_su_platform_hooks` + `az_iot_su_crypto_hooks` implementation a
-customer provides — without a broker or the cloud.
-
-```c
-/* tests/conformance/su/az_iot_su_conformance.h */
-typedef enum { AZ_IOT_SU_CONF_SUITE_FULL = 0 } az_iot_su_conformance_suite;
-
-/* Returns 0 pass / 1 fail / 77 skip (suitable as main()'s return). The suite
- * drives a real az_iot_su_client over a fake channel, calling the customer's
- * hooks, and asserts protocol-correct behavior across all states. */
-int az_iot_su_conformance_run(
-    az_iot_su_conformance_suite suite_kind,
-    const az_iot_su_platform_hooks* hooks,
-    const az_iot_su_crypto_hooks* crypto,
-    const az_iot_su_root_key* root_keys,
-    size_t root_key_count);
-```
-
-The suite exercises: already-installed skip, single- and multi-step manifests,
-download + hash verification, install/apply/reboot/`resume()`, replacement, and
-rollback — asserting the structured report at each step. It is **host-only**
-(fake channel) so customers can validate their adapters in
-CI with no Azure dependency. Where a sub-test needs a capability the supplied
-hooks declare unsupported (e.g. no `persist_state_fn`), it is compiled out rather
-than skipped at run time — see the no-self-skips rule below.
-
-### L4 — End-to-End (gated, real Azure Device Update service)
-
-The smallest layer: a real device identity, a real Device Update instance, and a real
-deployment, validating the wire contract end to end. Because it consumes cloud
-quota and is slow, it is **gated at build time** (mirroring
-`AZ_IOT_BUILD_E2E_CSR`), e.g. `AZ_IOT_BUILD_E2E_SU_LIVE=ON` plus hub/instance/
-deployment coordinates supplied by the environment; without the option the test
-is not built. It must never inspect the environment and excuse itself: a suite
-that skips itself is one nobody notices has stopped running. Scope:
-provision → deploy a signed test update → assert the device drives to success
-(result_code 700) → assert the service marks the deployment succeeded.
-
-### CI Integration
-
-- L1–L3 run on **every** CI leg (host-only, deterministic, no secrets) and are the
-  gate for merging — consistent with the existing unit/conformance split.
-- L4 runs on a **scheduled / opt-in** leg with cloud credentials, never on the
-  fast PR path, to protect cloud quota (per the project's CI-quota discipline).
+Suites never skip themselves at run time: a missing prerequisite fails the suite, and an optional
+suite is excluded at build time.
 
 ---
 
-## 16. Prerequisite: Connection State & Error Propagation
+## 16. Connection integration
 
-Software updates depends on a shared connection **state observer registry**, **lifecycle/reuse
-contract**, and **status notification** model that must land **before** the software updates
-feature client. Those decisions are now specified in their own engineering doc:
+The client relies on the connection client's observer registry, scopes and shared provisioning
+sessions ([connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)):
 
-> **[docs/eng/connection-state-and-error-propagation.md](connection-state-and-error-propagation.md)**
-
-Software updates touch points that rely on it:
-
-- **Session tracking.** The software updates channel registers a *feature-client* observer
-  (§2 of the connection doc) to learn when a provisioning session ends, and
-  retires a request lost with it. There is no reconnect re-report: device
-  properties travel on each update check (see
-  [§4 Device Properties on the Wire](#device-properties-on-the-wire)).
-- **Detach safety.** On `AZ_IOT_CONN_STATE_DEINITIALIZING` the software updates client nulls
-  its connection binding and sets `detached`; subsequent calls return
-  `AZ_IOT_ERR_DETACHED` (§3.3 of the connection doc).
-- **Reuse.** software updates survives a `close`→`open` cycle; `deinit`→`init` is rejected by
-  the poison-magic guard (§3 of the connection doc).
+- The channel registers a feature-client state observer and acts only on the `DPS` scope, so it
+  works whatever the hub state and under `dps.provision_only`.
+- It holds registration for the onboarding check and holds the provisioning session open while it
+  needs it. The connection client paces re-establishing a failed session.
+- It survives `close()` → `open()`. Device properties travel on each update check, so there is no
+  re-report on reconnect.
 
 ---
 
 ## 17. References
 
-- [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) — decision of record for cutting Device Update for IoT Hub, and where the software updates bootstrap/operational checks sit in the connection lifecycle
-- [client-separation.md §8](client-separation.md#8-device-update) — the `su_core` / `az_iot_su_channel` seam relative to the client split
-- [su-spec.md](su-spec.md) — **Software updates (via DPS) design summary** + diagrams: the device-facing DPS update APIs (`GetOnboardingDeviceUpdate` / `GetDeviceUpdate` / `ReportDeviceUpdateStatus`) and how the client uses them
-- **Software updates via DPS** (DRAFT, api-version `2026-11-02-preview`) — software updates' device-facing delivery is now **fronted by DPS** (an authenticated pass-through to ADR → Device Update); there is **no dedicated Device Update endpoint** and **no separate `syncConfiguration`** (service config is returned inline in the fetch response). The manifest content and the D2C report structure are unchanged. See [su-spec.md](su-spec.md).
+- [connection-c.md §7](connection-c.md#7-software-updates-onboarding-and-renewal-partly-implemented) — where the update checks sit in the connection lifecycle
 - [Azure Device Update documentation](https://learn.microsoft.com/azure/iot-hub-device-update/)
-- [software updates reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update) — architecture in `docs/architecture-deep-dive.md`
+- [Device Update reference agent (iot-hub-device-update)](https://github.com/Azure/iot-hub-device-update)
 - [Update Manifest v5 schema](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest)
 - [JWS (RFC 7515)](https://datatracker.ietf.org/doc/html/rfc7515)
 - [The Update Framework (TUF)](https://theupdateframework.io/) — key rotation and trust model reference
-- [azure-sdk-for-c `az_iot_su_client`](https://github.com/Azure/azure-sdk-for-c) — parsing/formatting dependency
-- [azure-iot-sdk SDK design](../design.md) — this project's overall architecture
+- [architecture.md](../architecture.md) — this SDK's overall architecture
