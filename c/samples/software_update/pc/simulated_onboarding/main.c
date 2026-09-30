@@ -302,7 +302,7 @@ int main(void)
   az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
 
   sample_state state = { 0 };
 
@@ -498,7 +498,7 @@ int main(void)
     {
       state.su_workflow_completed = 0;
       printf("Deployment workflow complete. Restart the sample to ask again.\n");
-      remove(state.simulation_control.state_file); /* clear the resume blob */
+      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
     }
 
     /* A (simulated) reboot was requested. Exit so the operator can "reboot"

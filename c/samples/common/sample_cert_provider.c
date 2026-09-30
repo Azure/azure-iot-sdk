@@ -46,7 +46,7 @@ static int cert_file_has_pem(const char* path)
   }
   char buf[64] = { 0 };
   size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
+  (void)fclose(f);
   return (n > 0) && (strstr(buf, "-----BEGIN CERTIFICATE-----") != NULL);
 }
 
