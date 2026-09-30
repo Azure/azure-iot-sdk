@@ -170,7 +170,7 @@ configure_package_config_file(
     INSTALL_DESTINATION ${_az_iot_pkg_cmake_dir}
 )
 # Numeric only: CMake package versions have no pre-release label, so
-# 1.0.0-preview and 1.0.0 both report 1.0.0. SameMinorVersion while in preview;
+# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMinorVersion while in preview;
 # revisit (SameMajorVersion) once stable releases guarantee API compatibility.
 write_basic_package_version_file(
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config-version.cmake"
