@@ -111,7 +111,7 @@ Providers in the tree:
 | --- | --- |
 | `dps.request_operational_certificate` | Send a CSR with the DPS registration (D2). `open()` returns `AZ_IOT_ERR_NOT_SUPPORTED` if the provider is below v2 or has no `get_csr`. |
 | `csr_payload_buffer` | Caller buffer for the registration body; must be non-empty when enrolling. `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` is enough for any CSR the service accepts. |
-| `az_iot_connection_client_set_operational_cert_callback()` | Called with a DPS-issued chain after the provider stored it (D4). |
+| `az_iot_connection_client_set_operational_cert_callback()` | Called with a DPS-issued chain (D4): after `store_issued_certificate()` succeeds, or on its own when the provider has no storage hook. |
 | `az_iot_connection_client_send_csr()` | Hub-side renewal (below). |
 | `az_iot_connection_client_cancel_csr()` | Abandon an in-flight renewal. |
 
@@ -121,8 +121,11 @@ Providers in the tree:
 
 When `dps.request_operational_certificate` is set, the connection client calls `get_csr()`,
 sends `{"csr":"<base64 DER>"}` in the registration body (the registration id travels in the
-DPS username and topic), and on assignment extracts `issuedCertificateChain`, calls
-`store_issued_certificate()`, then the operational-certificate callback. The hub connect then
+DPS username and topic), and on assignment extracts `issuedCertificateChain`. The chain goes to
+`store_issued_certificate()` when the provider has it, then to the operational-certificate
+callback when set; at least one must be present, or registration fails with
+`AZ_IOT_ERR_NOT_SUPPORTED`. A failed store skips the callback and fails the registration with the
+provider's result. The hub connect then
 calls `load(AZ_IOT_CRED_OPERATIONAL)`, falling back to `AZ_IOT_CRED_BOOTSTRAP` when no
 operational credential is held.
 

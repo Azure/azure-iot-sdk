@@ -158,8 +158,10 @@ Operational certificates:
 
 - **Issued at provisioning.** Set `dps.request_operational_certificate` and provide
   `csr_payload_buffer` (`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes is enough for any CSR the service
-  accepts). The device sends a CSR with its registration. The issued chain is passed to the
-  provider and to the callback set with `az_iot_connection_client_set_operational_cert_callback()`.
+  accepts). The device sends a CSR with its registration. The issued chain goes to the provider's
+  `store_issued_certificate()`, if it has one, and then to the callback set with
+  `az_iot_connection_client_set_operational_cert_callback()`, if set. At least one must be
+  present. If storage fails, the callback is skipped and the registration fails.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
   `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
   copy or persist it in the callback (it is valid only there), for example through the
