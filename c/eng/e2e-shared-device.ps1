@@ -3,43 +3,57 @@
 
 <#
 .SYNOPSIS
-Writes the ci-c-e2e test config for one leg on the shared e2e environment.
+Writes the e2e test config for one device on a shared e2e environment.
 
 .DESCRIPTION
 Issues a device certificate for -RegistrationId, signed by the shared DPS X.509 enrollment
-group's CA, and writes the test-config script that ci-c-e2e.yml sources (the variables the
-provisioning action emits, for -DeviceIndex only). The device registers through the group on
-first connect, so no Azure call is made here and nothing needs releasing.
+group's CA, and writes the test-config script the workflow sources (the variables the
+provisioning action emits). The device registers through the group on first connect, so no
+Azure call is made here and nothing needs releasing.
 
-Inputs come from the environment (repository secrets/variables):
+Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
   E2E_SHARED_IOTHUB_CS       IoT Hub 'service' policy connection string
   E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy
   E2E_SHARED_ID_SCOPE        DPS ID scope
+
+-Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
+  E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
+                             private key, then any CA certificates above it (issuer first)
+  E2E_CSR_SHARED_ID_SCOPE    DPS ID scope
+  E2E_CSR_SHARED_DPS_HOST    DPS device endpoint (optional)
 #>
 param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
     [ValidateRange(0, 99)][int]$DeviceIndex = 0,
     [ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
+    [switch]$Csr,
     [string]$OutFile = 'test_config/set_test_env_vars.ps1'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Missing = @('E2E_SHARED_GROUP_CA', 'E2E_SHARED_IOTHUB_CS', 'E2E_SHARED_EVENTHUB_CS', 'E2E_SHARED_ID_SCOPE') |
+$Prefix = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
+$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE') } else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
+$Missing = $Required | ForEach-Object { "${Prefix}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
 
-foreach ($Name in 'E2E_SHARED_IOTHUB_CS', 'E2E_SHARED_EVENTHUB_CS') {
-    if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
-        throw "$Name uses the iothubowner policy; use the 'service' policy."
+if (-not $Csr) {
+    foreach ($Name in 'E2E_SHARED_IOTHUB_CS', 'E2E_SHARED_EVENTHUB_CS') {
+        if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
+            throw "$Name uses the iothubowner policy; use the 'service' policy."
+        }
     }
 }
 
-$CaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:E2E_SHARED_GROUP_CA))
+$CaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Environment]::GetEnvironmentVariable("${Prefix}_GROUP_CA")))
+# The first certificate is the issuer; the key must match it.
 $Ca = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($CaPem, $CaPem)
-if (-not $Ca.HasPrivateKey) { throw 'E2E_SHARED_GROUP_CA has no private key.' }
+if (-not $Ca.HasPrivateKey) { throw "${Prefix}_GROUP_CA has no private key." }
+$CaChain = [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+$CaChain.ImportFromPem($CaPem)
 
 $Rsa = [System.Security.Cryptography.RSA]::Create(2048)
 $Request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -71,18 +85,33 @@ $Leaf = $Request.Create($Ca, $Now.AddMinutes(-10), $NotAfter, $Serial)
 function ConvertTo-B64([string]$Text) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Text)) }
 function Format-Assignment([string]$Name, [string]$Value) { "`$env:$Name = '$($Value.Replace("'", "''"))'" }
 
-# Chain (leaf + group CA): DPS matches the group by the issuing CA.
-$Chain = $Leaf.ExportCertificatePem() + "`n" + $Ca.ExportCertificatePem() + "`n"
-$Lines = @(
-    Format-Assignment 'IOTHUB_CONNECTION_STRING' $env:E2E_SHARED_IOTHUB_CS
-    Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' $env:E2E_SHARED_EVENTHUB_CS
-    Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
-    Format-Assignment 'IOT_DPS_ID_SCOPE' $env:E2E_SHARED_ID_SCOPE
-    Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
-    Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
-    Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" (ConvertTo-B64 $Rsa.ExportRSAPrivateKeyPem())
-)
+# Chain: leaf + the bundle's CA certificates. DPS matches the group by the issuing CA.
+$Chain = $Leaf.ExportCertificatePem() + "`n" + (($CaChain | ForEach-Object { $_.ExportCertificatePem() }) -join "`n") + "`n"
+$KeyB64 = ConvertTo-B64 $Rsa.ExportRSAPrivateKeyPem()
+$Lines = if ($Csr) {
+    @(
+        Format-Assignment 'IOT_DPS_ID_SCOPE' $env:E2E_CSR_SHARED_ID_SCOPE
+        Format-Assignment 'IOT_DPS_GROUP_X509_REGISTRATION_ID' $RegistrationId
+        Format-Assignment 'IOT_DPS_GROUP_X509_CERTIFICATE' (ConvertTo-B64 $Chain)
+        Format-Assignment 'IOT_DPS_GROUP_X509_KEY' $KeyB64
+        if ($env:E2E_CSR_SHARED_DPS_HOST) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' $env:E2E_CSR_SHARED_DPS_HOST }
+    )
+} else {
+    @(
+        Format-Assignment 'IOTHUB_CONNECTION_STRING' $env:E2E_SHARED_IOTHUB_CS
+        Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' $env:E2E_SHARED_EVENTHUB_CS
+        Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
+        Format-Assignment 'IOT_DPS_ID_SCOPE' $env:E2E_SHARED_ID_SCOPE
+        Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
+    )
+}
 $OutDir = Split-Path -Parent $OutFile
 if ($OutDir) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 Set-Content -Path $OutFile -Value $Lines -Encoding utf8NoBOM
-Write-Host "Wrote $OutFile for '$RegistrationId' (device index $DeviceIndex, consumer group $ConsumerGroup)."
+if ($Csr) {
+    Write-Host "Wrote $OutFile for CSR bootstrap device '$RegistrationId'."
+} else {
+    Write-Host "Wrote $OutFile for '$RegistrationId' (device index $DeviceIndex, consumer group $ConsumerGroup)."
+}

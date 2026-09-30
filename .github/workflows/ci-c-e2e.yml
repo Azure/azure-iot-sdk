@@ -84,7 +84,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write   # required for azure/login OIDC
 
 # Resource group name derived from the RUN, not from a random GUID published as a
 # job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
@@ -99,15 +98,20 @@ env:
 
 jobs:
   setup:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: setup (provision)
     if: ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -115,7 +119,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -134,7 +138,7 @@ jobs:
           enable-file-upload: 'true'
 
       - name: Upload test config
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-test-config
           path: test_config/set_test_env_vars.ps1
@@ -173,11 +177,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
@@ -212,7 +218,7 @@ jobs:
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: e2e-test-config
           path: test_config
@@ -432,7 +438,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
@@ -448,13 +454,16 @@ jobs:
 
       - name: Upload coverage tracefile (Linux)
         if: runner.os == 'Linux' && success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e
           path: c/coverage/e2e.json
           if-no-files-found: error
 
   teardown:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: teardown (delete resources)
     needs: [setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
@@ -465,17 +474,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 

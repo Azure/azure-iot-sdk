@@ -213,6 +213,14 @@ so there is nothing to clean up. Inputs are repository secrets
 (`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
 upload with notifications. Push and nightly runs always provision.
 
+[`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
+keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
+(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
+cannot reuse the one above. Each run issues a bootstrap device with
+`e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
+CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+device endpoint.
+
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
 
