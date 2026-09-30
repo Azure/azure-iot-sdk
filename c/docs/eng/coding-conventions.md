@@ -59,6 +59,17 @@ every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
 - False positive: `/* NOLINTNEXTLINE(<check>): <reason> */` on the line
   immediately before the one diagnosed.
 
+## 0.2. MSVC `/analyze` must be clean
+
+```pwsh
+cmake -S c -B c/build/msvc-analyze -G Ninja -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF
+cmake --build c/build/msvc-analyze    # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
+```
+
+From a Visual Studio developer shell. Findings (`C6xxx`) are errors in `src`,
+`adapters` and `samples`. Suppress a false positive on the line before it with
+`#pragma warning(suppress : <number>) /* <reason> */`, inside `#ifdef _MSC_VER`.
+
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
 `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`,

@@ -16,6 +16,10 @@ function(az_iot_apply_warnings target)
         if(AZ_IOT_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
+        if(AZ_IOT_ENABLE_MSVC_ANALYZE)
+            # External (SYSTEM) headers, e.g. azure-sdk-for-c, are not analyzed.
+            target_compile_options(${target} PRIVATE /analyze /analyze:external-)
+        endif()
         az_iot_apply_hardening(${target})
     else()
         target_compile_options(${target} PRIVATE

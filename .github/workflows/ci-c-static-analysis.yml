@@ -2,7 +2,8 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Static analysis of first-party C code (src, adapters, samples).
-#   clang-tidy: clang static analyzer, bugprone, CERT and misc checks; config in c/.clang-tidy.
+#   clang-tidy:    clang static analyzer, bugprone, CERT and misc checks; config in c/.clang-tidy.
+#   msvc-analyze:  MSVC code analysis (/analyze, AZ_IOT_ENABLE_MSVC_ANALYZE); findings are errors.
 name: ci-c-static-analysis
 
 on:
@@ -91,3 +92,33 @@ jobs:
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy
+
+  msvc-analyze:
+    name: msvc /analyze
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Configure
+        # Tests are not built: the scope matches clang-tidy (src, adapters, samples).
+        run: >
+          cmake -S . -B build/msvc-analyze -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON
+          -DAZ_IOT_BUILD_TESTS=OFF
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+
+      - name: Build with /analyze
+        # -k 0: report every failing file, not just the first.
+        run: cmake --build build/msvc-analyze -- -k 0
