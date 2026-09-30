@@ -30,8 +30,9 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # One PR per dependency, updating it in every project at once.
       nuget:
-        patterns: [ '*' ]
+        group-by: dependency-name
     labels: [ enhancement ]
     commit-message:
       prefix: '[.NET]'
