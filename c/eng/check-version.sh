@@ -48,7 +48,7 @@ if [ "${vcpkg_version}" != "${version}" ]; then
     fail "vcpkg.json version-semver '${vcpkg_version}' != '${version}'"
 fi
 
-changelog_top="$(sed -n -E 's/^## ([^ ]+) .*/\1/p' "${root_dir}/CHANGELOG.md" | head -n 1)"
+changelog_top="$(sed -n -E '/^## /{s/^## ([^ ]+) .*/\1/p;q;}' "${root_dir}/CHANGELOG.md")"
 if [ "${changelog_top}" != "${version}" ]; then
     fail "CHANGELOG.md latest entry '${changelog_top}' != '${version}'"
 fi
