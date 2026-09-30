@@ -583,6 +583,9 @@ jobs:
         run: ctest --test-dir build/hardening --output-on-failure
 
   # MSVC counterpart: /guard:cf, /CETCOMPAT and /sdl, checked with dumpbin.
+  # Samples are off in the shared leg: Windows shared builds put every
+  # executable in one bin/, and sample names repeat across groups (as in the
+  # install job).
   hardening-windows:
     name: windows-msvc${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
     needs: changes
@@ -608,6 +611,7 @@ jobs:
           cmake -S . -B build/hardening -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DAZ_IOT_BUILD_SAMPLES=${{ matrix.shared == 'ON' && 'OFF' || 'ON' }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_WITH_RUST_MQTT=ON
