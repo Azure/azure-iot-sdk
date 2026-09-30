@@ -64,6 +64,17 @@ typedef struct
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
+  if (event->error != NULL && event->error->source == AZ_IOT_CONN_ERR_SRC_DPS)
+  {
+    fprintf(
+        stderr,
+        "[e2e-csr] DPS error %ld: %.*s\n",
+        (long)event->error->code,
+        (int)az_span_size(event->error->message),
+        az_span_size(event->error->message) > 0 ? (const char*)az_span_ptr(event->error->message)
+                                                : "");
+  }
+
   /* Hub lifecycle only: the provisioning session reports on its own scope,
    * and storing its state here would overwrite the hub state this code acts
    * on. */
