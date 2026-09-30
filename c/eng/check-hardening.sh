@@ -10,9 +10,9 @@
 # function that needs a canary (compiler heuristics), so that is reported; it fails only when no
 # first-party executable has one.
 #
-# PE (dumpbin, on Windows): Control Flow Guard (Guard characteristic, CF Instrumented and FID
-# table present), ASLR (Dynamic base), DEP (NX compatible) and, for x64, High Entropy VA and CET
-# compatible.
+# PE (dumpbin, on Windows): Control Flow Guard (the Control Flow Guard DLL characteristic, CF
+# instrumented and FID table present), ASLR (Dynamic base), DEP (NX compatible) and, for x64,
+# High Entropy VA and CET compatible.
 #
 #   eng/check-hardening.sh <build-dir>
 #
@@ -38,12 +38,11 @@ check_pe() {
     command -v dumpbin >/dev/null || { echo "dumpbin not found (run from a VS developer shell)" 1>&2; exit 1; }
     while IFS= read -r -d '' f; do
         checked=$((checked + 1))
-        # Dash options: Git Bash rewrites arguments that start with '/'.
-        info="$(dumpbin -nologo -headers -loadconfig "$f")"
+        # Dash options: Git Bash rewrites arguments that start with '/'. dumpbin writes CRLF.
+        info="$(dumpbin -nologo -headers -loadconfig "$f" | tr -d '\r')"
         grep -q 'Dynamic base' <<<"$info" || fail "$f" "no ASLR (Dynamic base)"
         grep -q 'NX compatible' <<<"$info" || fail "$f" "no DEP (NX compatible)"
-        # dumpbin may prefix the characteristic with its value (e.g. "4000 Guard").
-        grep -qE '^[[:space:]]+([0-9A-Fa-f]+[[:space:]]+)?Guard[[:space:]]*$' <<<"$info" \
+        grep -qE '^[[:space:]]+Control Flow Guard[[:space:]]*$' <<<"$info" \
             || fail "$f" "no Control Flow Guard characteristic"
         grep -qi 'CF Instrumented' <<<"$info" || fail "$f" "not CF instrumented"
         grep -qi 'FID table present' <<<"$info" || fail "$f" "no CFG function table"
@@ -56,7 +55,7 @@ check_pe() {
 
     if [ "$failures" -gt 0 ] && [ -n "${first_failed:-}" ]; then
         echo "dumpbin output for ${first_failed}:"
-        dumpbin -nologo -headers -loadconfig "$first_failed" \
+        dumpbin -nologo -headers -loadconfig "$first_failed" | tr -d '\r' \
             | grep -iE 'machine|characteristics|Dynamic base|NX compatible|Guard|CF |FID|CET|High Entropy' || true
     fi
     echo "hardening: ${checked} PE files checked, ${failures} failures"
