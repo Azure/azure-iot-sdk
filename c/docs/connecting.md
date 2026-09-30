@@ -84,8 +84,11 @@ See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
 The assignment is cached. Reconnects go back to the same hub, and the client re-provisions only
 when:
 
-- the hub rejects the device identity, or
-- `dps.max_hub_connect_attempts_before_reprovision` consecutive hub connects fail (default 50).
+- the hub rejects the device identity,
+- `dps.max_hub_connect_attempts_before_reprovision` consecutive hub connects fail (default 50),
+- a registration fails or returns no assignment, or
+- the client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
+  `_MISMATCH`). The next `open()` registers again instead of reusing the cached hub.
 
 ## Reconnection
 
@@ -158,8 +161,12 @@ Operational certificates:
   accepts). The device sends a CSR with its registration. The issued chain is passed to the
   provider and to the callback set with `az_iot_connection_client_set_operational_cert_callback()`.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
-  `CONNECTED`. One renewal can be in flight at a time.
-- The new certificate is used on the next connect; the live session is not interrupted.
+  `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
+  copy or persist it in the callback (it is valid only there), for example through the
+  provider, then `close()` and `open()` to use it. See
+  [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
+- A DPS-issued certificate is used from the hub connect that follows the registration. The live
+  session is never interrupted.
 - At connect time the operational credential is preferred, with the bootstrap credential as a
   fallback.
 
@@ -171,8 +178,8 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 | Result | Meaning |
 | --- | --- |
 | `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused the device identity. The next attempt re-provisions. |
-| `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support. |
-| `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. |
+| `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support. The next `open()` re-provisions. |
+| `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
