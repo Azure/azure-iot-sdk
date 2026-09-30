@@ -312,7 +312,9 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   }
 
   int decoded_len = EVP_DecodeBlock(decoded, base64, base64_len);
-  if (decoded_len <= 0)
+  /* EVP_DecodeBlock writes at most 3 bytes per 4 input bytes; also tells static analysis the
+   * reads below stay inside the buffer. */
+  if (decoded_len <= 0 || decoded_len > base64_len)
   {
     /* Not decodable base64, so neither form can be recovered from it. Writing it
      * anyway would persist a certificate file that cannot be parsed and would

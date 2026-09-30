@@ -35,7 +35,7 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 #define CONNACK_V5_NOT_AUTHORIZED 0x87
 #define CONNACK_V5_BAD_AUTH_METHOD 0x8C
 
-az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
 {
   if (connack_code == 0)
   {
@@ -113,7 +113,8 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
 #define DISCONNECT_V5_NORMAL 0x00
 #define DISCONNECT_V5_NOT_AUTHORIZED 0x87
 
-az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
+AZ_NODISCARD az_iot_result
+az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
 {
   /* No code: an ordinary end of session, and what v3.1.1 always reports. */
   if (disconnect_code == DISCONNECT_V5_NORMAL || version != AZ_IOT_MQTT_VERSION_5)
@@ -138,7 +139,7 @@ az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int dis
   return AZ_IOT_ERR_MQTT;
 }
 
-az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
 {
   /* A granted QoS, including one below what was requested. That is still a
    * grant: the subscription exists, and delivery is min(publish QoS, granted
