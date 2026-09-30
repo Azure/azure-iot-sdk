@@ -1,0 +1,75 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+/**
+ * @file az_mqtt_codec_internal.h
+ * @brief Internal: wire primitives shared by the core and the MQTT 3.1.1 and 5.0 codecs.
+ *
+ * Defined once, in az_mqtt_core (az_mqtt_codec_common.c).
+ *
+ * Writers fail with AZ_ERROR_NOT_ENOUGH_SPACE (AZ_ERROR_ARG for a value the
+ * format cannot hold); readers with AZ_ERROR_UNEXPECTED_END
+ * (AZ_MQTT_ERROR_MALFORMED_PACKET for a Variable Byte Integer over 4 bytes).
+ * A failed call may have consumed part of the span: abandon the packet.
+ */
+
+#ifndef AZ_MQTT_CODEC_INTERNAL_H
+#define AZ_MQTT_CODEC_INTERNAL_H
+
+#include <az_mqtt/az_mqtt_types.h>
+
+#include <azure/core/az_result.h>
+#include <azure/core/az_span.h>
+
+#include <stdint.h>
+
+/** @brief Write one byte; advance @p dest. */
+AZ_NODISCARD az_result _az_mqtt_write_byte(az_span* dest, uint8_t b);
+
+/** @brief Write a big-endian 16-bit integer; advance @p dest. */
+AZ_NODISCARD az_result _az_mqtt_write_uint16(az_span* dest, uint16_t val);
+
+/** @brief Write a 2-byte length followed by @p str; advance @p dest. */
+AZ_NODISCARD az_result _az_mqtt_write_utf8_string(az_span* dest, az_span str);
+
+/** @brief Write a 2-byte length followed by @p data; advance @p dest. */
+AZ_NODISCARD AZ_INLINE az_result _az_mqtt_write_binary_data(az_span* dest, az_span data)
+{
+  return _az_mqtt_write_utf8_string(dest, data);
+}
+
+/** @brief Write a Variable Byte Integer; advance @p dest. */
+AZ_NODISCARD az_result _az_mqtt_write_vbi(az_span* dest, int32_t value);
+
+/** @brief Bytes a Variable Byte Integer of @p value takes (1-4). */
+AZ_NODISCARD int32_t _az_mqtt_vbi_size(int32_t value);
+
+/** @brief Read one byte; advance @p src. */
+AZ_NODISCARD az_result _az_mqtt_read_byte(az_span* src, uint8_t* out);
+
+/** @brief Read a big-endian 16-bit integer; advance @p src. */
+AZ_NODISCARD az_result _az_mqtt_read_uint16(az_span* src, uint16_t* out);
+
+/** @brief Read a Variable Byte Integer; advance @p src. */
+AZ_NODISCARD az_result _az_mqtt_read_vbi(az_span* src, int32_t* out);
+
+/** @brief Read a length-prefixed string (a view into @p src); advance @p src. */
+AZ_NODISCARD az_result _az_mqtt_read_utf8_string(az_span* src, az_span* out);
+
+/** @brief Read length-prefixed binary data (a view into @p src); advance @p src. */
+AZ_NODISCARD AZ_INLINE az_result _az_mqtt_read_binary_data(az_span* src, az_span* out)
+{
+  return _az_mqtt_read_utf8_string(src, out);
+}
+
+/** @brief Read a fixed header; advance @p src. */
+AZ_NODISCARD az_result _az_mqtt_decode_fixed_header(
+    az_span* src,
+    az_mqtt_packet_type* out_packet_type,
+    uint8_t* out_flags,
+    int32_t* out_remaining);
+
+/** @brief Write a PINGREQ (2 bytes); advance @p dest. */
+AZ_NODISCARD az_result _az_mqtt_encode_pingreq(az_span* dest);
+
+#endif // AZ_MQTT_CODEC_INTERNAL_H
