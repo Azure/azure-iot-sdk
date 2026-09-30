@@ -6,11 +6,13 @@
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
-- **Single-threaded.** No internal threads. The application calls
-  `az_iot_connection_client_do_work()`, and every callback fires from inside that call, on the
-  application's thread.
-- **No dynamic allocation in the core.** Buffers are caller-provided or live in caller-allocated
-  client structs.
+- **Single-threaded.** No internal threads. Callbacks fire synchronously on the thread that called
+  into the SDK: mostly from `az_iot_connection_client_do_work()`, but a feature client's own entry
+  points can dispatch them too (for example `az_iot_su_client_do_work()` and
+  `az_iot_su_client_resume()`).
+- **No dynamic allocation in the connection and feature clients.** Buffers are caller-provided or
+  live in caller-allocated structs. The reference PEM certificate provider is the exception: it
+  reads the certificate, key and CA files into heap buffers once, at init.
 - **Pluggable MQTT.** Any MQTT client library can be used through a small adapter interface.
   Eclipse Paho C is the default.
 - **Built on [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c)** for spans, JSON,

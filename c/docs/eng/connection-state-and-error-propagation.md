@@ -136,7 +136,7 @@ An application that disabled retries is its own retry policy, and `reason` alone
 
 It is computed from `reason` by an exhaustive switch, so a new result code does not compile until it
 is classified. It errs toward retriable. With retries disabled, `FAULTED` + retriable means the SDK
-never tried; with `max_attempts = N`, it means N attempts were spent.
+never tried; with `max_attempts = N`, it means N retries were spent.
 
 ### 5.2 `error`
 

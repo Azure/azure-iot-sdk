@@ -15,16 +15,24 @@ opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
 
-az_iot_connection_client_init(&client, &opts);
-az_iot_connection_client_add_state_observer(&client, on_state, ctx);
-az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v3_1_1());
-az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5());
+if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
+    || az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
+    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v3_1_1())
+        != AZ_IOT_OK
+    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
+        != AZ_IOT_OK)
+{
+  return 1;
+}
 
 /* Create feature clients, then: */
-az_iot_connection_client_open(&client);
+if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
+{
+  return 1;
+}
 for (;;)
 {
-  az_iot_connection_client_do_work(&client, 100);
+  (void)az_iot_connection_client_do_work(&client, 100);
 }
 ```
 
@@ -87,7 +95,7 @@ when:
 | --- | --- | --- |
 | `initial_delay_ms` | 1000 | First delay. `0` disables automatic reconnect. |
 | `max_delay_ms` | 60000 | Cap on the exponential backoff. |
-| `max_attempts` | 0 | Consecutive failures before `FAULTED`. `0` retries forever. |
+| `max_attempts` | 0 | Automatic retries after a failure before `FAULTED`; the count resets on success. `0` retries forever. |
 | `jitter_pct` | 20 | Random variation, ± percent. |
 
 `az_iot_reconnection_policy_get_default()`, `_get_retry_disabled()` and `_get_fixed_interval()`
