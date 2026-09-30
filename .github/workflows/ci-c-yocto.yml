@@ -41,8 +41,10 @@ jobs:
     outputs:
       yocto: ${{ steps.filter.outputs.yocto }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           # Only what the recipe builds: tests other than tests/install,
@@ -69,8 +71,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           # bitbake clones this checkout; SRCREV must be reachable in it.
           fetch-depth: 0
 
@@ -86,7 +89,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Restore sstate
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/yocto-sstate
           key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
@@ -173,7 +176,7 @@ jobs:
       # Also after a failure, cancellation or timeout: the next run continues.
       - name: Save sstate
         if: always() && steps.sstate.outputs.save == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/yocto-sstate
           key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}

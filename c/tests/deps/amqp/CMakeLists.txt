@@ -14,7 +14,7 @@
 # az_core + platform (az_win32 / az_posix) target and does NOT re-fetch
 # azure-sdk-for-c.
 #
-# The SHIPPING SDK stays MQTT-only (see c/docs/amqp_vs_mqtt_for_new_sdk_client.md);
+# The SHIPPING SDK stays MQTT-only;
 # AMQP appears here strictly as a test dependency so the C service half of every
 # scenario can be verified in-process, with no C# harness.
 #

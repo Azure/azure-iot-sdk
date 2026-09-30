@@ -2382,7 +2382,7 @@ static void restore_step_results(
   SU_I(client).step_results_count = step_count;
   for (int32_t i = 0; i < step_count; ++i)
   {
-    const uint8_t* rec = &steps[(uint32_t)i * AZ_IOT_SU_PERSIST_STEP_RECORD];
+    const uint8_t* rec = &steps[(size_t)i * AZ_IOT_SU_PERSIST_STEP_RECORD];
     az_iot_su_step_result* sr = &SU_I(client).step_results[i];
     sr->outcome = (az_iot_su_outcome)rd_u32le(rec);
     sr->failure_origin = (az_iot_su_failure_origin)rd_u32le(rec + 4);
@@ -2893,9 +2893,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      /* Already installed: under Device Update for IoT Hub this was a protocol-level reject (406).
-       * There is no accept/reject acknowledgement here, so it is reported as a
-       * SKIPPED outcome instead. */
+      /* Already installed. There is no accept/reject acknowledgement, so it is
+       * reported as a SKIPPED outcome. */
       int32_t inst = (h->is_installed_fn != NULL)
           ? h->is_installed_fn(&SU_I(client).current_manifest, h->user_ctx)
           : AZ_IOT_SU_RESULT_SUCCESS;

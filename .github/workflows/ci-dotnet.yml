@@ -30,7 +30,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write   # required for azure/login OIDC
 
 # Resource group name derived from the RUN, not from a random GUID published as a
 # job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
@@ -42,14 +41,19 @@ env:
 
 jobs:
   setup:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: setup (provision)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -57,7 +61,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -72,7 +76,7 @@ jobs:
           dps-x509-individual-enrollments: '2'
 
       - name: Upload test config
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-test-config
           path: test_config/set_test_env_vars.ps1
@@ -93,7 +97,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Build e2e tests
         working-directory: dotnet
@@ -101,7 +107,7 @@ jobs:
           dotnet build ./Project.slnx
 
       - name: Download shared test config
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: e2e-test-config
           path: test_config
@@ -189,13 +195,13 @@ jobs:
             -- xunit.parallelizeAssembly=true
 
       - name: Upload Test Report Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-report-${{ matrix.os }}
           path: ./coverage/*
           if-no-files-found: error
 
-      - uses: dorny/test-reporter@v3
+      - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         id: test-reporter
         if: always()
         with:
@@ -205,7 +211,9 @@ jobs:
 
       - name: Annotate Test Report
         if: always()
-        run: echo Test Report ${{ steps.test-reporter.outputs.url_html }} >> $GITHUB_STEP_SUMMARY
+        env:
+          REPORT_URL: ${{ steps.test-reporter.outputs.url_html }}
+        run: echo "Test Report $REPORT_URL" >> "$GITHUB_STEP_SUMMARY"
 
   report-coverage:
     runs-on: ubuntu-latest # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
@@ -221,13 +229,13 @@ jobs:
       contents: read
     steps:
     - name: Download Test Report Artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         name: test-report-${{ matrix.os }}
         path: ./coverage/
 
     - name: Code Coverage Summary Report
-      uses: irongut/CodeCoverageSummary@v1.3.0
+      uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
       with:
         filename: ./coverage/**/coverage.cobertura.xml
         format: markdown
@@ -237,6 +245,9 @@ jobs:
         output: both
 
   teardown:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: teardown (delete resources)
     needs: [setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
@@ -246,16 +257,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}

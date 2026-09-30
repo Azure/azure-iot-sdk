@@ -8,7 +8,7 @@
  * This adapter provides ONLY the cryptographic primitives the software updates core needs
  * (RSASSA-PKCS1-v1_5 over SHA-256 verification, and one-shot + incremental
  * SHA-256). All JWS/SJWK parsing, base64url decoding, root-key resolution and
- * revocation policy live in software updates core (see docs/eng/su-client-design.md §6),
+ * revocation policy live in software updates core (see docs/eng/software-updates.md §6),
  * so this adapter takes no key material and holds no software updates state. */
 #ifndef AZ_IOT_SU_CRYPTO_OPENSSL_H
 #define AZ_IOT_SU_CRYPTO_OPENSSL_H

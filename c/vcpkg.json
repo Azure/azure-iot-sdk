@@ -1,7 +1,7 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "azure-iot-sdk",
-    "version-string": "0.0.1",
+    "version-semver": "1.0.0-preview",
     "description": "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)",
     "dependencies": [
     ],

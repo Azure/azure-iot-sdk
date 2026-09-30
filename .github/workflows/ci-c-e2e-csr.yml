@@ -47,6 +47,15 @@
 #
 # The provision/destroy steps are the shared composite actions
 # Azure/iot-sdks-e2e-fx/actions/{provision,destroy}-e2e-resources, pinned to a tag.
+#
+# Shared environment (temporary, opt-in)
+# --------------------------------------
+# When the repository variable E2E_CSR_SHARED_ID_SCOPE is set, PULL REQUEST runs
+# skip setup/teardown and use a long-lived cert-management environment instead.
+# Each run issues its own bootstrap device from the enrollment group's issuing CA
+# (c/eng/e2e-shared-device.ps1 -Csr); the test job never logs in to Azure. Same
+# test. Push and nightly runs always provision. Unset the variable to return to
+# per-run provisioning.
 
 name: ci-c-e2e-csr
 
@@ -63,6 +72,7 @@ on:
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       # The e2e harness (shared device fixture + CSR test + service facade).
       - 'c/tests/e2e/**'
+      - 'c/eng/e2e-shared-device.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   push:
     branches: [ main ]
@@ -74,6 +84,7 @@ on:
       - 'c/inc/azure/iot/az_iot_certificate_provider.h'
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       - 'c/tests/e2e/**'
+      - 'c/eng/e2e-shared-device.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   schedule:
     - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
@@ -85,7 +96,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write   # required for azure/login OIDC
 
 # Resource group name derived from the RUN, not from a random GUID published as a
 # job output. A CANCELLED job does not propagate its `outputs`, so a teardown that
@@ -95,19 +105,28 @@ permissions:
 # teardown compute this name independently, so teardown never depends on setup.
 env:
   E2E_RESOURCE_GROUP: CSDKE2ECert-${{ github.run_id }}-${{ github.run_attempt }}
+  # 'true' when this run uses the shared environment (see header). Job-level
+  # `if:` cannot read `env`, so the setup and teardown jobs repeat the expression.
+  E2E_SHARED: ${{ vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
 
 jobs:
   setup:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: setup (provision)
+    if: ${{ !(vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     # Cert-management provisioning is heavier than the fast path: it creates an
     # ADR namespace/policy, role assignments, and an ADR-integrated DPS.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -115,7 +134,7 @@ jobs:
 
       - name: Provision cert-management resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -137,7 +156,7 @@ jobs:
           dps-x509-individual-enrollments: '1'
 
       - name: Upload test config
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-csr-test-config
           path: test_config/set_test_env_vars.ps1
@@ -147,10 +166,14 @@ jobs:
   test:
     name: csr (ubuntu-latest)
     needs: setup
+    # Runs after setup, or without it in shared mode (setup skipped).
+    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install ninja (Linux)
         run: |
@@ -164,10 +187,23 @@ jobs:
           cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr
 
       - name: Download shared test config
-        uses: actions/download-artifact@v4
+        if: env.E2E_SHARED != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: e2e-csr-test-config
           path: test_config
+
+      - name: Issue a bootstrap device on the shared environment
+        if: env.E2E_SHARED == 'true'
+        shell: pwsh
+        env:
+          E2E_CSR_SHARED_GROUP_CA: ${{ secrets.E2E_CSR_SHARED_GROUP_CA }}
+          E2E_CSR_SHARED_ID_SCOPE: ${{ vars.E2E_CSR_SHARED_ID_SCOPE }}
+          E2E_CSR_SHARED_DPS_HOST: ${{ vars.E2E_CSR_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-csr-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          ./c/eng/e2e-shared-device.ps1 -Csr -RegistrationId $env:E2E_REGISTRATION_ID `
+            -OutFile test_config/set_test_env_vars.ps1
 
       - name: Run CSR e2e
         shell: pwsh
@@ -222,7 +258,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-csr-results
           path: ./test_config/results/**/*.xml
@@ -237,32 +273,38 @@ jobs:
 
       - name: Upload coverage tracefile
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e-csr
           path: c/coverage/e2e-csr.json
           if-no-files-found: error
 
   teardown:
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
     name: teardown (delete resources)
     needs: [setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
-    # down; the destroy action no-ops when the group was never created.
-    if: always()
+    # down; the destroy action no-ops when the group was never created. Skipped in
+    # shared mode: the shared group outlives the run.
+    if: ${{ always() && !(vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@v1
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@573426796d625a070654ec3ab4b4d7a51f55974b # v1.0.0
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}

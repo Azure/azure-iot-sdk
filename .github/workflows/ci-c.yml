@@ -15,6 +15,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # All run steps execute from the c/ project directory (where CMakePresets.json
 # lives). Path-based fields (paths filters, working-directory overrides, artifact
 # paths) stay relative to the repo root and are qualified with c/ explicitly.
@@ -35,8 +38,10 @@ jobs:
     outputs:
       c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           # `every`: a file counts only if it matches all patterns of a filter,
@@ -97,11 +102,13 @@ jobs:
           --health-start-period=5s
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
@@ -143,7 +150,9 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Guards the rules in c/docs/eng/coding-conventions.md. Cheap and
       # dependency-free on purpose: it is the only part of those rules that a
       # reviewer cannot forget to apply.
@@ -151,6 +160,8 @@ jobs:
         run: bash eng/check-banned-constructs.sh
       - name: Check generation layering
         run: bash eng/check-layering.sh
+      - name: Check version consistency
+        run: bash eng/check-version.sh
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -200,7 +211,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-14
       - name: Configure (${{ matrix.std }} strict)
@@ -282,7 +295,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
@@ -313,7 +328,7 @@ jobs:
           fi
       - name: Upload valgrind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: valgrind-logs
           path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
@@ -346,7 +361,9 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
@@ -393,7 +410,7 @@ jobs:
           exit "${status}"
       - name: Upload race-detector logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: race-detector-logs
           path: c/build/linux-gcc-debug/*.log
@@ -405,8 +422,10 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Configure (MSVC AddressSanitizer)
         # Disable Paho here: pulling it in through FetchContent forces the
         # /MD[d] runtime which conflicts with /fsanitize=address's internal
@@ -434,6 +453,59 @@ jobs:
         # belt-and-braces rather than load-bearing.
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
 
+  # AddressSanitizer + UndefinedBehaviorSanitizer on Linux, including the
+  # conformance suites against a real broker. Paho is built instrumented too.
+  asan-ubsan-linux:
+    name: linux-clang / ASan + UBSan
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        # UBSan stays recoverable so eng/sanitizers/ubsan.supp can silence
+        # third-party findings; halt_on_error below still stops on any other.
+        run: >
+          cmake --preset linux-clang-debug
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build --preset linux-clang-debug
+      - name: Test under ASan + UBSan
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # Same reason as the build job: no PKCS#11 token on this leg.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:suppressions=${{ github.workspace }}/c/eng/sanitizers/ubsan.supp
+        # Function-name suppressions (and readable stacks) need clang's own symbolizer.
+        run: |
+          symbolizer="$(clang -print-prog-name=llvm-symbolizer)"
+          test -x "$symbolizer"
+          export ASAN_SYMBOLIZER_PATH="$symbolizer"
+          export UBSAN_OPTIONS="$UBSAN_OPTIONS:external_symbolizer_path=$symbolizer"
+          ctest --preset linux-clang-debug --output-on-failure
+
   # ---------------------------------------------------------------------------
   # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch
   # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
@@ -449,7 +521,9 @@ jobs:
       matrix:
         mbedtls: [ '3.6.7', '4.1.1', '4.2.0' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev valgrind
       - name: Build mbedTLS ${{ matrix.mbedtls }}
@@ -469,6 +543,44 @@ jobs:
           valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
           --track-origins=yes --errors-for-leak-kinds=definite,possible
           build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
+
+  # Optimized build (so _FORTIFY_SOURCE is active) checked by
+  # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
+  # static and shared: flags are probed per toolchain, and FORTIFY differs
+  # between them (glibc makes some libc calls macros under clang).
+  hardening-linux:
+    name: linux-${{ matrix.compiler }}${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ gcc, clang ]
+        shared: [ 'OFF', 'ON' ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build/hardening -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/hardening
+      - name: Check binaries
+        run: bash eng/check-hardening.sh build/hardening
+      - name: Unit tests
+        run: ctest --test-dir build/hardening --output-on-failure
 
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
@@ -516,11 +628,13 @@ jobs:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -598,8 +712,9 @@ jobs:
         # Linux must fail to load when only another release is present.
         if: matrix.shared == 'ON'
         run: |
-          ver=$(sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)")$/\1/p' \
-            "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config-version.cmake")
+          # Full version, pre-release label included; the CMake package version is numeric only.
+          ver=$(sed -n 's/^#define AZ_IOT_VERSION_STRING "\([^"]*\)".*/\1/p' \
+            "$AZ_IOT_PREFIX/include/azure/iot/az_iot_version.h")
           test -n "$ver"
           exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -680,8 +795,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           # diff-cover compares against the merge base.
           fetch-depth: 0
 
@@ -799,7 +915,7 @@ jobs:
         run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
 
       - name: Upload coverage tracefile
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-unit
           path: c/coverage/unit.json
@@ -824,10 +940,12 @@ jobs:
         # can be adopted against real data rather than a guess -- the same
         # approach used for the per-component floors, which were set from
         # measured values rather than chosen up front.
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
           diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \
-            --compare-branch "origin/${{ github.base_ref }}" \
+            --compare-branch "origin/$BASE_REF" \
             --markdown-report build/linux-gcc-coverage/coverage/patch.md \
             --src-roots . || echo "::warning::diff-cover failed; patch coverage not reported"
           {
@@ -845,7 +963,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-c
           path: c/build/linux-gcc-coverage/coverage/

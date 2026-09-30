@@ -1820,10 +1820,19 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
           c->dps_pending_retry_after_secs = resp.retry_after_seconds;
+          /* The parsed verdict first, on its own line: the raw body below can
+           * exceed AZ_IOT_LOG_MESSAGE_MAX and be cut before errorMessage. */
+          /* An empty span may carry a NULL pointer, which %.*s must not get. */
+          az_span err_msg = resp.registration_state.error_message;
+          AZ_IOT_LOG_ERRORF(
+              "dps register: errorCode=%ld errorMessage=%.*s",
+              (long)resp.registration_state.extended_error_code,
+              (int)az_span_size(err_msg),
+              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
           AZ_IOT_LOG_ERRORF(
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
-              (const char*)az_span_ptr(payload_span));
+              az_span_size(payload_span) > 0 ? (const char*)az_span_ptr(payload_span) : "");
           /* The service's own verdict -- 401001 "IoTHub not found" is this
            * path. Both are parsed already and were being thrown away, which is
            * what made "registration failed" and "no hub linked" the same
@@ -2354,7 +2363,7 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
     hex[i * 2u] = hexdigits[PRESENCE_HI_NIBBLE(c->presence.nonce[i])];
     hex[i * 2u + 1u] = hexdigits[PRESENCE_LO_NIBBLE(c->presence.nonce[i])];
   }
-  hex[PRESENCE_NONCE_LEN * 2u] = '\0';
+  hex[(size_t)PRESENCE_NONCE_LEN * 2u] = '\0';
 
   /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
    * string is percent-encoded too, which leaves today's digits-and-dots form
@@ -2468,7 +2477,7 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
  *
  * Waiting for the SUBACK rather than merely re-ordering the loop also covers
  * the case where the broker REFUSES a filter, which no amount of local ordering
- * would catch. See AB#39366084. */
+ * would catch. */
 static void announce_connected(az_iot_connection_client* c)
 {
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED, AZ_IOT_OK);
@@ -5209,7 +5218,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
  * would re-issue its $iothub/... filters at the new hub, which does not grant
  * them -- and once CONNECTED is gated on those SUBACKs, the session could never
  * come up and the application would never get the callback that would have
- * removed them. See docs/eng/client-separation.md section 9. */
+ * removed them. See docs/eng/connection-c.md section 5.3. */
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
   for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)

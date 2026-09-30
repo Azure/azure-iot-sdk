@@ -9,7 +9,7 @@
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
- * See the companion README.md and docs/eng/su-client-design.md.
+ * See the companion README.md and docs/eng/software-updates.md.
  *
  * REGULAR ROUTE: a device that has registered, and so has a device record,
  * asks with az_iot_su_client_request_update(), which sends installedUpdateId.
@@ -308,7 +308,7 @@ int main(void)
   az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
 
   sample_state state = { 0 };
 
@@ -490,7 +490,7 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      remove(state.simulation_control.state_file); /* clear the resume blob */
+      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
 
       /* Report the applied update as installed. Without this the next check
        * still sends the previous id, and is offered the same update again. */

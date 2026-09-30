@@ -4,23 +4,17 @@ C-specific reference for the connection lifecycle: identifiers, file locations, 
 defaults as implemented in [c/src/core/connection_client.c](../../src/core/connection_client.c),
 which is the current source of truth for the design.
 
-The language-neutral version of this design, which both the C and .NET clients are held to, is
-[connection.md](../connection.md). Read that first for the contract; read this one for the C
-implementation of it.
+The language-neutral contract is [connection.md](connection.md). Read that first for the
+contract; read this one for the C implementation of it. Known gaps are listed in
+[§11](#11-known-gaps). The customer-facing summary is [connecting.md](../connecting.md).
 
 Related documents:
 
-- [design.md](../design.md) — overall layering and adapter model.
-- [connection-impl-status.md](connection-impl-status.md) — per-client coverage of the contract.
+- [architecture.md](../architecture.md) — overall layering and adapter model.
 - [certificate-management.md](certificate-management.md) — CSR / operational certificate design.
-- [client-separation.md](client-separation.md) — connection profile (§2) and the software updates channel split (§8).
 - [connection-state-and-error-propagation.md](connection-state-and-error-propagation.md) — observer registry and status codes.
-- [dps-integration.md](../dps-integration.md), [devnotes.md](../devnotes.md) — DPS contract and the running requirements log.
-- **Software updates** — [su-spec.md](su-spec.md) is the device contract and the source for §7
-  below; it owns the request/response shapes, error codes and trust model, which are deliberately not
-  restated here. [su-client-plan.md](su-client-plan.md) carries the SDK status and the work
-  queue for the Device Update for IoT Hub cut. [su-client-design.md](su-client-design.md) covers the shared verify/download/install
-  engine, which is unchanged from Device Update for IoT Hub.
+- [software-updates.md](software-updates.md) — the software updates device contract (the source for §7)
+  and the client design.
 
 ### Status legend
 
@@ -305,7 +299,7 @@ eight hours and the broker clamps anything above it.
 
 The profile is what DPS says the device landed on. It is **reported, never selected** — there is no
 caller-facing knob, and falling back from one profile to another is application logic, not SDK
-behaviour. See [client-separation.md §2](client-separation.md) for the full rationale.
+behaviour.
 
 ```mermaid
 flowchart TB
@@ -501,7 +495,7 @@ So the synchronous half of the first attempt is never retried and the asynchrono
 exception: when the hub attempt follows a DPS assignment, `dps_apply_deferred()` runs it from the
 pump, and a synchronous `start_connect_attempt()` failure there settles at `HUB:FAULTED` without
 backoff.
-That is the split [connection.md §5.5](../connection.md#55-does-the-retry-policy-cover-the-first-attempt)
+That is the split [connection.md §5.5](connection.md)
 specifies, and it holds here without a separate option.
 
 ---
@@ -540,8 +534,7 @@ Renewal topics (MQTTv3 hub):
 | Subscribe | `$iothub/credentials/res/#` |
 | Response | `$iothub/credentials/res/{status}/{request_id}` |
 
-Rules every client must implement. The C client meets all of them; where .NET does not, see
-[connection-impl-status.md](connection-impl-status.md).
+Rules every client must implement. The C client meets all of them.
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
 - The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
@@ -564,35 +557,31 @@ Rules every client must implement. The C client meets all of them; where .NET do
 
 ## 7. Software updates: onboarding and renewal **[partly implemented]**
 
-**Device Update for IoT Hub is cut.** Its Twin-based public API has been removed; what survives is everything that has
-nothing to do with transport. Software updates is re-layered into a transport-independent **Software updates engine** —
+Software updates is layered into a transport-independent **Software updates engine** —
 manifest v5 parsing, JWS/SJWK verification, root keys, SHA-256 integrity, the
 download/backup/install/apply state machine, and reboot/resume persistence — plus an
 **`az_iot_su_channel`** vtable carrying delivery and reporting.
 
-Software updates is a **device-initiated pull protocol**, and its device-facing delivery moved **off** a
-dedicated Device Update HTTPS endpoint. The agent calls an updating operation on a gateway it already talks to,
-reusing the credential it already has; the gateway is an authenticated pass-through to ADR and then
-Software updates. The device never talks to Device Update directly, needs no software-updates-specific credential, and there is no twin,
-no subscription and no unsolicited offer.
+Software updates is a **device-initiated pull protocol**. The agent calls an updating operation on a
+gateway it already talks to, reusing the credential it already has; the gateway is an authenticated
+pass-through to the update service. The device needs no update-specific credential, and there is no
+subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (on the wire) | Spec working name |
-| --- | --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `GetOnboardingDeviceUpdate` |
-| Regular / operational (**after** provisioning) | DPS *(Ignite '26 interim)*, IoT Hub *(post-Ignite)* | `requestSoftwareUpdates` | `GetDeviceUpdate` |
-| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `ReportDeviceUpdateStatus` |
+| Phase | Gateway | Operation (on the wire) |
+| --- | --- | --- |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` |
+| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` |
 
-All three are POSTs under the device's own registration on the gateway's device endpoint; see
-[eng/su-spec.md](su-spec.md) for the exact URL, headers and payloads, and for which parts
-of the contract are measured rather than drafted.
+All three are requests under the device's own registration on the gateway's device endpoint; see
+[software-updates.md](software-updates.md#2-device-contract) for the request and response shapes.
 
 The device selects onboarding vs regular **by which operation it calls**; the gateway does not infer
 or validate the choice.
 
-> **The Hub updating API is not ready for Ignite '26.** In preview, DPS fronts both the bootstrap and
-> the operational flow, using the existing DPS device credential (X.509 in phase 1). The operational
-> path moves to IoT Hub afterwards **with no device-contract change** — same request and response, a
-> different gateway. Treat the gateway as a channel parameter, not a constant.
+> In preview, DPS fronts both the bootstrap and the operational flow, using the existing DPS device
+> credential (X.509). The device contract does not depend on the gateway. Treat the gateway as a
+> channel parameter, not a constant.
 
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
@@ -633,12 +622,12 @@ sequenceDiagram
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
-  the same call. Account scoping (`accountId` bound into the manifest signature) is **deferred past
-  Ignite '26** — DPS returns no `accountId`, so the device verifies provenance-from-Device-Update but not
+  the same call. Account scoping (`accountId` bound into the manifest signature) is **not yet
+  supported** — DPS returns no `accountId`, so the device verifies provenance-from-Device-Update but not
   account scoping. Base signature validation stays required.
 - `fileUrls` are **not** covered by the signed manifest; payloads are downloaded straight from blob
   storage and integrity comes from the per-file hashes inside the manifest.
-- Bootstrap orchestration is entirely the agent's responsibility for Ignite '26. DPS does **not**
+- Bootstrap orchestration is entirely the agent's responsibility. DPS does **not**
   enforce that a device is on a given update version before provisioning it.
 
 ### 7.2 Renewal — operational update check, after `CONNECTED`
@@ -680,7 +669,7 @@ sequenceDiagram
 `installResult` carries the outcome, its failure origin and the hex
 `extendedResultCodes` list. In-progress reports omit `stepResults`; terminal
 reports include complete per-step outcomes when steps are available — see
-[su-spec.md](su-spec.md) for the field-level shape.
+[software-updates.md](software-updates.md#2-device-contract) for the field-level shape.
 
 ### 7.3 Rules both clients must implement
 
@@ -704,11 +693,9 @@ reports include complete per-step outcomes when steps are available — see
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
-- **The gateway is a channel parameter.** Bootstrap always uses DPS; operational uses DPS in the
-  Ignite '26 preview and IoT Hub afterwards, with no device-contract change. This SDK plans to
-  expose the operational channel as an MQTTv5 feature client
-  ([client-separation.md](client-separation.md) §8), but the service contract binds software updates to
-  the updating operations, not to a connection profile.
+- **The gateway is a channel parameter.** Bootstrap always uses DPS; operational currently uses DPS
+  too. The service contract binds software updates to the updating operations, not to a connection
+  profile.
 
 ---
 
@@ -758,7 +745,7 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (DPS in preview, Hub afterwards) |
+| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (currently over DPS) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS scope, with registration held in `DPS_HOLD` for the bootstrap check | Backoff-driven reconnect reuses the cached assignment; DPS again only on `needs_reprovision` |
 
@@ -770,15 +757,12 @@ registration held for it.
 
 ## 9. Connection failure realization (C) **[partly implemented]**
 
-The C realization of the taxonomy in [connection.md §9](../connection.md#9-connection-failure-taxonomy).
+The C realization of the taxonomy in [connection.md](connection.md) §9.
 That section says what *any* client must do; this one says what the C client **actually does today**,
 which result value it produces, and which component decides.
 
 Read the two together. Where a row's class in the generic table and the SDK action here disagree,
 that is a gap, and it is called out in the notes rather than smoothed over.
-
-Per-client status — what C does versus what .NET does — is not repeated here; it lives in
-[connection-impl-status.md](connection-impl-status.md).
 
 ### 9.1 Result vocabulary
 
@@ -903,9 +887,7 @@ ran out. On an unattended device that is a hard failure to diagnose from the fie
 ### 9.5 The realization table
 
 **Mapped by** names the component that decides the result: the adapter, the CONNACK mapper, the
-connection client itself, or a feature client. Rows marked **[P1c]** describe scoped-but-unmerged
-behaviour; rows marked **unverified** are ones where current C behaviour was not established, and are
-left as gaps rather than guesses.
+connection client itself, or a feature client.
 
 #### 9.5.1 Phase 1 — host, network and OS
 
@@ -1059,7 +1041,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 
 ## 10. Connection topology (C)
 
-The C realization of [connection.md §10](../connection.md#10-connection-topology).
+The C realization of [connection.md §10](connection.md).
 
 The advertised path is provisioning: `opts.dps.id_scope` set, and the role settled from the
 ASSIGNED payload in `dps_apply_deferred()`. Every connecting sample uses it.
@@ -1073,47 +1055,26 @@ reports the result, and the raw string stays readable.
 when the assignment carries no `connectionProfile`. It applies **only** when the property is absent
 or null, so an actual wire value always wins.
 
-Gaps this section surfaced:
-
-- **There is no MQTTv5 file-upload client.** `src/mqttv5/` has no `file_upload_client.c` and `az_iot.h`
-  includes only `mqttv3/az_iot_file_upload_client.h`. This is the one feature an MQTTv3 sunset would
-  remove rather than migrate.
-- **The update hub channel is unwritten**, by design. `su_channel_dps.c` is the only channel. The
-  acceptance criterion for adding a hub one is that `connection_client.c` does not change.
-
 ---
 
-## 11. Other observations
+## 11. Known gaps
 
-Found while writing §9 and §10, none of them a failure the taxonomy covers, all of them cheaper to
-decide now than later.
-
-- **Teardown runs application code.** `teardown_active()` completes pending PUBACKs with
-  `AZ_IOT_ERR_NOT_CONNECTED` and then runs every session-end handler — both from inside a teardown,
-  and a handler that republishes immediately is explicitly anticipated. One ordering rule covers it:
-  **the transport teardown completes, then notifications run, and nothing in a notification may
-  re-enter the adapter.** Worth stating once rather than per call site.
-- **A profile change under a live feature client is expressible but not observable.**
-  `drop_subscriptions_from_other_generations()` exists because a re-provision can return a different
-  generation; the client drops the stale filters and faults with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. The application is told to rebuild its feature clients
-  through an error code and a log line, which is the weakest channel available for an instruction
-  that invalidates every handle it holds.
-- **`needs_reprovision` is one bit doing policy work.** It is set from three unrelated places —
-  identity rejection, the unreachable-hub threshold, a rejected assignment — and consumed in two.
-  It deliberately survives `close()`, which is correct and subtle, and is documented only in code
-  comments. What it actually means is "the next provisioning attempt must re-register".
-- **The subscription gate and the presence handshake have separate deadlines and identical failure
-  handling.** `subscription_ack_timeout_seconds` and `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` both end
-  in "reconnect if a policy is configured, else fault", written out separately in `do_work()`.
-- **The assignment is observable only through a callback.**
-  `az_iot_connection_client_get_iothub_address()` returns the assigned hub, but there is no getter
-  for the assigned device id, and the registration payload is delivered through a zero-copy callback
-  valid only for the duration of the call. A device that wants to log or persist what it was
-  assigned has to copy it out of that callback or not at all.
-- **`max_attempts` is misnamed.** `retry_attempt[scope]` resets on every successful connect of its scope, so the
-  field bounds *consecutive* failures, not attempts over the client's life.
-  `max_consecutive_attempts` would say what it does.
+- **Fatal-failure classification is reported, not acted on.** Every failure carries
+  `is_retriable`, but the retry decision is `reconnect_enabled()`. Only one family is terminal
+  under a reconnection policy: a SUBACK refusal the broker will repeat, on a `FAILS_SESSION` hub
+  subscription. Everything else — CONNACK `1 unacceptable protocol version`, the deterministic v5
+  CONNACK codes, deterministic TLS failures, and refused presence or provisioning filters — is
+  retried until the policy is exhausted.
+- **Reason-code fidelity.** CONNACK and SUBACK have mappers that keep the wire code. A server
+  DISCONNECT keeps its wire code in `error->code`, but only `0x87` maps to its own result
+  (`AZ_IOT_ERR_AUTH`); `0x8E Session taken over` is not distinguished. PUBACK failures collapse
+  to one result, so a caller cannot tell a refusal it must not retry from a quota it should back
+  off on.
+- **No mqttv5 file-upload or cloud-to-device client.** Both features are mqttv3 only.
+- **One software updates channel.** `su_channel_dps.c` carries both the onboarding and the
+  operational flow over DPS; there is no hub channel.
+- **The reconnection policy is parameters only.** A caller cannot supply its own backoff
+  function.
 
 ---
 
@@ -1128,8 +1089,8 @@ decide now than later.
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented — the DPS-reported value still needs the raised api-version to arrive, so it resolves to `classic` until then |
 | `az_iot_su_channel` vtable, DPS channel | [az_iot_su.h](../../inc/azure/iot/az_iot_su.h), [su_channel_dps.c](../../src/features/su/su_channel_dps.c) | implemented — the MQTTv5 hub channel is not written |
-| Software updates engine internals reused by software updates | [c/src/features/su](../../src/features/su) | implemented; the Device Update for IoT Hub twin-based API has been removed |
-| Software updates device contract | [su-spec.md](su-spec.md), [su_protocol.c](../../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows for Ignite '26 |
+| Software updates engine internals reused by software updates | [c/src/features/su](../../src/features/su) | implemented |
+| Software updates device contract | [software-updates.md](software-updates.md#2-device-contract), [su_protocol.c](../../src/features/su/su_protocol.c) | implemented over the DPS gateway — DPS fronts both flows |
 | CONNACK code mapping | [mqtt_iface.c](../../src/core/mqtt_iface.c) | implemented |
 | Paho adapter event and code mapping | [az_iot_mqtt_paho.c](../../adapters/paho/az_iot_mqtt_paho.c) | implemented |
 | Inbound dispatch table | [dispatch.c](../../src/core/dispatch.c) | implemented |

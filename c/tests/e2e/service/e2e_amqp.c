@@ -67,6 +67,8 @@
 #define E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CBS_AUTH_REJECTED
 #define E2E_ERR_TELEMETRY_RECEIVER_INIT E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_INIT
 #define E2E_ERR_TELEMETRY_RECEIVER_ATTACH E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_ATTACH
+#define E2E_ERR_TELEMETRY_FILTER E2E_AMQP_PFX_TELEMETRY "enqueued-time filter encode failed"
+#define E2E_ERR_TELEMETRY_SOURCE E2E_AMQP_PFX_TELEMETRY "partition source address too long"
 
 /* c2d */
 #define E2E_ERR_C2D_OUT_OF_MEMORY E2E_AMQP_PFX_C2D "out of memory"
@@ -197,30 +199,75 @@ static void on_message_received(
   az_amqp_message_body_kind body_kind;
   az_span body;
   if (az_result_succeeded(az_amqp_message_get_body(message, &body_kind, &body))
-      && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA && t->captured_count < E2E_AMQP_CAPTURE_MAX)
+      && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA)
   {
     int n = az_span_size(body);
     if (n > E2E_AMQP_CAPTURE_BODY_MAX - 1)
     {
       n = E2E_AMQP_CAPTURE_BODY_MAX - 1;
     }
-    memcpy(t->captured[t->captured_count], az_span_ptr(body), (size_t)n);
-    t->captured[t->captured_count][n] = '\0';
-    t->captured_count++;
+    char* slot = t->captured[t->captured_next];
+    memcpy(slot, az_span_ptr(body), (size_t)n);
+    slot[n] = '\0';
+    t->captured_next = (t->captured_next + 1) % E2E_AMQP_CAPTURE_MAX;
+    if (t->captured_count < E2E_AMQP_CAPTURE_MAX)
+    {
+      t->captured_count++;
+    }
   }
 
   E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+}
+
+/**
+ * @brief Encodes an Event Hubs filter-set selecting messages enqueued after @p after_ms.
+ *
+ * @return true with the encoded map in @p out_filter; false if @p buffer is too small.
+ */
+static bool encode_enqueued_after_filter(az_span buffer, int64_t after_ms, az_span* out_filter)
+{
+  static const az_span selector = AZ_SPAN_LITERAL_FROM_STR("apache.org:selector-filter:string");
+  char expression[96];
+  int length = snprintf(
+      expression,
+      sizeof(expression),
+      "amqp.annotation.x-opt-enqueued-time > '%lld'",
+      (long long)after_ms);
+  if (length <= 0 || length >= (int)sizeof(expression))
+  {
+    return false;
+  }
+
+  az_amqp_encoder encoder;
+  if (az_result_failed(az_amqp_encoder_init(&encoder, buffer))
+      || az_result_failed(az_amqp_encoder_begin_map(&encoder))
+      || az_result_failed(az_amqp_encoder_append_symbol(&encoder, selector))
+      || az_result_failed(az_amqp_encoder_append_descriptor_symbol(&encoder, selector))
+      || az_result_failed(
+          az_amqp_encoder_append_string(&encoder, az_span_create((uint8_t*)expression, length)))
+      || az_result_failed(az_amqp_encoder_end_map(&encoder)))
+  {
+    return false;
+  }
+  *out_filter = az_amqp_encoder_get_bytes(&encoder);
+  return true;
 }
 
 bool e2e_amqp_telemetry_begin(
     e2e_amqp_telemetry* t,
     const char* eh_host,
     const char* entity_path,
+    const char* consumer_group,
+    int64_t enqueued_after_ms,
     const char* sas_token,
     int partition_count,
     const char** err_out)
 {
   const char* err = NULL;
+  if (consumer_group == NULL || consumer_group[0] == '\0')
+  {
+    consumer_group = "$Default";
+  }
   if (partition_count < 1)
   {
     partition_count = 1;
@@ -350,20 +397,38 @@ bool e2e_amqp_telemetry_begin(
     goto error;
   }
 
-  /* 5. One earliest-position receiver per partition. */
+  /* 5. One receiver per partition, from enqueued_after_ms when set. */
+  az_span filter = AZ_SPAN_EMPTY;
+  if (enqueued_after_ms > 0
+      && !encode_enqueued_after_filter(
+          AZ_SPAN_FROM_BUFFER(t->filter_buffer), enqueued_after_ms, &filter))
+  {
+    err = E2E_ERR_TELEMETRY_FILTER;
+    goto error;
+  }
+
   for (int p = 0; p < partition_count; p++)
   {
     int source_length = snprintf(
         t->source_addr[p],
         sizeof(t->source_addr[p]),
-        "%s/ConsumerGroups/$Default/Partitions/%d",
+        "%s/ConsumerGroups/%s/Partitions/%d",
         entity_path,
+        consumer_group,
         p);
+    if (source_length <= 0 || source_length >= (int)sizeof(t->source_addr[p]))
+    {
+      err = E2E_ERR_TELEMETRY_SOURCE;
+      goto error;
+    }
     int name_length = snprintf(t->link_name[p], sizeof(t->link_name[p]), "e2e-recv-%d", p);
 
+    az_amqp_source source
+        = az_amqp_source_from_address(az_span_create((uint8_t*)t->source_addr[p], source_length));
+    source.filter = filter;
     az_amqp_link_options receiver_options = az_amqp_link_receiver_options_default(
         az_span_create((uint8_t*)t->link_name[p], name_length),
-        az_amqp_source_from_address(az_span_create((uint8_t*)t->source_addr[p], source_length)),
+        source,
         AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
         AZ_SPAN_FROM_BUFFER(t->recv_buffers[p]),
         50 /* prefetch credit */);

@@ -42,29 +42,29 @@ static az_iot_result read_file_content(const char* path, char** out)
   }
   if (fseek(f, 0, SEEK_END) != 0)
   {
-    fclose(f);
+    (void)fclose(f);
     return AZ_IOT_ERR_INTERNAL;
   }
   long len = ftell(f);
   if (len < 0)
   {
-    fclose(f);
+    (void)fclose(f);
     return AZ_IOT_ERR_INTERNAL;
   }
   if (fseek(f, 0, SEEK_SET) != 0)
   {
-    fclose(f);
+    (void)fclose(f);
     return AZ_IOT_ERR_INTERNAL;
   }
 
   char* buf = (char*)malloc((size_t)len + 1);
   if (!buf)
   {
-    fclose(f);
+    (void)fclose(f);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   size_t n = fread(buf, 1, (size_t)len, f);
-  fclose(f);
+  (void)fclose(f);
   if (n != (size_t)len)
   {
     free(buf);
