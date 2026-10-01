@@ -3,7 +3,7 @@
 [![ci-c](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml)
 [![ci-dotnet](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-dotnet.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-dotnet.yml)
 
-Device SDKs for connecting devices to Azure IoT Hub (mqttv3 and mqttv5) and the Azure IoT Hub Device Provisioning Service (DPS), all in one repository.
+Device SDKs for Azure IoT Hub Device Provisioning Service (DPS), Azure IoT Hub and Software Update, all in one repository.
 
 ## Table of Contents
 
@@ -21,14 +21,14 @@ Device SDKs for connecting devices to Azure IoT Hub (mqttv3 and mqttv5) and the 
 
 ## Documentation
 
-Each SDK keeps its own documentation next to its code:
+For documentation specific to each SDK library, please refer to:
 
-- C: [c/README.md](c/README.md) and [c/docs](c/docs).
-- .NET: [dotnet/README.md](dotnet/README.md) and [dotnet/samples](dotnet/samples/README.md).
+- .NET: [README.md](dotnet/README.md)
+- C: [README.md](c/README.md)
 
 ## The GitHub Repository
 
-To get help, file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
+To get help, post a suggestion or comment, please file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
 
 ### SDKs
 
