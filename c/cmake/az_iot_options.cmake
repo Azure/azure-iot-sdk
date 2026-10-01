@@ -68,8 +68,6 @@ option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a toke
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
 option(AZ_IOT_INSTALL          "Generate install rules and the azure-iot-sdk CMake package" ${PROJECT_IS_TOP_LEVEL})
-option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
-option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
 # Compiler and linker hardening; see cmake/az_iot_hardening.cmake.
 option(AZ_IOT_ENABLE_HARDENING "Harden builds: GCC/Clang (stack protector, FORTIFY, PIE, RELRO), MSVC (/guard:cf, /CETCOMPAT, /sdl)" ON)
