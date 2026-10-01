@@ -118,7 +118,7 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 4 | Root keys in the trust store. |
 | `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. Raise for larger manifests. |
-| `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for duplicate detection. |
+| `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for duplicate detection. A longer ID is not an error: that deployment is processed without duplicate detection (a redelivery is processed again) and its progress is not reported. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
 | `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
@@ -172,7 +172,7 @@ Levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF`. A custom sink is an
 
 ### Environment variables
 
-The SDK itself reads only these. The samples read their own; each sample's README lists them.
+Supported environment variables. The samples read their own; each sample's README lists them.
 
 | Variable | Read by | Effect |
 | --- | --- | --- |
