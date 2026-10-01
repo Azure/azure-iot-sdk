@@ -151,7 +151,8 @@ export AZ_IOT_MQTT_BROKER_HOST=localhost
 export AZ_IOT_MQTT_BROKER_PORT=1883
 export AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1   # no PKCS#11 token: see below
 cmake --preset linux-gcc-debug
-cmake --build --preset linux-gcc-debug
+cmake --build --preset linux-gcc-debug --target az_iot_tests_conformance_capability \
+    az_iot_conformance_paho_v3 az_iot_conformance_paho_v5 az_iot_conformance_paho_sign_negative
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 
