@@ -780,7 +780,7 @@ extern "C"
 /* Topic filters the connection re-subscribes on every session. Feature clients
  * take one slot per filter they need, so the default leaves headroom over what
  * a fully loaded device asks for: five on MQTTv3 (C2D, direct methods, twin
- * response, twin desired, certificate renewal) and six on MQTTv5. Registering
+ * response, twin desired, certificate renewal), none on MQTTv5. Registering
  * past the array fails with AZ_IOT_ERR_NOT_ENOUGH_SPACE and names the filter
  * that did not fit -- raise this if an application needs more slots than the
  * default holds. */
