@@ -88,9 +88,8 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# export AZ_IOT_DPS_GLOBAL_ENDPOINT='<dps-global-endpoint>'
 ```
 
 PowerShell:
@@ -101,12 +100,11 @@ $env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
 $env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
 $env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
 $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = 'global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = '<dps-global-endpoint>'
 ```
 
-> Manifest signature verification works out of the box: the sample uses
+> Manifest signatures are verified against Microsoft's root keys: the sample uses
 > `az_iot_su_microsoft_root_keys()`, Microsoft's published software updates production roots
 > compiled into the SDK — see [Root keys](#root-keys) below.
 
@@ -120,7 +118,7 @@ available — both are on by default).
 
 ### Prerequisites
 
-The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c, vcpkg)
+The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c)
 automatically, so you only need a toolchain, CMake, and OpenSSL on the host.
 
 **Linux** (Debian/Ubuntu package names shown; adjust for your distro):
@@ -148,7 +146,7 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 - **[CMake 3.21+](https://cmake.org/download/)** — bundled with Visual Studio, or
   install standalone and ensure `cmake` is on `PATH`.
 - **OpenSSL 3.0+** — install [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
-  (or `vcpkg install openssl:x64-windows`) so CMake's `find_package(OpenSSL 3.0)`
+  (or vcpkg; see [Build tools](../../../README.md#build-tools)) so CMake's `find_package(OpenSSL 3.0)`
   succeeds. Without it the software updates crypto adapter — and therefore this sample — is
   skipped.
 - **Git** to clone the repo and let CMake fetch dependencies.

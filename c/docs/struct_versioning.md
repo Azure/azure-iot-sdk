@@ -30,8 +30,9 @@ older headers is not supported.
   Windows, each DLL or executable calling it links its own copy. Copies are
   independent: the SDK sets no azure-sdk-for-c global state (log or precondition
   callbacks).
-- The full release version is in the soname (`libaz_iot_core.so.0.0.1`) and the
-  Windows DLL name (`az_iot_core-0.0.1.dll`). An application built against one
+- The full release version (`AZ_IOT_VERSION_STRING`, pre-release label
+  included) is in the soname (`libaz_iot_core.so.<version>`) and the Windows
+  DLL name (`az_iot_core-<version>.dll`). An application built against one
   release fails to load with any other, instead of misreading struct layouts.
 - Windows: each DLL links the static CRT (`/MT`), so heap, `FILE*` and
   environment are per module. The SDK API does not pass them across.

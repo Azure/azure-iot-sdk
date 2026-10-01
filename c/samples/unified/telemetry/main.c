@@ -10,7 +10,7 @@
  * when the device is moved to a hub of the other generation while it runs. The
  * MQTTv5-only route is mqttv5/telemetry.
  *
- * Every unified sample has this shape, and this is the one to read first:
+ * Most unified samples have this shape, and this is the one to read first:
  *
  *   1. Register BOTH MQTT adapters: DPS and MQTTv3 speak v3.1.1, MQTTv5 speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This

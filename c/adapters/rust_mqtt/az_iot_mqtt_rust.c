@@ -22,7 +22,7 @@
 static az_iot_rust_mqtt_ffi g_ffi;
 static int g_ffi_installed = 0;
 
-az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table)
+AZ_NODISCARD az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table)
 {
   if (table == NULL)
   {

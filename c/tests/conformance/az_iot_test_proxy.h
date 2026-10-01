@@ -119,9 +119,9 @@ extern "C"
      * az_iot_test_proxy_add_rule(), reset_after_packets, and
      * az_iot_test_proxy_packets_seen(), which stays 0.
      *
-     * This is the narrow form of the protocol/transport split tracked in
-     * docs/design.md section 4.5; it separates the two for the cases that never
-     * needed the protocol, rather than introducing the full codec seam. */
+     * This is the narrow form of a protocol/transport split: it separates the
+     * two for the cases that never needed the protocol, rather than introducing
+     * a full codec seam. */
     bool opaque_stream;
   } az_iot_test_proxy_options;
 

@@ -18,6 +18,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/az_iot_version.h"
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
@@ -708,7 +709,9 @@ static void hub_mqtt_v5_connect_username_carries_correlation_nonce(void** state)
 
   const char* cid = conn->username + strlen("correlationId=");
   assert_memory_equal(cid, expect_hex, 32);
-  assert_int_equal(cid[32], '&');
+  /* SemVer characters are all URL-unreserved, so the encoded version is the
+   * version string itself. */
+  assert_string_equal(cid + 32, "&clientVersion=c%2F" AZ_IOT_VERSION_STRING);
 }
 
 /* A birth-ack whose correlation data doesn't match our nonce is discarded; the

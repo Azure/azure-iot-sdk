@@ -1,0 +1,4 @@
+# UBSan suppressions for third-party code only (see ci-c.yml, job asan-ubsan-linux).
+# Paho writeData() calls memcpy(dst, NULL, 0) for an empty Will payload. Matched by function name,
+# so UBSAN_OPTIONS must give a symbolizer.
+nonnull-attribute:writeData

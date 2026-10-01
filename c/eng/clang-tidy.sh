@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+#
+# Runs clang-tidy (config: c/.clang-tidy) on every first-party translation unit (src, adapters,
+# samples) in a configured build tree. Exits non-zero on any finding.
+#
+#   eng/clang-tidy.sh <build-dir> [clang-tidy executable]
+#
+# The build tree only needs to be configured, with CMAKE_EXPORT_COMPILE_COMMANDS=ON.
+
+set -euo pipefail
+
+[ "$#" -ge 1 ] || { echo "usage: ${0##*/} <build-dir> [clang-tidy]" 1>&2; exit 1; }
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="$(cd "$1" && pwd)"
+tidy="${2:-clang-tidy}"
+db="${build_dir}/compile_commands.json"
+
+[ -f "${db}" ] || { echo "${db} not found" 1>&2; exit 1; }
+command -v "${tidy}" >/dev/null || { echo "${tidy} not found" 1>&2; exit 1; }
+command -v jq >/dev/null || { echo "jq not found" 1>&2; exit 1; }
+jobs="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+
+# Literal prefix match: the checkout path may contain regex metacharacters.
+mapfile -t files < <(jq -r --arg root "${root_dir}/" \
+    '.[].file | select(startswith($root + "src/") or startswith($root + "adapters/") or startswith($root + "samples/"))' \
+    "${db}" | sort -u)
+[ "${#files[@]}" -gt 0 ] || { echo "no first-party sources in ${db}" 1>&2; exit 1; }
+
+"${tidy}" --version | grep -m1 -i version
+echo "clang-tidy: ${#files[@]} translation units"
+
+# One process per file. The "N warnings generated" lines count diagnostics outside the header
+# filter; drop them. pipefail keeps xargs' exit status (123 when any file has a finding).
+printf '%s\0' "${files[@]}" \
+    | xargs -0 -P "${jobs}" -n 1 "${tidy}" -p "${build_dir}" --quiet 2>&1 \
+    | { grep -vE '^[0-9]+ warnings? generated\.$' || true; }

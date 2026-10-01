@@ -29,12 +29,13 @@ extern "C"
 #endif
 
 #define E2E_AMQP_MAX_PARTITIONS 32
-#define E2E_AMQP_CAPTURE_MAX 16
+#define E2E_AMQP_CAPTURE_MAX 64
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
 
   /* A telemetry watcher: an AMQP connection to the IoT Hub Event Hub-compatible
    * endpoint with one receiver link per partition. Received message bodies are
-   * captured into a small ring so the test can poll for a correlation marker.
+   * captured into a ring (newest overwrite oldest) so the test can poll for a
+   * correlation marker, even on a hub other runs are sending to.
    *
    * The struct is large (frame + per-partition buffers) and therefore intended to
    * be heap-allocated as part of the owning service object. */
@@ -53,6 +54,7 @@ extern "C"
     /* Capture ring of recently received bodies (NUL-terminated for substring search). */
     char captured[E2E_AMQP_CAPTURE_MAX][E2E_AMQP_CAPTURE_BODY_MAX];
     int captured_count;
+    int captured_next; /* ring slot the next body is written to */
 
     /* Backing storage referenced by the az_amqp objects above. */
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -61,19 +63,28 @@ extern "C"
     az_amqp_link* link_slots[E2E_AMQP_MAX_PARTITIONS + 2];
     uint8_t cbs_reply_buffer[1024];
     uint8_t recv_buffers[E2E_AMQP_MAX_PARTITIONS][2048];
-    char source_addr[E2E_AMQP_MAX_PARTITIONS][192];
+    char source_addr[E2E_AMQP_MAX_PARTITIONS][256];
     char link_name[E2E_AMQP_MAX_PARTITIONS][32];
     char audience_buffer[256];
+    uint8_t filter_buffer[256];
   } e2e_amqp_telemetry;
 
-  /* Connect to @p eh_host:5671, CBS-authorize @p sas_token against the entity, and
-   * attach one earliest-position receiver to each of @p partition_count partitions.
-   * On failure, returns false and (when non-NULL) points @p err_out at a static
-   * message. */
+  /**
+   * @brief Connects to @p eh_host:5671, CBS-authorizes @p sas_token against the entity and
+   * attaches one receiver per partition.
+   *
+   * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
+   * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
+   * 0 reads from the start of the stream.
+   * @param[out] err_out When non-NULL, set to a static message on failure.
+   * @return true on success.
+   */
   bool e2e_amqp_telemetry_begin(
       e2e_amqp_telemetry* t,
       const char* eh_host,
       const char* entity_path,
+      const char* consumer_group,
+      int64_t enqueued_after_ms,
       const char* sas_token,
       int partition_count,
       const char** err_out);
@@ -103,6 +114,7 @@ extern "C"
 
 #define E2E_AMQP_NOTIFY_CAPTURE_MAX 8
 #define E2E_AMQP_NOTIFY_BODY_MAX 2048
+#define E2E_AMQP_NOTIFY_HOLD_MAX 10
 
   /* A file-upload notification watcher: an AMQP connection to the IoT Hub service
    * endpoint with a single receiver on /messages/serviceBound/filenotifications.
@@ -126,11 +138,20 @@ extern "C"
     int captured_count;
     char match[128]; /* only notifications containing this are consumed */
 
+    /* Other live watchers' notifications, released after a short hold. */
+    struct
+    {
+      uint32_t delivery_number;
+      int64_t held_at_s;
+    } held[E2E_AMQP_NOTIFY_HOLD_MAX];
+    int held_count;
+
     /* Diagnostics. A notification that never arrives is indistinguishable from
      * one that arrived and was filtered out or could not be decoded, so count
      * every disposition and let a failing test report them. */
     int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
     int released_count; /* released because they name another device */
+    int stale_count; /* another device's, too old to have a watcher: accepted */
     int unparsed_count; /* body missing or not a DATA body */
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -147,9 +168,11 @@ extern "C"
    *
    * The notification node is HUB-WIDE, so several test legs can be listening at
    * once. Only notifications whose body contains @p match (typically this test's
-   * device id) are captured and settled; everything else is RELEASED so the hub
-   * redelivers it to its rightful watcher. On failure returns false and (when
-   * non-NULL) points @p err_out at a static message.
+   * device id) are captured and settled; everything else is RELEASED, after a
+   * short hold, so the hub redelivers it to its rightful watcher -- except
+   * notifications enqueued too long ago for any watcher to be waiting, which are
+   * accepted. On failure returns false and (when non-NULL) points @p err_out at a
+   * static message.
    *
    * @p attach_refused_out, when non-NULL, is set to true only when the hub
    * REFUSED the receiver link on the notification node, and false for every other
@@ -179,6 +202,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Detach the receiver and close the connection (best-effort). */

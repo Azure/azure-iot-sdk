@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 'Commit to build the report for (default: the last nightly e2e run)'
+        description: 'Full SHA of a commit on main to build the report for (default: the last nightly e2e run)'
         required: false
         type: string
 
@@ -49,26 +49,53 @@ jobs:
           PINNED: ${{ inputs.sha }}
         run: |
           set -euo pipefail
+          # Newest successful run of main itself, as "<sha>\t<run id>". Pull
+          # request runs are excluded server-side: --branch matches head_branch,
+          # which a fork pull request from a branch named "main" also carries.
+          latest_main_run () {
+            for ev in push schedule workflow_dispatch; do
+              gh run list --repo "$REPO" --workflow "$1" --branch main --event "$ev" \
+                --status success --limit 1 --json headSha,databaseId,createdAt --jq '.[]' || exit 1
+            done | jq -rs 'sort_by(.createdAt) | last // {} | [.headSha, .databaseId] | @tsv'
+          }
           if [ -n "${PINNED}" ]; then
             sha="${PINNED}"
             echo "using the dispatched commit"
           else
             # ci-c-e2e is the broadest of the nightlies, so its last green run is
             # the natural anchor for the others to agree with.
-            sha=$(gh run list --repo "$REPO" --workflow ci-c-e2e.yml \
-                    --branch main --status success --limit 1 --json headSha \
-                    --jq '.[0].headSha // empty')
+            run=$(latest_main_run ci-c-e2e.yml)
+            sha="${run%%$'\t'*}"
             if [ -z "$sha" ]; then
               echo "::error::no successful ci-c-e2e run on main to anchor the report to"
               exit 1
             fi
           fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target must be a full commit SHA"
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "target commit: $sha"
 
-      - uses: actions/checkout@v4
+      # Check out main, then move to the target only if main contains it, so
+      # nothing outside main is built.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+          ref: main
+          fetch-depth: 0
+
+      - name: Check out the target commit
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
+            echo "::error::$SHA is not a commit on main"
+            exit 1
+          fi
+          git checkout -q --detach "$SHA"
 
       - name: Install toolchain
         run: |
@@ -95,12 +122,19 @@ jobs:
           set -euo pipefail
           mkdir -p traces
           have=""
+          # Same as in "Resolve the target commit".
+          latest_main_run () {
+            for ev in push schedule workflow_dispatch; do
+              gh run list --repo "$REPO" --workflow "$1" --branch main --event "$ev" \
+                --status success --limit 1 --json headSha,databaseId,createdAt --jq '.[]' || exit 1
+            done | jq -rs 'sort_by(.createdAt) | last // {} | [.headSha, .databaseId] | @tsv'
+          }
           # Each nightly uploads exactly one tracefile artifact. A leg whose last
           # green run is on a DIFFERENT commit is skipped rather than merged --
           # see the correctness note at the top of this file.
           add () {          # $1 = workflow file, $2 = artifact name, $3 = label
-            run_sha=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
-                        --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+            run=$(latest_main_run "$1")
+            read -r run_sha run_id <<< "$run"
             if [ -z "$run_sha" ]; then
               echo "::warning::$3: no successful run found; excluded"
               return 0
@@ -109,8 +143,6 @@ jobs:
               echo "::warning::$3: last green run is $run_sha, not the target $SHA; excluded"
               return 0
             fi
-            run_id=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
-                       --status success --limit 1 --json databaseId --jq '.[0].databaseId')
             if gh run download "$run_id" --repo "$REPO" -n "$2" -D "traces/$3" 2>/dev/null; then
               f=$(find "traces/$3" -name '*.json' | head -1)
               echo "  $3: $f"
@@ -144,7 +176,7 @@ jobs:
             sh -c "echo 'listener 1883' > /m.conf; \
                    echo 'allow_anonymous true' >> /m.conf; \
                    mosquitto -c /m.conf"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             mosquitto_pub -h localhost -p 1883 -t probe -m ok 2>/dev/null && break
             sleep 1
           done
@@ -161,20 +193,22 @@ jobs:
           set -euo pipefail
           # Paths from the download step are relative to the workspace root; the
           # unit tracefile was written under c/.
-          pairs=""
+          pairs=()
           for p in $PAIRS; do
-            pairs="$pairs ${p%%=*}=$PWD/${p#*=}"
+            pairs+=("${p%%=*}=$PWD/${p#*=}")
           done
           bash c/eng/combine-coverage.sh "$PWD/coverage-combined" \
-            unit="$PWD/c/traces/unit.json" $pairs
+            unit="$PWD/c/traces/unit.json" "${pairs[@]}"
 
       - name: Publish to the job summary
         if: always()
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           {
             echo "# Combined C coverage"
             echo ""
-            echo "Commit \`${{ steps.target.outputs.sha }}\`"
+            echo "Commit \`$TARGET_SHA\`"
             echo ""
             [ -f coverage-combined/contribution.md ] && cat coverage-combined/contribution.md
             echo ""
@@ -183,7 +217,7 @@ jobs:
 
       - name: Upload combined coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-combined
           path: coverage-combined/
