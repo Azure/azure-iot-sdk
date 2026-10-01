@@ -231,7 +231,7 @@ int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   s->persist_failed = 1;
-  FILE* f = fopen(s->state_file, "wb");
+  FILE* f = sample_fopen_private(s->state_file);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;

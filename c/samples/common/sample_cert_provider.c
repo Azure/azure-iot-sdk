@@ -11,6 +11,7 @@
 
 #include "sample_cert_provider.h"
 #include "sample_csr_backend.h"
+#include "sample_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,7 +133,7 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  FILE* f = fopen(p->operational_cert_path, "wb");
+  FILE* f = sample_fopen_private(p->operational_cert_path);
   if (!f)
   {
     return AZ_IOT_ERR_INTERNAL;
