@@ -42,6 +42,38 @@ The tree was reformatted wholesale in one commit, which is listed in
 once with `git config blame.ignoreRevsFile .git-blame-ignore-revs`; GitHub
 honours it automatically.
 
+## 0.1. clang-tidy must be clean
+
+```bash
+cmake -S c -B c/build/clang-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   # configure only
+bash c/eng/clang-tidy.sh c/build/clang-tidy                            # what CI runs
+```
+
+Checks and the reason for each exclusion are in [`c/.clang-tidy`](../../.clang-tidy);
+every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
+18.1.8 (`pipx install clang-tidy==18.1.8`).
+
+- `cert-err33-c` (ignored libc result): cast to `(void)` when ignoring it is
+  deliberate. This does not work for `AZ_NODISCARD` functions: gcc still warns
+  (see §5), so handle their result.
+- False positive: `/* NOLINTNEXTLINE(<check>): <reason> */` on the line
+  immediately before the one diagnosed.
+
+## 0.2. MSVC `/analyze` must be clean
+
+```pwsh
+cmake -S c -B c/build/msvc-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF `
+  -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_RUST_MQTT=ON
+cmake --build c/build/msvc-analyze -- -k 0   # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
+```
+
+From a Visual Studio developer shell. Findings (`C6xxx`) are errors in `src`,
+`adapters` and `samples`; `-k 0` reports every failing file. CI does not analyze the
+mbedTLS software updates crypto adapter or the file upload sample's libcurl HTTPS path
+(no mbedTLS or libcurl on its Windows runners); clang-tidy covers both on Linux. Suppress a false positive on the line before it with
+`#pragma warning(suppress : <number>) /* <reason> */`, inside `#ifdef _MSC_VER`.
+
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
 `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`,

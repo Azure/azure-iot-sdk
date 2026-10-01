@@ -410,6 +410,7 @@ static char* create_private_temp_file(void)
   {
     return NULL;
   }
+  /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): the next memcpy adds the NUL. */
   memcpy(path, dir, dir_len);
   memcpy(path + dir_len, suffix, sizeof(suffix));
   int fd = mkstemp(path); /* 0600, and the name cannot be raced */
@@ -468,7 +469,7 @@ static az_iot_result store_reference_pem(az_iot_paho_key_custody* state, const c
   if (!written)
   {
     log_openssl_errors("could not write the key reference file");
-    remove(path);
+    (void)remove(path); /* best effort */
     free(path);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
@@ -637,7 +638,7 @@ void az_iot_paho_key_custody_release(az_iot_paho_key_custody* state)
   }
   if (state->key_ref_path)
   {
-    remove(state->key_ref_path);
+    (void)remove(state->key_ref_path); /* best effort */
     free(state->key_ref_path);
     state->key_ref_path = NULL;
   }

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "azure/iot/az_iot_connection_client.h"
 
@@ -71,6 +72,16 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
  * too long.
  */
 bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+
+/**
+ * @brief Open @p path for binary writing, truncating it, with owner-only
+ * access (0600) on POSIX rather than fopen()'s 0666 less umask. On Windows the
+ * file keeps the ACL inherited from its directory.
+ *
+ * @param[in] path File to create or truncate.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_fopen_private(const char* path);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample

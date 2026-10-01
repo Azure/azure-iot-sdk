@@ -851,7 +851,7 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
       conn, DI(client).inbound_topic, on_method_message, client);
 }
 
-az_iot_result az_iot_mqttv5_direct_method_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
     az_iot_mqttv5_direct_method_client* client,
     az_iot_connection_client* conn)
 {

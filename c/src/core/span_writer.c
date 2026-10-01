@@ -109,6 +109,7 @@ void az_iot_span_writer_append_str(az_iot_span_writer* writer, const char* value
   uint8_t* cursor = writer_reserve(writer, (int32_t)length);
   if (cursor != NULL)
   {
+    /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): spans are length-delimited. */
     memcpy(cursor, value, length);
   }
 }
@@ -360,7 +361,7 @@ void az_iot_span_writer_append_hex32(az_iot_span_writer* writer, uint32_t value,
   }
 }
 
-az_iot_result az_iot_span_writer_end(az_iot_span_writer* writer, az_span* out_written)
+AZ_NODISCARD az_iot_result az_iot_span_writer_end(az_iot_span_writer* writer, az_span* out_written)
 {
   if (writer == NULL)
   {
@@ -380,7 +381,8 @@ az_iot_result az_iot_span_writer_end(az_iot_span_writer* writer, az_span* out_wr
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_span_writer_end_str(az_iot_span_writer* writer, size_t* out_length)
+AZ_NODISCARD az_iot_result
+az_iot_span_writer_end_str(az_iot_span_writer* writer, size_t* out_length)
 {
   if (writer == NULL)
   {
@@ -412,7 +414,7 @@ az_iot_result az_iot_span_writer_end_str(az_iot_span_writer* writer, size_t* out
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_span_writer_build_str(
+AZ_NODISCARD az_iot_result az_iot_span_writer_build_str(
     az_span destination,
     size_t* out_length,
     const char* const* parts,

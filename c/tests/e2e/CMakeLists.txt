@@ -64,6 +64,17 @@ endif()
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
                  ${CMAKE_CURRENT_BINARY_DIR}/deps/amqp)
 
+# Receiver credit accounting of the vendored AMQP client, over an in-memory
+# peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
+target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
+
+# Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
+# stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
+    tests/e2e_notify_time_test.c service/e2e_notify_time.c)
+target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------

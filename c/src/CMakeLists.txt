@@ -91,12 +91,13 @@ az_iot_apply_coverage(az_iot_mqttv5)
 # Shared builds carry no ABI guarantee (docs/struct_versioning.md). The full
 # version in the soname (Linux) and DLL name (Windows) makes the loader refuse
 # a library from any other release instead of letting it misread our structs.
+# The pre-release label is included: previews may break the ABI between them.
 foreach(_tgt IN ITEMS az_iot_core az_iot_mqttv3 az_iot_mqttv5)
     set_target_properties(${_tgt} PROPERTIES
-        VERSION ${PROJECT_VERSION}
-        SOVERSION ${PROJECT_VERSION}
+        VERSION ${AZ_IOT_VERSION_FULL}
+        SOVERSION ${AZ_IOT_VERSION_FULL}
         WINDOWS_EXPORT_ALL_SYMBOLS ON)
     if(WIN32)
-        set_target_properties(${_tgt} PROPERTIES RUNTIME_OUTPUT_NAME ${_tgt}-${PROJECT_VERSION})
+        set_target_properties(${_tgt} PROPERTIES RUNTIME_OUTPUT_NAME ${_tgt}-${AZ_IOT_VERSION_FULL})
     endif()
 endforeach()

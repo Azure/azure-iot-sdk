@@ -1820,10 +1820,19 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
           c->dps_pending_retry_after_secs = resp.retry_after_seconds;
+          /* The parsed verdict first, on its own line: the raw body below can
+           * exceed AZ_IOT_LOG_MESSAGE_MAX and be cut before errorMessage. */
+          /* An empty span may carry a NULL pointer, which %.*s must not get. */
+          az_span err_msg = resp.registration_state.error_message;
+          AZ_IOT_LOG_ERRORF(
+              "dps register: errorCode=%ld errorMessage=%.*s",
+              (long)resp.registration_state.extended_error_code,
+              (int)az_span_size(err_msg),
+              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
           AZ_IOT_LOG_ERRORF(
               "dps register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
-              (const char*)az_span_ptr(payload_span));
+              az_span_size(payload_span) > 0 ? (const char*)az_span_ptr(payload_span) : "");
           /* The service's own verdict -- 401001 "IoTHub not found" is this
            * path. Both are parsed already and were being thrown away, which is
            * what made "registration failed" and "no hub linked" the same
@@ -2354,7 +2363,7 @@ static bool presence_build_username(const az_iot_connection_client* c, char* buf
     hex[i * 2u] = hexdigits[PRESENCE_HI_NIBBLE(c->presence.nonce[i])];
     hex[i * 2u + 1u] = hexdigits[PRESENCE_LO_NIBBLE(c->presence.nonce[i])];
   }
-  hex[PRESENCE_NONCE_LEN * 2u] = '\0';
+  hex[(size_t)PRESENCE_NONCE_LEN * 2u] = '\0';
 
   /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
    * string is percent-encoded too, which leaves today's digits-and-dots form
@@ -3282,7 +3291,7 @@ static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_connection_client_options az_iot_connection_client_options_default(void)
+AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void)
 {
   az_iot_connection_client_options opts = { 0 };
   /* 0, not 8883: the port is derived from the transport at connect time, so a
@@ -3306,7 +3315,7 @@ az_iot_connection_client_options az_iot_connection_client_options_default(void)
   return opts;
 }
 
-az_iot_result az_iot_connection_client_init(
+AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
 {
@@ -3420,7 +3429,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
    */
 }
 
-az_iot_result az_iot_connection_client_register_mqtt_factory(
+AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
     az_iot_connection_client* client,
     const az_iot_mqtt_factory* factory)
 {
@@ -3634,7 +3643,7 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
+AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
 {
   if (!client)
   {
@@ -4621,7 +4630,7 @@ const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_
   return client ? client->opts.host : NULL;
 }
 
-az_iot_result az_iot_connection_client_get_hub_profile(
+AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
     const az_iot_connection_client* client,
     az_iot_hub_profile* out_profile)
 {
@@ -5209,7 +5218,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
  * would re-issue its $iothub/... filters at the new hub, which does not grant
  * them -- and once CONNECTED is gated on those SUBACKs, the session could never
  * come up and the application would never get the callback that would have
- * removed them. See docs/eng/client-separation.md section 9. */
+ * removed them. See docs/eng/connection-c.md section 5.3. */
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
   for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
@@ -5433,7 +5442,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 }
 
-az_iot_result az_iot_connection_client_send_csr(
+AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
     const az_iot_certificate_signing_request* csr,
     const char* request_id,
@@ -5557,7 +5566,7 @@ az_iot_result az_iot_connection_client_send_csr(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
+AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
 {
   if (!client)
   {

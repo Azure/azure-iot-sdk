@@ -5,7 +5,7 @@
 
 C99 client SDK for the Azure MQTTv3 hub and the MQTTv5 hub.
 
-> Status: **early bootstrap**. See [docs/design.md](docs/design.md) for the architecture and [docs/devnotes.md](docs/devnotes.md) for original design discussion notes.
+> Status: **early bootstrap**. See [docs/architecture.md](docs/architecture.md) for the architecture and [docs/connecting.md](docs/connecting.md) for connecting a device.
 
 ## Highlights
 
@@ -46,9 +46,10 @@ Run a sample binary:
 
 ### Build hardening
 
-GCC and Clang builds are hardened by default (`AZ_IOT_ENABLE_HARDENING=ON`); see
-[cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake). MSVC builds are not
-affected.
+Builds are hardened by default (`AZ_IOT_ENABLE_HARDENING=ON`); see
+[cmake/az_iot_hardening.cmake](cmake/az_iot_hardening.cmake).
+
+GCC and Clang:
 
 | Flag | Effect | When |
 |---|---|---|
@@ -60,10 +61,19 @@ affected.
 | PIE, `-z relro -z now` | Position-independent code, read-only relocations | Always |
 | `-z noexecstack` | Non-executable stack | Always |
 
+MSVC (`/GS`, `/DYNAMICBASE`, `/NXCOMPAT` and `/HIGHENTROPYVA` are already on by default):
+
+| Flag | Effect | When |
+|---|---|---|
+| `/guard:cf` | Control Flow Guard | Always |
+| `/CETCOMPAT` | CET shadow stack compatible | x64 only |
+| `/sdl` | Security-relevant warnings are errors | First-party targets only |
+
 Each flag is probed first and skipped if the toolchain does not support it.
 
 **Scope.** The flags apply to the SDK, its samples and tests, and the dependencies it
-fetches (azure-sdk-for-c, Paho). They are not exported: a parent project that adds this
+fetches (azure-sdk-for-c, Paho), except `/sdl`, which the dependencies do not build
+cleanly with. They are not exported: a parent project that adds this
 tree with `add_subdirectory()`/`FetchContent`, or consumes the installed package, keeps
 its own flags.
 
@@ -95,15 +105,18 @@ its own flags.
   ```
 
 `AZ_IOT_WARNINGS_AS_ERRORS=OFF` drops `-Werror`/`/WX` only; `-Werror=format-security`
-belongs to hardening. Package builds that inject their own hardening flags (e.g. Debian,
+and `/sdl` belong to hardening. Package builds that inject their own hardening flags (e.g. Debian,
 Yocto) can set `AZ_IOT_ENABLE_HARDENING=OFF` to avoid duplicates.
 
 **Verifying.** `eng/check-hardening.sh <build-dir>` fails any ELF executable or shared
 library without PIE (executables), RELRO, `BIND_NOW` or a non-executable stack. The stack
 protector check is weaker: it covers first-party executables only (not shared libraries),
 reports each one without a canary reference, and fails only if none has one; a binary with
-no function that needs a canary legitimately has none. CI runs it on gcc and clang, static
-and shared (`hardening-linux` in `ci-c.yml`).
+no function that needs a canary legitimately has none. On Windows (from a Visual Studio
+developer shell, in Git Bash) it uses `dumpbin` and fails any `.exe`/`.dll` without Control
+Flow Guard, ASLR or DEP, and, on x64, high entropy VA or CET compatibility. CI runs it on
+gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`), and on MSVC, static
+and shared (`hardening-windows`).
 
 ## Install and consume
 

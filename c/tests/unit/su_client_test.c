@@ -930,8 +930,7 @@ static void open_to_connected(fixture* fx)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
-/* Deliver an update payload through the channel. Under Device Update for IoT Hub this arrived as an
- * MQTT twin desired-property PATCH; the engine no longer knows or cares what
+/* Deliver an update payload through the channel. The engine does not know what
  * carried it, so the test hands the payload straight to the channel callback. */
 static void inject_patch(fixture* fx, const char* body)
 {
@@ -1592,8 +1591,7 @@ static void cancel_action_sets_cancelled_flag(void** state)
 /* Reporting is keyed on workflowId and is therefore per-workflow: a device with
  * no workflow in flight has nothing the service could attribute a report to.
  * Refreshing device properties must be accepted and must NOT manufacture a
- * report. Under Device Update for IoT Hub this same call produced an unsolicited reported-property
- * PATCH; that channel, and the concept, are gone. */
+ * report. */
 static void update_device_properties_is_accepted_without_reporting(void** state)
 {
   fixture* fx = (fixture*)*state;

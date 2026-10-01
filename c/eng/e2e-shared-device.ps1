@@ -78,9 +78,11 @@ $Serial = [byte[]]::new(16)
 [System.Security.Cryptography.RandomNumberGenerator]::Fill($Serial)
 $Serial[0] = $Serial[0] -band 0x7F
 $Now = [DateTimeOffset]::UtcNow
+$NotBefore = $Now.AddMinutes(-10)
+if ($NotBefore -lt $Ca.NotBefore) { $NotBefore = [DateTimeOffset]$Ca.NotBefore }
 $NotAfter = $Now.AddDays(2)
 if ($NotAfter -gt $Ca.NotAfter) { $NotAfter = [DateTimeOffset]$Ca.NotAfter }
-$Leaf = $Request.Create($Ca, $Now.AddMinutes(-10), $NotAfter, $Serial)
+$Leaf = $Request.Create($Ca, $NotBefore, $NotAfter, $Serial)
 
 function ConvertTo-B64([string]$Text) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Text)) }
 function Format-Assignment([string]$Name, [string]$Value) { "`$env:$Name = '$($Value.Replace("'", "''"))'" }

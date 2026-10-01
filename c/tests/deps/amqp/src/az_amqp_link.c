@@ -732,7 +732,18 @@ static void _parse_delivery_state(az_amqp_value const* state, az_amqp_delivery_s
 
 static void _on_attach(az_amqp_link* link, az_amqp_value const* fields)
 {
-  (void)fields;
+  if (link->options.role == AZ_AMQP_ROLE_RECEIVER)
+  {
+    // A receiver's delivery-count tracks the sender's, starting at the sender's
+    // initial-delivery-count (AMQP 1.0 2.6.7). Set before ATTACHED is published:
+    // the state callback may grant credit.
+    az_amqp_value v;
+    if (az_result_succeeded(_az_amqp_list_field(fields, 9, &v))
+        && v.kind == AZ_AMQP_VALUE_KIND_UINT)
+    {
+      link->delivery_count = (uint32_t)v.scalar.u64;
+    }
+  }
   _set_state(link, AZ_AMQP_LINK_STATE_ATTACHED, NULL);
   if (link->options.role == AZ_AMQP_ROLE_RECEIVER && link->options.prefetch_credit > 0)
   {
@@ -810,6 +821,11 @@ static void _on_transfer(az_amqp_link* link, az_amqp_value const* fields, az_spa
 
   if (!more)
   {
+    // Advance before the callback: a disposition sent from it may replenish
+    // credit, and the sender grants credit relative to this count. Left at its
+    // initial value, every replenishing flow grants nothing once the first
+    // prefetch_credit deliveries have arrived.
+    link->delivery_count++;
     az_span const full
         = az_span_slice(link->options.message_buffer, 0, link->partial_length);
     az_amqp_message message;

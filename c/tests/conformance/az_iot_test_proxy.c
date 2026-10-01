@@ -38,6 +38,7 @@ typedef int proxy_socklen;
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -2206,6 +2207,13 @@ static DWORD WINAPI proxy_thread_entry(LPVOID arg)
 #else
 static void* proxy_thread_entry(void* arg)
 {
+  /* A peer that closes mid-write makes send()/SSL_write raise SIGPIPE in this
+   * thread. Block it here so EPIPE is returned instead and the harness does not
+   * depend on the adapter under test ignoring SIGPIPE process-wide. */
+  sigset_t pipe_set;
+  sigemptyset(&pipe_set);
+  sigaddset(&pipe_set, SIGPIPE);
+  (void)pthread_sigmask(SIG_BLOCK, &pipe_set, NULL);
   proxy_run((struct az_iot_test_proxy*)arg);
   return NULL;
 }

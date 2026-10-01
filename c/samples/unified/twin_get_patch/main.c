@@ -8,9 +8,9 @@
  * Issue a twin GET and a reported-properties PATCH on every connect, for ~60
  * seconds, on whichever hub DPS assigns: MQTTv3 or MQTTv5,
  * including after the device is moved to a hub of the other generation. The
- * MQTTv5-only route is mqttv5/twin_get_patch. See unified/telemetry for the shape
- * every unified sample shares: build for an assumed generation before open(),
- * rebuild when DPS assigns the other one.
+ * MQTTv5-only route is mqttv5/twin_get_patch. Same shape as unified/telemetry:
+ * build for an assumed generation before open(), rebuild when DPS assigns the
+ * other one.
  *
  * The two twin clients differ in protocol, not only in type, so each has its
  * own callbacks:

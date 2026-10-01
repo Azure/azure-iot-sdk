@@ -97,6 +97,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Stop watching file-upload notifications. Safe to call when not watching. */

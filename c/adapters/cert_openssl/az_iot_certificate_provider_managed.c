@@ -312,7 +312,9 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   }
 
   int decoded_len = EVP_DecodeBlock(decoded, base64, base64_len);
-  if (decoded_len <= 0)
+  /* EVP_DecodeBlock writes at most 3 bytes per 4 input bytes; also tells static analysis the
+   * reads below stay inside the buffer. */
+  if (decoded_len <= 0 || decoded_len > base64_len)
   {
     /* Not decodable base64, so neither form can be recovered from it. Writing it
      * anyway would persist a certificate file that cannot be parsed and would
@@ -338,8 +340,11 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
     return false;
   }
 
-  if ((size_t)decoded_len >= strlen(PEM_CERT_PREFIX)
-      && memcmp(decoded, PEM_CERT_PREFIX, strlen(PEM_CERT_PREFIX)) == 0)
+  /* decoded_len <= base64_len already; the base64_len bound restates it against
+   * the allocation, which MSVC /analyze (C6385) does not infer. */
+  const size_t prefix_len = strlen(PEM_CERT_PREFIX);
+  if ((size_t)base64_len >= prefix_len && (size_t)decoded_len >= prefix_len
+      && memcmp(decoded, PEM_CERT_PREFIX, prefix_len) == 0)
   {
     /* Already PEM: write it through unchanged, and guarantee the newline that
      * separates it from the next certificate in the chain. */

@@ -4,12 +4,14 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_amqp.h"
+#include "e2e_notify_time.h"
 
 #include "az_amqp_sample_wait.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* GCC flags these AZ_NODISCARD (warn_unused_result) az_amqp calls under -Werror even
    with a plain (void) cast, which GCC deliberately ignores. Route the intentional
@@ -807,6 +809,37 @@ cleanup:
 
 /* --- file-upload notification receiver ------------------------------------ */
 
+/* Age past which another device's notification has no waiting watcher: a test
+ * process is killed at CTest's 900 s timeout. The rest is clock-skew margin. */
+#define E2E_AMQP_NOTIFY_STALE_S (20 * 60)
+
+/* How long another live watcher's notification is held before it is released.
+ * With time()'s 1 s resolution this is 1-2 s. */
+#define E2E_AMQP_NOTIFY_HOLD_S 2
+
+/**
+ * @brief Releases held notifications; all of them if @p all, else those held
+ * for at least #E2E_AMQP_NOTIFY_HOLD_S.
+ */
+static void release_held(e2e_amqp_filenotify* f, bool all)
+{
+  int64_t const now = (int64_t)time(NULL);
+  int kept = 0;
+  for (int i = 0; i < f->held_count; i++)
+  {
+    if (all || now - f->held[i].held_at_s >= E2E_AMQP_NOTIFY_HOLD_S)
+    {
+      f->released_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_release(&f->receiver, f->held[i].delivery_number));
+    }
+    else
+    {
+      f->held[kept++] = f->held[i];
+    }
+  }
+  f->held_count = kept;
+}
+
 static void on_filenotify_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -836,9 +869,29 @@ static void on_filenotify_received(
   text[n] = '\0';
 
   /* The notification node is hub-wide. A notification for someone else is
-   * RELEASED so the hub redelivers it to the leg that is waiting for it. */
+   * RELEASED so the hub redelivers it to the leg that is waiting for it --
+   * unless it is too old for any leg to be waiting. Nobody settles those, so on
+   * a long-lived hub they pile up and are redelivered to every watcher ahead of
+   * its own; accept them instead. Unparseable times are released, as before. */
   if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
   {
+    int64_t enqueued_s;
+    if (e2e_notify_enqueued_time(text, &enqueued_s)
+        && (int64_t)time(NULL) - enqueued_s > E2E_AMQP_NOTIFY_STALE_S)
+    {
+      f->stale_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+      return;
+    }
+    /* Released at once, it would come straight back to this link in a tight
+     * loop; hold it briefly (see e2e_amqp_filenotify_do_work). */
+    if (f->held_count < E2E_AMQP_NOTIFY_HOLD_MAX)
+    {
+      f->held[f->held_count].delivery_number = delivery->number;
+      f->held[f->held_count].held_at_s = (int64_t)time(NULL);
+      f->held_count++;
+      return;
+    }
     f->released_count++;
     E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
     return;
@@ -1063,7 +1116,12 @@ bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
   {
     return false;
   }
-  return pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  bool ok = pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  if (ok)
+  {
+    release_held(f, false);
+  }
+  return ok;
 }
 
 bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
@@ -1083,6 +1141,7 @@ void e2e_amqp_filenotify_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
+    int* out_stale,
     int* out_unparsed)
 {
   if (out_delivered != NULL)
@@ -1097,6 +1156,10 @@ void e2e_amqp_filenotify_stats(
   {
     *out_released = f->released_count;
   }
+  if (out_stale != NULL)
+  {
+    *out_stale = f->stale_count;
+  }
   if (out_unparsed != NULL)
   {
     *out_unparsed = f->unparsed_count;
@@ -1108,6 +1171,7 @@ void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
   if (f->started)
   {
     f->started = false;
+    release_held(f, true);
     E2E_AMQP_DISCARD(az_amqp_link_detach(&f->receiver, NULL));
     E2E_AMQP_DISCARD(az_amqp_cbs_close(&f->cbs));
     E2E_AMQP_DISCARD(az_amqp_session_end(&f->session, NULL));
