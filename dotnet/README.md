@@ -32,7 +32,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 
 ## Key features
 
-:heavy_check_mark: feature available  :heavy_multiplication_x: feature planned but not supported  :heavy_minus_sign: no support planned
+:heavy_check_mark: feature available  :heavy_multiplication_x: not supported, but planned to be supported  :heavy_minus_sign: not supported
 
 ### v1.0.0 supported features
 
@@ -50,6 +50,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
+| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
 
 ### v2.0.0-preview Unified API set supported features
 
