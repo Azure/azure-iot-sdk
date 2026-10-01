@@ -51,9 +51,10 @@ extern "C"
   /**
    * @brief Send @p message as QoS 1 telemetry.
    *
-   * @p callback, if set, gets the broker's acknowledgement from
-   * az_iot_connection_client_do_work(). Without it, a failed acknowledgement is
-   * only logged.
+   * @p callback, if set, runs once: with the broker's acknowledgement result, or with
+   * AZ_IOT_ERR_NOT_CONNECTED if the session ends first (also on
+   * az_iot_connection_client_close()); the message may then not have arrived, so resend
+   * if needed. Without it, a failed acknowledgement is only logged.
    *
    * @return AZ_IOT_OK if handed to the transport.
    * @return AZ_IOT_ERR_BUSY if @p callback is set and AZ_IOT_MAX_PENDING_PUBACKS

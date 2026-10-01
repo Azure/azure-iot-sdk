@@ -295,6 +295,16 @@ extern "C"
       az_iot_publish_ack_callback ack_cb,
       void* ack_user_ctx);
 
+  /**
+   * @brief Whether a QoS 1 publish with an ack callback would get a pending-PUBACK slot now.
+   *
+   * Lets a caller that can live without the ack choose to publish untracked, without
+   * mistaking an adapter's AZ_IOT_ERR_BUSY for a full table.
+   *
+   * @return true if a slot is free; false if all are in use or @p client is NULL.
+   */
+  bool az_iot_connection_client__has_free_puback_slot(const az_iot_connection_client* client);
+
   /* Subscribe through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. Out-arg packet_id is populated on success. */
   az_iot_result az_iot_connection_client__subscribe(

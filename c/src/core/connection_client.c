@@ -5102,6 +5102,22 @@ az_iot_result az_iot_connection_client__publish(
   return AZ_IOT_OK;
 }
 
+bool az_iot_connection_client__has_free_puback_slot(const az_iot_connection_client* client)
+{
+  if (client == NULL)
+  {
+    return false;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    if (!client->pending_pubacks[i].in_use)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 az_iot_result az_iot_connection_client__subscribe(
     az_iot_connection_client* client,
     const char* topic_filter,

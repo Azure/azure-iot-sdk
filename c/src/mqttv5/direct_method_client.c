@@ -355,17 +355,18 @@ static az_iot_result publish_typed(
   out.content_type = DM_CONTENT_TYPE;
   out.message_expiry_seconds = expiry_seconds;
 
-  az_iot_result result
-      = az_iot_connection_client__publish(DI(dm).conn, &out, on_publish_ack, (void*)type_value);
-  if (result == AZ_IOT_ERR_BUSY)
+  /* The ack only feeds a log line, so a full pending-ack table must not cost
+   * the message: send it untracked instead. */
+  az_iot_publish_ack_callback ack_cb = on_publish_ack;
+  if (!az_iot_connection_client__has_free_puback_slot(DI(dm).conn))
   {
-    /* The pending-ack table is full and nothing was sent. The ack only feeds a
-     * log line, so send without it rather than fail the response. */
     AZ_IOT_LOG_WARNF(
         "mqttv5_direct_method: sending '%s' without ack tracking, the pending-ack table is full",
         type_value);
-    result = az_iot_connection_client__publish(DI(dm).conn, &out, NULL, NULL);
+    ack_cb = NULL;
   }
+  az_iot_result result
+      = az_iot_connection_client__publish(DI(dm).conn, &out, ack_cb, (void*)type_value);
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
