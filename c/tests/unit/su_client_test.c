@@ -3373,6 +3373,103 @@ static void a_workflow_id_at_the_limit_is_reported_in_full(void** state)
   assert_string_equal(fx->chan.last_workflow_id, decoded);
 }
 
+/* Counts ERROR lines containing `needle`. */
+typedef struct
+{
+  const char* needle;
+  int count;
+} su_error_log_capture;
+
+static void su_error_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
+  {
+    cap->count++;
+  }
+}
+
+/* A checkpoint written before oversized ids were refused holds the id only in
+ * its stored request (the kept-id field is empty). Resuming it continues the
+ * install but logs that the workflow cannot be reported. */
+static void a_resumed_oversized_workflow_id_is_logged(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  /* Splice an id too long to keep into the stored request. It is the first
+   * string, so every later request offset moves by `delta`. */
+  static uint8_t old_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE];
+  size_t old_len = fx->log.persist_len;
+  memcpy(old_blob, fx->log.persist_blob, old_len);
+  uint32_t old_req_len = blob_u32(&old_blob[36]);
+  uint32_t wf_off = blob_u32(&old_blob[20]);
+  uint32_t old_wf_len = blob_u32(&old_blob[24]);
+
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+  uint32_t delta = (uint32_t)strlen(id) - old_wf_len;
+  uint32_t req_len = old_req_len + delta;
+
+  uint8_t* b = fx->log.persist_blob;
+  memcpy(b, old_blob, 40u + wf_off);
+  memcpy(&b[40u + wf_off], id, strlen(id));
+  memcpy(
+      &b[40u + wf_off + strlen(id)],
+      &old_blob[40u + wf_off + old_wf_len],
+      old_req_len - wf_off - old_wf_len);
+  blob_put_u32(&b[24], (uint32_t)strlen(id));
+  blob_put_u32(&b[28], blob_u32(&old_blob[28]) + delta);
+  blob_put_u32(&b[36], req_len);
+
+  uint32_t old_t = 40u + old_req_len;
+  uint32_t old_urls = old_t + 16u + blob_u32(&old_blob[old_t + 12u]) * 16u;
+  uint32_t url_count = blob_u32(&old_blob[old_urls]);
+  uint32_t old_wf = old_urls + 4u + url_count * 16u;
+  uint32_t old_after_wf = old_wf + 4u + blob_u32(&old_blob[old_wf]);
+
+  uint32_t p = 40u + req_len;
+  memcpy(&b[p], &old_blob[old_t], old_wf - old_t);
+  uint32_t urls = p + (old_urls - old_t);
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    uint8_t* u = &b[urls + 4u + i * 16u];
+    blob_put_u32(u, blob_u32(u) + delta);
+    blob_put_u32(u + 8, blob_u32(u + 8) + delta);
+  }
+  p += old_wf - old_t;
+  blob_put_u32(&b[p], 0u); /* no id kept */
+  p += 4u;
+  memcpy(&b[p], &old_blob[old_after_wf], old_len - old_after_wf);
+  fx->log.persist_len = p + (old_len - old_after_wf);
+  blob_reseal(b, fx->log.persist_len);
+
+  su_error_log_capture cap = { .needle = "does not fit AZ_IOT_SU_WORKFLOW_ID_SIZE", .count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_TRACE };
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  az_iot_log_set_global_sink(&sink);
+  az_iot_result r = az_iot_su_client_resume(&fresh->su);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_OK);
+  assert_int_equal(cap.count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_false(fresh->su._internal.active_workflow_valid);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* A workflow with no workflow id kept (as resumed from a record written by an
  * earlier build) has no terminal record to write; that is not retried as a
  * failed write. */
@@ -5555,6 +5652,7 @@ int main(void)
         an_oversized_workflow_id_leaves_the_active_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_workflow_id_at_the_limit_is_reported_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_resumed_oversized_workflow_id_is_logged, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(

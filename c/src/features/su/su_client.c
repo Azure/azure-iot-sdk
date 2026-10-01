@@ -1348,10 +1348,10 @@ static void process_update_metadata(
   if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
     AZ_IOT_LOG_ERRORF(
-        "su: workflowId (%d bytes received) exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE (%u); update "
-        "refused",
-        (int)az_span_size(probe.workflow.id),
-        (unsigned)sizeof(id_scratch));
+        "su: decoded workflowId exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE (%u; %d bytes encoded); "
+        "update refused",
+        (unsigned)sizeof(id_scratch),
+        (int)az_span_size(probe.workflow.id));
     raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
     return;
   }
