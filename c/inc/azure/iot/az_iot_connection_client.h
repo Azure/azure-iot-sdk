@@ -306,7 +306,6 @@ extern "C"
      * az_iot_reconnection_policy_get_default(). Use
      * az_iot_reconnection_policy_get_retry_disabled() to opt out. */
     az_iot_reconnection_policy reconnection_policy;
-    az_iot_log_sink log;
 
     /* Caller-provided scratch buffer used to BUILD the outbound CSR request
      * payload - the DPS registration body when dps.request_operational_certificate
@@ -1286,7 +1285,7 @@ extern "C"
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
   /* Returns an options struct with optional fields defaulted (port derived from
-   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy, no log sink,
+   * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy,
    * and the default reconnection policy from
    * az_iot_reconnection_policy_get_default(): 1s initial delay, 60s cap, retry
    * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
