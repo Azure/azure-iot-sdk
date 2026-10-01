@@ -97,12 +97,25 @@ static void test_missing_field_rejected(void** state)
   assert_false(e2e_notify_enqueued_time("", &s));
 }
 
+static void test_separator(void** state)
+{
+  (void)state;
+  int64_t s = 0;
+  assert_true(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\" :\t\"1970-01-01T00:00:01Z\"}", &s));
+  assert_int_equal(1, s);
+  assert_true(
+      e2e_notify_enqueued_time("{\"enqueuedTimeUtc\"\r\n:\n \"1970-01-01T00:00:01Z\"}", &s));
+  assert_false(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\" \"1970-01-01T00:00:01Z\"}", &s));
+  assert_false(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\":::\"1970-01-01T00:00:01Z\"}", &s));
+  assert_false(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\": :\"1970-01-01T00:00:01Z\"}", &s));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_valid_timestamps),       cmocka_unit_test(test_out_of_range_rejected),
     cmocka_unit_test(test_bad_suffix_rejected),    cmocka_unit_test(test_truncated_rejected),
-    cmocka_unit_test(test_missing_field_rejected),
+    cmocka_unit_test(test_missing_field_rejected), cmocka_unit_test(test_separator),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

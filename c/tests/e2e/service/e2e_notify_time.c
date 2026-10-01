@@ -52,6 +52,20 @@ static int days_in_month(int year, int month)
   return (month == 2 && leap) ? 29 : days[month - 1];
 }
 
+/**
+ * @brief Skips JSON whitespace (space, tab, LF, CR).
+ *
+ * @return The first non-whitespace character at or after @p p.
+ */
+static const char* skip_json_whitespace(const char* p)
+{
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+  {
+    p++;
+  }
+  return p;
+}
+
 bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
 {
   static const char key[] = "\"enqueuedTimeUtc\"";
@@ -61,10 +75,12 @@ bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
     return false;
   }
   p += sizeof(key) - 1;
-  while (*p == ' ' || *p == ':')
+  p = skip_json_whitespace(p);
+  if (*p != ':')
   {
-    p++;
+    return false;
   }
+  p = skip_json_whitespace(p + 1);
   if (*p != '"')
   {
     return false;
