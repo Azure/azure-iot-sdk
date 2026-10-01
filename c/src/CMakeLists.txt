@@ -28,7 +28,7 @@ add_library(azure::iot::core ALIAS az_iot_core)
 
 target_include_directories(az_iot_core
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         # Lets internal headers refer to siblings as "internal/foo.h" regardless

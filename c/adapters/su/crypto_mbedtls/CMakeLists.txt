@@ -37,7 +37,7 @@ add_library(azure::iot::su_crypto_mbedtls ALIAS az_iot_su_crypto_mbedtls)
 
 target_include_directories(az_iot_su_crypto_mbedtls
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 target_link_libraries(az_iot_su_crypto_mbedtls

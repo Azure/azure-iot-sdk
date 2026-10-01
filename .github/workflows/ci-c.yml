@@ -797,6 +797,51 @@ jobs:
           bash tests/install/pkg-config-test.sh --run "$RUNNER_TEMP/pkg-config-test" "${comps[@]}"
 
   # ---------------------------------------------------------------------------
+  # c/ embedded with add_subdirectory() (c/tests/subproject), so paths that
+  # assume c/ is the top-level project fail here. Unit tests and samples are on
+  # so their CMake files are covered too.
+  # ---------------------------------------------------------------------------
+  subproject:
+    name: subproject / ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-gcc
+          - os: windows-latest
+            name: windows-msvc
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >
+          cmake -S tests/subproject -B build/subproject -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/subproject
+      - name: Test
+        run: ctest --test-dir build/subproject --output-on-failure --no-tests=error
+
+  # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
   # Report-only, deliberately. The per-component floors in

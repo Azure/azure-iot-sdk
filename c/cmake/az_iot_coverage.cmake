@@ -67,17 +67,17 @@ function(az_iot_add_coverage_target)
         return()
     endif()
 
-    set(_cov_dir "${CMAKE_BINARY_DIR}/coverage")
+    set(_cov_dir "${PROJECT_BINARY_DIR}/coverage")
 
     add_custom_target(coverage
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_cov_dir}/html"
         COMMAND ${GCOVR_EXECUTABLE}
-            --root "${CMAKE_SOURCE_DIR}"
+            --root "${PROJECT_SOURCE_DIR}"
             # Explicit search path. gcovr defaults to searching --root, but the
             # .gcda files live in the build tree, which may be outside it.
-            "${CMAKE_BINARY_DIR}"
-            --filter "${CMAKE_SOURCE_DIR}/src/"
-            --filter "${CMAKE_SOURCE_DIR}/adapters/"
+            "${PROJECT_BINARY_DIR}"
+            --filter "${PROJECT_SOURCE_DIR}/src/"
+            --filter "${PROJECT_SOURCE_DIR}/adapters/"
             --exclude ".*/_deps/.*"
             --exclude ".*/tests/.*"
             --exclude ".*/samples/.*"
@@ -88,13 +88,13 @@ function(az_iot_add_coverage_target)
             --txt --print-summary
         COMMAND ${CMAKE_COMMAND} -E echo "--- per-component summary ---"
         COMMAND ${CMAKE_COMMAND} -E env python3
-            "${CMAKE_SOURCE_DIR}/tests/coverage_report.py"
+            "${PROJECT_SOURCE_DIR}/tests/coverage_report.py"
             --summary "${_cov_dir}/summary.json"
-            --components "${CMAKE_SOURCE_DIR}/tests/coverage-components.json"
-            --source-root "${CMAKE_SOURCE_DIR}"
+            --components "${PROJECT_SOURCE_DIR}/tests/coverage-components.json"
+            --source-root "${PROJECT_SOURCE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E echo
             "Coverage report: ${_cov_dir}/html/index.html"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        WORKING_DIRECTORY "${PROJECT_BINARY_DIR}"
         COMMENT "Generating coverage report with gcovr"
         VERBATIM
     )
