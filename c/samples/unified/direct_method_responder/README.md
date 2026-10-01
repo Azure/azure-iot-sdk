@@ -13,7 +13,7 @@ see [`mqttv5/direct_method_responder`](../../mqttv5/direct_method_responder/READ
 - Direct methods differ most between the generations, so each gets its own setup:
 -   - mqttv3 has no method registry and no probe. One handler receives every invocation with its arguments, so the sample routes by name and answers unknown names with 404. mqttv3 never learns the caller's timeout, so the sample sets a local response timeout (60 s).
 -   - mqttv5 asks before it calls. Methods are declared with `register_method()`; a probe for any other name is answered `METHOD_NOT_FOUND` by the SDK before the arguments are sent. An optional probe handler can decline a declared method (for example `DEVICE_BUSY`); this sample accepts every probe.
-- A payload too large to echo back is answered 413.
+- On mqttv5, a payload larger than `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` is answered 413.
 - Rebuilds its clients when DPS assigns the other generation, as [`unified/telemetry`](../telemetry/README.md) does.
 - Platforms: Linux and Windows.
 
