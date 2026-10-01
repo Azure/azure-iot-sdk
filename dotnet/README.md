@@ -27,8 +27,10 @@ This SDK is currently previewing v2.0.0 versions which are compatible with new M
 
 The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different enough that this preview SDK version includes two API sets (each with their own set of samples). 
 
- - The **Unified** API set allows for writing device code that is agnostic to the type of IoT Hub it is connected to by taking a lowest-common-denonminator of the supported features. Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/Unified)
- - The **MQTTv5** API set allows for writing device code that specifically targets this new kind of IoT hub. Seet the supported features section below for more details. Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/MQTTv5)
+ - The **Unified** API set allows for writing device code that is agnostic to the type of IoT Hub it is connected to by taking a lowest-common-denonminator of the supported features. 
+   - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/Unified)
+ - The **MQTTv5** API set allows for writing device code that specifically targets this new kind of IoT hub. Seet the supported features section below for more details. 
+   - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/MQTTv5)
  - All the SDK code is shipped in a single NuGet package. No more managing IoT Hub + DPS packages separately
 
 ## Key features
