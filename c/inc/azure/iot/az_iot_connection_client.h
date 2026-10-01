@@ -269,13 +269,15 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     /**
-     * @brief Source of the TLS material: trust anchors and, if any, the client
-     * identity. Required.
+     * @brief Source of every credential: trust anchors, plus per role (DPS,
+     * hub) either an X.509 client identity or a SAS signer. Required.
      *
      * Every DPS and hub connection uses TLS: open() refuses a client without a
      * provider (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a connect attempt whose
      * load() fails fails with the provider's error instead of connecting
-     * without TLS.
+     * without TLS. load() selects X.509 or SAS per role through
+     * az_iot_certificate_material::kind, so any onboarding credential can pair
+     * with any operational one.
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -336,7 +338,8 @@ extern "C"
                                              * registration and connect to the assigned
                                              * hub with the issued operational cert.
                                              * Requires a provider whose vtable exposes
-                                             * get_csr (version >= 2). */
+                                             * get_csr (version >= 2). The onboarding
+                                             * credential may be X.509 or SAS. */
 
       /* Consecutive failed hub connect attempts after which the assignment is
        * treated as stale and re-provisioning is forced. Defaults to
@@ -563,6 +566,20 @@ extern "C"
      * disconnected session is also bounded by its queue (100 messages / 1 MB) --
      * overflowing that destroys the session regardless of this value. */
     uint32_t session_expiry_seconds;
+
+    /**
+     * @brief Lifetime of each SAS token the SDK signs, in seconds. 0 selects
+     * AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS. Ignored for X.509 roles.
+     *
+     * The hub drops a session whose token expires, so the SDK reconnects the
+     * hub session with a fresh token at 80% of this lifetime. The reconnect is
+     * reported like any other (HUB: RECONNECTING, then CONNECTED) and resumes
+     * the session per session_continuity. DPS tokens are signed per attempt.
+     *
+     * Applies to MQTTv3 and MQTTv5 hubs alike. Whether a hub accepts SAS is the
+     * service's decision; a refusal fails with AZ_IOT_ERR_IDENTITY_REJECTED.
+     */
+    uint32_t sas_token_lifetime_seconds;
   } az_iot_connection_client_options;
 
   /* Which of the client's two lifecycles something refers to.
@@ -829,6 +846,10 @@ extern "C"
  * holding broker state for every absent device. */
 #ifndef AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS
 #define AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS 3600
+#endif
+/** @brief Default SAS token lifetime, in seconds (opts.sas_token_lifetime_seconds). */
+#ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS
+#define AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS 3600
 #endif
 /* Matches the presence birth-ack timeout: both bound "the broker accepted the
  * connection and then went quiet", and having two different windows for that on
@@ -1296,8 +1317,8 @@ extern "C"
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
-   *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
-   *     certificate_provider.
+   *   - DPS (host==NULL): dps.id_scope, dps.registration_id,
+   *     certificate_provider. The provider chooses X.509 or SAS per role.
    *   - Direct hub connect: host, client_id, certificate_provider; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
    *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1). */

@@ -82,3 +82,6 @@ add_executable(az_iot_sample_auth_hsm_sign_callback
     hsm_sign_callback/main.c)
 target_link_libraries(az_iot_sample_auth_hsm_sign_callback PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)
+
+# dps_symmetric_key and dps_symmetric_key_csr use the proposed symmetric-key
+# provider, which has no implementation yet; they are added here with it.

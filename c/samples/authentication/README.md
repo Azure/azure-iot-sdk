@@ -15,7 +15,24 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 | Renew the operational certificate over an mqttv3 hub | [`hub_renew`](hub_renew/README.md) | managed (OpenSSL) |
 | Key in a PKCS#11 token or TPM, named by a URI | [`hsm_pkcs11`](hsm_pkcs11/README.md) | your own; returns a key reference |
 | Key reachable only through "sign these bytes" | [`hsm_sign_callback`](hsm_sign_callback/README.md) | your own; implements `sign()` |
-| Skeleton of a certificate provider | [`custom_provider_template`](custom_provider_template/README.md) | your own |
+| Skeleton of a certificate provider, incl. `sign_sas()` | [`custom_provider_template`](custom_provider_template/README.md) | your own |
+| SAS to DPS, SAS to the hub (proposed) | [`dps_symmetric_key`](dps_symmetric_key/README.md) | `az_iot_certificate_provider_symmetric_key` |
+| SAS to DPS, DPS-issued certificate to the hub (proposed) | [`dps_symmetric_key_csr`](dps_symmetric_key_csr/README.md) | symmetric key + managed (operational only) |
+
+## Onboarding and operational credentials (proposed)
+
+Not implemented; the `dps_symmetric_key*` samples show the proposed API and are not built.
+`load()` sets `az_iot_certificate_material::kind` per role, so DPS and the hub each use X.509 or SAS; SAS tokens are signed through the provider's `sign_sas()`.
+
+| DPS (onboarding) | Hub (operational) | Service | How |
+| --- | --- | --- | --- |
+| SAS | SAS, mqttv3 | Supported | `dps_symmetric_key` |
+| SAS | DPS-issued X.509, mqttv3 or mqttv5 | Supported (certificate management preview) | `dps_symmetric_key_csr` |
+| X.509 | DPS-issued X.509, mqttv3 or mqttv5 | Supported (certificate management preview) | `dps_csr_managed`, `custom_certificate_provider` |
+| X.509 | Same X.509, mqttv3 or mqttv5 | Supported | `unified/`, `mqttv5/` samples |
+| X.509 | SAS | Not provisioned by DPS | Expressible: `load(OPERATIONAL)` returns SAS. |
+| SAS | SAS, mqttv5 | Not supported by the service | `dps_symmetric_key`; not blocked by the SDK, a refusal is `AZ_IOT_ERR_IDENTITY_REJECTED`. |
+| TPM attestation | any | Not available over MQTT | Out of scope. A TPM can hold the X.509 or SAS key. |
 
 ## Which non-extractable key route applies
 
@@ -37,3 +54,4 @@ The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON` (the 
 | `custom_certificate_provider` | The Paho adapter, and OpenSSL 3.0+ outside Windows |
 | `hsm_pkcs11` | The Paho adapter |
 | `custom_provider_template`, `hsm_sign_callback` | Always |
+| `dps_symmetric_key`, `dps_symmetric_key_csr` | Not yet (proposed API) |

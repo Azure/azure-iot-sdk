@@ -21,14 +21,29 @@ extern "C"
   /* Pluggable certificate provider. The default implementation passes through
    * file/PEM material from configuration. Custom implementations can integrate
    * TPM / HSM / OS keystore, and (optionally) certificate-signing-request (CSR)
-   * based enrollment. See docs/eng/certificate-management.md. */
+   * based enrollment. From vtable v3 a role can also authenticate with a SAS
+   * token (see az_iot_credential_kind). See docs/eng/certificate-management.md. */
 
   /* Which identity load() should return (design decision D3). */
   typedef enum
   {
     AZ_IOT_CRED_BOOTSTRAP = 0, /* identity that authenticates to DPS         */
-    AZ_IOT_CRED_OPERATIONAL /* DPS/Hub-issued operational cert, once held  */
+    AZ_IOT_CRED_OPERATIONAL /* identity that authenticates to the hub      */
   } az_iot_cert_role;
+
+  /**
+   * @brief How a role authenticates. Chosen per role by load().
+   */
+  typedef enum az_iot_credential_kind
+  {
+    /** @brief TLS client certificate. Default (zero). */
+    AZ_IOT_CREDENTIAL_X509 = 0,
+    /**
+     * @brief SAS token in the MQTT password, signed through the vtable's
+     * sign_sas(). The SDK builds the token and renews it before it expires.
+     */
+    AZ_IOT_CREDENTIAL_SAS
+  } az_iot_credential_kind;
 
   typedef struct az_iot_certificate_material
   {
@@ -53,6 +68,15 @@ extern "C"
      * key; the rust_mqtt adapter has no TLS credential handling at all. */
     const char* client_key_uri; /* may be NULL; e.g. "pkcs11:token=...;object=..." */
     const char* crypto_engine_id; /* may be NULL; OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
+    /**
+     * @brief Credential this role authenticates with.
+     *
+     * AZ_IOT_CREDENTIAL_SAS requires vtable version >= 3 and sign_sas(); the
+     * client_cert_* / client_key_* / crypto_engine_id fields must then be NULL.
+     * trusted_ca_* still apply: TLS always authenticates the server.
+     * A violation fails the connect with AZ_IOT_ERR_CREDENTIAL_INCOMPLETE.
+     */
+    az_iot_credential_kind kind;
   } az_iot_certificate_material;
 
   /* PKCS#10 certificate signing request produced by the provider. Base64-encoded
@@ -90,7 +114,7 @@ extern "C"
 
 /* Vtable ABI version (D1). The client checks this before calling any hook added
  * after v1; a provider MUST set vtable->version to the value it was built with. */
-#define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 2u
+#define AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION 3u
 
   typedef struct az_iot_certificate_provider_vtable
   {
@@ -139,6 +163,33 @@ extern "C"
         uint8_t* out_sig,
         size_t out_sig_cap,
         size_t* out_sig_len);
+
+    /**
+     * @brief v3 SAS signing (optional; required when load() returns
+     * AZ_IOT_CREDENTIAL_SAS for any role).
+     *
+     * Computes HMAC-SHA256 over @p data with the symmetric key of @p role. The
+     * key never leaves the provider, so it can live in a TPM or HSM. The SDK
+     * builds the string to sign (DPS registration or hub device resource) and
+     * encodes the result into the token.
+     *
+     * @param[in] self          Provider.
+     * @param[in] role          Role the token is for.
+     * @param[in] data          String to sign.
+     * @param[in] data_len      Length of @p data in bytes.
+     * @param[out] out_hmac     Receives the raw (not base64) HMAC.
+     * @param[in] out_hmac_cap  Capacity of @p out_hmac; at least 32.
+     * @param[out] out_hmac_len Bytes written.
+     * @return AZ_IOT_OK, or an error that fails the connect attempt.
+     */
+    az_iot_result (*sign_sas)(
+        az_iot_certificate_provider* self,
+        az_iot_cert_role role,
+        const uint8_t* data,
+        size_t data_len,
+        uint8_t* out_hmac,
+        size_t out_hmac_cap,
+        size_t* out_hmac_len);
   } az_iot_certificate_provider_vtable;
 
   struct az_iot_certificate_provider

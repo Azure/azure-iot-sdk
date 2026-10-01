@@ -150,9 +150,17 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
-Every connection uses TLS with X.509 client authentication. `certificate_provider` supplies the
-trusted CA and the device credential; `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`
-without one.
+Every connection uses TLS. `certificate_provider` supplies the trusted CA and, per role, the
+device credential: an X.509 client certificate, or a SAS token signed through the provider's
+`sign_sas()` (`az_iot_certificate_material::kind`). The DPS (onboarding) and hub (operational)
+roles choose independently, so a device can register with a symmetric key and use a DPS-issued
+certificate on the hub. `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` without a
+provider.
+
+SAS tokens last `sas_token_lifetime_seconds` (default one hour). The SDK reconnects the hub
+session with a new token at 80% of that. Whether a hub accepts SAS is up to the service; a
+refusal is `AZ_IOT_ERR_IDENTITY_REJECTED`. See
+[`samples/authentication`](../samples/authentication/README.md) for every combination.
 
 Operational certificates:
 

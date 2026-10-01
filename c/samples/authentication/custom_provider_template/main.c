@@ -19,6 +19,9 @@
  *                 set client_key_uri/crypto_engine_id so the TLS adapter calls
  *                 back into sign() during the handshake instead of reading a key.
  *   - store_issued_certificate(): persist the issued chain wherever you like.
+ *   - sign_sas(): HMAC-SHA256 with a symmetric key (v3). Return
+ *                 AZ_IOT_CREDENTIAL_SAS from load() for a role that uses it;
+ *                 the key can stay in a TPM / HSM.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +39,7 @@ typedef struct
   const char* bootstrap_key_path;
   const char* trusted_ca_path;
   int has_operational;
+  int sas_onboarding; /* DPS with a symmetric key instead of bootstrap_cert */
 } my_provider;
 
 static char* dup_cstr(const char* s)
@@ -80,6 +84,11 @@ static az_iot_result my_load(
     out->client_cert_path = "operational_cert.pem";
     out->client_key_uri = NULL; /* e.g. "pkcs11:object=device-key" */
     out->crypto_engine_id = NULL; /* e.g. "pkcs11" */
+  }
+  else if (m->sas_onboarding)
+  {
+    /* No client certificate: the SDK signs a SAS token through sign_sas(). */
+    out->kind = AZ_IOT_CREDENTIAL_SAS;
   }
   else
   {
@@ -165,6 +174,31 @@ static az_iot_result my_sign(
   return AZ_IOT_ERR_NOT_SUPPORTED;
 }
 
+static az_iot_result my_sign_sas(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    const uint8_t* data,
+    size_t data_len,
+    uint8_t* out_hmac,
+    size_t out_hmac_cap,
+    size_t* out_hmac_len)
+{
+  (void)self;
+  (void)role;
+  (void)data;
+  (void)data_len;
+  if (!out_hmac || !out_hmac_len || out_hmac_cap < 32)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* REPLACE ME (optional, v3): HMAC-SHA256 over `data` with the symmetric key
+   * for `role` (e.g. a TPM HMAC key), writing the 32 raw bytes to out_hmac.
+   * Return AZ_IOT_ERR_NOT_SUPPORTED if no role uses SAS. */
+  memset(out_hmac, 0, 32);
+  *out_hmac_len = 32;
+  return AZ_IOT_OK;
+}
+
 static void my_destroy(az_iot_certificate_provider* self)
 {
   (void)self; /* nothing owned in this template */
@@ -179,6 +213,7 @@ static const az_iot_certificate_provider_vtable s_my_vtable = {
   .release_csr = my_release_csr,
   .store_issued_certificate = my_store_issued_certificate,
   .sign = my_sign,
+  .sign_sas = my_sign_sas,
 };
 
 int main(void)
@@ -188,6 +223,7 @@ int main(void)
   provider.bootstrap_cert_path = "bootstrap_cert.pem";
   provider.bootstrap_key_path = "bootstrap_key.pem";
   provider.trusted_ca_path = "trusted_ca.pem";
+  provider.sas_onboarding = 1;
 
   /* Pass &provider.base wherever an az_iot_certificate_provider* is expected
    * (assign to az_iot_connection_client_options.certificate_provider, etc.).
@@ -203,6 +239,30 @@ int main(void)
   az_span chain[1] = { AZ_SPAN_FROM_STR("MIIBase64DERcertGoesHere==") };
   az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
   (void)provider.base.vtable->store_issued_certificate(&provider.base, &issued);
+
+  az_iot_certificate_material material = { 0 };
+  if (provider.base.vtable->load(&provider.base, AZ_IOT_CRED_BOOTSTRAP, &material) != AZ_IOT_OK
+      || material.kind != AZ_IOT_CREDENTIAL_SAS)
+  {
+    return 1;
+  }
+  provider.base.vtable->release(&provider.base, &material);
+  static const uint8_t to_sign[] = "scope/registrations/my-device-id\n1700000000";
+  uint8_t hmac[32];
+  size_t hmac_len = 0;
+  if (provider.base.vtable->sign_sas(
+          &provider.base,
+          AZ_IOT_CRED_BOOTSTRAP,
+          to_sign,
+          sizeof(to_sign) - 1,
+          hmac,
+          sizeof(hmac),
+          &hmac_len)
+      != AZ_IOT_OK)
+  {
+    return 1;
+  }
+  fprintf(stderr, "[custom] sign_sas produced %zu bytes\n", hmac_len);
 
   provider.base.vtable->deinit(&provider.base);
   return 0;
