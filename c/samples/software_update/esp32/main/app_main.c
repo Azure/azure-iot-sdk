@@ -219,6 +219,10 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   {
     g_persist_failing = false;
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
+  }
 }
 
 /* ------------------------------------------------------------------------- */
