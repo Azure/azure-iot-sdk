@@ -109,19 +109,6 @@ Change them in [`main/app_main.c`](main/app_main.c).
 | `SU_UPDATE_NAME` | `ESP32-SU` |
 | `SU_UPDATE_VERSION` | `1.0.0` |
 
-<details>
-<summary>Shortcut: configure with <code>Set-SuEsp32Config.ps1</code></summary>
-
-[`Set-SuEsp32Config.ps1`](../../common/scripts/Set-SuEsp32Config.ps1) copies the
-certificate and key from `AZ_IOT_CLIENT_CERT` / `AZ_IOT_CLIENT_KEY` (and the CA from
-`AZ_IOT_TRUSTED_CA` if it is a real certificate), prompts for Wi-Fi, and writes the
-four required settings into `sdkconfig`.
-
-```powershell
-../../common/scripts/Set-SuEsp32Config.ps1 -IdfExportScript <ESP-IDF>/export.bat
-```
-
-</details>
 
 ---
 
@@ -193,9 +180,6 @@ I (...) su_esp32: resumed persisted workflow at state: <state>
 I (...) su_ota: image confirmed valid; rollback cancelled
 ```
 
-> [`New-SuEsp32Image.ps1`](../../common/scripts/New-SuEsp32Image.ps1) builds the
-> image, then imports and deploys it through the IoT-Hub-based Device Update model.
-> That deployment is not offered to this sample; import the `.bin` yourself.
 
 ---
 
