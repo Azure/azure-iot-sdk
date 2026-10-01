@@ -23,6 +23,8 @@ Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Servic
 
 ## MQTTv5 Public Preview Notice
 
+> Please note that all preview APIs are subject to change prior to their formal release
+
 This SDK is currently previewing v2.0.0 versions which are compatible with new MQTTv5 supporting Azure IoT Hub (which is also currently in preview). These new MQTTv5 IoT Hubs will include new features that will not be available in the current MQTTv3 IoT Hubs.
 
 The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different enough that this preview SDK version includes two API sets (each with their own set of samples). 
