@@ -232,6 +232,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
               ? "; giving up"
               : "");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
+      /* Nothing was installed or reported; raise the limit named in the log. */
+      fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
+      break;
   }
 }
 

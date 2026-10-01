@@ -50,6 +50,7 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
+static void raise_refused(az_iot_su_client* client, az_iot_result reason);
 
 /* fetch_in_flight occupies padding after pending_fetch, so adding it left the
  * caller-allocated client's size and offsets unchanged. Fails the build if that
@@ -1223,9 +1224,10 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_su_client_update_
 
 /* Copy the deployment identity (workflow `id`) out of the request so it
  * survives request_buffer being overwritten by a later payload. `retry` and
- * `manifest_crc` are kept only for the persisted snapshot. An id that does not
- * fit disables de-duplication for that deployment (active_workflow_valid stays
- * false), so it is reprocessed on redelivery rather than skipped. */
+ * `manifest_crc` are kept only for the persisted snapshot. New deployments
+ * whose id does not fit are refused in process_update_metadata(); one that
+ * still does not fit (a record persisted by an earlier build) leaves
+ * active_workflow_valid false, so its progress cannot be reported. */
 static void set_active_workflow(
     az_iot_su_client* client,
     az_span id,
@@ -1235,6 +1237,10 @@ static void set_active_workflow(
   int32_t id_len = az_span_size(id);
   if (id_len <= 0 || (size_t)id_len > sizeof(SU_I(client).active_workflow_id))
   {
+    AZ_IOT_LOG_ERRORF(
+        "su: workflowId of %d bytes does not fit AZ_IOT_SU_WORKFLOW_ID_SIZE (%u); not reported",
+        (int)id_len,
+        (unsigned)sizeof(SU_I(client).active_workflow_id));
     SU_I(client).active_workflow_valid = false;
     SU_I(client).active_workflow_id_len = 0;
     SU_I(client).active_retry_timestamp_len = 0;
@@ -1305,6 +1311,7 @@ static void process_update_metadata(
         "su: update payload of %u bytes exceeds AZ_IOT_SU_REQUEST_BUFFER_SIZE (%u); ignored",
         (unsigned)patch_len,
         (unsigned)sizeof(SU_I(client).request_buffer));
+    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
     return;
   }
 
@@ -1326,8 +1333,9 @@ static void process_update_metadata(
   }
 
   /* Compare the decoded id: an escaped spelling of the active id is the same
-   * workflow. One too long for the scratch cannot match the active id, which
-   * is stored only when it fits in the same capacity. */
+   * workflow. An id too long for the scratch can be neither kept nor reported,
+   * so the deployment is refused rather than run unreported. Not truncated:
+   * the service correlates on the exact id. */
   uint8_t id_scratch[AZ_IOT_SU_WORKFLOW_ID_SIZE];
   az_span probe_id;
   az_iot_result dr
@@ -1335,6 +1343,16 @@ static void process_update_metadata(
   if (dr == AZ_IOT_ERR_INVALID_ARG)
   {
     AZ_IOT_LOG_ERROR("su: update payload has an undecodable workflowId; ignored");
+    return;
+  }
+  if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    AZ_IOT_LOG_ERRORF(
+        "su: decoded workflowId exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE (%u; %d bytes encoded); "
+        "update refused",
+        (unsigned)sizeof(id_scratch),
+        (int)az_span_size(probe.workflow.id));
+    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
     return;
   }
   if (dr == AZ_IOT_OK && same_workflow_id(client, probe_id))
@@ -1481,6 +1499,19 @@ static void raise_abandoned(
       event.service_error.tracking_id = "";
     }
   }
+  dispatch_event(client, &event);
+}
+
+/** @brief Raise AZ_IOT_SU_EVENT_UPDATE_REFUSED for an update not processed. */
+static void raise_refused(az_iot_su_client* client, az_iot_result reason)
+{
+  az_iot_su_event event = {
+    .kind = AZ_IOT_SU_EVENT_UPDATE_REFUSED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .reason = reason,
+    .service_error = k_no_service_error,
+  };
   dispatch_event(client, &event);
 }
 
