@@ -8,7 +8,6 @@ Device SDKs for Azure IoT Hub Device Provisioning Service (DPS), Azure IoT Hub a
 ## Table of Contents
 
 - [Getting Started](#getting-started)
-- [Documentation](#documentation)
 - [Getting Help](#getting-help)
 - [Contributing](#contributing)
   - [Helpful Links for Contributors](#helpful-links-for-contributors)
@@ -19,11 +18,6 @@ Device SDKs for Azure IoT Hub Device Provisioning Service (DPS), Azure IoT Hub a
 ## Getting Started
 
 Pick your language and follow its README:
-
-- [C SDK](c/README.md) - build, samples ([c/samples](c/samples/README.md)) and connecting a device ([c/docs/connecting.md](c/docs/connecting.md)).
-- [.NET SDK](dotnet/README.md) - samples ([dotnet/samples](dotnet/samples/README.md)).
-
-## Documentation
 
 | Library | Home | Documentation |
 | --- | --- | --- |
