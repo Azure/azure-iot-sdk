@@ -7,45 +7,14 @@ Device SDKs for Azure IoT Hub Device Provisioning Service (DPS), Azure IoT Hub a
 
 ## Table of Contents
 
-- [Documentation](#documentation)
-- [The GitHub Repository](#the-github-repository)
-  - [SDKs](#sdks)
-  - [Structure](#structure)
-  - [Main Branch](#main-branch)
 - [Getting Started](#getting-started)
+- [Documentation](#documentation)
+- [Getting Help](#getting-help)
 - [Contributing](#contributing)
   - [Helpful Links for Contributors](#helpful-links-for-contributors)
   - [Reporting Security Issues](#reporting-security-issues)
   - [License](#license)
   - [Trademarks](#trademarks)
-
-## Documentation
-
-For documentation specific to each SDK library, please refer to:
-
-- .NET: [README.md](dotnet/README.md)
-- C: [README.md](c/README.md)
-
-## The GitHub Repository
-
-To get help, post a suggestion or comment, please file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
-
-### SDKs
-
-| SDK | Folder |
-| --- | --- |
-| C (C99) | [c/](c/) |
-| .NET | [dotnet/](dotnet/) |
-
-### Structure
-
-- `/c` - C SDK: sources, samples, tests and docs.
-- `/dotnet` - .NET SDK: sources, samples and tests.
-- `/common` - Shared assets (e.g. protobuf definitions).
-
-### Main Branch
-
-`main` has the latest code, with new features and bug fixes. It is not a General Availability (GA) release.
 
 ## Getting Started
 
@@ -53,6 +22,17 @@ Pick your language and follow its README:
 
 - [C SDK](c/README.md) - build, samples ([c/samples](c/samples/README.md)) and connecting a device ([c/docs/connecting.md](c/docs/connecting.md)).
 - [.NET SDK](dotnet/README.md) - samples ([dotnet/samples](dotnet/samples/README.md)).
+
+## Documentation
+
+| Library | Home | Documentation |
+| --- | --- | --- |
+| C | [c/](c/) | [c/README.md](c/README.md) |
+| .NET | [dotnet/](dotnet/) | [dotnet/README.md](dotnet/README.md) |
+
+## Getting Help
+
+To get help, post a suggestion or comment, please file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
 
 ## Contributing
 
