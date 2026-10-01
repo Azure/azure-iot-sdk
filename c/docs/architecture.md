@@ -6,10 +6,11 @@
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
-- **Single-threaded.** No internal threads. Callbacks fire synchronously on the thread that called
-  into the SDK: mostly from `az_iot_connection_client_do_work()`, but a feature client's own entry
-  points can dispatch them too (for example `az_iot_su_client_do_work()` and
-  `az_iot_su_client_resume()`).
+- **Single-threaded API.** The connection and feature clients start no threads, and callbacks fire
+  synchronously on the thread that called into the SDK. The Paho adapter runs Paho's own I/O
+  threads internally and hands their events over to that thread. Callbacks are dispatched mostly
+  from `az_iot_connection_client_do_work()`, but a feature client's own entry points can dispatch
+  them too (for example `az_iot_su_client_do_work()` and `az_iot_su_client_resume()`).
 - **No dynamic allocation in the connection and feature clients.** Buffers are caller-provided or
   live in caller-allocated structs. The reference PEM certificate provider is the exception: it
   reads the certificate, key and CA files into heap buffers once, at init.
@@ -113,6 +114,8 @@ These are enforced in CI by [`eng/check-layering.sh`](../eng/check-layering.sh):
 
 - [Connecting a device](connecting.md): connection states, provisioning, reconnection, proxies,
   certificates.
+- [Client configuration](client-configuration.md): build options, compile-time limits, run-time
+  settings.
 - [Struct versioning](struct_versioning.md): compatibility guarantees.
 - [Bring your own MQTT client](how_to_byo_mqtt_client.md).
 - [Samples](../samples/README.md).
