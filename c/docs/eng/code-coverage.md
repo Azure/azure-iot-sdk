@@ -77,6 +77,8 @@ unit tracefile with those of the nightly e2e workflows (`ci-c-e2e`, `ci-c-e2e-cs
   `head_sha` is the target commit. Tracefiles from different revisions would give a plausible but
   wrong percentage, and `combine-coverage.sh` does not detect that itself.
 - It builds only a target commit that is on `main`; a dispatched SHA that is not fails the run.
+- Without a dispatched SHA, the target is the commit of the last green `ci-c-e2e` run, so a missing
+  `e2e` tracefile fails the run rather than producing a unit-only report.
 - It writes per-suite and combined reports (summary, Markdown, Cobertura, lcov).
 - `collect-coverage.sh` is the only place the gcovr filters are defined. Tracefiles collected with
   different filters cannot be merged meaningfully.
