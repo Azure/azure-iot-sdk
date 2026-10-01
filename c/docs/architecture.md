@@ -114,6 +114,8 @@ These are enforced in CI by [`eng/check-layering.sh`](../eng/check-layering.sh):
 
 - [Connecting a device](connecting.md): connection states, provisioning, reconnection, proxies,
   certificates.
+- [Client configuration](client-configuration.md): build options, compile-time limits, run-time
+  settings.
 - [Struct versioning](struct_versioning.md): compatibility guarantees.
 - [Bring your own MQTT client](how_to_byo_mqtt_client.md).
 - [Samples](../samples/README.md).

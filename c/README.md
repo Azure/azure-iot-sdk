@@ -83,6 +83,7 @@ sample has its own README.
 | --- | --- |
 | Understand how the SDK fits together | [Architecture](docs/architecture.md) |
 | Connect a device: states, provisioning, reconnection, proxies, certificates | [Connecting a device](docs/connecting.md) |
+| Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
 | Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |
 | Know what stays compatible between releases | [Struct versioning](docs/struct_versioning.md) |
 | Install the SDK, consume it from CMake or pkg-config, or harden builds | [Building and installing](docs/eng/building.md) |
