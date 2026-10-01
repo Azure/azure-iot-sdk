@@ -19,9 +19,9 @@
  * names the object inside it; the SDK never learns anything else about it.
  *
  * Key custody is generation-agnostic -- the token signs a TLS handshake and
- * neither MQTT version is visible to it. So, as in every unified sample (see
- * samples/unified/telemetry), both MQTT adapters are registered and the
- * telemetry client is built only once CONNECTED, for the profile DPS assigned.
+ * neither MQTT version is visible to it. So, as in samples/unified/connect_first,
+ * both MQTT adapters are registered and the telemetry client is built only once
+ * CONNECTED, for the profile DPS assigned.
  * The custody code is the same either way.
  *
  * Requirements on the host:

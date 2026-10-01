@@ -27,9 +27,9 @@
  *     and while one invocation is held, the probe answers DEVICE_BUSY -- both
  *     before the arguments are sent.
  *
- * Runs ~60 seconds and, like every unified sample (see unified/telemetry),
- * builds for an assumed generation before open() and rebuilds when DPS assigns
- * the other one -- including after the device is moved while it runs.
+ * Runs ~60 seconds and, like unified/telemetry, builds for an assumed
+ * generation before open() and rebuilds when DPS assigns the other one --
+ * including after the device is moved while it runs.
  */
 #include <stdio.h>
 #include <stdlib.h>
