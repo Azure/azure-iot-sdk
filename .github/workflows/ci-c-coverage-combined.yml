@@ -27,13 +27,19 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 'Commit to build the report for (default: the last nightly e2e run)'
+        description: 'Full SHA of a commit on main to build the report for (default: the last nightly e2e run)'
         required: false
         type: string
 
 permissions:
   contents: read
   actions: read
+
+env:
+  # jq: newest run of main itself. --branch matches head_branch, which a fork
+  # pull request from a branch named "main" also carries, so pull request runs
+  # are excluded by event.
+  MAIN_RUN: '[.[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")][0]'
 
 jobs:
   combine:
@@ -56,20 +62,38 @@ jobs:
             # ci-c-e2e is the broadest of the nightlies, so its last green run is
             # the natural anchor for the others to agree with.
             sha=$(gh run list --repo "$REPO" --workflow ci-c-e2e.yml \
-                    --branch main --status success --limit 1 --json headSha \
-                    --jq '.[0].headSha // empty')
+                    --branch main --status success --limit 50 --json headSha,event \
+                    --jq "$MAIN_RUN | .headSha // empty")
             if [ -z "$sha" ]; then
               echo "::error::no successful ci-c-e2e run on main to anchor the report to"
               exit 1
             fi
           fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target must be a full commit SHA"
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "target commit: $sha"
 
+      # Check out main, then move to the target only if main contains it, so
+      # nothing outside main is built.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: ${{ steps.target.outputs.sha }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Check out the target commit
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
+            echo "::error::$SHA is not a commit on main"
+            exit 1
+          fi
+          git checkout -q --detach "$SHA"
 
       - name: Install toolchain
         run: |
@@ -100,8 +124,10 @@ jobs:
           # green run is on a DIFFERENT commit is skipped rather than merged --
           # see the correctness note at the top of this file.
           add () {          # $1 = workflow file, $2 = artifact name, $3 = label
-            run_sha=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
-                        --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+            run=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
+                    --status success --limit 50 --json headSha,databaseId,event \
+                    --jq "$MAIN_RUN | [.headSha, .databaseId] | @tsv")
+            read -r run_sha run_id <<< "$run"
             if [ -z "$run_sha" ]; then
               echo "::warning::$3: no successful run found; excluded"
               return 0
@@ -110,8 +136,6 @@ jobs:
               echo "::warning::$3: last green run is $run_sha, not the target $SHA; excluded"
               return 0
             fi
-            run_id=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
-                       --status success --limit 1 --json databaseId --jq '.[0].databaseId')
             if gh run download "$run_id" --repo "$REPO" -n "$2" -D "traces/$3" 2>/dev/null; then
               f=$(find "traces/$3" -name '*.json' | head -1)
               echo "  $3: $f"
