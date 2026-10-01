@@ -2975,9 +2975,12 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
 
     /* Phase 3.1: route PUBACK to the publishing feature client via the
-     * correlation table. Unmatched packet_ids are dropped (could be a
-     * publish issued by a future feature without an ack callback). */
+     * correlation table. An unmatched packet_id is a publish sent without an
+     * ack callback: success is dropped, failure is logged since no one else
+     * will report it. */
     case AZ_IOT_MQTT_EVT_PUBLISH_ACK:
+    {
+      bool matched = false;
       for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
       {
         /* cb == NULL: reserved by a publish still in progress; not yet matchable. */
@@ -2989,6 +2992,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           c->pending_pubacks[i].in_use = false;
           c->pending_pubacks[i].cb = NULL;
           c->pending_pubacks[i].user_ctx = NULL;
+          matched = true;
           if (cb)
           {
             cb(evt->status, ctx);
@@ -2996,7 +3000,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           break;
         }
       }
+      if (!matched && evt->status != AZ_IOT_OK)
+      {
+        AZ_IOT_LOG_ERRORF(
+            "publish with packet id %u failed (%s); it had no completion callback",
+            (unsigned)evt->packet_id,
+            az_iot_result_to_string(evt->status));
+      }
       break;
+    }
 
     /* The dev/presence SUBACK advances the MQTTv5 birth handshake: publish the
      * birth message now that the ack topic is subscribed. Other SUBACKs are

@@ -1153,6 +1153,34 @@ static void unmatched_puback_is_ignored(void** state)
   assert_int_equal(probe.calls, 0);
 }
 
+/* Without a callback nobody else can report a rejected publish, so it is
+ * logged; an accepted one stays quiet. */
+static void untracked_publish_failure_is_logged(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_OK);
+  uint16_t ok_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  assert_int_equal(az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_OK);
+  uint16_t bad_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+
+  log_capture cap;
+  install_error_capture(&cap);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, ok_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(cap.count, 0);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, bad_pid, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "no completion callback"));
+}
+
 /* A publish that was in flight when the session died can never be
  * acknowledged. Completing the callback with an error is what lets the caller
  * decide to resend; dropping it silently would leave the app tracking a
@@ -1400,6 +1428,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         matching_puback_invokes_the_callback, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(unmatched_puback_is_ignored, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        untracked_publish_failure_is_logged, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         full_puback_table_publishes_nothing, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(failed_publish_releases_its_slot, setup_two_attempts, teardown),
