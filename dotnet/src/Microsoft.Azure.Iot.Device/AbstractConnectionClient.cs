@@ -213,6 +213,7 @@ namespace Microsoft.Azure.Iot.Device
                 CurrentConnectionContext.AuthenticationProvider = authentication;
             }
 
+            //TODO need to throw if using MQTTv5 API set and you get provisioned to an MQTTv3 hub
             await ConnectAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
