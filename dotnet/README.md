@@ -16,7 +16,7 @@ This SDK does not include any service client code. You can find that [here inste
 
 ## High-level Design notes
 
-Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Service SDKs, this version is setup such that
+Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Service SDKs, this version is designed such that
 
  - A single ```ConnectionClient``` instance handles all provisioning + connection logic
  - Separate "feature clients" (such as ```TelemetryClient```) use that ```ConnectionClient``` to perform twin/direct methods/telemetry operations
@@ -29,7 +29,7 @@ This SDK is currently previewing v2.0.0 versions which are compatible with new M
 
 The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different enough that this preview SDK version includes two API sets (each with their own set of samples). 
 
- - The **Unified** API set allows for writing device code that is agnostic to the type of IoT Hub it is connected to by taking a lowest-common-denominator of the supported features. 
+ - The **Unified** API set allows for writing device code that works as similarly as possible regardless of the type of IoT Hub it is connected to by taking a lowest-common-denominator of the supported features. 
    - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/Unified)
  - The **MQTTv5** API set allows for writing device code that specifically targets this new kind of IoT hub. See the supported features section below for more details.
    - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/MQTTv5)
