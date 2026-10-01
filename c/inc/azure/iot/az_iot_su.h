@@ -115,14 +115,16 @@ extern "C"
 #endif
 #define AZ_IOT_SU_PERSIST_BLOB_SIZE (AZ_IOT_SU_REQUEST_BUFFER_SIZE + AZ_IOT_SU_PERSIST_OVERHEAD)
 
-/* Capacities for the copied-out workflow `id` (duplicate detection) and
- * `retryTimestamp` (not persisted). Deployment ids are GUID-shaped (~36 chars) and retry
- * timestamps are ISO-8601 (~28 chars); these include generous headroom. An identity that does not
- * fit simply disables de-duplication for that deployment (it is then reprocessed on redelivery), so
- * correctness never depends on the size. */
+/**
+ * @brief Largest decoded workflow `id` the client accepts, in bytes. It is kept for reporting,
+ * duplicate detection and persistence. A deployment with a longer id is refused: nothing is
+ * processed or reported, and AZ_IOT_SU_EVENT_UPDATE_REFUSED is raised with
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE. Deployment ids are GUID-shaped (~36 chars).
+ */
 #ifndef AZ_IOT_SU_WORKFLOW_ID_SIZE
 #define AZ_IOT_SU_WORKFLOW_ID_SIZE 64
 #endif
+/* Capacity for the copied-out `retryTimestamp` (ISO-8601, ~28 chars; not persisted). */
 #ifndef AZ_IOT_SU_RETRY_TIMESTAMP_SIZE
 #define AZ_IOT_SU_RETRY_TIMESTAMP_SIZE 64
 #endif
@@ -639,7 +641,14 @@ extern "C"
      * AZ_IOT_SU_EVENT_PERSIST_FAILED. Carries `state` and `persist_attempts`
      * (the failures that preceded it). The best-effort erase of a stale record
      * after a failed terminal-record write is not tracked and never raises it. */
-    AZ_IOT_SU_EVENT_PERSIST_RECOVERED
+    AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
+
+    /* A delivered update was refused before processing, so nothing was
+     * installed or reported for it. Carries `state` (unchanged) and `reason`:
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
+     * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
+     * AZ_IOT_SU_REQUEST_BUFFER_SIZE. Raised again on each redelivery. */
+    AZ_IOT_SU_EVENT_UPDATE_REFUSED
   } az_iot_su_event_kind;
 
   /**
@@ -695,7 +704,8 @@ extern "C"
     az_iot_su_state state;
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED. */
+    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED and
+     * UPDATE_REFUSED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
