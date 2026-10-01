@@ -267,6 +267,14 @@ model (D9).
    Scope the *feature* to X.509 (matches the material struct), but route bootstrap
    auth through the provider so a future TPM/SAS provider can supply a token instead of a
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
+
+   **Symmetric key (proposed).** A separate `az_iot_sas_signer` (HMAC-SHA256 hook) is set
+   per role in `az_iot_connection_client_options::sas`; the certificate provider is
+   unchanged and keeps serving trust anchors, CSRs and X.509 roles. The key can stay in a
+   TPM/HSM. Any onboarding kind pairs with any operational kind.
+   `az_iot_sas_signer_symmetric_key` (OpenSSL) holds the key in memory and derives
+   enrollment-group keys. TPM *attestation* is out of scope: DPS does not support it over
+   MQTT.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is

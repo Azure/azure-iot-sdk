@@ -82,3 +82,13 @@ add_executable(az_iot_sample_auth_hsm_sign_callback
     hsm_sign_callback/main.c)
 target_link_libraries(az_iot_sample_auth_hsm_sign_callback PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)
+
+# BYO SAS signer template: no crypto deps, does not connect. Always built so
+# the signer vtable contract stays compiling.
+add_executable(az_iot_sample_auth_custom_sas_signer_template
+    custom_sas_signer_template/main.c)
+target_link_libraries(az_iot_sample_auth_custom_sas_signer_template PRIVATE az_iot_core)
+az_iot_apply_warnings(az_iot_sample_auth_custom_sas_signer_template)
+
+# dps_symmetric_key and dps_symmetric_key_csr use the proposed symmetric-key
+# signer, which has no implementation yet; they are added here with it.

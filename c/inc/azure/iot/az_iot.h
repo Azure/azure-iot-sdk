@@ -11,6 +11,7 @@
 #include "az_iot_message.h"
 #include "az_iot_certificate_provider.h"
 #include "az_iot_certificate_provider_pem.h"
+#include "az_iot_sas_signer.h"
 #include "az_iot_connection_client.h"
 #include "mqttv3/az_iot_telemetry_client.h"
 #include "mqttv5/az_iot_telemetry_client.h"

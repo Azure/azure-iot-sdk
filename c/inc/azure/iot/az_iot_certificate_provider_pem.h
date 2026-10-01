@@ -31,8 +31,10 @@ extern "C"
   typedef struct az_iot_certificate_provider_pem_options
   {
     const char* trusted_ca_pem_path; /* may be NULL                          */
-    const char* client_cert_pem_path; /* required                             */
-    const char* client_key_pem_path; /* required                             */
+    /* Both required, or both NULL for trust anchors only (every role then
+     * authenticates with a SAS signer; see az_iot_connection_client_options). */
+    const char* client_cert_pem_path; /* required, or NULL with key           */
+    const char* client_key_pem_path; /* required, or NULL with cert          */
     const char* client_key_password; /* may be NULL; copied verbatim         */
   } az_iot_certificate_provider_pem_options;
 

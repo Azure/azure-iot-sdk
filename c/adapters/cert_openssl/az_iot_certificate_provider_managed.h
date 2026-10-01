@@ -41,9 +41,12 @@ extern "C"
 
   typedef struct az_iot_certificate_provider_managed_options
   {
-    /* Bootstrap X.509 identity that authenticates to DPS. Both required. */
-    const char* bootstrap_cert_pem_path; /* required */
-    const char* bootstrap_key_pem_path; /* required */
+    /* Bootstrap X.509 identity that authenticates to DPS. Both required, unless
+     * both are NULL: the provider then serves AZ_IOT_CRED_OPERATIONAL only
+     * (load(BOOTSTRAP) returns AZ_IOT_ERR_NOT_FOUND), for a device whose
+     * onboarding uses a SAS signer. */
+    const char* bootstrap_cert_pem_path; /* required, or NULL with key */
+    const char* bootstrap_key_pem_path; /* required, or NULL with cert */
     /* Trusted CA presented to both bootstrap and operational connections. */
     const char* trusted_ca_pem_path; /* may be NULL */
     /* Operational private key. Loaded if the file exists, otherwise a new key
