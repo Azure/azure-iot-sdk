@@ -57,10 +57,11 @@ When a limit is exceeded:
 
 - by an application call: the call fails with an `az_iot_result` (usually
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or `AZ_IOT_ERR_NOT_SUPPORTED`);
-- by a message from the service: the message, or the part that does not fit, is dropped with a
-  `WARN` log.
+- by data from the service: depends on the limit. Usually the message, or the part that does not
+  fit, is dropped with a `WARN` log; for some limits the operation it belongs to fails
+  (provisioning, a software update).
 
-Exceptions are stated in the tables.
+The tables state each outcome that is not a failed call or a dropped message.
 
 #### Connection client ([az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h))
 
@@ -74,9 +75,9 @@ Exceptions are stated in the tables.
 | `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS` | 6 | Connection-state observers used by feature clients. |
 | `AZ_IOT_MAX_APP_STATE_OBSERVERS` | 4 | Connection-state observers the application can register. |
 | `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients attached to one connection client. |
-| `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. |
-| `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device ID, terminator included. |
-| `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS operation ID. |
+| `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
+| `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device ID, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
+| `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS operation ID. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `AZ_IOT_DPS_TOPIC_BUF` | 256 | DPS publish topic. |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Custom registration payload that `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` leaves room for. Application-side only; you can also size the buffer yourself. |
 | `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` | 64 | Connection profile string returned by DPS. A longer value is reported truncated. |
@@ -122,7 +123,7 @@ Defaults used when the matching option is left at 0:
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 4 | Root keys in the trust store. |
-| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. Raise for larger manifests. |
+| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
@@ -140,8 +141,9 @@ Defaults used when the matching option is left at 0:
 
 ### Option structs
 
-Each client is configured once, at `init()`, from a struct you fill in. Start from the `_default()`
-function where one exists: a zero-initialized struct is not always the same thing.
+Most structs configure a client once, at `init()`; `az_iot_mqttv5_twin_get_options` is passed per
+request. Start from the `_default()` function where one exists: a zero-initialized struct is not
+always the same thing.
 
 | Struct | Configures | Reference |
 | --- | --- | --- |
@@ -150,6 +152,7 @@ function where one exists: a zero-initialized struct is not always the same thin
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
 | `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform and crypto hooks, root keys, device properties | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
+| `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 
 ### Setters on feature clients
 
@@ -181,6 +184,6 @@ Supported environment variables. The samples read their own; each sample's READM
 
 | Variable | Read by | Effect |
 | --- | --- | --- |
-| `AZ_IOT_PAHO_TRACE` | Paho adapter | Turns on Paho's trace and detailed OpenSSL errors on a failed TLS handshake. Values, least to most verbose: `error`, `protocol`, `minimum`, `medium`, `maximum`; any other non-empty value means `minimum`. The trace is logged at `TRACE`, so set the log sink to `AZ_IOT_LOG_LEVEL_TRACE` to see it. Proxy credentials are redacted. |
+| `AZ_IOT_PAHO_TRACE` | Paho adapter | Turns on Paho's trace and detailed OpenSSL errors on a failed TLS handshake. Values, least to most verbose: `error`, `protocol`, `minimum` (or `min`), `medium`, `maximum` (or `max`); any other non-empty value means `minimum`. The trace is logged at `TRACE`, so set the log sink to `AZ_IOT_LOG_LEVEL_TRACE` to see it. Proxy credentials are redacted. |
 | `TMPDIR` | Paho adapter, key custody (not Windows) | Directory for the short-lived key-reference file. Default `/tmp`. |
 | `http_proxy`, `https_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none. Lowercase only. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |
