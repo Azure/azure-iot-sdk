@@ -111,6 +111,7 @@ jobs:
         with:
           name: e2e-test-config
           path: test_config
+          digest-mismatch: warn
 
       - name: Run e2e
         shell: pwsh
