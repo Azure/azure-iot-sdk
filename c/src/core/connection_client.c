@@ -2980,7 +2980,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_PUBLISH_ACK:
       for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
       {
-        if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].packet_id == evt->packet_id)
+        /* cb == NULL: reserved by a publish still in progress; not yet matchable. */
+        if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].cb != NULL
+            && c->pending_pubacks[i].packet_id == evt->packet_id)
         {
           az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
           void* ctx = c->pending_pubacks[i].user_ctx;
@@ -5033,41 +5035,57 @@ az_iot_result az_iot_connection_client__publish(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  uint16_t pid = 0;
-  az_iot_result r = client->active_client->iface->publish(client->active_client, msg, &pid);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  /* QoS 0: there is no PUBACK on the wire. Fire the cb synchronously. */
-  if (msg->qos == AZ_IOT_MQTT_QOS_0)
-  {
-    if (ack_cb)
-    {
-      ack_cb(AZ_IOT_OK, ack_user_ctx);
-    }
-    return AZ_IOT_OK;
-  }
-
-  /* QoS 1/2: register correlation entry. If no callback was requested, we
-   * still succeeded; the future PUBACK will be silently absorbed. */
-  if (ack_cb)
+  /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
+   * so a full table sends nothing and the caller can retry without
+   * duplicating. The reserved slot has no cb, so neither the PUBACK match nor
+   * teardown_active() acts on it. Adapters deliver events only from
+   * process_loop() (az_iot_mqtt_iface), so no PUBACK can arrive before the
+   * packet id is filled in below. */
+  size_t slot = AZ_IOT_MAX_PENDING_PUBACKS;
+  if (msg->qos != AZ_IOT_MQTT_QOS_0 && ack_cb)
   {
     for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
     {
       if (!client->pending_pubacks[i].in_use)
       {
-        client->pending_pubacks[i].packet_id = pid;
-        client->pending_pubacks[i].cb = ack_cb;
-        client->pending_pubacks[i].user_ctx = ack_user_ctx;
-        client->pending_pubacks[i].in_use = true;
-        return AZ_IOT_OK;
+        slot = i;
+        break;
       }
     }
-    /* Table full: the publish itself succeeded but we cannot deliver the
-     * ack. Surface it so the caller can apply backpressure. */
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    if (slot == AZ_IOT_MAX_PENDING_PUBACKS)
+    {
+      return AZ_IOT_ERR_BUSY;
+    }
+    client->pending_pubacks[slot].packet_id = 0;
+    client->pending_pubacks[slot].cb = NULL;
+    client->pending_pubacks[slot].user_ctx = NULL;
+    client->pending_pubacks[slot].in_use = true;
+  }
+
+  uint16_t pid = 0;
+  az_iot_result r = client->active_client->iface->publish(client->active_client, msg, &pid);
+  if (slot < AZ_IOT_MAX_PENDING_PUBACKS)
+  {
+    if (r != AZ_IOT_OK)
+    {
+      client->pending_pubacks[slot].in_use = false;
+      return r;
+    }
+    client->pending_pubacks[slot].packet_id = pid;
+    client->pending_pubacks[slot].cb = ack_cb;
+    client->pending_pubacks[slot].user_ctx = ack_user_ctx;
+    return AZ_IOT_OK;
+  }
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  /* QoS 0: there is no PUBACK on the wire. Fire the cb synchronously. QoS 1/2
+   * without a callback: the future PUBACK is silently absorbed. */
+  if (msg->qos == AZ_IOT_MQTT_QOS_0 && ack_cb)
+  {
+    ack_cb(AZ_IOT_OK, ack_user_ctx);
   }
   return AZ_IOT_OK;
 }

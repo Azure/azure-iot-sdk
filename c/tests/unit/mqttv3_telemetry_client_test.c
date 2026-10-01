@@ -492,7 +492,7 @@ static void a_disconnect_completes_the_pending_send(void** state)
   assert_int_equal(record.status, AZ_IOT_ERR_NOT_CONNECTED);
 }
 
-static void a_full_puback_table_reports_that_completion_cannot_be_tracked(void** state)
+static void a_full_puback_table_sends_nothing(void** state)
 {
   fixture* test = (fixture*)*state;
   open_mqtt_v3(test);
@@ -511,8 +511,8 @@ static void a_full_puback_table_reports_that_completion_cannot_be_tracked(void**
   send_record overflow = { 0 };
   assert_int_equal(
       az_iot_mqttv3_telemetry_client_send(&test->telemetry, &message, on_send, &overflow),
-      AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_true(az_iot_mock_mqtt_client_call_count(test->mock) > before);
+      AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_call_count(test->mock), before);
   assert_false(overflow.fired);
 }
 
@@ -536,8 +536,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         empty_payload_is_valid_and_publish_failures_are_returned, setup, teardown),
     cmocka_unit_test_setup_teardown(a_disconnect_completes_the_pending_send, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_full_puback_table_reports_that_completion_cannot_be_tracked, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_full_puback_table_sends_nothing, setup, teardown),
   };
   return cmocka_run_group_tests_name("mqttv3_telemetry_client", tests, NULL, NULL);
 }

@@ -1206,6 +1206,82 @@ static void all_pending_pubacks_are_completed_on_disconnect(void** state)
   assert_int_equal(c.last_status, AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+static az_iot_result try_publish(az_iot_test_conn* fx, az_iot_mqtt_qos qos, puback_probe* probe)
+{
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.payload = (const uint8_t*)"x";
+  msg.payload_len = 1;
+  msg.qos = qos;
+  return az_iot_connection_client__publish(fx->client, &msg, probe ? on_puback : NULL, probe);
+}
+
+/* A full ack table must refuse before anything reaches the wire, so a caller
+ * that retries on the error does not send a duplicate. */
+static void full_puback_table_publishes_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  uint16_t first_pid = 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    uint16_t pid = publish_qos1(fx, m, &probes[i]);
+    if (i == 0)
+    {
+      first_pid = pid;
+    }
+  }
+
+  size_t published = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), published);
+  assert_int_equal(overflow.calls, 0);
+
+  /* Publishes that need no slot are unaffected. */
+  puback_probe qos0 = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_0, &qos0), AZ_IOT_OK);
+  assert_int_equal(qos0.calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, NULL), AZ_IOT_OK);
+
+  /* An ack frees a slot and the retry goes through. */
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, first_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(probes[0].calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_OK);
+  assert_int_equal(overflow.calls, 0);
+}
+
+/* A publish the adapter refuses must give back the slot it reserved. */
+static void failed_publish_releases_its_slot(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  for (size_t i = 0; i + 1 < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    (void)publish_qos1(fx, m, &probes[i]);
+  }
+
+  puback_probe failed = { 0 };
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &failed), AZ_IOT_ERR_MQTT);
+  uint16_t failed_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+
+  /* The last slot is still free, and an ack for the refused publish's packet
+   * id reaches nobody. */
+  (void)publish_qos1(fx, m, &probes[AZ_IOT_MAX_PENDING_PUBACKS - 1]);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, failed_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(failed.calls, 0);
+
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+}
+
 /* Destroying inside the backoff window is the awkward case: there is no
  * adapter to tear down (it was destroyed when the retry was scheduled) but a
  * deadline is still armed. Nothing must be left pointing at freed memory, and
@@ -1324,6 +1400,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         matching_puback_invokes_the_callback, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(unmatched_puback_is_ignored, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        full_puback_table_publishes_nothing, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(failed_publish_releases_its_slot, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         pending_pubacks_are_completed_with_an_error_on_disconnect, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

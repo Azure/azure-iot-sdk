@@ -285,7 +285,9 @@ extern "C"
    * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
    * invoked synchronously from inside do_work() when the matching PUBLISH_ACK
    * arrives. For QoS 0, ack_cb (if any) is invoked synchronously here with
-   * AZ_IOT_OK because QoS 0 has no on-the-wire ack. */
+   * AZ_IOT_OK because QoS 0 has no on-the-wire ack. Returns AZ_IOT_ERR_BUSY,
+   * without publishing, when a QoS 1 ack_cb is given and all
+   * AZ_IOT_MAX_PENDING_PUBACKS slots are in use. */
 
   az_iot_result az_iot_connection_client__publish(
       az_iot_connection_client* client,

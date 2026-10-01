@@ -68,7 +68,7 @@ The tables state each outcome that is not a failed call or a dropped message.
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, the message is still sent but the call returns `AZ_IOT_ERR_NOT_SUPPORTED` and the callback is not called; do not resend it. |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
