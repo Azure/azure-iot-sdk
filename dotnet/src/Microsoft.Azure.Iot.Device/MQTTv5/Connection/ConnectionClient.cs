@@ -211,19 +211,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             return connect;
         }
 
-        /// <summary>
-        /// Send a certificate signing request to IoT hub
-        /// </summary>
-        /// <param name="request">The certificates to have IoT hub sign.</param>
-        /// <param name="cancellationToken">The cancellation token</param>
-        /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
-        public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            throw new NotImplementedException("Not a supported feature on Gen 2 Hubs yet");
-        }
-
         private static string GetPackageVersion()
         {
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
