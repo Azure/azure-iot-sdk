@@ -738,6 +738,9 @@ typedef struct
   uint32_t last_persist_attempts;
   bool last_persist_retrying;
   az_iot_result last_persist_reason;
+
+  int refused_count;
+  az_iot_result last_refused_reason;
 } fixture;
 
 /* Records whatever the client raises. */
@@ -760,6 +763,11 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->state_event_count++;
     fx->last_state = event->state;
     fx->last_previous_state = event->previous_state;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    fx->refused_count++;
+    fx->last_refused_reason = event->reason;
   }
   else if (
       event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED
@@ -1278,9 +1286,12 @@ static void oversized_update_metadata_is_ignored(void** state)
   big[pos] = '\0';
   assert_true(strlen(big) > AZ_IOT_SU_REQUEST_BUFFER_SIZE);
 
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
   inject_patch(fx, big);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -3285,17 +3296,94 @@ static void channel_state_round_trips_through_the_blob(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A workflow whose id is too long to keep has no terminal record to write;
- * that is not retried as a failed write. */
+/* A workflow id longer than AZ_IOT_SU_WORKFLOW_ID_SIZE could never be
+ * reported, so the deployment is refused before anything runs, and the
+ * application is told. A redelivery is refused again. */
+static void an_oversized_workflow_id_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+
+  for (int delivery = 1; delivery <= 2; ++delivery)
+  {
+    inject_patch(fx, build_patch(id));
+    assert_int_equal(fx->refused_count, delivery);
+    assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    pump(fx, 40);
+    assert_int_equal((int)fx->log.op_count, 0);
+    assert_int_equal(fx->state_event_count, 0);
+    assert_false(fx->su._internal.have_request);
+    assert_false(fx->log.have_persist);
+    assert_int_equal(fx->chan.report_count, 0);
+  }
+}
+
+/* An oversized id does not disturb the workflow already running. */
+static void an_oversized_workflow_id_leaves_the_active_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+  inject_patch(fx, build_patch(id));
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > 0);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+/* The limit applies to the decoded id: one of exactly AZ_IOT_SU_WORKFLOW_ID_SIZE
+ * bytes, even when escaped longer on the wire, runs and is reported in full. */
+static void a_workflow_id_at_the_limit_is_reported_in_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  /* Wire form: "\/" then SIZE-1 'w'; decoded: "/" then SIZE-1 'w'. */
+  char wire[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  wire[0] = '\\';
+  wire[1] = '/';
+  memset(&wire[2], 'w', AZ_IOT_SU_WORKFLOW_ID_SIZE - 1);
+  wire[sizeof(wire) - 1] = '\0';
+  char decoded[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+  decoded[0] = '/';
+  memset(&decoded[1], 'w', AZ_IOT_SU_WORKFLOW_ID_SIZE - 1);
+  decoded[sizeof(decoded) - 1] = '\0';
+
+  inject_patch(fx, build_patch(wire));
+  pump(fx, 40);
+  assert_int_equal(fx->refused_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(strlen(fx->chan.last_workflow_id), AZ_IOT_SU_WORKFLOW_ID_SIZE);
+  assert_string_equal(fx->chan.last_workflow_id, decoded);
+}
+
+/* A workflow with no workflow id kept (as resumed from a record written by an
+ * earlier build) has no terminal record to write; that is not retried as a
+ * failed write. */
 static void an_unrepresentable_terminal_record_is_not_retried(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   fx->chan.report_verdict_deferred = true;
-  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 8];
-  memset(id, 'w', sizeof(id) - 1);
-  id[sizeof(id) - 1] = '\0';
-  inject_patch(fx, build_patch(id));
+  inject_patch(fx, signed_patch());
+  fx->su._internal.active_workflow_valid = false;
+  fx->su._internal.active_workflow_id_len = 0;
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_false(fx->log.have_persist);
@@ -5462,6 +5550,11 @@ int main(void)
         a_failed_terminal_write_counts_once_with_a_stored_record, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unrepresentable_terminal_record_is_not_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_oversized_workflow_id_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_workflow_id_leaves_the_active_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_workflow_id_at_the_limit_is_reported_in_full, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(

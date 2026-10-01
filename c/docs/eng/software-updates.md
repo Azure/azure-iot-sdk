@@ -299,6 +299,7 @@ superseded. The client MUST distinguish:
 |-----------|---------|----------|
 | New `workflowId` | **Replacement** | MUST restart from ManifestReceived with the new deployment |
 | Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
+| `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
 
 ### Result-Code Mapping
 
@@ -851,6 +852,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
+ *   UPDATE_REFUSED         -- a delivered update was not processed because it
+ *     does not fit a compile-time limit (workflow id or request buffer).
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
