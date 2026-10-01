@@ -35,12 +35,6 @@ permissions:
   contents: read
   actions: read
 
-env:
-  # jq: newest run of main itself. --branch matches head_branch, which a fork
-  # pull request from a branch named "main" also carries, so pull request runs
-  # are excluded by event.
-  MAIN_RUN: '[.[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")][0]'
-
 jobs:
   combine:
     name: combined coverage
@@ -55,15 +49,23 @@ jobs:
           PINNED: ${{ inputs.sha }}
         run: |
           set -euo pipefail
+          # Newest successful run of main itself, as "<sha>\t<run id>". Pull
+          # request runs are excluded server-side: --branch matches head_branch,
+          # which a fork pull request from a branch named "main" also carries.
+          latest_main_run () {
+            for ev in push schedule workflow_dispatch; do
+              gh run list --repo "$REPO" --workflow "$1" --branch main --event "$ev" \
+                --status success --limit 1 --json headSha,databaseId,createdAt --jq '.[]' || exit 1
+            done | jq -rs 'sort_by(.createdAt) | last // {} | [.headSha, .databaseId] | @tsv'
+          }
           if [ -n "${PINNED}" ]; then
             sha="${PINNED}"
             echo "using the dispatched commit"
           else
             # ci-c-e2e is the broadest of the nightlies, so its last green run is
             # the natural anchor for the others to agree with.
-            sha=$(gh run list --repo "$REPO" --workflow ci-c-e2e.yml \
-                    --branch main --status success --limit 50 --json headSha,event \
-                    --jq "$MAIN_RUN | .headSha // empty")
+            run=$(latest_main_run ci-c-e2e.yml)
+            sha="${run%%$'\t'*}"
             if [ -z "$sha" ]; then
               echo "::error::no successful ci-c-e2e run on main to anchor the report to"
               exit 1
@@ -120,13 +122,18 @@ jobs:
           set -euo pipefail
           mkdir -p traces
           have=""
+          # Same as in "Resolve the target commit".
+          latest_main_run () {
+            for ev in push schedule workflow_dispatch; do
+              gh run list --repo "$REPO" --workflow "$1" --branch main --event "$ev" \
+                --status success --limit 1 --json headSha,databaseId,createdAt --jq '.[]' || exit 1
+            done | jq -rs 'sort_by(.createdAt) | last // {} | [.headSha, .databaseId] | @tsv'
+          }
           # Each nightly uploads exactly one tracefile artifact. A leg whose last
           # green run is on a DIFFERENT commit is skipped rather than merged --
           # see the correctness note at the top of this file.
           add () {          # $1 = workflow file, $2 = artifact name, $3 = label
-            run=$(gh run list --repo "$REPO" --workflow "$1" --branch main \
-                    --status success --limit 50 --json headSha,databaseId,event \
-                    --jq "$MAIN_RUN | [.headSha, .databaseId] | @tsv")
+            run=$(latest_main_run "$1")
             read -r run_sha run_id <<< "$run"
             if [ -z "$run_sha" ]; then
               echo "::warning::$3: no successful run found; excluded"
