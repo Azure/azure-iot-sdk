@@ -6,6 +6,8 @@
 #
 # Provenance: https://github.com/Azure/az_amqp @ fe7c0c2ed87257a22f0cd6b183374cdc855e5000
 # (inc/, src/, and the reference transport from samples/common/).
+# Local change: receiver links advance delivery-count per incoming delivery
+# (src/az_amqp_link.c), without which replenished credit is never granted.
 #
 # A small, allocation-free, single-pump C99 AMQP 1.0 client. It is used ONLY by
 # the end-to-end test service client (c/tests/e2e/service) to receive device

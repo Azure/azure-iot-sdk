@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* GCC flags these AZ_NODISCARD (warn_unused_result) az_amqp calls under -Werror even
    with a plain (void) cast, which GCC deliberately ignores. Route the intentional
@@ -807,6 +808,108 @@ cleanup:
 
 /* --- file-upload notification receiver ------------------------------------ */
 
+/* Age past which another device's notification has no waiting watcher: a test
+ * process is killed at CTest's 900 s timeout. The rest is clock-skew margin. */
+#define E2E_AMQP_NOTIFY_STALE_S (20 * 60)
+
+/* How long another live watcher's notification is held before it is released.
+ * With time()'s 1 s resolution this is 1-2 s. */
+#define E2E_AMQP_NOTIFY_HOLD_S 2
+
+/**
+ * @brief Releases held notifications; all of them if @p all, else those held
+ * for at least #E2E_AMQP_NOTIFY_HOLD_S.
+ */
+static void release_held(e2e_amqp_filenotify* f, bool all)
+{
+  int64_t const now = (int64_t)time(NULL);
+  int kept = 0;
+  for (int i = 0; i < f->held_count; i++)
+  {
+    if (all || now - f->held[i].held_at_s >= E2E_AMQP_NOTIFY_HOLD_S)
+    {
+      f->released_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_release(&f->receiver, f->held[i].delivery_number));
+    }
+    else
+    {
+      f->held[kept++] = f->held[i];
+    }
+  }
+  f->held_count = kept;
+}
+
+/**
+ * @brief Parses @p count decimal digits at @p p.
+ *
+ * @return true with the value in @p out; false if any of them is not a digit.
+ */
+static bool parse_digits(const char* p, int count, int* out)
+{
+  int value = 0;
+  for (int i = 0; i < count; i++)
+  {
+    if (p[i] < '0' || p[i] > '9')
+    {
+      return false;
+    }
+    value = value * 10 + (p[i] - '0');
+  }
+  *out = value;
+  return true;
+}
+
+/**
+ * @brief Converts a proleptic Gregorian UTC date to days since 1970-01-01.
+ */
+static int64_t days_from_civil(int year, int month, int day)
+{
+  year -= (month <= 2) ? 1 : 0;
+  int64_t const era = (year >= 0 ? year : year - 399) / 400;
+  int64_t const yoe = year - era * 400;
+  int64_t const doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  int64_t const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+/**
+ * @brief Reads the `enqueuedTimeUtc` field ("YYYY-MM-DDTHH:MM:SS...") of a
+ * file-upload notification body.
+ *
+ * @return true with seconds since the Unix epoch in @p out_epoch_s; false if the
+ * field is missing or malformed.
+ */
+static bool notification_enqueued_time(const char* body, int64_t* out_epoch_s)
+{
+  static const char key[] = "\"enqueuedTimeUtc\"";
+  const char* p = strstr(body, key);
+  if (p == NULL)
+  {
+    return false;
+  }
+  p += sizeof(key) - 1;
+  while (*p == ' ' || *p == ':')
+  {
+    p++;
+  }
+  if (*p != '"')
+  {
+    return false;
+  }
+  p++;
+
+  int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+  if (!parse_digits(p, 4, &year) || p[4] != '-' || !parse_digits(p + 5, 2, &month) || p[7] != '-'
+      || !parse_digits(p + 8, 2, &day) || p[10] != 'T' || !parse_digits(p + 11, 2, &hour)
+      || p[13] != ':' || !parse_digits(p + 14, 2, &minute) || p[16] != ':'
+      || !parse_digits(p + 17, 2, &second) || month < 1 || month > 12 || day < 1 || day > 31)
+  {
+    return false;
+  }
+  *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  return true;
+}
+
 static void on_filenotify_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -836,9 +939,29 @@ static void on_filenotify_received(
   text[n] = '\0';
 
   /* The notification node is hub-wide. A notification for someone else is
-   * RELEASED so the hub redelivers it to the leg that is waiting for it. */
+   * RELEASED so the hub redelivers it to the leg that is waiting for it --
+   * unless it is too old for any leg to be waiting. Nobody settles those, so on
+   * a long-lived hub they pile up and are redelivered to every watcher ahead of
+   * its own; accept them instead. Unparseable times are released, as before. */
   if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
   {
+    int64_t enqueued_s;
+    if (notification_enqueued_time(text, &enqueued_s)
+        && (int64_t)time(NULL) - enqueued_s > E2E_AMQP_NOTIFY_STALE_S)
+    {
+      f->stale_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+      return;
+    }
+    /* Released at once, it would come straight back to this link in a tight
+     * loop; hold it briefly (see e2e_amqp_filenotify_do_work). */
+    if (f->held_count < E2E_AMQP_NOTIFY_HOLD_MAX)
+    {
+      f->held[f->held_count].delivery_number = delivery->number;
+      f->held[f->held_count].held_at_s = (int64_t)time(NULL);
+      f->held_count++;
+      return;
+    }
     f->released_count++;
     E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
     return;
@@ -1063,7 +1186,12 @@ bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
   {
     return false;
   }
-  return pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  bool ok = pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  if (ok)
+  {
+    release_held(f, false);
+  }
+  return ok;
 }
 
 bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
@@ -1083,6 +1211,7 @@ void e2e_amqp_filenotify_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
+    int* out_stale,
     int* out_unparsed)
 {
   if (out_delivered != NULL)
@@ -1097,6 +1226,10 @@ void e2e_amqp_filenotify_stats(
   {
     *out_released = f->released_count;
   }
+  if (out_stale != NULL)
+  {
+    *out_stale = f->stale_count;
+  }
   if (out_unparsed != NULL)
   {
     *out_unparsed = f->unparsed_count;
@@ -1108,6 +1241,7 @@ void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
   if (f->started)
   {
     f->started = false;
+    release_held(f, true);
     E2E_AMQP_DISCARD(az_amqp_link_detach(&f->receiver, NULL));
     E2E_AMQP_DISCARD(az_amqp_cbs_close(&f->cbs));
     E2E_AMQP_DISCARD(az_amqp_session_end(&f->session, NULL));
