@@ -8,7 +8,7 @@ This SDK is intended for use by IoT devices that use Azure IoT Hub and Azure Dev
 
 This SDK does not include any service client code. You can find that [here instead](https://github.com/Azure/azure-iot-sdk-csharp/tree/main/iothub/service)
 
-## Nuget packages
+## NuGet packages
 
 | Package Name                                          | Release Version                                           |
 | ---                                                   | ---                                                       |
