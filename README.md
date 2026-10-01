@@ -32,7 +32,7 @@ Pick your language and follow its README:
 
 ## Getting Help
 
-To get help, post a suggestion or comment, please file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
+To get help, or to post a suggestion or comment, please file a [GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
 
 ## Contributing
 
