@@ -732,11 +732,11 @@ static void _parse_delivery_state(az_amqp_value const* state, az_amqp_delivery_s
 
 static void _on_attach(az_amqp_link* link, az_amqp_value const* fields)
 {
-  _set_state(link, AZ_AMQP_LINK_STATE_ATTACHED, NULL);
   if (link->options.role == AZ_AMQP_ROLE_RECEIVER)
   {
     // A receiver's delivery-count tracks the sender's, starting at the sender's
-    // initial-delivery-count (AMQP 1.0 2.6.7).
+    // initial-delivery-count (AMQP 1.0 2.6.7). Set before ATTACHED is published:
+    // the state callback may grant credit.
     az_amqp_value v;
     if (az_result_succeeded(_az_amqp_list_field(fields, 9, &v))
         && v.kind == AZ_AMQP_VALUE_KIND_UINT)
@@ -744,6 +744,7 @@ static void _on_attach(az_amqp_link* link, az_amqp_value const* fields)
       link->delivery_count = (uint32_t)v.scalar.u64;
     }
   }
+  _set_state(link, AZ_AMQP_LINK_STATE_ATTACHED, NULL);
   if (link->options.role == AZ_AMQP_ROLE_RECEIVER && link->options.prefetch_credit > 0)
   {
     link->link_credit = link->options.prefetch_credit;

@@ -873,6 +873,16 @@ static int64_t days_from_civil(int year, int month, int day)
 }
 
 /**
+ * @brief Number of days in @p month (1-12) of @p year.
+ */
+static int days_in_month(int year, int month)
+{
+  static const int days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+  bool const leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  return (month == 2 && leap) ? 29 : days[month - 1];
+}
+
+/**
  * @brief Reads the `enqueuedTimeUtc` field ("YYYY-MM-DDTHH:MM:SS...") of a
  * file-upload notification body.
  *
@@ -902,7 +912,8 @@ static bool notification_enqueued_time(const char* body, int64_t* out_epoch_s)
   if (!parse_digits(p, 4, &year) || p[4] != '-' || !parse_digits(p + 5, 2, &month) || p[7] != '-'
       || !parse_digits(p + 8, 2, &day) || p[10] != 'T' || !parse_digits(p + 11, 2, &hour)
       || p[13] != ':' || !parse_digits(p + 14, 2, &minute) || p[16] != ':'
-      || !parse_digits(p + 17, 2, &second) || month < 1 || month > 12 || day < 1 || day > 31)
+      || !parse_digits(p + 17, 2, &second) || month < 1 || month > 12 || day < 1
+      || day > days_in_month(year, month) || hour > 23 || minute > 59 || second > 59)
   {
     return false;
   }
