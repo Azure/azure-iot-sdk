@@ -114,6 +114,7 @@ extern "C"
 
 #define E2E_AMQP_NOTIFY_CAPTURE_MAX 8
 #define E2E_AMQP_NOTIFY_BODY_MAX 2048
+#define E2E_AMQP_NOTIFY_HOLD_MAX 10
 
   /* A file-upload notification watcher: an AMQP connection to the IoT Hub service
    * endpoint with a single receiver on /messages/serviceBound/filenotifications.
@@ -137,11 +138,20 @@ extern "C"
     int captured_count;
     char match[128]; /* only notifications containing this are consumed */
 
+    /* Other live watchers' notifications, released after a short hold. */
+    struct
+    {
+      uint32_t delivery_number;
+      int64_t held_at_s;
+    } held[E2E_AMQP_NOTIFY_HOLD_MAX];
+    int held_count;
+
     /* Diagnostics. A notification that never arrives is indistinguishable from
      * one that arrived and was filtered out or could not be decoded, so count
      * every disposition and let a failing test report them. */
     int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
     int released_count; /* released because they name another device */
+    int stale_count; /* another device's, too old to have a watcher: accepted */
     int unparsed_count; /* body missing or not a DATA body */
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -158,9 +168,11 @@ extern "C"
    *
    * The notification node is HUB-WIDE, so several test legs can be listening at
    * once. Only notifications whose body contains @p match (typically this test's
-   * device id) are captured and settled; everything else is RELEASED so the hub
-   * redelivers it to its rightful watcher. On failure returns false and (when
-   * non-NULL) points @p err_out at a static message.
+   * device id) are captured and settled; everything else is RELEASED, after a
+   * short hold, so the hub redelivers it to its rightful watcher -- except
+   * notifications enqueued too long ago for any watcher to be waiting, which are
+   * accepted. On failure returns false and (when non-NULL) points @p err_out at a
+   * static message.
    *
    * @p attach_refused_out, when non-NULL, is set to true only when the hub
    * REFUSED the receiver link on the notification node, and false for every other
@@ -190,6 +202,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Detach the receiver and close the connection (best-effort). */

@@ -333,12 +333,13 @@ void az_iot_e2e_service_file_notification_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
+    int* out_stale,
     int* out_unparsed)
 {
   if (svc->filenotify != NULL)
   {
     e2e_amqp_filenotify_stats(
-        svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
+        svc->filenotify, out_delivered, out_captured, out_released, out_stale, out_unparsed);
     return;
   }
   if (out_delivered != NULL)
@@ -352,6 +353,10 @@ void az_iot_e2e_service_file_notification_stats(
   if (out_released != NULL)
   {
     *out_released = 0;
+  }
+  if (out_stale != NULL)
+  {
+    *out_stale = 0;
   }
   if (out_unparsed != NULL)
   {
