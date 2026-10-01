@@ -53,16 +53,21 @@ arrays inside caller-allocated structs, or buffers inside the SDK.
 - After changing a value, rebuild the SDK and the application. See
   [Struct versioning](struct_versioning.md).
 
-A limit that is exceeded fails the operation with an `az_iot_result` (usually
-`AZ_IOT_ERR_NOT_ENOUGH_SPACE` or `AZ_IOT_ERR_NOT_SUPPORTED`); nothing is truncated silently unless
-the table says so.
+When a limit is exceeded:
+
+- by an application call: the call fails with an `az_iot_result` (usually
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` or `AZ_IOT_ERR_NOT_SUPPORTED`);
+- by a message from the service: the message, or the part that does not fit, is dropped with a
+  `WARN` log.
+
+Exceptions are stated in the tables.
 
 #### Connection client ([az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h))
 
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, the message is still sent but the call returns `AZ_IOT_ERR_NOT_SUPPORTED` and the callback is not called; do not resend it. |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded device uses 5 (mqttv3) or 6 (mqttv5). |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
@@ -95,7 +100,7 @@ Defaults used when the matching option is left at 0:
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Twin requests in flight per twin client. |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | Direct-method invocations held per client (mqttv3; default for mqttv5). |
+| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | Direct-method invocations held per client (mqttv3; default for mqttv5). When full, a new mqttv3 invocation is dropped with a `WARN` log and gets no response. |
 | `AZ_IOT_DM_METHOD_NAME_MAX` | 96 | Direct-method name. |
 | `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID. |
 | `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
@@ -106,7 +111,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
 | `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` | 16 | User properties on one mqttv5 telemetry message, 2 of them added by the client. Extra properties are dropped with a warning. |
 | `AZ_IOT_C2D_MAX_PROPERTIES` | 8 | Properties surfaced on one cloud-to-device message. Extra properties are dropped with a warning; the message is still delivered. |
-| `AZ_IOT_C2D_PROPERTY_BUFFER` | 256 | Decoded property names and values of one cloud-to-device message. |
+| `AZ_IOT_C2D_PROPERTY_BUFFER` | 256 | Decoded property names and values of one cloud-to-device message. When they do not fit, the message is delivered with no properties and a `WARN` log. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
@@ -118,7 +123,7 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 4 | Root keys in the trust store. |
 | `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. Raise for larger manifests. |
-| `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for duplicate detection. A longer ID is not an error: that deployment is processed without duplicate detection (a redelivery is processed again) and its progress is not reported. |
+| `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
 | `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
@@ -178,3 +183,4 @@ Supported environment variables. The samples read their own; each sample's READM
 | --- | --- | --- |
 | `AZ_IOT_PAHO_TRACE` | Paho adapter | Turns on Paho's trace and detailed OpenSSL errors on a failed TLS handshake. Values, least to most verbose: `error`, `protocol`, `minimum`, `medium`, `maximum`; any other non-empty value means `minimum`. The trace is logged at `TRACE`, so set the log sink to `AZ_IOT_LOG_LEVEL_TRACE` to see it. Proxy credentials are redacted. |
 | `TMPDIR` | Paho adapter, key custody (not Windows) | Directory for the short-lived key-reference file. Default `/tmp`. |
+| `http_proxy`, `https_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none. Lowercase only. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |
