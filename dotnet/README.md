@@ -55,7 +55,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
+| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
 | Software updates via DPS | :heavy_minus_sign: |
 
 ### v2.0.0-preview Unified API set supported features
@@ -75,6 +75,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
+| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
 | Software updates via DPS | :heavy_minus_sign: |
 
 ### v2.0.0-preview MQTTv5 API set supported features
@@ -94,6 +95,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
+| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
 | Software updates via DPS | :heavy_minus_sign: |
 
 
