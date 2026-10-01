@@ -149,9 +149,14 @@ It needs a reachable MQTT broker:
 ```sh
 export AZ_IOT_MQTT_BROKER_HOST=localhost
 export AZ_IOT_MQTT_BROKER_PORT=1883
+export AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1   # no PKCS#11 token: see below
+cmake --preset linux-gcc-debug
+cmake --build --preset linux-gcc-debug
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 
 The tests are registered only with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON`, which the Linux presets
-set. Once registered, an unset `AZ_IOT_MQTT_BROKER_HOST` is a failure, not a skip. CI runs an
+set. Once registered, an unset `AZ_IOT_MQTT_BROKER_HOST` is a failure, not a skip. The Paho
+harness declares the key-custody capability; without a PKCS#11 token and certificate to prove it,
+the suite fails unless `AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1` is set. CI runs an
 `eclipse-mosquitto:2` broker.
