@@ -86,8 +86,8 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | MQTTv3 connection to IoT Hub       | :heavy_minus_sign: | 
 | MQTTv5 connection to IoT Hub       | :heavy_check_mark: | 
 | Device-to-cloud telemetry       | :heavy_check_mark: | 
-| Device twin       | :heavy_check_mark:* | *Some twin features (such as twin pushes) are only available in MQTTv5 Hubs, so they are not included in this API set 
-| Direct methods       | :heavy_check_mark:* | *Direct method probe handling support is exclusive to MQTTv5 hubs, so it is omitted from this API set
+| Device twin       | :heavy_check_mark: | 
+| Direct methods       | :heavy_check_mark: |
 | Custom topic support       | :heavy_multiplication_x: | This feature will allow you to publish/receive publishes from custom MQTT topics. It will be exclusive to MQTTv5 IoT Hubs
 | Certificate management       | :heavy_multiplication_x: |
 | Bring-your-own MQTT client       | :heavy_check_mark: | This library defines an ```IMqttClient``` interface that allows you to swap out our default MQTTnet MQTT client for your own, if needed 
