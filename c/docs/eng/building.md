@@ -61,6 +61,7 @@ Yocto: [platforms/yocto/meta-azure-iot-sdk](../../platforms/yocto/meta-azure-iot
 
 [tests/install](../../tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
 with CMake and with pkg-config alone ([pkg-config-test.sh](../../tests/install/pkg-config-test.sh)).
+[tests/subproject](../../tests/subproject/CMakeLists.txt) builds the same sources with this tree added via `add_subdirectory()`.
 
 ## Build hardening
 

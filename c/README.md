@@ -16,10 +16,11 @@ built for constrained and embedded devices.
 - **Device features:** telemetry, device twin, direct methods, cloud-to-device messages and file
   upload (mqttv3), and software updates.
 - **X.509 authentication:** certificates from files, certificates issued by DPS from a CSR,
-  renewal over IoT Hub, and private keys held in a PKCS#11 token or TPM.
+  renewal over IoT Hub (mqttv3 only), and private keys held in a PKCS#11 token or TPM.
 - **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
   proxy support.
-- **Small footprint:** single-threaded, no dynamic allocation in the core, no internal threads.
+- **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
+  connection and feature clients do no dynamic allocation.
 - **Pluggable MQTT:** Eclipse Paho C by default; bring your own MQTT client through a small
   adapter interface.
 
@@ -30,7 +31,7 @@ On Linux, with the [build tools](samples/README.md#build-tools) installed (a C c
 
 ```sh
 cmake --preset linux-gcc-debug
-cmake --build --preset linux-gcc-debug
+cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_telemetry
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
