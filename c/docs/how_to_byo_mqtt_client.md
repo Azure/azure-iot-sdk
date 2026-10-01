@@ -156,7 +156,7 @@ add_library(az_iot_adapter_mymqtt STATIC
     az_iot_mqtt_mymqtt.c
 )
 target_include_directories(az_iot_adapter_mymqtt PUBLIC
-    ${CMAKE_SOURCE_DIR}/inc
+    ${PROJECT_SOURCE_DIR}/inc
 )
 target_link_libraries(az_iot_adapter_mymqtt
     PUBLIC  az_iot_core
