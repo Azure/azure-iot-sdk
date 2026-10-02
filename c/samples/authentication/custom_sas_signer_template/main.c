@@ -14,6 +14,7 @@
  *   opts.sas.onboarding  = &signer.base;   SAS to DPS
  *   opts.sas.operational = &signer.base;   SAS to the hub
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,7 +25,7 @@
 typedef struct
 {
   az_iot_sas_signer base; /**< Vtable pointer. */
-  int key_handle; /**< E.g. a TPM persistent handle for the HMAC key. */
+  uint32_t key_handle; /**< E.g. a TPM persistent handle for the HMAC key. */
 } my_signer;
 
 static az_iot_result my_sign(
@@ -60,7 +61,7 @@ static const az_iot_sas_signer_vtable k_my_vtable = {
 
 int main(void)
 {
-  my_signer signer = { .base = { .vtable = &k_my_vtable }, .key_handle = 0x81000001 };
+  my_signer signer = { .base = { .vtable = &k_my_vtable }, .key_handle = 0x81000001u };
 
   static const uint8_t to_sign[] = "scope/registrations/my-device-id\n1700000000";
   uint8_t hmac[32];

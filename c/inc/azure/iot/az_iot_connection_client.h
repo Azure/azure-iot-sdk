@@ -275,9 +275,11 @@ extern "C"
      *
      * Every DPS and hub connection uses TLS: a connect attempt whose load()
      * fails fails with the provider's error instead of connecting without TLS.
-     * Required unless both sas.onboarding and sas.operational are set; when
-     * NULL, the adapter's default trust store authenticates the server. open()
-     * otherwise refuses a client without one (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE).
+     * Required unless every role the configuration uses has a signer: DPS
+     * (sas.onboarding) unless host is set, the hub (sas.operational) unless
+     * dps.provision_only. When NULL, the adapter's default trust store
+     * authenticates the server. open() otherwise refuses a client without one
+     * (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE).
      */
     az_iot_certificate_provider* certificate_provider;
 
