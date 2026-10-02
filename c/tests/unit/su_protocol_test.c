@@ -982,6 +982,9 @@ static void a_truncated_error_body_is_rejected(void** state)
       az_iot_su__parse_error_code(
           (const uint8_t*)cut_after_value, strlen(cut_after_value), code, sizeof(code), &numeric),
       AZ_IOT_ERR_NOT_FOUND);
+  /* What was read before the cut is not reported. */
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 0);
 
   /* Cut inside the nested info object, after a complete string code. */
   const char* cut_in_info = "{\"errorCode\":409000,\"info\":{\"aduErrorCode\":\"REPORT_CONFLICT\"";
@@ -989,6 +992,8 @@ static void a_truncated_error_body_is_rejected(void** state)
       az_iot_su__parse_error_code(
           (const uint8_t*)cut_in_info, strlen(cut_in_info), code, sizeof(code), &numeric),
       AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 0);
 }
 
 static void string_codes_map_to_the_specified_actions(void** state)

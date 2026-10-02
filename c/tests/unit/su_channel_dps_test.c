@@ -794,6 +794,20 @@ static void an_unparseable_503_body_falls_back_to_the_status(void** state)
   assert_int_equal(fx->last_error_code, 0);
 }
 
+/* A truncated body is rejected whole: a code read before the cut must not
+ * override the status, nor drop the ETags. */
+static void a_truncated_503_body_falls_back_to_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  memcpy(fx->channel_state.agent_info_etag, "agent", sizeof("agent"));
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"errorCode\":400004,\"message\":\"x\"");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->channel_state.agent_info_etag, "agent");
+}
+
 /* The status fallback must not widen every bodyless failure into a retry. */
 static void a_bodyless_4xx_stays_fatal(void** state)
 {
@@ -2860,6 +2874,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_bodyless_503_report_is_retryable_not_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unparseable_503_body_falls_back_to_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_truncated_503_body_falls_back_to_the_status, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_4xx_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),

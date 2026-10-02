@@ -912,7 +912,39 @@ az_iot_result az_iot_su__parse_fetch_response(
 /* errors                                                                    */
 /* ------------------------------------------------------------------------- */
 
+static az_iot_result parse_error_signals(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code);
+
 az_iot_result az_iot_su__parse_error_code(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code)
+{
+  az_iot_result r
+      = parse_error_signals(payload, payload_len, out_code, out_code_size, out_numeric_code);
+  /* A rejected body may have been read partway; what it yielded must not
+   * classify. */
+  if (r != AZ_IOT_OK)
+  {
+    if (out_code != NULL && out_code_size > 0)
+    {
+      out_code[0] = '\0';
+    }
+    if (out_numeric_code != NULL)
+    {
+      *out_numeric_code = 0;
+    }
+  }
+  return r;
+}
+
+static az_iot_result parse_error_signals(
     const uint8_t* payload,
     size_t payload_len,
     char* out_code,
