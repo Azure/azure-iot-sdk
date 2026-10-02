@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Retry;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -556,6 +557,154 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(1, mockDps.RegistrationCount);
         }
 
+        [Fact]
+        public async Task HubUnreachableForTheConfiguredAttemptsReprovisionsAndConnectsToNewlyAssignedHub()
+        {
+            const uint threshold = 3;
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int firstHubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == SecondAssignedHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                // The first hub accepts the initial connect so this device is connected, then stops answering -- it
+                // was vacated service-side, so every reconnect fails with a retryable transport error rather than a
+                // rejection of this device's identity. DPS keeps answering throughout.
+                if (connect.HostName == FirstAssignedHub && Interlocked.Increment(ref firstHubConnects) > 1)
+                {
+                    throw new Exception("simulated unreachable hub");
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                MaxHubConnectAttemptsBeforeReprovision = threshold,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            // The hub stops answering mid-session for a benign, retryable reason, so the connection layer reconnects
+            // rather than faulting. Every reconnect fails, and once the configured number of attempts has been spent,
+            // this client re-provisions instead of retrying the unreachable hub forever.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
+        [Fact]
+        public async Task HubUnreachableDoesNotReprovisionWhenTheThresholdIsDisabled()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int firstHubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == FirstAssignedHub && Interlocked.Increment(ref firstHubConnects) > 1)
+                {
+                    throw new Exception("simulated unreachable hub");
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                // Zero disables the fallback, so the hub is retried indefinitely and this device never re-provisions.
+                MaxHubConnectAttemptsBeforeReprovision = 0,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(TimeSpan.FromMilliseconds(20)),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            // The hub has been retried many times over, but with the fallback disabled this device never crosses over
+            // to Device Provisioning Service.
+            Assert.Equal(1, mockDps.RegistrationCount);
+            Assert.True(firstHubConnects > 1, "The connection layer should have kept retrying the unreachable hub.");
+        }
+
+        [Fact]
+        public async Task HubReachableAgainBeforeTheThresholdDoesNotReprovision()
+        {
+            const uint threshold = 5;
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            TaskCompletionSource reconnectedToFirstHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int firstHubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName != FirstAssignedHub)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                // Initial connect succeeds (1), the next two reconnects fail, then the hub answers again (4). Two
+                // failures is short of the threshold, so the counter must reset on that success rather than carry over.
+                int attempt = Interlocked.Increment(ref firstHubConnects);
+                if (attempt == 2 || attempt == 3)
+                {
+                    throw new Exception("temporarily unreachable hub");
+                }
+
+                if (attempt == 4)
+                {
+                    reconnectedToFirstHub.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                MaxHubConnectAttemptsBeforeReprovision = threshold,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+
+            await reconnectedToFirstHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            // The hub came back within the threshold, so this device reconnected to the same hub without re-provisioning.
+            Assert.Equal(1, mockDps.RegistrationCount);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+            Assert.Equal(FirstAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
         private static ProvisioningSettings CreateProvisioningSettings()
         {
             return new ProvisioningSettings(IdScope)
@@ -572,6 +721,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
             return new X509AuthenticationProvider(certificate);
+        }
+
+        /// <summary>
+        /// A retry policy that retries forever after a fixed (by default zero) delay, so that a test can drive many
+        /// reconnection attempts quickly without waiting out the production exponential backoff.
+        /// </summary>
+        private sealed class ImmediateRetryPolicy : IRetryPolicy
+        {
+            private readonly TimeSpan _delay;
+
+            public ImmediateRetryPolicy(TimeSpan? delay = null) => _delay = delay ?? TimeSpan.Zero;
+
+            public bool ShouldRetry(uint currentRetryCount, Exception? lastException, out TimeSpan retryDelay)
+            {
+                retryDelay = _delay;
+                return true;
+            }
         }
 
         /// <summary>

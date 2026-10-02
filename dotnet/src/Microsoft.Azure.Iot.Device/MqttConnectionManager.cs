@@ -53,6 +53,21 @@ namespace Microsoft.Azure.Iot.Device
 
         private readonly TimeSpan _connectionAttemptTimeout;
 
+        /// <summary>
+        /// When greater than zero, the number of consecutive failed connect attempts during a single reconnection
+        /// sequence after which this layer stops retrying and ends maintenance with a fault flagged
+        /// <see cref="MqttConnectionFaultedEventArgs.ReprovisionRequired"/>, so a DPS-provisioned device can
+        /// re-provision instead of retrying an unreachable endpoint forever. Zero disables the crossover.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client arms this for IoT hub connections and clears it for Device Provisioning
+        /// Service connections, since re-provisioning only makes sense when the endpoint that cannot be reached is a
+        /// hub. A successful reconnect starts a fresh sequence, so this counts consecutive failures, mirroring the C
+        /// connection client's <c>consecutive_hub_connect_failures</c> against
+        /// <c>max_hub_connect_attempts_before_reprovision</c>.
+        /// </remarks>
+        public uint ReprovisionAfterConsecutiveReconnectFailures { get; set; }
+
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
 
@@ -325,6 +340,31 @@ namespace Microsoft.Azure.Iot.Device
                         ?? new OperationCanceledException("This operation was canceled because the MQTT client was closed.");
                 }
 
+                // A hub that simply will not answer is otherwise retried under the policy forever, which for a device
+                // provisioned through DPS would never fall back to asking DPS for a fresh assignment. Mirror the C
+                // connection client: once a reconnection has failed this many times in a row, stop retrying this
+                // endpoint and end maintenance with a fault the owning client turns into a re-provisioning attempt.
+                // Counted per reconnection sequence -- a successful reconnect returns and starts the next sequence at
+                // attempt 1 -- and only while armed, which the owning client does for hub connections and not for DPS
+                // connections. This is a planned crossover to provisioning, not an error.
+                uint reprovisionThreshold = ReprovisionAfterConsecutiveReconnectFailures;
+                if (isReconnection && reprovisionThreshold > 0 && attemptCount > reprovisionThreshold)
+                {
+                    uint failedAttempts = attemptCount - 1;
+                    Trace.TraceWarning("Hub unreachable for {0} consecutive connect attempts; re-provisioning through DPS.", failedAttempts);
+
+                    var reprovisionFault = new DeviceException(
+                        $"The IoT hub was unreachable for {failedAttempts} consecutive connection attempts, so this device will re-provision through Device Provisioning Service.",
+                        lastException!)
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = false,
+                    };
+
+                    await EndConnectionMaintenanceAsync(reprovisionFault, lastDisconnect, reprovisionRequired: true);
+                    return null;
+                }
+
                 DeviceException? deviceException = Classify(lastException, cancellationToken.IsCancellationRequested);
 
                 if (deviceException != null)
@@ -442,7 +482,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
         /// and never reach here.
         /// </remarks>
-        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect)
+        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
         {
             Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
 
@@ -459,6 +499,7 @@ namespace Microsoft.Azure.Iot.Device
             {
                 Exception = fault,
                 LastDisconnect = lastDisconnect,
+                ReprovisionRequired = reprovisionRequired,
             };
 
             try

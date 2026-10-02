@@ -42,5 +42,19 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// <see cref="MqttNetClient"/> will be created for you.
         /// </remarks>
         public IMqttClient? MqttClient { get; set; }
+
+        /// <summary>
+        /// The number of consecutive failed IoT hub connection attempts, during an automatic reconnection, after which
+        /// a device that was provisioned through Device Provisioning Service re-provisions rather than continuing to
+        /// retry an unreachable hub forever.
+        /// </summary>
+        /// <remarks>
+        /// A hub that was vacated service-side may stop answering rather than rejecting the device's identity, in which
+        /// case nothing else would ever send the device back to DPS. Once this many consecutive reconnect attempts
+        /// fail, the client asks DPS for a fresh assignment and connects to whichever hub it is assigned. This only
+        /// applies to a device that was provisioned through DPS, since there is otherwise no registration to renew.
+        /// Set to 0 to disable this fallback and retry the hub indefinitely. Defaults to 50.
+        /// </remarks>
+        public uint MaxHubConnectAttemptsBeforeReprovision { get; set; } = 50;
     }
 }
