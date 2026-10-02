@@ -4705,6 +4705,20 @@ static void init_requires_a_crypto_backend_that_verifies(void** state)
   az_iot_connection_client_deinit(&conn);
 }
 
+/** @brief Whether all @p len bytes at @p p are zero. */
+static bool all_zero(const void* p, size_t len)
+{
+  const uint8_t* b = (const uint8_t*)p;
+  for (size_t i = 0; i < len; ++i)
+  {
+    if (b[i] != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 /* The standalone entry points take the backend directly. Parsing verifies
  * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
 static void standalone_entry_points_check_the_backend_they_need(void** state)
@@ -4715,17 +4729,14 @@ static void standalone_entry_points_check_the_backend_they_need(void** state)
   az_iot_su_client_update_request req;
   az_iot_su_client_update_manifest manifest;
 
-  static const az_iot_su_client_update_request k_zero_req;
-  static const az_iot_su_client_update_manifest k_zero_manifest;
-
   /* Outputs are zeroed on every error, including the argument checks. */
   memset(&req, 0xA5, sizeof(req));
   memset(&manifest, 0xA5, sizeof(manifest));
   assert_int_equal(
       az_iot_su_parse_update_request(json, NULL, k_root_keys, 1, &req, &manifest),
       AZ_IOT_ERR_INVALID_ARG);
-  assert_memory_equal(&req, &k_zero_req, sizeof(req));
-  assert_memory_equal(&manifest, &k_zero_manifest, sizeof(manifest));
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
 
   mock_crypto no_verify = make_mock_crypto(&fx->log);
   no_verify.base.verify_rs256 = NULL;
@@ -4734,15 +4745,15 @@ static void standalone_entry_points_check_the_backend_they_need(void** state)
   assert_int_equal(
       az_iot_su_parse_update_request(json, &no_verify.base, k_root_keys, 1, &req, &manifest),
       AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_memory_equal(&req, &k_zero_req, sizeof(req));
-  assert_memory_equal(&manifest, &k_zero_manifest, sizeof(manifest));
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
 
   /* With one output missing, the other is still cleared. */
   memset(&req, 0xA5, sizeof(req));
   assert_int_equal(
       az_iot_su_parse_update_request(json, &fx->crypto.base, k_root_keys, 1, &req, NULL),
       AZ_IOT_ERR_INVALID_ARG);
-  assert_memory_equal(&req, &k_zero_req, sizeof(req));
+  assert_true(all_zero(&req, sizeof(req)));
 
   az_iot_su_client_update_manifest_file file;
   memset(&file, 0, sizeof(file));

@@ -66,19 +66,32 @@ typedef struct AZ_IOT_MAY_ALIAS psa_hash_box
 /* Largest key we accommodate: 4096-bit modulus (512 bytes) + slack. */
 #define DER_BUFFER_SIZE 600
 
-/* Encode a DER length field; returns the number of bytes written (1..3). */
-static size_t der_enc_len(uint8_t* out, size_t len)
+/** @brief Encodes a DER length into @p out (capacity @p cap).
+ *  @return Bytes written (1..3), or 0 when it does not fit or @p len > 0xFFFF. */
+static size_t der_enc_len(uint8_t* out, size_t cap, size_t len)
 {
   if (len < 0x80)
   {
+    if (cap < 1)
+    {
+      return 0;
+    }
     out[0] = (uint8_t)len;
     return 1;
   }
   if (len <= 0xFF)
   {
+    if (cap < 2)
+    {
+      return 0;
+    }
     out[0] = 0x81;
     out[1] = (uint8_t)len;
     return 2;
+  }
+  if (len > 0xFFFF || cap < 3)
+  {
+    return 0;
   }
   out[0] = 0x82;
   out[1] = (uint8_t)(len >> 8);
@@ -102,14 +115,19 @@ static size_t der_enc_int(uint8_t* out, size_t cap, const uint8_t* val, size_t v
   size_t pad = (val_len > 0 && (val[0] & 0x80)) ? 1 : 0;
   size_t content_len = val_len + pad;
 
-  size_t o = 0;
-  if (o + 1 > cap)
+  if (cap < 1)
   {
     return 0;
   }
+  size_t o = 0;
   out[o++] = 0x02; /* INTEGER */
-  o += der_enc_len(out + o, content_len);
-  if (o + content_len > cap)
+  size_t n = der_enc_len(out + o, cap - o, content_len);
+  if (n == 0)
+  {
+    return 0;
+  }
+  o += n;
+  if (content_len > cap - o)
   {
     return 0;
   }
@@ -148,14 +166,19 @@ static size_t build_rsa_public_der(
   }
   bo += n;
 
-  size_t o = 0;
-  if (o + 1 > der_cap)
+  if (der_cap < 1)
   {
     return 0;
   }
+  size_t o = 0;
   der[o++] = 0x30; /* SEQUENCE */
-  o += der_enc_len(der + o, bo);
-  if (o + bo > der_cap)
+  n = der_enc_len(der + o, der_cap - o, bo);
+  if (n == 0)
+  {
+    return 0;
+  }
+  o += n;
+  if (bo > der_cap - o)
   {
     return 0;
   }

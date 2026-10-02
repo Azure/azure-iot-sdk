@@ -398,6 +398,48 @@ static void rs256_rejects_missing_inputs(void** state)
   }
 }
 
+/* Keys sized to fill, then overflow, a fixed-size DER encoding buffer. Every
+ * case must be rejected without writing out of bounds (run under ASan in CI). */
+static void rs256_rejects_oversized_keys_safely(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    size_t modulus_len;
+    size_t exponent_len;
+  } k_cases[] = {
+    { 594, 200 }, /* modulus leaves under 4 bytes; exponent header must not overrun */
+    { 596, 3 },
+    { 4096, 3 },
+    { 70000, 3 }, /* beyond a 2-byte DER length */
+  };
+  static uint8_t modulus[70000];
+  static uint8_t exponent[200];
+  static uint8_t signature[512];
+  memset(modulus, 0x01, sizeof(modulus));
+  memset(exponent, 0x01, sizeof(exponent));
+  exponent[sizeof(exponent) - 1] = 0x03;
+  memset(signature, 0x5A, sizeof(signature));
+  static const uint8_t data[] = "data";
+  for (size_t i = 0; i < SU_ARRAY_LEN(k_cases); ++i)
+  {
+    az_iot_result r = g_crypto->verify_rs256(
+        g_crypto,
+        modulus,
+        k_cases[i].modulus_len,
+        exponent,
+        k_cases[i].exponent_len,
+        data,
+        sizeof(data) - 1,
+        signature,
+        sizeof(signature));
+    if (r == AZ_IOT_OK)
+    {
+      fail_msg("verify_rs256 accepted a %zu-byte modulus", k_cases[i].modulus_len);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Through core: the adapter only ever sees primitive inputs                 */
 /* ------------------------------------------------------------------------- */
@@ -662,6 +704,7 @@ int crypto_contract_run(const char* group_name, const az_iot_crypto* crypto)
     cmocka_unit_test(rs256_accepts_known_good_vectors),
     cmocka_unit_test(rs256_rejects_known_bad_vectors),
     cmocka_unit_test(rs256_rejects_missing_inputs),
+    cmocka_unit_test(rs256_rejects_oversized_keys_safely),
     cmocka_unit_test(chain_verifies_and_backend_sees_only_primitive_inputs),
     cmocka_unit_test(chain_is_rejected_when_tampered_or_root_disabled),
     cmocka_unit_test(file_hash_matches_signed_manifest),
