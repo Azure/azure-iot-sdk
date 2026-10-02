@@ -40,6 +40,7 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
+#include "internal/connection_client_internal.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -1685,6 +1686,70 @@ static void an_accepted_result_is_not_reported_as_rejected(void** state)
   assert_int_equal(cap.count, 0);
 }
 
+static void ignore_ack(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)user_ctx;
+}
+
+static void a_result_is_sent_untracked_when_the_ack_table_is_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xB9);
+
+  /* Fill whatever the exchange so far left free. */
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  az_iot_result r = AZ_IOT_OK;
+  for (size_t i = 0; r == AZ_IOT_OK; ++i)
+  {
+    assert_true(i <= AZ_IOT_MAX_PENDING_PUBACKS);
+    r = az_iot_connection_client__publish(&fx->conn, &filler, ignore_ack, NULL);
+  }
+  assert_int_equal(r, AZ_IOT_ERR_BUSY);
+
+  /* The ack only feeds a log line; losing it must not cost the answer. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
+  assert_non_null(find_phase(fx->mock, "result:1"));
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "without ack tracking"));
+}
+
+/* An adapter's own BUSY is a failed send, not a full ack table: it is
+ * returned once, never retried untracked. */
+static void an_adapter_busy_is_not_mistaken_for_a_full_ack_table(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xBA);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
+  assert_null(strstr(cap.all, "without ack tracking"));
+}
+
 static void a_result_that_cannot_be_published_says_why(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2387,6 +2452,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_broker_rejected_result_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_result_is_not_reported_as_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_result_is_sent_untracked_when_the_ack_table_is_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_adapter_busy_is_not_mistaken_for_a_full_ack_table, setup, teardown),
     cmocka_unit_test_setup_teardown(a_result_that_cannot_be_published_says_why, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),
     cmocka_unit_test_setup_teardown(

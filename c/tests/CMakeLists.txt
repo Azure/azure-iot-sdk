@@ -209,6 +209,8 @@ if(UNIX)
 endif()
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client unit/mqttv5_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv5)
+target_include_directories(az_iot_tests_mqttv5_direct_method_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 if(UNIX)
     # Two MQTTv5 direct-method budgets are only observable once a real second has
     # passed, so the suite calls nanosleep().
