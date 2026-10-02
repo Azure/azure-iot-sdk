@@ -1409,7 +1409,7 @@ static void a_failed_user_session_is_not_reopened_immediately(void** state)
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_IDLE);
-  assert_int_not_equal(fx->client->dps_user_retry_due_ms, 0);
+  assert_int_not_equal(fx->client->dps_user_retry._internal.due_ms, 0);
 
   /* Asking again, repeatedly, opens nothing. */
   for (int i = 0; i < 5; ++i)
@@ -1435,12 +1435,12 @@ static void a_user_session_reopens_once_the_backoff_expires(void** state)
   assert_null(fx->client->dps_mqtt);
 
   /* Move the deadline into the past rather than sleeping. */
-  fx->client->dps_user_retry_due_ms = az_iot_time_mono_ms() - 1u;
+  fx->client->dps_user_retry._internal.due_ms = az_iot_time_mono_ms() - 1u;
   fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
   assert_non_null(fx->client->dps_mqtt);
   /* Consumed on firing, so it cannot authorize a second attempt. */
-  assert_int_equal(fx->client->dps_user_retry_due_ms, 0);
+  assert_int_equal(fx->client->dps_user_retry._internal.due_ms, 0);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }
@@ -1460,13 +1460,13 @@ static void repeated_user_session_failures_climb_the_ladder(void** state)
   fx->client->opts.reconnection_policy.jitter_pct = 0u;
 
   fail_a_user_held_session(fx);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 1u);
-  uint64_t first = fx->client->dps_user_retry_due_ms - az_iot_time_mono_ms();
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 1u);
+  uint64_t first = fx->client->dps_user_retry._internal.due_ms - az_iot_time_mono_ms();
 
-  fx->client->dps_user_retry_due_ms = az_iot_time_mono_ms() - 1u;
+  fx->client->dps_user_retry._internal.due_ms = az_iot_time_mono_ms() - 1u;
   fail_a_user_held_session(fx);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 2u);
-  uint64_t second = fx->client->dps_user_retry_due_ms - az_iot_time_mono_ms();
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 2u);
+  uint64_t second = fx->client->dps_user_retry._internal.due_ms - az_iot_time_mono_ms();
 
   assert_true(second > first);
 
@@ -1486,18 +1486,18 @@ static void a_user_session_failure_does_not_spend_the_registration_budget(void**
 
   for (int i = 0; i < 3; ++i)
   {
-    fx->client->dps_user_retry_due_ms = 0;
+    fx->client->dps_user_retry._internal.due_ms = 0;
     fail_a_user_held_session(fx);
   }
 
-  assert_int_equal(fx->client->dps_user_retry_attempt, 3u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 3u);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], 0u);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB], 0u);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
-/* Retries disabled means initial_delay_ms == 0, and az_iot_reconnect_delay_ms()
+/* Retries disabled means initial_delay_ms == 0, and az_iot_retry_policy__delay_ms()
  * returns a 0 ms delay for that -- which would pace nothing. The refusal has to
  * be explicit, or "no retries" would be the one setting that reproduces the
  * hot loop this change exists to remove. */
@@ -1534,11 +1534,11 @@ static void a_spent_user_session_budget_settles(void** state)
 
   for (int i = 0; i < 2; ++i)
   {
-    fx->client->dps_user_retry_due_ms = 0;
+    fx->client->dps_user_retry._internal.due_ms = 0;
     fail_a_user_held_session(fx);
     assert_false(fx->client->dps_user_retry_blocked);
   }
-  fx->client->dps_user_retry_due_ms = 0;
+  fx->client->dps_user_retry._internal.due_ms = 0;
   fail_a_user_held_session(fx);
 
   assert_true(fx->client->dps_user_retry_blocked);
@@ -1571,8 +1571,8 @@ static void close_clears_a_settled_user_session_refusal(void** state)
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
 
   assert_false(fx->client->dps_user_retry_blocked);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 0u);
-  assert_int_equal(fx->client->dps_user_retry_due_ms, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.due_ms, 0u);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }
@@ -1597,7 +1597,7 @@ static void the_last_release_clears_the_user_session_ladder(void** state)
 
   az_iot_connection_client__dps_user_release(fx->client);
   assert_false(fx->client->dps_user_retry_blocked);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 0u);
 }
 
 /* A session that comes up is proof the service is reachable, so the ladder it
@@ -1612,10 +1612,10 @@ static void a_user_session_coming_up_resets_the_ladder(void** state)
   assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
 
   fail_a_user_held_session(fx);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 1u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 1u);
 
   /* Let it through, then bring the next session all the way up. */
-  fx->client->dps_user_retry_due_ms = az_iot_time_mono_ms() - 1u;
+  fx->client->dps_user_retry._internal.due_ms = az_iot_time_mono_ms() - 1u;
   fx->client->dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -1628,8 +1628,8 @@ static void a_user_session_coming_up_resets_the_ladder(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_true(az_iot_connection_client__dps_session_ready(fx->client));
-  assert_int_equal(fx->client->dps_user_retry_attempt, 0u);
-  assert_int_equal(fx->client->dps_user_retry_due_ms, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.due_ms, 0u);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }
@@ -1652,8 +1652,8 @@ static void a_synchronous_start_failure_is_paced_too(void** state)
   assert_null(fx->client->dps_mqtt);
 
   /* Paced, and asking again opens nothing. */
-  assert_int_equal(fx->client->dps_user_retry_attempt, 1u);
-  assert_int_not_equal(fx->client->dps_user_retry_due_ms, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 1u);
+  assert_int_not_equal(fx->client->dps_user_retry._internal.due_ms, 0u);
   for (int i = 0; i < 3; ++i)
   {
     assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
@@ -3107,8 +3107,8 @@ static void closing_from_the_connecting_callback_is_not_paced(void** state)
 
   /* The close stands: nothing was re-armed behind it. */
   assert_false(fx->client->dps_user_retry_blocked);
-  assert_int_equal(fx->client->dps_user_retry_attempt, 0u);
-  assert_int_equal(fx->client->dps_user_retry_due_ms, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 0u);
+  assert_int_equal(fx->client->dps_user_retry._internal.due_ms, 0u);
 
   /* So the holder can immediately ask again, which is the point of close(). */
   ctx.closed = 1; /* do not close a second time */
@@ -3225,7 +3225,7 @@ static void provision_only_reopens_a_dropped_session(void** state)
   assert_null(fx->client->dps_mqtt);
 
   /* Pacing applies here too: an immediate reopen would be the hot loop. */
-  fx->client->dps_user_retry_due_ms = 0;
+  fx->client->dps_user_retry._internal.due_ms = 0;
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_non_null(fx->client->dps_mqtt);
 
@@ -3387,10 +3387,10 @@ static void provision_only_rejects_a_second_open_while_backing_off(void** state)
       AZ_IOT_CONN_STATE_IDLE);
   assert_true(fx->client->dps_standing_ref);
 
-  uint32_t attempts_before = fx->client->dps_user_retry_attempt;
+  uint32_t attempts_before = fx->client->dps_user_retry._internal.attempt;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
   /* Refused, and the pacing it would have reset is intact. */
-  assert_int_equal(fx->client->dps_user_retry_attempt, attempts_before);
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, attempts_before);
   assert_null(fx->client->dps_mqtt);
 
   (void)az_iot_connection_client_close(fx->client);
@@ -3753,7 +3753,7 @@ static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(voi
   }
 
   /* The application owns the retry ladder. */
-  fx->client->opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  fx->client->opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
 
   /* 0x97 quota exceeded, classified by the adapter as a failure. */
   fx->log.count = 0;

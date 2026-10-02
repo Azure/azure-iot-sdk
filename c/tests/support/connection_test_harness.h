@@ -25,7 +25,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 
 #include "support/mock_mqtt_iface.h"
 #include "support/subscription_ack.h"

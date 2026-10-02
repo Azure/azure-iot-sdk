@@ -25,7 +25,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -2827,7 +2827,7 @@ static void a_failed_checkpoint_retire_is_retried(void** state)
   int calls = fx->log.persist_calls;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->log.persist_calls, calls);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->log.persist_calls, calls + 1);
   assert_true(fx->log.have_persist);
@@ -2855,7 +2855,7 @@ static void a_failed_checkpoint_clear_is_retried_while_idle(void** state)
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_true(fx->log.have_persist);
 
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_false(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_stored);
@@ -3047,12 +3047,12 @@ static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
       assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
     }
     assert_int_equal(fx->log.persist_calls, calls);
-    fx->su._internal.persist_retry_ms = 0;
+    fx->su._internal.persist_retry._internal.due_ms = 0;
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
     assert_int_equal(fx->log.persist_calls, calls + 1);
   }
   assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* this write succeeds */
   assert_true(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_pending);
@@ -3160,7 +3160,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
 
@@ -3172,7 +3172,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
   assert_true(fx->su._internal.report_owed);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   pump(fx, 3);
   assert_true(fx->log.have_persist);
 
@@ -3503,7 +3503,7 @@ static void an_unrepresentable_terminal_record_is_not_retried(void** state)
   assert_false(fx->su._internal.report_owed);
 
   int calls = fx->log.persist_calls;
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   pump(fx, 3);
   assert_int_equal(fx->log.persist_calls, calls);
 }
@@ -3522,7 +3522,7 @@ static void a_failed_supersede_clear_holds_the_new_workflow(void** state)
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
 
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_false(fx->log.have_persist);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
@@ -3634,14 +3634,14 @@ static void a_failed_apply_reboot_checkpoint_holds_the_next_step(void** state)
   }
   assert_int_equal(fx->log.op_count, ops);
   assert_int_equal(fx->log.persist_calls, 1);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* fails again */
   assert_int_equal(fx->log.op_count, ops);
   assert_false(fx->log.have_persist);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
 
   /* The write lands, recording the next step. */
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_pending);
@@ -3680,7 +3680,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
 
   fx->chan.report_result = AZ_IOT_ERR_BUSY;
   fx->su._internal.device_properties_report_pending = true;
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(fx->su._internal.device_properties_report_pending);
   assert_true(fx->log.have_persist);
@@ -3693,7 +3693,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
 /* Make the next retry due now and tick once. */
 static void persist_retry_now(fixture* fx)
 {
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
 }
 
@@ -3719,9 +3719,9 @@ static void persist_retries_back_off_and_report_recovery(void** state)
   const uint64_t expected[] = { 1000u, 2000u, 4000u, 8000u };
   for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); ++i)
   {
-    uint64_t delay = fx->su._internal.persist_retry_ms - az_iot_time_mono_ms();
+    uint64_t delay = fx->su._internal.persist_retry._internal.due_ms - az_iot_time_mono_ms();
     assert_true(delay <= expected[i] && delay + 200u > expected[i]);
-    assert_int_equal(fx->su._internal.persist_failures, (uint32_t)(i + 1u));
+    assert_int_equal(fx->su._internal.persist_retry._internal.attempt, (uint32_t)(i + 1u));
     if (i + 1u < sizeof(expected) / sizeof(expected[0]))
     {
       persist_retry_now(fx);
@@ -3734,7 +3734,7 @@ static void persist_retries_back_off_and_report_recovery(void** state)
   assert_true(fx->log.have_persist);
   assert_int_equal(fx->persist_recovered_count, 1);
   assert_int_equal(fx->last_persist_attempts, 4);
-  assert_int_equal(fx->su._internal.persist_failures, 0);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 0);
   pump(fx, 20);
   assert_int_equal(count_ops(&fx->log, OP_APPLY), 1);
 }
@@ -3743,11 +3743,11 @@ static void persist_retries_back_off_and_report_recovery(void** state)
 static void persist_retry_delay_is_capped(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->su._internal.persist_failures = 10;
+  fx->su._internal.persist_retry._internal.attempt = 10;
   fx->log.persist_failures = 1;
   fx->su._internal.checkpoint_stored = true;
   inject_patch(fx, signed_patch()); /* the supersede clear fails */
-  uint64_t delay = fx->su._internal.persist_retry_ms - az_iot_time_mono_ms();
+  uint64_t delay = fx->su._internal.persist_retry._internal.due_ms - az_iot_time_mono_ms();
   assert_true(delay <= 60000u && delay + 200u > 60000u);
 }
 
@@ -3770,7 +3770,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   {
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   }
-  while (fx->su._internal.persist_failures + 1u < SU_TEST_PERSIST_MAX_ATTEMPTS)
+  while (fx->su._internal.persist_retry._internal.attempt + 1u < SU_TEST_PERSIST_MAX_ATTEMPTS)
   {
     persist_retry_now(fx);
   }
@@ -3780,7 +3780,8 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   persist_retry_now(fx);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
   assert_int_equal(fx->chan.report_count, reports + 1);
-  assert_int_equal(fx->su._internal.persist_failures >= SU_TEST_PERSIST_MAX_ATTEMPTS, true);
+  assert_int_equal(
+      fx->su._internal.persist_retry._internal.attempt >= SU_TEST_PERSIST_MAX_ATTEMPTS, true);
   assert_int_equal(fx->persist_failed_count, 2);
   assert_false(fx->last_persist_retrying);
   assert_int_equal(fx->last_persist_attempts, SU_TEST_PERSIST_MAX_ATTEMPTS);
@@ -3812,7 +3813,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   }
   assert_true(fx->log.have_persist);
   assert_int_equal(fx->persist_recovered_count, 1);
-  assert_int_equal(fx->su._internal.persist_failures, 0);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 0);
   assert_false(fx->su._internal.checkpoint_pending);
 }
 
@@ -3835,7 +3836,7 @@ static void a_terminal_record_that_never_lands_stops_being_retried(void** state)
   {
     persist_retry_now(fx);
   }
-  assert_int_equal(fx->su._internal.persist_failures, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
   assert_int_equal(fx->persist_failed_count, 2);
   assert_false(fx->last_persist_retrying);
   int calls = fx->log.persist_calls;
@@ -3863,7 +3864,7 @@ static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(voi
     persist_retry_now(fx);
   }
   assert_false(fx->su._internal.checkpoint_superseded);
-  assert_int_equal(fx->su._internal.persist_failures, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000002");
@@ -3950,7 +3951,7 @@ static void a_new_workflow_waits_for_a_held_workflow(void** state)
     /* Storage recovers: the held workflow resumes and completes. */
     fx->log.persist_failures = 0;
     fx->log.apply_result = AZ_IOT_SU_RESULT_SUCCESS;
-    fx->su._internal.persist_retry_ms = 0;
+    fx->su._internal.persist_retry._internal.due_ms = 0;
     pump(fx, 60);
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
     assert_string_equal(fx->chan.last_workflow_id, "distinct-files-deployment");
@@ -4133,7 +4134,7 @@ static void a_failed_terminal_write_counts_once_with_a_stored_record(void** stat
     }
     pump(fx, 40);
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
-    assert_int_equal(fx->su._internal.persist_failures, 1u);
+    assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 1u);
     assert_int_equal(fx->persist_failed_count, 1);
     if (c == 1)
     {
@@ -4151,7 +4152,7 @@ static void a_failed_terminal_write_counts_once_with_a_stored_record(void** stat
     for (uint32_t n = 2; n <= SU_TEST_PERSIST_MAX_ATTEMPTS; ++n)
     {
       persist_retry_now(fx);
-      assert_int_equal(fx->su._internal.persist_failures, n);
+      assert_int_equal(fx->su._internal.persist_retry._internal.attempt, n);
     }
     assert_int_equal(fx->persist_failed_count, 2);
     assert_false(fx->last_persist_retrying);
@@ -5409,7 +5410,7 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
   /* Paced: not on the next tick, but once the fallback delay elapses. */
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 1);
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
@@ -5470,7 +5471,7 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
   /* The retry survived the accepted publish and goes out again, on the route
    * that was asked for. */
   assert_int_not_equal(fx->su._internal.pending_fetch, 0);
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
@@ -5494,8 +5495,8 @@ static void assert_fallback_delay(fixture* fx, uint64_t before, uint32_t attempt
   {
     base = 60000u;
   }
-  uint64_t due = fx->su._internal.retry_due_ms;
-  assert_int_equal(fx->su._internal.retry_attempts, attempt);
+  uint64_t due = fx->su._internal.retry._internal.due_ms;
+  assert_int_equal(fx->su._internal.retry._internal.attempt, attempt);
   assert_true(due >= before + base - base / 5u);
   assert_true(due <= az_iot_time_mono_ms() + base + base / 5u);
 }
@@ -5548,7 +5549,7 @@ static void a_no_hint_retryable_report_is_paced(void** state)
   pump(fx, 5);
   assert_int_equal(fx->chan.report_count, sent);
 
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
   assert_int_equal(fx->chan.last_report.outcome, first.outcome);
@@ -5588,8 +5589,8 @@ static void only_a_no_hint_service_verdict_arms_the_fallback(void** state)
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
       NULL,
       fx->chan.engine_ctx);
-  assert_int_equal(fx->su._internal.retry_due_ms, 0);
-  assert_int_equal(fx->su._internal.retry_attempts, 0);
+  assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
+  assert_int_equal(fx->su._internal.retry._internal.attempt, 0);
 
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
@@ -5642,7 +5643,7 @@ static void a_stale_fallback_does_not_hold_an_excluded_fetch_retry(void** state)
 
   for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); ++i)
   {
-    assert_true(fx->su._internal.retry_due_ms > az_iot_time_mono_ms());
+    assert_true(fx->su._internal.retry._internal.due_ms > az_iot_time_mono_ms());
     fx->chan.result_cb(
         AZ_IOT_SU_OP_GET_UPDATE,
         verdicts[i].result,
@@ -5661,7 +5662,7 @@ static void a_stale_fallback_does_not_hold_an_excluded_report_retry(void** state
   fixture* fx = (fixture*)*state;
   finish_with_report_unacknowledged(fx);
   int sent = fx->chan.report_count;
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms() + 60000u;
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms() + 60000u;
 
   fx->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
@@ -5681,7 +5682,7 @@ static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
   finish_with_report_unacknowledged(fx);
   int sent = fx->chan.report_count;
   deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
 
   fx->chan.report_sync_retry_once = true;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
@@ -5691,7 +5692,7 @@ static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
 
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
-  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 2);
 }
@@ -5712,7 +5713,7 @@ static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
   dp.installed_update_id.version = "1.1";
   assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
   deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
-  assert_true(fx->su._internal.retry_due_ms > az_iot_time_mono_ms());
+  assert_true(fx->su._internal.retry._internal.due_ms > az_iot_time_mono_ms());
 
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
@@ -5734,8 +5735,8 @@ static void the_fallback_backs_off_and_resets_on_success(void** state)
 
   fx->chan.result_cb(
       AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
-  assert_int_equal(fx->su._internal.retry_attempts, 0);
-  assert_int_equal(fx->su._internal.retry_due_ms, 0);
+  assert_int_equal(fx->su._internal.retry._internal.attempt, 0);
+  assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
 }
 
 /* The mirror case: a synchronous TERMINAL verdict must not be retried, or the

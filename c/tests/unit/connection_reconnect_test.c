@@ -8,7 +8,7 @@
  * and what the core does with persistent subscriptions and in-flight QoS-1
  * acknowledgements when a session is replaced.
  *
- * The backoff MATH lives in reconnect_policy_test.c; this suite is about the
+ * The backoff MATH lives in retry_policy_test.c; this suite is about the
  * state machine that consumes it. */
 #include <stdarg.h>
 #include <stddef.h>

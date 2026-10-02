@@ -272,7 +272,7 @@ static void version_string_matches_the_header_macros(void** state)
 static void reconnection_policy_default_is_usable_as_supplied(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy p = az_iot_connection_client_get_default_retry_policy();
 
   /* These are documented in az_iot_connection_client.h ("1s initial delay, 60s
    * max backoff, infinite attempts, 20% jitter"), which makes them part of the
@@ -292,11 +292,11 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
 
 /* Never retry. The bytes are the same as a zeroed struct -- the value of the
  * getter is that the call site says so. The behaviour that follows from
- * initial_delay_ms == 0 is asserted in reconnect_policy_test.c. */
+ * initial_delay_ms == 0 is asserted in retry_policy_test.c. */
 static void retry_disabled_policy_disables_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  az_iot_retry_policy p = az_iot_connection_client_get_disabled_retry_policy();
   assert_int_equal(p.initial_delay_ms, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.jitter_pct, 0u);
@@ -307,7 +307,7 @@ static void retry_disabled_policy_disables_retrying(void** state)
 static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000u, 360u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(5000u, 360u);
   assert_int_equal(p.initial_delay_ms, 5000u);
   assert_int_equal(p.max_delay_ms, 5000u);
   assert_int_equal(p.max_attempts, 360u);
@@ -318,7 +318,7 @@ static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 static void fixed_interval_policy_can_retry_forever(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(1000u, 0u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(1000u, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.initial_delay_ms, p.max_delay_ms);
 }
@@ -331,7 +331,7 @@ static void fixed_interval_policy_can_retry_forever(void** state)
 static void a_zero_fixed_interval_does_not_disable_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(0u, 5u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(0u, 5u);
 
   assert_int_not_equal(p.initial_delay_ms, 0u); /* not the disable sentinel */
   assert_int_equal(p.initial_delay_ms, 1u);

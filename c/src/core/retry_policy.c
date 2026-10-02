@@ -3,23 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#include "internal/reconnect.h"
+#include "internal/retry_policy.h"
+
+#include "azure/iot/az_iot_connection_client.h"
+#include "internal/mono_time.h"
 
 #include <stddef.h>
-
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-uint64_t az_iot_time_mono_ms(void) { return (uint64_t)GetTickCount64(); }
-#else
-#include <time.h>
-uint64_t az_iot_time_mono_ms(void)
-{
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000);
-}
-#endif
 
 static uint64_t xorshift64(uint64_t* s)
 {
@@ -35,8 +24,8 @@ static uint64_t xorshift64(uint64_t* s)
   return x;
 }
 
-uint32_t az_iot_reconnect_delay_ms(
-    const az_iot_reconnection_policy* policy,
+uint32_t az_iot_retry_policy__delay_ms(
+    const az_iot_retry_policy* policy,
     uint32_t attempt,
     uint64_t* rng_state)
 {
@@ -73,7 +62,7 @@ uint32_t az_iot_reconnect_delay_ms(
   }
 
   uint64_t result = base;
-  if (pct > 0 && base > 0)
+  if (pct > 0)
   {
     /* Jitter the backoff by [-pct%, +pct%], computed WITHOUT a signed
      * intermediate.
@@ -119,9 +108,84 @@ uint32_t az_iot_reconnect_delay_ms(
   return (uint32_t)result;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
+bool az_iot_retry_policy_is_enabled(const az_iot_retry_policy* policy)
 {
-  az_iot_reconnection_policy p = {
+  return policy != NULL && policy->initial_delay_ms > 0u;
+}
+
+bool az_iot_retry_policy__next(
+    const az_iot_retry_policy* policy,
+    uint32_t* attempt,
+    uint64_t* rng_state,
+    uint32_t* delay_ms)
+{
+  /* Checked before counting: the counter saturates, so "count > max" could
+   * never hold for max_attempts == UINT32_MAX. */
+  bool spent = policy->max_attempts > 0u && *attempt >= policy->max_attempts;
+  if (*attempt < UINT32_MAX)
+  {
+    (*attempt)++;
+  }
+  if (spent)
+  {
+    return false;
+  }
+  *delay_ms = az_iot_retry_policy__delay_ms(policy, *attempt, rng_state);
+  return true;
+}
+
+bool az_iot_retry_state__schedule(
+    az_iot_retry_state* state,
+    const az_iot_retry_policy* policy,
+    uint64_t* rng_state)
+{
+  uint32_t delay_ms = 0u;
+  if (!az_iot_retry_policy__next(policy, &state->_internal.attempt, rng_state, &delay_ms))
+  {
+    state->_internal.due_ms = 0u;
+    return false;
+  }
+  state->_internal.due_ms = az_iot_time_mono_ms() + (uint64_t)delay_ms;
+  return true;
+}
+
+void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms)
+{
+  if (state->_internal.due_ms < not_before_ms)
+  {
+    state->_internal.due_ms = not_before_ms;
+  }
+}
+
+bool az_iot_retry_state__due(az_iot_retry_state* state)
+{
+  if (state->_internal.due_ms != 0u && az_iot_time_mono_ms() < state->_internal.due_ms)
+  {
+    return false;
+  }
+  state->_internal.due_ms = 0u;
+  return true;
+}
+
+bool az_iot_retry_state__pending(const az_iot_retry_state* state)
+{
+  return state->_internal.due_ms != 0u && az_iot_time_mono_ms() < state->_internal.due_ms;
+}
+
+uint32_t az_iot_retry_state__attempts(const az_iot_retry_state* state)
+{
+  return state->_internal.attempt;
+}
+
+void az_iot_retry_state__reset(az_iot_retry_state* state)
+{
+  state->_internal.attempt = 0u;
+  state->_internal.due_ms = 0u;
+}
+
+az_iot_retry_policy az_iot_connection_client_get_default_retry_policy(void)
+{
+  az_iot_retry_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
     .max_delay_ms = 60000u, /* cap exponential backoff at 60s */
     .max_attempts = 0u, /* 0 = retry forever              */
@@ -130,12 +194,12 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
   return p;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
+az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void)
 {
   /* initial_delay_ms == 0 is what disables retrying. Returning it from a named
    * getter is the whole point: the value is identical to a zeroed struct, so
    * the difference this makes is at the call site, not in the bytes. */
-  az_iot_reconnection_policy p = {
+  az_iot_retry_policy p = {
     .initial_delay_ms = 0u,
     .max_delay_ms = 0u,
     .max_attempts = 0u,
@@ -144,7 +208,7 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
   return p;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+az_iot_retry_policy az_iot_connection_client_get_fixed_interval_retry_policy(
     uint32_t interval_ms,
     uint32_t max_attempts)
 {
@@ -158,7 +222,7 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
    * calculator can represent (it floors every result at 1), so it is the
    * nearest thing to the caller's request that is still a retry. */
   uint32_t interval = interval_ms ? interval_ms : 1u;
-  az_iot_reconnection_policy p = {
+  az_iot_retry_policy p = {
     .initial_delay_ms = interval,
     .max_delay_ms = interval,
     .max_attempts = max_attempts,

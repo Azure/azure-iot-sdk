@@ -2061,7 +2061,7 @@ static void a_lost_session_is_retried_a_bounded_number_of_times(void** state)
      *
      * Asserted not-blocked because a spent ladder would refuse outright and
      * the loop would stall on a cause that is not what is under test. */
-    fx->client.dps_user_retry_due_ms = 0;
+    fx->client.dps_user_retry._internal.due_ms = 0;
     assert_false(fx->client.dps_user_retry_blocked);
 
     /* A session, a request on it, and then the session goes away. */

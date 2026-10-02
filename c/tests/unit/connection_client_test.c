@@ -22,7 +22,8 @@
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
@@ -2203,7 +2204,7 @@ static az_iot_mqtt_factory* tls_client_init(
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   if (!reconnect)
   {
-    opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+    opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
   }
   else
   {

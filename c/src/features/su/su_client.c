@@ -37,7 +37,8 @@
 
 #include "internal/su_internal.h"
 #include "internal/json_string.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
@@ -775,19 +776,27 @@ static int32_t verify_file_hash(
 /** @brief Upper bound, in milliseconds, of the doubling retry delay. */
 #define AZ_IOT_SU_PERSIST_RETRY_MAX_MS 60000u
 
+/** @brief Schedule for retrying a failed persist_state_fn write: doubling, no jitter. */
+static const az_iot_retry_policy k_persist_retry_policy
+    = { .initial_delay_ms = AZ_IOT_SU_PERSIST_RETRY_BASE_MS,
+        .max_delay_ms = AZ_IOT_SU_PERSIST_RETRY_MAX_MS,
+        .max_attempts = 0,
+        .jitter_pct = 0 };
+
 static az_iot_result su_persist(az_iot_su_client* client, bool terminal);
 static void dispatch_event(az_iot_su_client* client, const az_iot_su_event* event);
 
 /** @brief Whether persist_max_attempts consecutive writes have failed. */
 static bool persist_gave_up(const az_iot_su_client* client)
 {
-  return SU_I(client).persist_failures >= SU_I(client).persist_max_attempts;
+  return az_iot_retry_state__attempts(&SU_I(client).persist_retry)
+      >= SU_I(client).persist_max_attempts;
 }
 
 /** @brief Whether a failed write may be retried now. */
 static bool persist_retry_due(const az_iot_su_client* client)
 {
-  return !persist_gave_up(client) && az_iot_time_mono_ms() >= SU_I(client).persist_retry_ms;
+  return !persist_gave_up(client) && !az_iot_retry_state__pending(&SU_I(client).persist_retry);
 }
 
 /** @brief Raise AZ_IOT_SU_EVENT_PERSIST_FAILED or AZ_IOT_SU_EVENT_PERSIST_RECOVERED. */
@@ -822,8 +831,8 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
   int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
   if (rc == 0)
   {
-    uint32_t failed = SU_I(client).persist_failures;
-    SU_I(client).persist_failures = 0;
+    uint32_t failed = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
+    az_iot_retry_state__reset(&SU_I(client).persist_retry);
     if (failed > 0)
     {
       raise_persist(client, false, failed);
@@ -832,21 +841,9 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
   }
 
   SU_I(client).persist_last_error = rc;
-  uint32_t n = SU_I(client).persist_failures;
-  if (n < UINT32_MAX)
-  {
-    SU_I(client).persist_failures = ++n;
-  }
-  uint32_t delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
-  if (n <= 16u)
-  {
-    delay = AZ_IOT_SU_PERSIST_RETRY_BASE_MS << (n - 1u);
-    if (delay > AZ_IOT_SU_PERSIST_RETRY_MAX_MS)
-    {
-      delay = AZ_IOT_SU_PERSIST_RETRY_MAX_MS;
-    }
-  }
-  SU_I(client).persist_retry_ms = az_iot_time_mono_ms() + delay;
+  (void)az_iot_retry_state__schedule(
+      &SU_I(client).persist_retry, &k_persist_retry_policy, &SU_I(client).retry_rng);
+  uint32_t n = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
   AZ_IOT_LOG_ERRORF("su: persist_state_fn failed (%u consecutive)", (unsigned)n);
   if (n == 1u || n == SU_I(client).persist_max_attempts)
   {
@@ -1590,36 +1587,15 @@ static bool arm_retry_backoff(
   {
     return false;
   }
-  const az_iot_reconnection_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
+  static const az_iot_retry_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
                                               .max_delay_ms = AZ_IOT_SU_RETRY_MAX_MS,
                                               .max_attempts = 0,
                                               .jitter_pct = AZ_IOT_SU_RETRY_JITTER_PCT };
-  uint64_t now = az_iot_time_mono_ms();
   if (SU_I(client).retry_rng == 0)
   {
-    SU_I(client).retry_rng = now ^ (uint64_t)(uintptr_t)client;
+    SU_I(client).retry_rng = az_iot_time_mono_ms() ^ (uint64_t)(uintptr_t)client;
   }
-  if (SU_I(client).retry_attempts < UINT32_MAX)
-  {
-    SU_I(client).retry_attempts++;
-  }
-  SU_I(client).retry_due_ms = now
-      + az_iot_reconnect_delay_ms(&policy, SU_I(client).retry_attempts, &SU_I(client).retry_rng);
-  return true;
-}
-
-/** @brief Whether a paced fetch/report retry may be sent now. */
-static bool retry_backoff_due(az_iot_su_client* client)
-{
-  if (SU_I(client).retry_due_ms == 0)
-  {
-    return true;
-  }
-  if (az_iot_time_mono_ms() < SU_I(client).retry_due_ms)
-  {
-    return false;
-  }
-  SU_I(client).retry_due_ms = 0;
+  (void)az_iot_retry_state__schedule(&SU_I(client).retry, &policy, &SU_I(client).retry_rng);
   return true;
 }
 
@@ -1678,8 +1654,7 @@ static void on_channel_result(
   {
     if (result == AZ_IOT_OK)
     {
-      SU_I(client).retry_attempts = 0;
-      SU_I(client).retry_due_ms = 0;
+      az_iot_retry_state__reset(&SU_I(client).retry);
     }
     /* This branch IS the definition of "the client will not re-arm it", so it
      * is also where the application is told. Deriving the two from one
@@ -1905,7 +1880,7 @@ static void drive_pending_fetch(az_iot_su_client* client)
   }
   /* After the deadline check: pacing must not postpone an abandonment. A newer
    * application request is not paced: the application owns its cadence. */
-  if (SU_I(client).pending_fetch_paced && !retry_backoff_due(client))
+  if (SU_I(client).pending_fetch_paced && !az_iot_retry_state__due(&SU_I(client).retry))
   {
     return;
   }
@@ -2922,7 +2897,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
      * may re-arm it from inside report(). Restored on refusal, so a status
      * report -- the service's only record of what this device did -- is not
      * dropped on a transient channel failure. */
-    if (!SU_I(client).report_paced || retry_backoff_due(client))
+    if (!SU_I(client).report_paced || az_iot_retry_state__due(&SU_I(client).retry))
     {
       SU_I(client).device_properties_report_pending = false;
       if (az_iot_su__report_state(client) != AZ_IOT_OK)

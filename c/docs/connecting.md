@@ -101,7 +101,7 @@ when:
 | `max_attempts` | 0 | Automatic retries after a failure before `FAULTED`; the count resets on success. `0` retries forever. |
 | `jitter_pct` | 20 | Random variation, ± percent. |
 
-`az_iot_reconnection_policy_get_default()`, `_get_retry_disabled()` and `_get_fixed_interval()`
+`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()` and `_get_fixed_interval_retry_policy()`
 build the common shapes.
 
 - DPS and the hub each have their own retry count, so failures on one do not use up the other's

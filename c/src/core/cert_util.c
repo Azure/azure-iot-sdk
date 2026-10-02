@@ -6,7 +6,7 @@
 #include "internal/cert_util.h"
 
 #include "internal/log_internal.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 /* LCG mixing constants for the request-id nonce generator. */
