@@ -211,6 +211,7 @@ typedef struct
   int32_t restore_result;
   int32_t is_installed_result;
   int32_t verify_result;
+  int sha256_calls; /* one-shot sha256_fn calls */
 
   bool install_in_progress_once; /* first install returns IN_PROGRESS */
   bool install_in_progress_consumed;
@@ -365,7 +366,7 @@ static int32_t mock_sha256(const uint8_t* data, size_t len, uint8_t out[32], voi
 {
   (void)data;
   (void)len;
-  (void)ctx;
+  ((hook_log*)ctx)->sha256_calls++;
   memset(out, SU_TEST_HASH_BYTE, 32);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
@@ -746,6 +747,7 @@ typedef struct
   int state_event_count;
   az_iot_su_state last_state;
   az_iot_su_state last_previous_state;
+  az_iot_su_state states[16]; /* first states entered, in order */
 
   int persist_failed_count;
   int persist_recovered_count;
@@ -775,6 +777,10 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
   }
   else if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED)
   {
+    if (fx->state_event_count < (int)(sizeof(fx->states) / sizeof(fx->states[0])))
+    {
+      fx->states[fx->state_event_count] = event->state;
+    }
     fx->state_event_count++;
     fx->last_state = event->state;
     fx->last_previous_state = event->previous_state;
@@ -1336,6 +1342,74 @@ static void verify_failure_blocks_download_and_fails(void** state)
   /* Terminal: machine returns to Idle after reporting FAILED. */
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+}
+
+/* A manifest that is not JSON, with a well-formed JWS around it. */
+static const char* not_json_manifest_patch(void)
+{
+  static char patch[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(
+      patch,
+      sizeof(patch),
+      "{\"workflowId\":\"7d2f0a8e-not-json\",\"updateManifest\":\"not-json\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}",
+      jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* A rejected signature fails the workflow before the manifest is parsed. */
+static void rejected_signature_fails_before_manifest_is_parsed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, not_json_manifest_patch());
+  pump(fx, 40);
+
+  assert_int_equal((int)count_ops(&fx->log, OP_VERIFY), 1);
+  assert_int_equal(fx->log.sha256_calls, 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_DOWNLOAD), 0);
+  assert_true(fx->state_event_count >= 3);
+  assert_int_equal(fx->states[0], AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fx->states[1], AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_int_equal(fx->states[2], AZ_IOT_SU_STATE_FAILED);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].extended_result_code,
+      (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, 0u));
+}
+
+/* A verified manifest that does not parse fails after verification. */
+static void verified_malformed_manifest_fails_after_verification(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  inject_patch(fx, not_json_manifest_patch());
+  pump(fx, 40);
+
+  assert_int_equal((int)count_ops(&fx->log, OP_VERIFY), 2); /* SJWK + manifest */
+  assert_int_equal(fx->log.sha256_calls, 1);
+  assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_DOWNLOAD), 0);
+  assert_true(fx->state_event_count >= 3);
+  assert_int_equal(fx->states[1], AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_int_equal(fx->states[2], AZ_IOT_SU_STATE_FAILED);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].extended_result_code,
+      (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_INTERNAL, 0u));
 }
 
 static void install_failure_triggers_rollback(void** state)
@@ -5865,6 +5939,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(public_parser_accepts_update_metadata, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        rejected_signature_fails_before_manifest_is_parsed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        verified_malformed_manifest_fails_after_verification, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
     cmocka_unit_test_setup_teardown(hash_mismatch_blocks_install_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
