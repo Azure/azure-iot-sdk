@@ -305,11 +305,17 @@ static az_iot_result publish_operation(
 /* inbound                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Apply a failure to the channel's state. Returns the action so the caller can
- * decide whether the operation may be retried. */
+/**
+ * @brief Apply a failure to the channel's state.
+ *
+ * @param status  Response status from the topic. Classifies the failure when
+ *                the body carries no numeric code; never reported as one.
+ * @return The action, so the caller can decide whether to retry.
+ */
 static az_iot_su_error_action handle_failure(
     az_iot_su_channel_dps* c,
     az_iot_su_operation operation,
+    int32_t status,
     const uint8_t* payload,
     size_t payload_len,
     char* code,
@@ -325,7 +331,11 @@ static az_iot_su_error_action handle_failure(
   (void)az_iot_su__parse_tracking_id(payload, payload_len, tracking_id, tracking_id_size);
   *out_numeric = numeric;
 
-  az_iot_su_error_action action = az_iot_su__classify_error(code, numeric, operation);
+  /* A bodyless or unparseable failure still has its status; without it a
+   * transient 429/503 would classify as FATAL. A bare status only ever maps to
+   * RETRY, RETRY_AFTER or FATAL. */
+  az_iot_su_error_action action
+      = az_iot_su__classify_error(code, (numeric != 0) ? numeric : status, operation);
 
   switch (action)
   {
@@ -464,6 +474,7 @@ static bool on_dps_message(
     az_iot_su_error_action action = handle_failure(
         c,
         operation,
+        status,
         payload,
         payload_len,
         code,

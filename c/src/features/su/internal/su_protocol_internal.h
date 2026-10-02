@@ -76,8 +76,9 @@ extern "C"
    *
    * Shape: $dps/registrations/res/{status}/?$rid={request_id}
    *
-   * The status is the transport-level code; the machine-readable error code in
-   * the body is what drives behaviour (see az_iot_su__classify_error).
+   * The status is the transport-level code. The body's error code takes
+   * precedence; the status classifies a failure whose body carries none (see
+   * az_iot_su__classify_error).
    */
   az_iot_result az_iot_su__parse_response_topic(
       const char* topic,

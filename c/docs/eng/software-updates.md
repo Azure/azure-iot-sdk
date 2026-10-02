@@ -138,7 +138,9 @@ rejected with `409 REPORT_CONFLICT`.
 
 ### Errors
 
-Act on the machine-readable `error.code`, never on the HTTP status.
+Act on the machine-readable `error.code`, never on the HTTP status. Exception: a failure whose body
+carries no code (empty or unparseable) is classified by its status alone -- 429 throttled,
+500/502/503/504 retryable, anything else fatal -- and the missing code is reported as 0.
 
 | Case | Code / status | Device action |
 | --- | --- | --- |
