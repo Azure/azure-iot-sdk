@@ -153,6 +153,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
         }
 
+        [Fact]
+        public async Task ProvisioningWithACertificateSigningRequestButNoCompletionCallbackThrows()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+
+            using MockConnectionMqttClient mockMqttClient = new();
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // Intentionally leave HandleCertificateSigningCompleteAsync unset.
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+        }
+
         private static string CreateCertificateSigningRequest(RSA key)
         {
             var certificateRequest = new CertificateRequest($"CN={RegistrationId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
