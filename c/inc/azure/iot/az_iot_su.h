@@ -806,7 +806,7 @@ extern "C"
        * never run concurrently, so one buffer serves both directions. */
       uint8_t persist_scratch[AZ_IOT_SU_PERSIST_BLOB_SIZE];
 
-      /* The unescaped manifest text within request_buffer (parse_manifest
+      /* The unescaped manifest text within request_buffer (decode_manifest
        * sets this; persistence/resume re-parses it). */
       az_span manifest_text;
 
