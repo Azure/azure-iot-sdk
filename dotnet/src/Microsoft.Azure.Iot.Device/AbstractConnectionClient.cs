@@ -184,6 +184,11 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
+            {
+                throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+            }
+
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             CurrentConnectionContext = new ConnectionContext()
@@ -198,11 +203,9 @@ namespace Microsoft.Azure.Iot.Device
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
             if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
             {
-                if (HandleCertificateSigningCompleteAsync == null)
-                {
-                    throw new Exception("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
-                }
-
+                // Service should only return signed certificates if the provisioning request included a certificate signing request, and this HandleCertificateSigningCompleteAsync callback
+                // is null checked earlier if one was provided
+                Debug.Assert(HandleCertificateSigningCompleteAsync != null);
                 CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
             }
             else
@@ -491,6 +494,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     Trace.TraceInformation("Re-provisioning this device because the connection faulted on its identity. {0}", args.Exception);
 
+                    //This needs to retry and doesn't?
                     await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
