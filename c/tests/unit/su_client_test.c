@@ -3145,6 +3145,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
 
@@ -5390,6 +5391,10 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
       NULL,
       fx->chan.engine_ctx);
 
+  /* Paced: not on the next tick, but once the fallback delay elapses. */
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
@@ -5449,9 +5454,167 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
 
   /* The retry survived the accepted publish and goes out again, on the route
    * that was asked for. */
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+/** @brief A retryable verdict with no service delay, as for a 503 with no retry-after. */
+static void deliver_no_hint_retry(fixture* fx, az_iot_su_operation operation)
+{
+  az_iot_su_service_error se = {
+    .code = 503000, .message = "UPSTREAM_UNAVAILABLE", .tracking_id = "", .retry_after_ms = 0
+  };
+  fx->chan.result_cb(
+      operation, AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY, &se, fx->chan.engine_ctx);
+}
+
+/** @brief Asserts the armed fallback delay is base * 2^(attempt-1), capped, +/- jitter. */
+static void assert_fallback_delay(fixture* fx, uint64_t before, uint32_t attempt)
+{
+  uint64_t base = (attempt > 7u) ? 60000u : (uint64_t)1000u << (attempt - 1u);
+  if (base > 60000u)
+  {
+    base = 60000u;
+  }
+  uint64_t due = fx->su._internal.retry_due_ms;
+  assert_int_equal(fx->su._internal.retry_attempts, attempt);
+  assert_true(due >= before + base - base / 5u);
+  assert_true(due <= az_iot_time_mono_ms() + base + base / 5u);
+}
+
+/* A no-hint retryable fetch is not resent at pump frequency, and the caller's
+ * deadline still abandons it exactly once. */
+static void a_no_hint_retryable_fetch_is_paced_and_keeps_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  uint64_t armed = fx->su._internal.pending_fetch_deadline_ms;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  uint64_t before = az_iot_time_mono_ms();
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_fallback_delay(fx, before, 1u);
+
+  pump(fx, 5);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, armed);
+  assert_int_equal(fx->abandoned_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  pump(fx, 3);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* A no-hint retryable report waits for the fallback delay, then is resent
+ * unchanged and without reinstalling. */
+static void a_no_hint_retryable_report_is_paced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  az_iot_su_report first = fx->chan.last_report;
+  char workflow_id[128];
+  char extended[32];
+  memcpy(workflow_id, fx->chan.last_workflow_id, sizeof(workflow_id));
+  memcpy(extended, fx->chan.last_extended, sizeof(extended));
+  size_t installs = count_ops(&fx->log, OP_INSTALL);
+
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  assert_int_equal(fx->chan.last_report.outcome, first.outcome);
+  assert_int_equal(fx->chan.last_report.result_code, first.result_code);
+  assert_string_equal(fx->chan.last_workflow_id, workflow_id);
+  assert_string_equal(fx->chan.last_extended, extended);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), installs);
+}
+
+/* Only a service verdict that named no delay arms the fallback: a named delay
+ * is the channel's, a lost session the connection client's, and a corrective
+ * resend is due at once. */
+static void only_a_no_hint_service_verdict_arms_the_fallback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+
+  az_iot_su_service_error hinted
+      = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      &hinted,
+      fx->chan.engine_ctx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.retry_due_ms, 0);
+  assert_int_equal(fx->su._internal.retry_attempts, 0);
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A fresh application request is not held by the fallback: the application
+ * owns its cadence. */
+static void a_new_application_request_is_not_paced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* The fallback doubles to a cap, and an accepted operation resets it. */
+static void the_fallback_backs_off_and_resets_on_success(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+
+  for (uint32_t attempt = 1u; attempt <= 10u; ++attempt)
+  {
+    uint64_t before = az_iot_time_mono_ms();
+    deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+    assert_fallback_delay(fx, before, attempt);
+  }
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.retry_attempts, 0);
+  assert_int_equal(fx->su._internal.retry_due_ms, 0);
 }
 
 /* The mirror case: a synchronous TERMINAL verdict must not be retried, or the
@@ -5550,6 +5713,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_retryable_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_no_hint_retryable_fetch_is_paced_and_keeps_its_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_no_hint_retryable_report_is_paced, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        only_a_no_hint_service_verdict_arms_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_application_request_is_not_paced, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         two_requests_before_do_work_issue_only_the_newest, setup, teardown),

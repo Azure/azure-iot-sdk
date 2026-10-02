@@ -863,6 +863,17 @@ extern "C"
        * policy instead of silently acquiring a new one. */
       uint32_t pending_fetch_timeout_ms;
 
+      /** Earliest az_iot_time_mono_ms() for retrying after a retryable verdict with no
+       * service delay; 0 when none is in force. */
+      uint64_t retry_due_ms;
+      /** Consecutive retryable verdicts with no service delay; 0 after any accepted
+       * operation. */
+      uint32_t retry_attempts;
+      /** Jitter PRNG state for retry_due_ms. */
+      uint64_t retry_rng;
+      /** pending_fetch was re-armed by the client, so retry_due_ms paces it. */
+      bool pending_fetch_paced;
+
       /* Terminal outcome for the active workflow, latched at the transition
        * that ends it. Reporting is keyed on workflowId, so the engine must be
        * able to distinguish SUCCEEDED / CANCELED / SKIPPED after the workflow
@@ -1081,6 +1092,11 @@ extern "C"
    * it. If the service asks for a delay that cannot fit, the request is
    * abandoned AT ONCE rather than at the deadline, and the event carries
    * `service_error.retry_after_ms` so the caller can decide when to ask again.
+   *
+   * A retryable failure that names no delay is retried by the client after a
+   * jittered exponential backoff (1 s doubling to 60 s, +/-20%), reset by any
+   * accepted operation; status reports are paced the same way. The backoff
+   * counts against @p timeout_ms. A new request is not held by it.
    *
    * Pass AZ_IOT_SU_REQUEST_NO_TIMEOUT for no bound: the request is then
    * retried indefinitely and the only abandonment is a channel verdict.

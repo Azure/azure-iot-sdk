@@ -150,7 +150,9 @@ Act on the machine-readable `error.code`, never on the HTTP status.
 | Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
 | Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
 
-**The device is the only retrier**: DPS makes one attempt per hop. Reports are durable writes,
+**The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
+`Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
+any accepted operation; it counts against the request timeout. Reports are durable writes,
 retried until acknowledged.
 
 ---
