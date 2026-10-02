@@ -225,7 +225,7 @@ static az_iot_result psa_verify_rs256(
       = build_rsa_public_der(der, sizeof(der), modulus, modulus_len, exponent, exponent_len);
   if (der_len == 0)
   {
-    return AZ_IOT_ERR_AUTH;
+    return AZ_IOT_ERR_INVALID_ARG; /* key larger than this backend encodes */
   }
 
   psa_algorithm_t alg = PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256);

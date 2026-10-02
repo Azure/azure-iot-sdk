@@ -269,9 +269,18 @@ static void hmac_sha256_matches_known_answers(void** state)
     assert_true(v->key_len <= sizeof(key) && v->data_len <= sizeof(data));
     for (size_t k = 0; k < v->key_len; ++k)
     {
-      key[k] = v->key_text != NULL ? (uint8_t)v->key_text[k]
-          : v->key_from != 0       ? (uint8_t)((size_t)v->key_from - 1u + k)
-                                   : v->key_byte;
+      if (v->key_text != NULL)
+      {
+        key[k] = (uint8_t)v->key_text[k];
+      }
+      else if (v->key_from != 0)
+      {
+        key[k] = (uint8_t)((size_t)v->key_from - 1u + k);
+      }
+      else
+      {
+        key[k] = v->key_byte;
+      }
     }
     if (v->data_byte != 0)
     {

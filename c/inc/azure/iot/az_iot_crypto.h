@@ -96,8 +96,8 @@ extern "C"
      * @param[in] signature     Signature.
      * @param[in] signature_len Bytes in @p signature.
      * @return AZ_IOT_OK only for a valid signature; AZ_IOT_ERR_INVALID_ARG
-     * for a NULL or empty key or signature, or NULL @p data; another error
-     * otherwise.
+     * for a NULL or empty key or signature, NULL @p data, or a key longer
+     * than the backend supports; another error otherwise.
      */
     az_iot_result (*verify_rs256)(
         const az_iot_crypto* self,
