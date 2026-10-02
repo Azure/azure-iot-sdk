@@ -1365,6 +1365,21 @@ static void an_oversized_message_is_dropped_not_truncated(void** state)
       AZ_IOT_SU_ERROR_ACTION_RETRY);
 }
 
+/* An oversized info.aduErrorCode is dropped the same way; errorCode survives. */
+static void an_oversized_string_code_is_dropped_not_truncated(void** state)
+{
+  (void)state;
+  char code[8];
+  int32_t numeric = 0;
+
+  const char* body = "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"OUTDATED_AGENT_INFO\"}}";
+  assert_int_equal(
+      az_iot_su__parse_error_code((const uint8_t*)body, strlen(body), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 400004);
+}
+
 /* The service correlation GUID is the one value a support request needs, so it
  * is extracted rather than discarded. */
 static void the_tracking_id_is_extracted(void** state)
@@ -1462,6 +1477,7 @@ int main(void)
     cmocka_unit_test(live_deserialization_error_parses),
     cmocka_unit_test(prose_in_message_does_not_make_a_retryable_error_fatal),
     cmocka_unit_test(an_oversized_message_is_dropped_not_truncated),
+    cmocka_unit_test(an_oversized_string_code_is_dropped_not_truncated),
     cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
     cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
     cmocka_unit_test(a_truncated_error_body_is_rejected),

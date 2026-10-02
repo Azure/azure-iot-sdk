@@ -808,6 +808,18 @@ static void a_truncated_503_body_falls_back_to_the_status(void** state)
   assert_string_equal(fx->channel_state.agent_info_etag, "agent");
 }
 
+/* An oversized string code does not discard the body: its numeric code still
+ * takes precedence over the status. */
+static void an_oversized_string_code_still_classifies_by_the_body(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char body[512];
+  snprintf(body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", body);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(fx->last_error_code, 400004);
+}
+
 /* The status fallback must not widen every bodyless failure into a retry. */
 static void a_bodyless_4xx_stays_fatal(void** state)
 {
@@ -2876,6 +2888,8 @@ int main(void)
         an_unparseable_503_body_falls_back_to_the_status, setup, teardown),
     cmocka_unit_test_setup_teardown(a_truncated_503_body_falls_back_to_the_status, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_4xx_stays_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_string_code_still_classifies_by_the_body, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),
   };

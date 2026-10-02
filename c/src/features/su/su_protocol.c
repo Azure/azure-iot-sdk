@@ -1064,14 +1064,15 @@ static az_iot_result parse_error_signals(
         }
         if (is_su_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
         {
+          /* Oversized: dropped like an oversized `message`; errorCode still
+           * classifies. */
           int32_t n = az_span_size(jr.token.slice);
-          if (n < 0 || (size_t)n + 1 > out_code_size)
+          if (n >= 0 && (size_t)n + 1 <= out_code_size)
           {
-            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+            memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+            out_code[n] = '\0';
+            found_string_code = true;
           }
-          memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-          out_code[n] = '\0';
-          found_string_code = true;
           continue;
         }
         if (az_result_failed(az_json_reader_skip_children(&jr)))
