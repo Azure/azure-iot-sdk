@@ -54,6 +54,7 @@ Exit code 0.
 ```
 [custom] get_csr produced: PLACEHOLDER-BASE64-DER-CSR
 [custom] persisting issued chain: 1 cert(s)
+[custom] sign_sas produced 32 bytes
 ```
 
 ## Where to look in `main.c`
@@ -61,6 +62,6 @@ Exit code 0.
 | What | Code |
 | --- | --- |
 | Provider state (the base must be first) | the provider struct at the top of `main.c` |
-| The interface to fill in | `my_load()`, `my_get_csr()`, `my_store_issued_certificate()`, `my_sign()`, `my_destroy()` |
+| The interface to fill in | `my_load()`, `my_get_csr()`, `my_store_issued_certificate()`, `my_sign()`, `my_sign_sas()`, `my_destroy()` |
 
 Interface reference: [az_iot_certificate_provider.h](../../../inc/azure/iot/az_iot_certificate_provider.h).
