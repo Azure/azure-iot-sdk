@@ -1310,6 +1310,145 @@ static void failed_publish_releases_its_slot(void** state)
   assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
 }
 
+static az_iot_result try_publish_as(az_iot_test_conn* fx, const void* owner, puback_probe* probe)
+{
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  return az_iot_connection_client__publish_reserved(fx->client, owner, &msg, on_puback, probe);
+}
+
+/* A reservation is a separate pool: neither side can use the other's slots,
+ * and an ack frees a slot only in the pool it was taken from. */
+static void reserved_and_shared_pools_do_not_borrow(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  static const int owner = 0;
+  static const int no_reservation = 0;
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 4), AZ_IOT_OK);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  size_t shared = 0;
+  while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 4);
+  assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
+  /* An owner with no reservation draws from the shared pool. */
+  assert_int_equal(try_publish_as(fx, &no_reservation, &probes[0]), AZ_IOT_ERR_BUSY);
+
+  puback_probe reserved[4] = { 0 };
+  uint16_t first_reserved_pid = 0;
+  for (size_t i = 0; i < 4; ++i)
+  {
+    assert_true(az_iot_connection_client__can_track_publish(fx->client, &owner));
+    assert_int_equal(try_publish_as(fx, &owner, &reserved[i]), AZ_IOT_OK);
+    if (i == 0)
+    {
+      first_reserved_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+    }
+  }
+  size_t published = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish_as(fx, &owner, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), published);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, first_reserved_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(reserved[0].calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(try_publish_as(fx, &owner, &overflow), AZ_IOT_OK);
+}
+
+static void reservations_cannot_exceed_the_table(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const int a = 0;
+  static const int b = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, NULL, 1), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS + 1)),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+      AZ_IOT_OK);
+  assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &b, 1), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* Re-reserving replaces the owner's count rather than adding to it. */
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &b, 1), AZ_IOT_OK);
+
+  /* 0 withdraws. */
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &a, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+      AZ_IOT_OK);
+}
+
+static void reservation_holders_are_bounded(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const char owners[AZ_IOT_MAX_FEATURE_CLIENT_BINDS + 1] = { 0 };
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client__reserve_pubacks(fx->client, &owners[i], 1), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &owners[AZ_IOT_MAX_FEATURE_CLIENT_BINDS], 1),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client__release_pubacks(fx->client, &owners[0]);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &owners[AZ_IOT_MAX_FEATURE_CLIENT_BINDS], 1),
+      AZ_IOT_OK);
+}
+
+/* Releasing does not drop in-flight publishes: they finish normally and count
+ * against the shared pool until they do. */
+static void released_reservation_in_flight_publishes_complete_from_the_shared_pool(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  static const int owner = 0;
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_OK);
+  puback_probe reserved = { 0 };
+  assert_int_equal(try_publish_as(fx, &owner, &reserved), AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  az_iot_connection_client__release_pubacks(fx->client, &owner);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  size_t shared = 0;
+  while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 1);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(reserved.calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[0]), AZ_IOT_OK);
+}
+
 /* Destroying inside the backoff window is the awkward case: there is no
  * adapter to tear down (it was destroyed when the retry was scheduled) but a
  * deadline is still armed. Nothing must be left pointing at freed memory, and
@@ -1433,6 +1572,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         full_puback_table_publishes_nothing, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(failed_publish_releases_its_slot, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reserved_and_shared_pools_do_not_borrow, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reservations_cannot_exceed_the_table, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(reservation_holders_are_bounded, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        released_reservation_in_flight_publishes_complete_from_the_shared_pool,
+        setup_two_attempts,
+        teardown),
     cmocka_unit_test_setup_teardown(
         pending_pubacks_are_completed_with_an_error_on_disconnect, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

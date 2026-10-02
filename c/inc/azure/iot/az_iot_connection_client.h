@@ -773,6 +773,8 @@ extern "C"
 #ifndef AZ_IOT_MAX_MQTT_FACTORIES
 #define AZ_IOT_MAX_MQTT_FACTORIES 4
 #endif
+/* QoS 1 publishes awaiting a PUBACK with a completion callback, across all feature clients.
+ * Feature clients may reserve part of it; the rest is shared. At most 65535. */
 #ifndef AZ_IOT_MAX_PENDING_PUBACKS
 #define AZ_IOT_MAX_PENDING_PUBACKS 16
 #endif
@@ -863,7 +865,8 @@ extern "C"
 #define AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
 #endif
 /* Feature clients that ask to build their topics at connect time. One per
- * attached feature client, so this tracks the persistent-subscription bound. */
+ * attached feature client, so this tracks the persistent-subscription bound.
+ * Also bounds the feature clients holding a pending-PUBACK reservation. At most 65535. */
 #ifndef AZ_IOT_MAX_FEATURE_CLIENT_BINDS
 #define AZ_IOT_MAX_FEATURE_CLIENT_BINDS 8
 #endif
@@ -1022,11 +1025,21 @@ extern "C"
 
     struct
     {
-      uint16_t packet_id;
       az_iot_publish_ack_callback cb;
       void* user_ctx;
+      uint16_t packet_id;
+      /* Index into puback_reservations[] the slot counts against, or UINT16_MAX for the shared
+       * pool. */
+      uint16_t reservation;
       bool in_use;
     } pending_pubacks[AZ_IOT_MAX_PENDING_PUBACKS];
+
+    /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
+    struct
+    {
+      const void* owner;
+      uint16_t count;
+    } puback_reservations[AZ_IOT_MAX_FEATURE_CLIENT_BINDS];
 
     struct
     {

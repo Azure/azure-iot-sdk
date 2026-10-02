@@ -68,13 +68,13 @@ The tables state each outcome that is not a failed call or a dropped message.
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
 | `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS` | 6 | Connection-state observers used by feature clients. |
 | `AZ_IOT_MAX_APP_STATE_OBSERVERS` | 4 | Connection-state observers the application can register. |
-| `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients attached to one connection client. |
+| `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients attached to one connection client, and feature clients holding a pending-acknowledgement reservation. |
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device ID, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS operation ID. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
@@ -106,7 +106,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID. |
 | `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
-| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. |
+| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `AZ_IOT_MAX_PENDING_PUBACKS` slots. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
@@ -140,20 +140,22 @@ Defaults used when the matching option is left at 0:
 #### In-flight QoS 1 publishes
 
 A QoS 1 publish sent with a completion callback holds one `AZ_IOT_MAX_PENDING_PUBACKS` slot until
-its acknowledgement arrives or the session ends. All feature clients on a connection share the
-slots.
+its acknowledgement arrives or the session ends. A feature client may reserve slots for its own
+publishes at init; the rest form a shared pool. Neither side uses the other's slots.
 
-| Feature client | QoS 1 publishes | Own bound | Takes a slot |
+| Feature client | QoS 1 publishes | Own bound | Slots |
 | --- | --- | --- | --- |
-| mqttv3 and mqttv5 telemetry `send` | 1 per call | Only this table | Yes; the callback is required. |
-| mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Refused probes are also acknowledged, so probe acks are not bounded. | When one is free; otherwise sent without one. |
-| Certificate renewal | 1 request | 1 operation at a time | No |
+| mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
+| mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and an invocation ends at `respond()`, before its result is acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit. When all are in use, sends without one. |
+| Certificate renewal | 1 request | 1 operation at a time | None |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
 
-To size it, add the telemetry sends you keep in flight to about `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`
-(a probe ack plus a result or abandon per mqttv5 invocation). A slot is 16 bytes on 32-bit targets and 32 bytes on 64-bit targets.
+With the defaults, telemetry gets all 16 slots, or 8 when an mqttv5 direct method client is
+attached. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
+16 bytes on 32-bit targets and 24 bytes on 64-bit targets; a reservation entry
+(`AZ_IOT_MAX_FEATURE_CLIENT_BINDS` of them) is 8 or 16 bytes.
 
 ## Run time
 

@@ -1692,7 +1692,10 @@ static void ignore_ack(az_iot_result status, void* user_ctx)
   (void)user_ctx;
 }
 
-static void a_result_is_sent_untracked_when_the_ack_table_is_full(void** state)
+/* Telemetry or any other shared-pool publisher filling its slots does not
+ * reach the slots this client reserved: the result is still tracked, so a
+ * broker rejection is reported by name. */
+static void a_full_shared_pool_leaves_results_tracked(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -1701,7 +1704,6 @@ static void a_result_is_sent_untracked_when_the_ack_table_is_full(void** state)
   fx->rec = &rec;
   run_one_invocation(fx, &rec, 0xB9);
 
-  /* Fill whatever the exchange so far left free. */
   az_iot_mqtt_message filler = { 0 };
   filler.topic = "filler";
   filler.qos = AZ_IOT_MQTT_QOS_1;
@@ -1713,7 +1715,43 @@ static void a_result_is_sent_untracked_when_the_ack_table_is_full(void** state)
   }
   assert_int_equal(r, AZ_IOT_ERR_BUSY);
 
-  /* The ack only feeds a log line; losing it must not cost the answer. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* sent = find_phase(fx->mock, "result:1");
+  assert_non_null(sent);
+  assert_int_equal(cap.count, 0);
+  inject_puback(fx, sent->packet_id, AZ_IOT_ERR_MQTT);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "result:1"));
+  assert_non_null(strstr(cap.last, "rejected"));
+}
+
+/* Refused probes hold no invocation, so they can use up the reservation. The
+ * ack only feeds a log line; losing it must not cost the answer. */
+static void a_result_is_sent_untracked_when_its_reservation_is_used_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xBB);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t seed = 0; az_iot_connection_client__can_track_publish(&fx->conn, &fx->dm); ++seed)
+  {
+    assert_true(seed <= 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+    uint8_t request_id[16];
+    make_request_id(request_id, seed);
+    inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  }
+
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   log_capture cap;
   install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
@@ -1725,6 +1763,51 @@ static void a_result_is_sent_untracked_when_the_ack_table_is_full(void** state)
   assert_non_null(find_phase(fx->mock, "result:1"));
   assert_int_equal(cap.count, 1);
   assert_non_null(strstr(cap.last, "without ack tracking"));
+}
+
+/* The reservation is taken at init and given back at deinit. */
+static void init_reserves_pending_ack_slots_and_deinit_returns_them(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  size_t shared = 0;
+  while (az_iot_connection_client__publish(&fx->conn, &filler, ignore_ack, NULL) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+  for (size_t i = 0; i < 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client__publish(&fx->conn, &filler, ignore_ack, NULL), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->conn, &filler, ignore_ack, NULL), AZ_IOT_ERR_BUSY);
+}
+
+/* With no room for its reservation init fails cleanly and can be retried
+ * once room is made. */
+static void init_without_room_for_its_reservation_fails(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  static const int other_owner = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          &fx->conn, &other_owner, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  az_iot_connection_client__release_pubacks(&fx->conn, &other_owner);
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 }
 
 /* An adapter's own BUSY is a failed send, not a full ack table: it is
@@ -2452,8 +2535,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_broker_rejected_result_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_result_is_not_reported_as_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_full_shared_pool_leaves_results_tracked, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_result_is_sent_untracked_when_the_ack_table_is_full, setup, teardown),
+        a_result_is_sent_untracked_when_its_reservation_is_used_up, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_reserves_pending_ack_slots_and_deinit_returns_them, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_without_room_for_its_reservation_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_adapter_busy_is_not_mistaken_for_a_full_ack_table, setup, teardown),
     cmocka_unit_test_setup_teardown(a_result_that_cannot_be_published_says_why, setup, teardown),
