@@ -1562,6 +1562,67 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
   }
 }
 
+/** @brief First fallback delay, in milliseconds, for a retryable verdict naming no delay. */
+#define AZ_IOT_SU_RETRY_BASE_MS 1000u
+/** @brief Upper bound, in milliseconds, of the doubling fallback delay (before jitter). */
+#define AZ_IOT_SU_RETRY_MAX_MS 60000u
+/** @brief Jitter, in percent, applied around the fallback delay. */
+#define AZ_IOT_SU_RETRY_JITTER_PCT 20u
+
+/**
+ * @brief Pace the next fetch/report after a retryable verdict that named no delay.
+ *
+ * Exponential backoff with jitter. Service verdicts only: a lost session is
+ * paced by the connection client, and a service-named delay by the channel.
+ * Never moves a fetch deadline.
+ *
+ * @return true if this verdict armed the backoff.
+ */
+static bool arm_retry_backoff(
+    az_iot_su_client* client,
+    az_iot_result result,
+    az_iot_su_error_action action,
+    const az_iot_su_service_error* service_error)
+{
+  if (result != AZ_IOT_ERR_DPS
+      || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+      || (service_error != NULL && service_error->retry_after_ms != 0))
+  {
+    return false;
+  }
+  const az_iot_reconnection_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
+                                              .max_delay_ms = AZ_IOT_SU_RETRY_MAX_MS,
+                                              .max_attempts = 0,
+                                              .jitter_pct = AZ_IOT_SU_RETRY_JITTER_PCT };
+  uint64_t now = az_iot_time_mono_ms();
+  if (SU_I(client).retry_rng == 0)
+  {
+    SU_I(client).retry_rng = now ^ (uint64_t)(uintptr_t)client;
+  }
+  if (SU_I(client).retry_attempts < UINT32_MAX)
+  {
+    SU_I(client).retry_attempts++;
+  }
+  SU_I(client).retry_due_ms = now
+      + az_iot_reconnect_delay_ms(&policy, SU_I(client).retry_attempts, &SU_I(client).retry_rng);
+  return true;
+}
+
+/** @brief Whether a paced fetch/report retry may be sent now. */
+static bool retry_backoff_due(az_iot_su_client* client)
+{
+  if (SU_I(client).retry_due_ms == 0)
+  {
+    return true;
+  }
+  if (az_iot_time_mono_ms() < SU_I(client).retry_due_ms)
+  {
+    return false;
+  }
+  SU_I(client).retry_due_ms = 0;
+  return true;
+}
+
 /* The channel's verdict on an operation it accepted earlier.
  *
  * An asynchronous channel returns AZ_IOT_OK from request_update()/report() to
@@ -1615,6 +1676,11 @@ static void on_channel_result(
       || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
       || action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED || action == AZ_IOT_SU_ERROR_ACTION_NONE)
   {
+    if (result == AZ_IOT_OK)
+    {
+      SU_I(client).retry_attempts = 0;
+      SU_I(client).retry_due_ms = 0;
+    }
     /* This branch IS the definition of "the client will not re-arm it", so it
      * is also where the application is told. Deriving the two from one
      * condition is the point: a separate list elsewhere would be free to drift.
@@ -1647,11 +1713,17 @@ static void on_channel_result(
     return;
   }
 
+  bool paced = arm_retry_backoff(client, result, action, service_error);
   switch (operation)
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
       SU_I(client).terminal_report_in_flight = false;
-      SU_I(client).device_properties_report_pending = true;
+      /* A report queued since keeps its own pacing; one send covers both. */
+      if (!SU_I(client).device_properties_report_pending)
+      {
+        SU_I(client).device_properties_report_pending = true;
+        SU_I(client).report_paced = paced;
+      }
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_SU_OP_GET_UPDATE:
@@ -1691,6 +1763,7 @@ static void on_channel_result(
         SU_I(client).pending_fetch = (operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE)
             ? SU_FETCH_ONBOARDING
             : SU_FETCH_REGULAR;
+        SU_I(client).pending_fetch_paced = paced;
         /* A re-armed request is always bounded. Without this a LATE verdict
          * could resurrect an operation after the slot had been abandoned: the
          * abandonment cleared the deadline, this puts the request back, and it
@@ -1828,6 +1901,12 @@ static void drive_pending_fetch(az_iot_su_client* client)
           SU_I(client).channel.ctx, fetch_operation(in_flight));
     }
     raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+    return;
+  }
+  /* After the deadline check: pacing must not postpone an abandonment. A newer
+   * application request is not paced: the application owns its cadence. */
+  if (SU_I(client).pending_fetch_paced && !retry_backoff_due(client))
+  {
     return;
   }
 
@@ -2556,6 +2635,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     SU_I(client).checkpoint_terminal = true;
     SU_I(client).checkpoint_superseded = false;
     SU_I(client).device_properties_report_pending = true;
+    SU_I(client).report_paced = false;
     restore_channel_state(client, &blob[ch_at], ch_len);
     set_su_state(client, AZ_IOT_SU_STATE_IDLE);
     return AZ_IOT_OK;
@@ -2838,14 +2918,17 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   /* A pending device-properties / startup report takes priority. */
   if (SU_I(client).device_properties_report_pending)
   {
-    /* Clear the flag only once the report is actually accepted. Clearing it up
-     * front drops the report on a transient channel failure with no retry,
-     * which matters because a status report is the only record the service
-     * gets of what this device did. Same retry-on-success rule as the update
-     * check below. */
-    if (az_iot_su__report_state(client) == AZ_IOT_OK)
+    /* Cleared BEFORE the send, as for the update check: a synchronous channel
+     * may re-arm it from inside report(). Restored on refusal, so a status
+     * report -- the service's only record of what this device did -- is not
+     * dropped on a transient channel failure. */
+    if (!SU_I(client).report_paced || retry_backoff_due(client))
     {
       SU_I(client).device_properties_report_pending = false;
+      if (az_iot_su__report_state(client) != AZ_IOT_OK)
+      {
+        SU_I(client).device_properties_report_pending = true;
+      }
     }
     /* Piggyback a requested update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh
@@ -3227,6 +3310,7 @@ az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t ti
     return AZ_IOT_ERR_INVALID_ARG;
   }
   SU_I(client).pending_fetch = SU_FETCH_ONBOARDING;
+  SU_I(client).pending_fetch_paced = false;
   arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;
 }
@@ -3239,6 +3323,7 @@ az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   SU_I(client).pending_fetch = SU_FETCH_REGULAR;
+  SU_I(client).pending_fetch_paced = false;
   arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;
 }
@@ -3278,6 +3363,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
 
   commit_device_properties_cache(client, &snapshot);
   SU_I(client).device_properties_report_pending = true;
+  SU_I(client).report_paced = false;
   return AZ_IOT_OK;
 }
 
