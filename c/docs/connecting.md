@@ -175,6 +175,37 @@ Operational certificates:
 Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 [`samples/authentication`](../samples/authentication/README.md).
 
+## Authentication (proposed)
+
+> **Proposed, not implemented.** Today every connection authenticates with X.509.
+
+Each role -- DPS (`dps_auth`) and hub (`hub_auth`) -- picks one kind, independently:
+
+| Kind | Configure | Notes |
+| --- | --- | --- |
+| `AZ_IOT_AUTH_X509` (default) | `certificate_provider` | As today. A zeroed `az_iot_auth` is X.509. |
+| `AZ_IOT_AUTH_SAS_KEY` | `sas_key.key_base64`, optionally `is_enrollment_group_key` | The SDK signs tokens with the backend in `crypto`. Needs a Unix time: `time()`, or `unix_time.get_time`. |
+| `AZ_IOT_AUTH_SAS_TOKEN_CALLBACK` | `sas_token.get_token` | The application returns a token and its remaining validity. The SDK never sees a key. |
+
+```c
+copts.dps_auth.kind = AZ_IOT_AUTH_SAS_KEY;
+copts.dps_auth.sas_key.key_base64 = key;
+copts.hub_auth = copts.dps_auth;          /* or X.509: leave hub_auth zeroed */
+copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
+copts.trusted_ca.path = "ca.pem";         /* server trust, any kind */
+```
+
+- **Renewal.** MQTT 3.1.1 cannot re-authenticate a live session, so the SDK reconnects the hub
+  with a new token at 80% of its validity (`sas_token_lifetime_seconds` for keys, default one
+  hour; the callback's reported validity for tokens). DPS tokens are made per attempt.
+- **DPS-issued certificate.** With `dps.request_operational_certificate`, `hub_auth` must stay
+  X.509; DPS can still use SAS. See
+  [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
+- **mqttv5 hubs** do not accept SAS today. The SDK still sends it; a refusal is
+  `AZ_IOT_ERR_IDENTITY_REJECTED`.
+- **Server trust.** `trusted_ca` applies to every connection. Without it, the X.509 provider's CA
+  is used if there is one, otherwise the adapter's default store.
+
 ## Crypto backend
 
 `crypto` supplies SHA-256 and RS256 verification to every feature that needs them; today that

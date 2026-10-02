@@ -168,6 +168,118 @@ extern "C"
       [AZ_IOT_CSR_PAYLOAD_BUFFER_MIN + AZ_IOT_DPS_REGISTRATION_PAYLOAD_OVERHEAD \
        + AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX]
 
+  /* Which of the client's two lifecycles something refers to.
+   *
+   * A DPS-provisioned device runs two connections in sequence, and sometimes
+   * side by side: the provisioning session, and the hub session it is assigned
+   * to. They fail, retry and settle independently, so anything scoped to one
+   * of them -- today the retry ladders below -- has to say which.
+   *
+   * DPS and HUB only. Which hub GENERATION a hub session speaks (MQTTv3 or
+   * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
+   * logical connection either way, and splitting the scope by generation would
+   * make a caller handle two values for it. */
+  typedef enum az_iot_connection_scope
+  {
+    AZ_IOT_CONN_SCOPE_DPS = 0,
+    AZ_IOT_CONN_SCOPE_HUB = 1
+  } az_iot_connection_scope;
+
+#define AZ_IOT_CONN_SCOPE_COUNT 2
+
+  /* ---- Authentication ------------------------------------------------------- */
+
+  /**
+   * @brief How one connection role (DPS or hub) authenticates.
+   *
+   * X.509 and SAS are peers: each role picks one, independently. Zero is
+   * X.509, so an options struct that sets no auth keeps today's behaviour.
+   */
+  typedef enum az_iot_auth_kind
+  {
+    /** @brief TLS client certificate from az_iot_connection_client_options::certificate_provider.
+     */
+    AZ_IOT_AUTH_X509 = 0,
+    /** @brief SAS tokens the SDK signs and renews from a symmetric key. Needs
+     * az_iot_connection_client_options::crypto and a Unix time source. */
+    AZ_IOT_AUTH_SAS_KEY,
+    /** @brief SAS tokens the application supplies on request, e.g. signed in
+     * a TPM or HSM, or fetched from a backend. */
+    AZ_IOT_AUTH_SAS_TOKEN_CALLBACK
+  } az_iot_auth_kind;
+
+  /**
+   * @brief What a requested SAS token must be valid for. SDK-owned; valid
+   * only during the callback.
+   */
+  typedef struct az_iot_sas_token_request
+  {
+    /** @brief Role the token is for. */
+    az_iot_connection_scope scope;
+    /** @brief The token's `sr` value, already URL-encoded:
+     * `<id_scope>%2Fregistrations%2F<registration_id>` for DPS,
+     * `<hub host>%2Fdevices%2F<device id>` for the hub. */
+    az_span resource_uri;
+    /** @brief The token's `skn` value: `registration` for DPS, empty for the hub. */
+    az_span key_name;
+  } az_iot_sas_token_request;
+
+  /**
+   * @brief Supplies a SAS token. Called from do_work() before each connect
+   * attempt that needs a new token, and again before the token expires.
+   *
+   * Write the complete token, `SharedAccessSignature sr=...&sig=...&se=...`
+   * (plus `&skn=...` when @p request->key_name is not empty), into
+   * @p token_buffer.
+   *
+   * @param[in] request             What the token must be valid for.
+   * @param[out] token_buffer       Destination; AZ_IOT_SAS_TOKEN_BUF bytes.
+   * @param[out] out_token_len      Bytes written, without a terminator.
+   * @param[out] out_valid_seconds  Seconds the token stays valid from now. The
+   *                                SDK requests a new one at 80% of it.
+   * @param[in] user_ctx            az_iot_auth::sas_token::user_ctx.
+   * @return AZ_IOT_OK. Any other result fails the connect attempt, which is
+   * retried under az_iot_connection_client_options::reconnection_policy.
+   */
+  typedef az_iot_result (*az_iot_sas_token_callback)(
+      const az_iot_sas_token_request* request,
+      az_span token_buffer,
+      int32_t* out_token_len,
+      uint32_t* out_valid_seconds,
+      void* user_ctx);
+
+  /**
+   * @brief Current time, in seconds since 1970-01-01T00:00:00Z, or 0 when not
+   * yet known (e.g. before an SNTP sync). Signs SAS tokens in
+   * AZ_IOT_AUTH_SAS_KEY.
+   */
+  typedef uint64_t (*az_iot_unix_time_callback)(void* user_ctx);
+
+  /** @brief Credentials for one role. Zeroed: X.509. */
+  typedef struct az_iot_auth
+  {
+    /** @brief Which of the fields below applies. */
+    az_iot_auth_kind kind;
+
+    /** @brief For AZ_IOT_AUTH_SAS_KEY. */
+    struct
+    {
+      /** @brief Base64 symmetric key. Borrowed; must outlive the client. */
+      const char* key_base64;
+      /** @brief key_base64 is an enrollment-group key. The device key is then
+       * HMAC-SHA256(group key, id), with id the DPS registration ID, or
+       * client_id for a direct hub connection. */
+      bool is_enrollment_group_key;
+    } sas_key;
+
+    /** @brief For AZ_IOT_AUTH_SAS_TOKEN_CALLBACK. */
+    struct
+    {
+      az_iot_sas_token_callback get_token; /**< Required. */
+      void* user_ctx; /**< Passed to get_token. */
+    } sas_token;
+  } az_iot_auth;
+
   typedef struct az_iot_connection_client_options
   {
     const char* host; /* hub host (or NULL when using DPS) */
@@ -229,13 +341,13 @@ extern "C"
                            * compatibility properties it sends with each
                            * update request. */
     /**
-     * @brief Source of the TLS material: trust anchors and, if any, the client
-     * identity. Required.
+     * @brief Source of X.509 client identities, and of trust anchors unless
+     * trusted_ca is set.
      *
-     * Every DPS and hub connection uses TLS: open() refuses a client without a
-     * provider (AZ_IOT_ERR_CREDENTIAL_INCOMPLETE), and a connect attempt whose
-     * load() fails fails with the provider's error instead of connecting
-     * without TLS.
+     * Required when a role the client uses has AZ_IOT_AUTH_X509 (the default)
+     * or dps.request_operational_certificate is set; open() otherwise fails
+     * with AZ_IOT_ERR_CREDENTIAL_INCOMPLETE. A connect attempt whose load()
+     * fails fails with the provider's error instead of connecting without TLS.
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -534,26 +646,55 @@ extern "C"
      * without SHA-256 or of another version with AZ_IOT_ERR_INVALID_ARG.
      */
     const az_iot_crypto* crypto;
+
+    /**
+     * @brief How the DPS session authenticates. Zeroed: X.509.
+     */
+    az_iot_auth dps_auth;
+
+    /**
+     * @brief How the hub session authenticates, for DPS-assigned and direct
+     * hub connections. Zeroed: X.509.
+     *
+     * Must be X.509 when dps.request_operational_certificate is set: the hub
+     * then uses the issued certificate. A hub that refuses SAS -- mqttv5 does
+     * today -- fails the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
+     */
+    az_iot_auth hub_auth;
+
+    /**
+     * @brief Trust anchors for every TLS connection, whatever the auth kind.
+     * Both NULL: the X.509 provider's trusted CA if there is one, otherwise
+     * the adapter's default trust store.
+     */
+    struct
+    {
+      const char* pem; /**< CA certificates, PEM. NULL if unused. */
+      const char* path; /**< CA file path, for adapters that load from files. */
+    } trusted_ca;
+
+    /**
+     * @brief Lifetime of each token signed in AZ_IOT_AUTH_SAS_KEY, in seconds.
+     * 0 selects AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS.
+     *
+     * MQTT 3.1.1 cannot re-authenticate a live session, so the SDK reconnects
+     * the hub with a new token at 80% of the lifetime (HUB: RECONNECTING, then
+     * CONNECTED; the session resumes per session_continuity). DPS tokens are
+     * signed per attempt.
+     */
+    uint32_t sas_token_lifetime_seconds;
+
+    /**
+     * @brief Unix time source for AZ_IOT_AUTH_SAS_KEY. NULL uses the C
+     * library's time(); set it on a platform without one. A time of 0 fails
+     * the connect attempt, which is retried.
+     */
+    struct
+    {
+      az_iot_unix_time_callback get_time; /**< NULL: time(). */
+      void* user_ctx; /**< Passed to get_time. */
+    } unix_time;
   } az_iot_connection_client_options;
-
-  /* Which of the client's two lifecycles something refers to.
-   *
-   * A DPS-provisioned device runs two connections in sequence, and sometimes
-   * side by side: the provisioning session, and the hub session it is assigned
-   * to. They fail, retry and settle independently, so anything scoped to one
-   * of them -- today the retry ladders below -- has to say which.
-   *
-   * DPS and HUB only. Which hub GENERATION a hub session speaks (MQTTv3 or
-   * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
-   * logical connection either way, and splitting the scope by generation would
-   * make a caller handle two values for it. */
-  typedef enum az_iot_connection_scope
-  {
-    AZ_IOT_CONN_SCOPE_DPS = 0,
-    AZ_IOT_CONN_SCOPE_HUB = 1
-  } az_iot_connection_scope;
-
-#define AZ_IOT_CONN_SCOPE_COUNT 2
 
   typedef enum az_iot_connection_state
   {
@@ -800,6 +941,15 @@ extern "C"
  * holding broker state for every absent device. */
 #ifndef AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS
 #define AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS 3600
+#endif
+/** @brief Default lifetime of a token signed in AZ_IOT_AUTH_SAS_KEY, in seconds. */
+#ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS
+#define AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS 3600
+#endif
+/** @brief Bytes of the buffer a SAS token is built in, or handed to
+ * az_iot_sas_token_callback. */
+#ifndef AZ_IOT_SAS_TOKEN_BUF
+#define AZ_IOT_SAS_TOKEN_BUF 512
 #endif
 /* Matches the presence birth-ack timeout: both bound "the broker accepted the
  * connection and then went quiet", and having two different windows for that on
@@ -1266,11 +1416,12 @@ extern "C"
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
-   *   - DPS + X.509 (host==NULL): dps.id_scope, dps.registration_id,
-   *     certificate_provider.
-   *   - Direct hub connect: host, client_id, certificate_provider; also set
+   *   - DPS (host==NULL): dps.id_scope, dps.registration_id.
+   *   - Direct hub connect: host, client_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
-   *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1). */
+   *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1).
+   *   - Per role, dps_auth / hub_auth: certificate_provider for X.509 (the
+   *     default), or a SAS key or token callback. */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
   AZ_NODISCARD az_iot_result az_iot_connection_client_init(

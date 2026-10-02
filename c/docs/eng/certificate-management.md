@@ -267,6 +267,12 @@ model (D9).
    Scope the *feature* to X.509 (matches the material struct), but route bootstrap
    auth through the provider so a future TPM/SAS provider can supply a token instead of a
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
+
+   **SAS (proposed).** SAS is not routed through the provider. `dps_auth` / `hub_auth`
+   select X.509 (this provider), a symmetric key the SDK signs with through `crypto`, or a
+   token callback for keys held elsewhere. The provider keeps serving X.509 roles, CSRs and
+   issued chains; with SAS onboarding the managed provider runs without a bootstrap identity.
+   TPM *attestation* is out of scope: DPS does not support it over MQTT.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
