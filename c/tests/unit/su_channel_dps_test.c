@@ -113,6 +113,73 @@ static void on_result(
   fx->last_action = action;
 }
 
+/* The channel never hashes or verifies, but the client it is built for needs a
+ * complete backend to initialize. */
+static az_iot_result stub_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
+{
+  (void)self;
+  (void)ctx;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
+{
+  (void)self;
+  (void)ctx;
+  (void)data;
+  (void)len;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  if (out != NULL)
+  {
+    memset(out, 0, AZ_IOT_SHA256_SIZE);
+  }
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_verify_rs256(
+    const az_iot_crypto* self,
+    const uint8_t* modulus,
+    size_t modulus_len,
+    const uint8_t* exponent,
+    size_t exponent_len,
+    const uint8_t* data,
+    size_t data_len,
+    const uint8_t* signature,
+    size_t signature_len)
+{
+  (void)self;
+  (void)modulus;
+  (void)modulus_len;
+  (void)exponent;
+  (void)exponent_len;
+  (void)data;
+  (void)data_len;
+  (void)signature;
+  (void)signature_len;
+  return AZ_IOT_ERR_AUTH;
+}
+
+static const az_iot_crypto k_stub_crypto = {
+  .version = AZ_IOT_CRYPTO_VERSION,
+  .sha256_init = stub_sha256_init,
+  .sha256_update = stub_sha256_update,
+  .sha256_final = stub_sha256_final,
+  .verify_rs256 = stub_verify_rs256,
+};
+
 static int setup(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
@@ -125,6 +192,7 @@ static int setup(void** state)
   opts.dps.registration_id = "ut-device";
   /* Short so the advisory-expiry case is testable without a long wait. */
   opts.dps_hold_timeout_ms = 50;
+  opts.crypto = &k_stub_crypto;
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
@@ -944,12 +1012,10 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
 {
   fixture* fx = (fixture*)*state;
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
   az_iot_su_device_properties properties = { .manufacturer = "original" };
   uint8_t storage[512] = { 0 };
   az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
   options.hooks = &hooks;
-  options.crypto = &crypto;
   options.device_properties = &properties;
   options.device_properties_buffer = storage;
   options.device_properties_buffer_size = sizeof(storage);

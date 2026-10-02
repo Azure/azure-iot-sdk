@@ -116,7 +116,7 @@ jobs:
       id-token: write   # azure/login OIDC
     name: setup (provision)
     if: ${{ !(vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Cert-management provisioning is heavier than the fast path: it creates an
     # ADR namespace/policy, role assignments, and an ADR-integrated DPS.
     timeout-minutes: 60
@@ -164,11 +164,11 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: csr (ubuntu-latest)
+    name: csr (ubuntu-24.04)
     needs: setup
     # Runs after setup, or without it in shared mode (setup skipped).
     if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -290,7 +290,7 @@ jobs:
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
     if: ${{ always() && !(vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

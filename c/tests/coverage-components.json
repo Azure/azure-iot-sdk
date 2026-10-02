@@ -40,20 +40,20 @@
         "comment": "Shipped (AZ_IOT_WITH_PAHO default ON). Coverage comes almost entirely from the broker-gated conformance suites, not from unit tests. Measured 65.1/41.8/81.6 on unit+conformance; the lowest floors in the file because a broker outage moves this component further than any other."
     },
     {
-        "name": "adapter-su-crypto",
-        "prefix": "adapters/su/crypto_openssl/",
+        "name": "adapter-crypto-openssl",
+        "prefix": "adapters/crypto_openssl/",
         "line": 75,
         "branch": 40,
         "function": 95,
-        "comment": "Shipped (AZ_IOT_WITH_SU_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
+        "comment": "Shipped (AZ_IOT_WITH_CRYPTO_OPENSSL default ON, requires OpenSSL 3.0+). Measured 78.9/46.5/100.0 on unit+conformance; the e2e suites add nothing here, so the nightly figure is identical."
     },
     {
-        "name": "adapter-su-crypto-mbedtls",
-        "prefix": "adapters/su/crypto_mbedtls/",
+        "name": "adapter-crypto-mbedtls",
+        "prefix": "adapters/crypto_mbedtls/",
         "line": 80,
         "branch": 70,
         "function": 95,
-        "comment": "Shipped (AZ_IOT_WITH_SU_CRYPTO_MBEDTLS default ON, requires mbedTLS 3.6 LTS or 4.1+; CI builds 4.1.1). Measured 84.6/78.6/100.0 on unit with gcovr 5.2; branch floor kept 5 points lower until confirmed on the CI gcovr."
+        "comment": "Shipped (AZ_IOT_WITH_CRYPTO_MBEDTLS default ON, requires mbedTLS 3.6 LTS or 4.1+; CI builds 4.1.1). Measured 84.6/78.6/100.0 on unit with gcovr 5.2; branch floor kept 5 points lower until confirmed on the CI gcovr."
     },
     {
         "name": "adapter-cert-managed",

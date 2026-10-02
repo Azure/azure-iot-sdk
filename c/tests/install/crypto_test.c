@@ -3,12 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* azure::iot::su_crypto_*: the crypto hooks compute a known SHA-256 digest.
- * AZ_IOT_TEST_HOOKS_HEADER and AZ_IOT_TEST_HOOKS select the adapter. */
+/* azure::iot::crypto_*: the backend computes a known SHA-256 digest.
+ * AZ_IOT_TEST_CRYPTO_HEADER and AZ_IOT_TEST_CRYPTO select the backend. */
 #include <stdint.h>
 #include <string.h>
 
-#include AZ_IOT_TEST_HOOKS_HEADER
+#include AZ_IOT_TEST_CRYPTO_HEADER
 
 #include "install_test.h"
 
@@ -21,14 +21,16 @@ int main(void)
           0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad };
   static const uint8_t message[] = { 'a', 'b', 'c' };
 
-  az_iot_su_crypto_hooks hooks = AZ_IOT_TEST_HOOKS();
-  CHECK(hooks.sha256_fn != NULL);
-  CHECK(hooks.verify_rs256_fn != NULL);
+  const az_iot_crypto* crypto = AZ_IOT_TEST_CRYPTO();
+  CHECK(crypto != NULL);
+  CHECK(crypto->version == AZ_IOT_CRYPTO_VERSION);
+  CHECK(crypto->verify_rs256 != NULL);
 
-  uint8_t digest[32] = { 0 };
-  CHECK(
-      hooks.sha256_fn(message, sizeof(message), digest, hooks.user_ctx)
-      == AZ_IOT_SU_RESULT_SUCCESS);
+  az_iot_sha256_ctx ctx;
+  uint8_t digest[AZ_IOT_SHA256_SIZE] = { 0 };
+  CHECK(crypto->sha256_init(crypto, &ctx) == AZ_IOT_OK);
+  CHECK(crypto->sha256_update(crypto, &ctx, message, sizeof(message)) == AZ_IOT_OK);
+  CHECK(crypto->sha256_final(crypto, &ctx, digest) == AZ_IOT_OK);
   CHECK(memcmp(digest, expected, sizeof(expected)) == 0);
   return 0;
 }

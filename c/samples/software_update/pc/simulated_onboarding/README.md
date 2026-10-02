@@ -113,7 +113,7 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 ## Build and run
 
 The sample target is `az_iot_sample_software_update_simulated_onboarding` (built
-when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL software updates crypto adapter is
+when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL crypto backend is
 available — both are on by default).
 
 ### Prerequisites
@@ -133,7 +133,7 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 
 - A C compiler — **GCC** (`build-essential`) or **Clang**.
 - **CMake 3.21+** and **Ninja** (the `linux-gcc-debug` preset uses the Ninja generator).
-- **OpenSSL 3.0+** development headers (`libssl-dev`) for the software updates crypto adapter.
+- **OpenSSL 3.0+** development headers (`libssl-dev`) for the OpenSSL crypto backend.
 - **Git** to clone the repo and let CMake fetch dependencies.
 
 **Windows:**
@@ -147,7 +147,7 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
   install standalone and ensure `cmake` is on `PATH`.
 - **OpenSSL 3.0+** — install [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
   (or vcpkg; see [Build tools](../../../README.md#build-tools)) so CMake's `find_package(OpenSSL 3.0)`
-  succeeds. Without it the software updates crypto adapter — and therefore this sample — is
+  succeeds. Without it the OpenSSL crypto backend — and therefore this sample — is
   skipped.
 - **Git** to clone the repo and let CMake fetch dependencies.
 
@@ -248,7 +248,7 @@ The simulated hooks are shared with the regular-update sample, in
 | Concern | Behavior |
 |---|---|
 | Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
-| Manifest JWS signature verification | **Real** (OpenSSL crypto hooks, real root keys) |
+| Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
 | `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |

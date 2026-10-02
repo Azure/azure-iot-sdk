@@ -99,8 +99,8 @@ in its header.
 - A [Yocto layer](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap) builds the libraries,
   headers, CMake package and pkg-config files.
 - To port to another platform, supply an MQTT adapter
-  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, the
-  platform and crypto hooks ([ESP32 sample](samples/software_update/esp32/README.md)).
+  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, a
+  crypto backend and the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md)).
 
 ## Getting Help
 
