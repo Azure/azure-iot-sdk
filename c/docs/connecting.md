@@ -150,6 +150,9 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
+> **Proposed, not implemented.** SAS signers (`sas.onboarding`, `sas.operational`) are a design
+> proposal; today every connection authenticates with X.509.
+
 Every connection uses TLS. Each role -- DPS (onboarding) and hub (operational) -- authenticates
 with a SAS token when its `sas.onboarding` / `sas.operational` signer is set, and with X.509 from
 `certificate_provider` otherwise. So a device can register with a symmetric key and use a
