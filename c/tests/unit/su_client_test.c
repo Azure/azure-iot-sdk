@@ -4705,8 +4705,9 @@ static void init_requires_a_crypto_backend_that_verifies(void** state)
   az_iot_connection_client_deinit(&conn);
 }
 
-/* The standalone entry points take the backend directly. */
-static void standalone_verification_requires_a_backend_that_verifies(void** state)
+/* The standalone entry points take the backend directly. Parsing verifies
+ * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
+static void standalone_entry_points_check_the_backend_they_need(void** state)
 {
   fixture* fx = (fixture*)*state;
   char request[] = "{}";
@@ -4729,6 +4730,22 @@ static void standalone_verification_requires_a_backend_that_verifies(void** stat
   assert_int_equal(
       az_iot_su_verify_file_hash(&file, NULL, standalone_read_chunk, &fx->log),
       AZ_IOT_ERR_INVALID_ARG);
+
+  /* The mock digests a file not starting with 0x55 to SU_TEST_HASH_BYTE x 32. */
+  uint8_t digest[32];
+  memset(digest, SU_TEST_HASH_BYTE, sizeof(digest));
+  char digest_b64[64];
+  int32_t written = 0;
+  assert_true(az_result_succeeded(az_base64_encode(
+      az_span_create((uint8_t*)digest_b64, (int32_t)sizeof(digest_b64)),
+      az_span_create(digest, (int32_t)sizeof(digest)),
+      &written)));
+  file.hashes[0].hash_type = AZ_SPAN_FROM_STR("sha256");
+  file.hashes[0].hash_value = az_span_create((uint8_t*)digest_b64, written);
+  file.hashes_count = 1;
+  assert_int_equal(
+      az_iot_su_verify_file_hash(&file, &no_verify.base, standalone_read_chunk, &fx->log),
+      AZ_IOT_OK);
 }
 
 /* The vtable advertises an optional do_work hook for a channel with
@@ -6156,7 +6173,7 @@ int main(void)
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
     cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        standalone_verification_requires_a_backend_that_verifies, setup, teardown),
+        standalone_entry_points_check_the_backend_they_need, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(

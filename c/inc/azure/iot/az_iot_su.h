@@ -1157,6 +1157,7 @@ extern "C"
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
    * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
    * AZ_IOT_ERR_AUTH when verification fails.
    */
   AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
@@ -1171,7 +1172,8 @@ extern "C"
    * Verify one downloaded file's SHA-256 against the signed manifest, streaming
    * the file back through @p read_chunk. Standalone (no client/state machine) so a
    * bring-your-own-state-machine agent performs the same integrity check the
-   * managed client does after each download.
+   * managed client does after each download. Needs only the SHA-256 functions
+   * of @p crypto, not verify_rs256.
    *
    * Returns AZ_IOT_OK when the hash matches, AZ_IOT_ERR_INVALID_ARG on bad
    * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
