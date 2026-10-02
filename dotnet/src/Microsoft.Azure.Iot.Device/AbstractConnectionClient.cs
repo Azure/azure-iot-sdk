@@ -219,6 +219,77 @@ namespace Microsoft.Azure.Iot.Device
             return CurrentConnectionContext;
         }
 
+        public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // From here on, every connection this client establishes targets IoT hub, so every connection (including the
+            // ones the connection layer re-establishes on its own) runs the device presence flow.
+            Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
+            CurrentEndpoint = ConnectionEndpoint.IotHub;
+
+            // This client is establishing a connection again, so any earlier fault no longer describes its state.
+            ClearUnrecoverableFault();
+
+            CurrentConnectionContext = connectionContext;
+
+            string deviceId = CurrentConnectionContext.DeviceId;
+            string hostname = CurrentConnectionContext.IotHubHostName;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
+
+            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
+            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
+            {
+                devicePresenceFlowResult.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
+            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+
+            try
+            {
+                // These are the connect packet fields that are invariable between connect attempts to any kind of IoT Hub. There is an MQTT connect packet override
+                // step triggered by the "ConnectingAsync" callback each time a connect is attempted. This allows for the gen 2 client to insert a new connect nonce
+                // per connect attempt. It also allows the inheriting ConnectionClient to insert the appropriate username/password/websocket port for that hub type
+                MqttConnect connectPacket = new MqttConnect()
+                {
+                    HostName = hostname,
+                    TcpPort = 8883,
+                    WebsocketPort = 443,
+                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
+                    RemoteCertificateValidationCallback = CurrentConnectionContext.AuthenticationProvider.RemoteCertificateValidationCallback,
+                    LocalCertificateSelectionCallback = CurrentConnectionContext.AuthenticationProvider.LocalCertificateSelectionCallback,
+                    ClientId = deviceId,
+
+                    // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
+                    // wherein a device attempts to reconnect w/ clean session=false, server sends back CONNACK w/ "session not resumed"
+                    // and starts a new session with no subscriptions, but that CONNACK is lost. The device will likely reconnect then.
+                    // If the device connects with cleanSession=false at that time, the broker may send back CONNACK with "session resumed", but
+                    // it isn't the same session that the device initially wanted to resume, and so subscriptions are unknowingly lost.
+                    //
+                    // Because of the above, it is simpler to just start clean sessions each time.
+                    CleanSession = true,
+                };
+
+                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
+
+                var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
+
+                if (devicePresenceFlowCompletedArgs.Exception != null)
+                {
+                    throw devicePresenceFlowCompletedArgs.Exception;
+                }
+            }
+            finally
+            {
+                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+            }
+        }
+
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
@@ -298,77 +369,6 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.Dispose();
 
             _isDisposed = true;
-        }
-
-        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            // From here on, every connection this client establishes targets IoT hub, so every connection (including the
-            // ones the connection layer re-establishes on its own) runs the device presence flow.
-            Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
-            CurrentEndpoint = ConnectionEndpoint.IotHub;
-
-            // This client is establishing a connection again, so any earlier fault no longer describes its state.
-            ClearUnrecoverableFault();
-
-            CurrentConnectionContext = connectionContext;
-
-            string deviceId = CurrentConnectionContext.DeviceId;
-            string hostname = CurrentConnectionContext.IotHubHostName;
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            Trace.TraceInformation("Attempting to establish connection and presence for device {0} with IoT Hub {1}", deviceId, hostname);
-
-            TaskCompletionSource<DevicePresenceFlowCompletedArgs> devicePresenceFlowResult = new();
-            Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
-            {
-                devicePresenceFlowResult.TrySetResult(args);
-                return Task.CompletedTask;
-            };
-
-            // Setup callbacks BEFORE sending CONNECT so that CONNACK can be handled regardless of how quickly it arrives
-            DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-
-            try
-            {
-                // These are the connect packet fields that are invariable between connect attempts to any kind of IoT Hub. There is an MQTT connect packet override
-                // step triggered by the "ConnectingAsync" callback each time a connect is attempted. This allows for the gen 2 client to insert a new connect nonce
-                // per connect attempt. It also allows the inheriting ConnectionClient to insert the appropriate username/password/websocket port for that hub type
-                MqttConnect connectPacket = new MqttConnect()
-                {
-                    HostName = hostname,
-                    TcpPort = 8883,
-                    WebsocketPort = 443,
-                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
-                    RemoteCertificateValidationCallback = CurrentConnectionContext.AuthenticationProvider.RemoteCertificateValidationCallback,
-                    LocalCertificateSelectionCallback = CurrentConnectionContext.AuthenticationProvider.LocalCertificateSelectionCallback,
-                    ClientId = deviceId,
-
-                    // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
-                    // wherein a device attempts to reconnect w/ clean session=false, server sends back CONNACK w/ "session not resumed"
-                    // and starts a new session with no subscriptions, but that CONNACK is lost. The device will likely reconnect then.
-                    // If the device connects with cleanSession=false at that time, the broker may send back CONNACK with "session resumed", but
-                    // it isn't the same session that the device initially wanted to resume, and so subscriptions are unknowingly lost.
-                    //
-                    // Because of the above, it is simpler to just start clean sessions each time.
-                    CleanSession = true,
-                };
-
-                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
-
-                var devicePresenceFlowCompletedArgs = await devicePresenceFlowResult.Task.WaitAsync(cancellationToken);
-
-                if (devicePresenceFlowCompletedArgs.Exception != null)
-                {
-                    throw devicePresenceFlowCompletedArgs.Exception;
-                }
-            }
-            finally
-            {
-                DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
-            }
         }
 
         /// <summary>
