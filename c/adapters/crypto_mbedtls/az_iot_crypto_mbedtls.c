@@ -18,6 +18,7 @@
  */
 #include "az_iot_crypto_mbedtls.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "psa/crypto.h"
@@ -25,6 +26,38 @@
 /** @brief Fails to compile when psa_hash_operation_t does not fit az_iot_sha256_ctx. */
 typedef char az_iot_psa_hash_fits_ctx
     [(sizeof(psa_hash_operation_t) <= sizeof(((az_iot_sha256_ctx*)0)->opaque)) ? 1 : -1];
+
+/** @brief Measures the alignment of psa_hash_operation_t (C99 has no alignof). */
+struct psa_hash_align
+{
+  char c;
+  psa_hash_operation_t op;
+};
+/** @brief Measures the alignment of az_iot_sha256_ctx::opaque. */
+struct ctx_align
+{
+  char c;
+  uint64_t u;
+};
+/** @brief Fails to compile when psa_hash_operation_t needs stricter alignment than the context. */
+typedef char az_iot_psa_hash_aligned_in_ctx
+    [(offsetof(struct psa_hash_align, op) <= offsetof(struct ctx_align, u)) ? 1 : -1];
+
+/* The operation lives in az_iot_sha256_ctx storage of another declared type.
+ * may_alias exempts accesses through this wrapper from GCC/Clang type-based
+ * alias analysis. The SDK touches the context only through this backend and
+ * as bytes. */
+#if defined(__GNUC__) || defined(__clang__)
+#define AZ_IOT_MAY_ALIAS __attribute__((__may_alias__))
+#else
+#define AZ_IOT_MAY_ALIAS
+#endif
+
+/** @brief The PSA operation as stored in az_iot_sha256_ctx. */
+typedef struct AZ_IOT_MAY_ALIAS psa_hash_box
+{
+  psa_hash_operation_t op; /**< The operation. */
+} psa_hash_box;
 
 /* ------------------------------------------------------------------------- */
 /* minimal DER encoder for an RSA public key (SEQUENCE { INTEGER n, e })      */
@@ -138,7 +171,7 @@ static size_t build_rsa_public_der(
 /** @brief The PSA operation stored in @p ctx. */
 static psa_hash_operation_t* op_of(az_iot_sha256_ctx* ctx)
 {
-  return (psa_hash_operation_t*)(void*)ctx->opaque;
+  return &((psa_hash_box*)(void*)ctx->opaque)->op;
 }
 
 static az_iot_result psa_verify_rs256(
