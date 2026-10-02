@@ -26,10 +26,10 @@ Add `azure-iot-sdk` to a consumer's `DEPENDS` and link with
 | Option | Default | Component |
 |---|---|---|
 | `paho` | on | `adapter_paho` |
-| `su-crypto-openssl` | on | `su_crypto_openssl` |
+| `crypto-openssl` | on | `crypto_openssl` |
 | `certificate-provider-managed` | on | `certificate_provider_managed` |
 | `rust-mqtt` | off | `adapter_rust_mqtt` |
-| `mbedtls` | off | `su_crypto_mbedtls` (needs meta-oe's `mbedtls`, 3.6 LTS or 4.1+) |
+| `mbedtls` | off | `crypto_mbedtls` (needs meta-oe's `mbedtls`, 3.6 LTS or 4.1+) |
 
 A selected component that does not build fails `do_install`.
 

@@ -511,8 +511,8 @@ jobs:
   # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
   # pinned release. The known-answer suite also runs under valgrind.
   # ---------------------------------------------------------------------------
-  su-crypto-mbedtls:
-    name: su crypto / mbedTLS ${{ matrix.mbedtls }}
+  crypto-mbedtls:
+    name: crypto / mbedTLS ${{ matrix.mbedtls }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -535,14 +535,14 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_BUILD_SAMPLES=OFF
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
       - name: Build
-        run: cmake --build build/su-mbedtls --target az_iot_tests_su_crypto_mbedtls az_iot_tests_su_crypto_openssl
+        run: cmake --build build/su-mbedtls --target az_iot_tests_crypto_mbedtls az_iot_tests_crypto_openssl
       - name: Test
-        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_su_crypto_' --no-tests=error
+        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_crypto_' --no-tests=error
       - name: Test under valgrind
         run: >
           valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
           --track-origins=yes --errors-for-leak-kinds=definite,possible
-          build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
+          build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
@@ -629,7 +629,7 @@ jobs:
   # c/tests/install then builds and runs against the install prefix alone: the
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
-  # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # the package fails the job. mbedTLS is Linux-only, as in crypto-mbedtls.
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
@@ -646,22 +646,22 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-latest
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:

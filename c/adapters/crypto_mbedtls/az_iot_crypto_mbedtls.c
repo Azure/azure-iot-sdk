@@ -3,25 +3,28 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* PSA-Crypto implementation of the software updates crypto primitive hooks.
+/**
+ * @file az_iot_crypto_mbedtls.c
+ * @brief az_iot_crypto on PSA Crypto.
  *
- * ESP-IDF v6.0 ships mbedTLS 4.x (TF-PSA-Crypto), where the legacy
- * mbedtls_rsa_* / mbedtls_sha256_* APIs are private. The supported native
- * primitive API is PSA Crypto (psa/crypto.h), so the hooks below are
- * implemented with it. See the header for the design rationale (hooks-only:
- * no JWS/base64/key resolution here).
+ * mbedTLS 4.x (ESP-IDF 6.0) makes the legacy mbedtls_rsa_* / mbedtls_sha256_*
+ * APIs private, so this uses PSA Crypto (psa/crypto.h) only.
  *
- * RS256 verification: software updates core hands us the signer's RSA public key as raw
- * big-endian (modulus, exponent). PSA imports an RSA public key from its PKCS#1
- * RSAPublicKey DER encoding (RFC 8017): SEQUENCE { INTEGER n, INTEGER e }, so
- * we DER-wrap the two integers before psa_import_key().
+ * RS256: PSA imports an RSA public key from its PKCS#1 RSAPublicKey DER
+ * (RFC 8017: SEQUENCE { INTEGER n, INTEGER e }), so the raw big-endian
+ * modulus and exponent are DER-wrapped before psa_import_key().
+ *
+ * SHA-256: the psa_hash_operation_t lives inside az_iot_sha256_ctx.
  */
-#include "az_iot_su_crypto_mbedtls.h"
+#include "az_iot_crypto_mbedtls.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 #include "psa/crypto.h"
+
+/** @brief Fails to compile when psa_hash_operation_t does not fit az_iot_sha256_ctx. */
+typedef char az_iot_psa_hash_fits_ctx
+    [(sizeof(psa_hash_operation_t) <= sizeof(((az_iot_sha256_ctx*)0)->opaque)) ? 1 : -1];
 
 /* ------------------------------------------------------------------------- */
 /* minimal DER encoder for an RSA public key (SEQUENCE { INTEGER n, e })      */
@@ -129,30 +132,36 @@ static size_t build_rsa_public_der(
 }
 
 /* ------------------------------------------------------------------------- */
-/* crypto hooks                                                              */
+/* backend                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static int32_t psa_verify_rs256(
+/** @brief The PSA operation stored in @p ctx. */
+static psa_hash_operation_t* op_of(az_iot_sha256_ctx* ctx)
+{
+  return (psa_hash_operation_t*)(void*)ctx->opaque;
+}
+
+static az_iot_result psa_verify_rs256(
+    const az_iot_crypto* self,
     const uint8_t* modulus,
     size_t modulus_len,
     const uint8_t* exponent,
     size_t exponent_len,
-    const uint8_t* signed_data,
-    size_t signed_data_len,
+    const uint8_t* data,
+    size_t data_len,
     const uint8_t* signature,
-    size_t signature_len,
-    void* user_ctx)
+    size_t signature_len)
 {
-  (void)user_ctx;
-  if (!modulus || !modulus_len || !exponent || !exponent_len || !signed_data || !signature
+  (void)self;
+  if (!modulus || !modulus_len || !exponent || !exponent_len || !data || !signature
       || !signature_len)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   if (psa_crypto_init() != PSA_SUCCESS)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INTERNAL;
   }
 
   uint8_t der[DER_BUFFER_SIZE];
@@ -160,7 +169,7 @@ static int32_t psa_verify_rs256(
       = build_rsa_public_der(der, sizeof(der), modulus, modulus_len, exponent, exponent_len);
   if (der_len == 0)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_AUTH;
   }
 
   psa_algorithm_t alg = PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256);
@@ -172,115 +181,89 @@ static int32_t psa_verify_rs256(
   psa_key_id_t key = 0;
   if (psa_import_key(&attr, der, der_len, &key) != PSA_SUCCESS)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_AUTH;
   }
 
-  int32_t result = AZ_IOT_SU_RESULT_FAILURE;
-  uint8_t hash[32];
+  az_iot_result result = AZ_IOT_ERR_AUTH;
+  uint8_t hash[AZ_IOT_SHA256_SIZE];
   size_t hash_len = 0;
-  if (psa_hash_compute(PSA_ALG_SHA_256, signed_data, signed_data_len, hash, sizeof(hash), &hash_len)
+  if (psa_hash_compute(PSA_ALG_SHA_256, data, data_len, hash, sizeof(hash), &hash_len)
           == PSA_SUCCESS
       && psa_verify_hash(key, alg, hash, hash_len, signature, signature_len) == PSA_SUCCESS)
   {
-    result = AZ_IOT_SU_RESULT_SUCCESS;
+    result = AZ_IOT_OK;
   }
 
   psa_destroy_key(key);
   return result;
 }
 
-static int32_t psa_sha256_oneshot(
-    const uint8_t* data,
-    size_t data_len,
-    uint8_t hash_out[32],
-    void* user_ctx)
+static az_iot_result psa_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
 {
-  (void)user_ctx;
-  if (!hash_out || (!data && data_len != 0))
+  (void)self;
+  if (ctx == NULL)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   if (psa_crypto_init() != PSA_SUCCESS)
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INTERNAL;
   }
-
-  size_t hash_len = 0;
-  return (psa_hash_compute(PSA_ALG_SHA_256, data, data_len, hash_out, 32, &hash_len) == PSA_SUCCESS)
-      ? AZ_IOT_SU_RESULT_SUCCESS
-      : AZ_IOT_SU_RESULT_FAILURE;
-}
-
-static int32_t psa_sha256_begin(void** ctx_out, void* user_ctx)
-{
-  (void)user_ctx;
-  if (!ctx_out)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  if (psa_crypto_init() != PSA_SUCCESS)
-  {
-    *ctx_out = NULL;
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-
-  psa_hash_operation_t* op = (psa_hash_operation_t*)malloc(sizeof(psa_hash_operation_t));
-  if (!op)
-  {
-    *ctx_out = NULL;
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
+  psa_hash_operation_t* op = op_of(ctx);
   memset(op, 0, sizeof(*op)); /* equivalent to PSA_HASH_OPERATION_INIT */
-
   if (psa_hash_setup(op, PSA_ALG_SHA_256) != PSA_SUCCESS)
   {
-    free(op);
-    *ctx_out = NULL;
-    return AZ_IOT_SU_RESULT_FAILURE;
+    psa_hash_abort(op);
+    return AZ_IOT_ERR_INTERNAL;
   }
-  *ctx_out = op;
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  return AZ_IOT_OK;
 }
 
-static int32_t psa_sha256_feed(void* ctx, const uint8_t* data, size_t len, void* user_ctx)
+static az_iot_result psa_sha256_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
 {
-  (void)user_ctx;
-  if (!ctx || (!data && len != 0))
+  (void)self;
+  if (ctx == NULL || (data == NULL && len != 0))
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  return (psa_hash_update((psa_hash_operation_t*)ctx, data, len) == PSA_SUCCESS)
-      ? AZ_IOT_SU_RESULT_SUCCESS
-      : AZ_IOT_SU_RESULT_FAILURE;
+  return psa_hash_update(op_of(ctx), data, len) == PSA_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
 }
 
-static int32_t psa_sha256_end(void* ctx, uint8_t hash_out[32], void* user_ctx)
+static az_iot_result psa_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
 {
-  (void)user_ctx;
-  if (!ctx || !hash_out)
+  (void)self;
+  if (ctx == NULL)
   {
-    if (ctx)
-    {
-      psa_hash_abort((psa_hash_operation_t*)ctx);
-      free(ctx);
-    }
-    return AZ_IOT_SU_RESULT_FAILURE;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (out == NULL)
+  {
+    psa_hash_abort(op_of(ctx));
+    return AZ_IOT_OK;
   }
   size_t hash_len = 0;
-  psa_status_t st = psa_hash_finish((psa_hash_operation_t*)ctx, hash_out, 32, &hash_len);
-  free(ctx);
-  return (st == PSA_SUCCESS) ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
+  psa_status_t st = psa_hash_finish(op_of(ctx), out, AZ_IOT_SHA256_SIZE, &hash_len);
+  if (st != PSA_SUCCESS)
+  {
+    psa_hash_abort(op_of(ctx));
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  return AZ_IOT_OK;
 }
 
-az_iot_su_crypto_hooks az_iot_su_crypto_mbedtls_hooks(void)
-{
-  az_iot_su_crypto_hooks hooks;
-  memset(&hooks, 0, sizeof(hooks));
-  hooks.verify_rs256_fn = psa_verify_rs256;
-  hooks.sha256_fn = psa_sha256_oneshot;
-  hooks.sha256_init_fn = psa_sha256_begin;
-  hooks.sha256_update_fn = psa_sha256_feed;
-  hooks.sha256_final_fn = psa_sha256_end;
-  hooks.user_ctx = NULL;
-  return hooks;
-}
+static const az_iot_crypto k_mbedtls = {
+  .version = AZ_IOT_CRYPTO_VERSION,
+  .sha256_init = psa_sha256_init,
+  .sha256_update = psa_sha256_update,
+  .sha256_final = psa_sha256_final,
+  .verify_rs256 = psa_verify_rs256,
+};
+
+const az_iot_crypto* az_iot_crypto_mbedtls(void) { return &k_mbedtls; }

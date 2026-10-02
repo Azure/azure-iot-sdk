@@ -65,7 +65,7 @@
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "az_iot_su_crypto_openssl.h"
+#include "az_iot_crypto_openssl.h"
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -273,6 +273,8 @@ static int initialize_connection_client(sample_state* state)
    * one both fail registration the same way, so inferring it would hide real
    * misconfiguration. */
   copts.dps.provision_only = true;
+  /* Verifies update manifests and hashes downloaded files. */
+  copts.crypto = az_iot_crypto_openssl();
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -349,8 +351,6 @@ int main(void)
   hooks.load_state_fn = su_load_state;
   hooks.user_ctx = &state.simulation_control;
 
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
-
   /* Microsoft's compiled-in software updates production root keys: anchors the trust chain
    * for updates signed by the real Device Update service. */
   size_t root_key_count = 0;
@@ -412,7 +412,6 @@ int main(void)
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;

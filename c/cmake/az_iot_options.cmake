@@ -10,8 +10,8 @@ option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             O
 # either way and refuses a key reference with AZ_IOT_ERR_NOT_SUPPORTED when the
 # support is absent, rather than connecting without a client key.
 option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Paho adapter (needs OpenSSL 3.0+)" ON)
-option(AZ_IOT_WITH_SU_CRYPTO_OPENSSL "Build the OpenSSL software updates crypto adapter"   ON)
-option(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS "Build the mbedTLS software updates crypto adapter when mbedTLS 3.6 LTS or 4.1+ is found" ON)
+option(AZ_IOT_WITH_CRYPTO_OPENSSL "Build the OpenSSL crypto backend"                    ON)
+option(AZ_IOT_WITH_CRYPTO_MBEDTLS "Build the mbedTLS crypto backend when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)

@@ -43,7 +43,7 @@ extern "C"
   AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT
 #define AZ_IOT_SU_CLIENT_AGENT_VERSION AZ_IOT_ADU_CLIENT_AGENT_VERSION
 
-  /* --- Result codes (returned by platform/crypto hooks) -------------------- */
+  /* --- Result codes (returned by platform hooks) --------------------------- */
 
 #define AZ_IOT_SU_RESULT_SUCCESS 0
 #define AZ_IOT_SU_RESULT_IN_PROGRESS 1
@@ -196,7 +196,8 @@ extern "C"
      * Download one file (called once per file, once per do_work iteration).
      * Return IN_PROGRESS to continue on the next do_work, SUCCESS when complete.
      * The hook SHOULD check az_iot_su_is_cancelled() periodically.
-     * Hash verification is performed by core via the crypto hooks.
+     * Hash verification is performed by core with the connection client's
+     * crypto backend.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -289,49 +290,6 @@ extern "C"
 
     void* user_ctx;
   } az_iot_su_platform_hooks;
-
-  /* --- Crypto hooks (REQUIRED, pure primitives) ---------------------------- */
-
-  /**
-   * Pure cryptographic primitives. These hooks MUST NOT parse JWS, decode
-   * base64url, resolve keys, or enforce revocation — all of that orchestration
-   * lives in software updates core. An adapter therefore only wires "RSA verify + SHA-256".
-   * Pre-built implementations are available under adapters/su/.
-   */
-  typedef struct az_iot_su_crypto_hooks
-  {
-    /**
-     * Verify an RSASSA-PKCS1-v1_5 signature over SHA-256 (JWS "alg":"RS256").
-     * The public key is passed as raw big-endian modulus/exponent (already
-     * base64url-decoded by core). MUST return AZ_IOT_SU_RESULT_SUCCESS iff the
-     * signature is valid, AZ_IOT_SU_RESULT_FAILURE otherwise.
-     */
-    int32_t (*verify_rs256_fn)(
-        const uint8_t* modulus,
-        size_t modulus_len,
-        const uint8_t* exponent,
-        size_t exponent_len,
-        const uint8_t* signed_data,
-        size_t signed_data_len,
-        const uint8_t* signature,
-        size_t signature_len,
-        void* user_ctx);
-
-    /** Compute SHA-256 of a buffer. */
-    int32_t (
-        *sha256_fn)(const uint8_t* data, size_t data_len, uint8_t hash_out[32], void* user_ctx);
-
-    /** Initialize an incremental SHA-256 context (opaque, impl-managed). */
-    int32_t (*sha256_init_fn)(void** ctx_out, void* user_ctx);
-
-    /** Feed data into an incremental SHA-256. */
-    int32_t (*sha256_update_fn)(void* ctx, const uint8_t* data, size_t len, void* user_ctx);
-
-    /** Finalize an incremental SHA-256, write 32-byte hash, free ctx. */
-    int32_t (*sha256_final_fn)(void* ctx, uint8_t hash_out[32], void* user_ctx);
-
-    void* user_ctx;
-  } az_iot_su_crypto_hooks;
 
   /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
@@ -745,7 +703,7 @@ extern "C"
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;
-      az_iot_su_crypto_hooks crypto;
+      const az_iot_crypto* crypto;
 
       /* Upstream parser/formatter handle. */
       az_iot_adu_client az;
@@ -910,8 +868,6 @@ extern "C"
   {
     /** Required. Platform operations (download, install, apply, ...). */
     const az_iot_su_platform_hooks* hooks;
-    /** Required. Crypto primitives (RSA verify, SHA-256). */
-    const az_iot_su_crypto_hooks* crypto;
     /** RSA root keys that anchor manifest trust. The descriptors are copied; the
      * key bytes are referenced and must outlive the client. For Microsoft-signed
      * updates pass az_iot_su_microsoft_root_keys(). */
@@ -928,7 +884,7 @@ extern "C"
   /**
    * @brief Returns zero-initialized options.
    *
-   * Set hooks, crypto, root_keys, root_key_count, device_properties,
+   * Set hooks, root_keys, root_key_count, device_properties,
    * device_properties_buffer and device_properties_buffer_size before
    * az_iot_su_client_init().
    *
@@ -943,11 +899,14 @@ extern "C"
    * @param[in] connection Connection client the device-update channel is built
    *   on. Need not be connected, but its DPS ID scope, registration ID and
    *   credential must be set: an application-requested onboarding check can
-   *   run before registration. Initialization sends nothing.
-   * @param[in] options Hooks, crypto, trust store, device properties and cache.
+   *   run before registration. Initialization sends nothing. Its crypto
+   *   backend (az_iot_connection_client_options::crypto) verifies updates.
+   * @param[in] options Hooks, trust store, device properties and cache.
    * @return AZ_IOT_OK on success.
-   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
-   *   properties are malformed (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
+   *   client has no crypto backend, or the device properties are malformed
+   *   (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
@@ -1191,7 +1150,7 @@ extern "C"
    *                       values (also on failure), so the buffer must be
    *                       writable and outlive both outputs, whose spans point
    *                       into it.
-   * @param crypto         RSA-verify and SHA-256 hooks.
+   * @param crypto         Backend; needs verify_rs256.
    * @param root_keys      Trusted root keys, e.g. az_iot_su_microsoft_root_keys().
    * @param root_key_count Entries in @p root_keys.
    * @param out_request    Workflow id and file URLs.
@@ -1202,7 +1161,7 @@ extern "C"
    */
   AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
       az_span request_json,
-      const az_iot_su_crypto_hooks* crypto,
+      const az_iot_crypto* crypto,
       const az_iot_su_root_key* root_keys,
       size_t root_key_count,
       az_iot_su_client_update_request* out_request,
@@ -1212,8 +1171,7 @@ extern "C"
    * Verify one downloaded file's SHA-256 against the signed manifest, streaming
    * the file back through @p read_chunk. Standalone (no client/state machine) so a
    * bring-your-own-state-machine agent performs the same integrity check the
-   * managed client does after each download. Requires the incremental SHA-256
-   * crypto hooks (sha256_init/update/final).
+   * managed client does after each download.
    *
    * Returns AZ_IOT_OK when the hash matches, AZ_IOT_ERR_INVALID_ARG on bad
    * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
@@ -1221,7 +1179,7 @@ extern "C"
    */
   AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
       const az_iot_su_client_update_manifest_file* file,
-      const az_iot_su_crypto_hooks* crypto,
+      const az_iot_crypto* crypto,
       az_iot_su_read_chunk_callback read_chunk,
       void* read_ctx);
 

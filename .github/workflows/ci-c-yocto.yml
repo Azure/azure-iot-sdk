@@ -142,7 +142,7 @@ jobs:
           test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure/iot/az_iot.h"
           test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure-sdk-for-c/azure/core/az_span.h"
           test -f "$pkgs/azure-iot-sdk-dev/usr/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
-          for c in core mqttv3 mqttv5 adapter_paho su_crypto_openssl certificate_provider_managed; do
+          for c in core mqttv3 mqttv5 adapter_paho crypto_openssl certificate_provider_managed; do
             test -f "$pkgs/azure-iot-sdk-dev/usr/lib/pkgconfig/azure-iot-sdk-$c.pc"
           done
           test -f "$pkgs/azure-iot-sdk-staticdev/usr/lib/libaz_iot_core.a"
