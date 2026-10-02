@@ -145,7 +145,7 @@ slots.
 
 | Feature client | QoS 1 publishes | Own bound | Takes a slot |
 | --- | --- | --- | --- |
-| mqttv3 and mqttv5 telemetry `send` | 1 per call | None | Only with a callback. Without one, the SDK does not bound them. |
+| mqttv3 and mqttv5 telemetry `send` | 1 per call | Only this table | Yes; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Refused probes are also acknowledged, so probe acks are not bounded. | When one is free; otherwise sent without one. |
 | Certificate renewal | 1 request | 1 operation at a time | No |
 

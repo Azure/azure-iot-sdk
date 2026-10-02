@@ -76,6 +76,12 @@ typedef struct send_record
   az_iot_result status;
 } send_record;
 
+static void ignore_send(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)user_ctx;
+}
+
 static void on_send(az_iot_result status, void* user_ctx)
 {
   send_record* record = (send_record*)user_ctx;
@@ -265,7 +271,8 @@ static void lifecycle_is_deterministic(void** state)
 
   az_iot_telemetry_message message = { 0 };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&local, &message, NULL, NULL), AZ_IOT_ERR_NOT_SUPPORTED);
+      az_iot_mqttv5_telemetry_client_send(&local, &message, ignore_send, NULL),
+      AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
 static void send_rejects_invalid_arguments(void** state)
@@ -275,18 +282,27 @@ static void send_rejects_invalid_arguments(void** state)
 
   az_iot_telemetry_message message = { .payload_len = 1 };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL),
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   message.payload_len = 0;
   message.properties_count = 1;
   assert_int_equal(
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_mqttv5_telemetry_client_send(NULL, &message, ignore_send, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, NULL, ignore_send, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* QoS 1 telemetry must be tracked, so a callback is required. */
+  message.payload_len = 0;
+  message.properties_count = 0;
+  assert_int_equal(
       az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(NULL, &message, NULL, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, NULL, NULL, NULL),
-      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(test->mock, AZ_IOT_MOCK_CALL_PUBLISH), 0);
 }
 
 static void send_uses_the_v5_wire_shape_and_waits_for_puback(void** state)
@@ -334,7 +350,8 @@ static void metadata_uses_native_v5_fields(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(publish->user_type, "telemetry:1");
@@ -373,7 +390,8 @@ static void every_system_property_reaches_the_wire(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(
@@ -422,7 +440,7 @@ static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
   log_capture log;
   install_capture(&log, AZ_IOT_LOG_LEVEL_WARN);
   az_iot_result result
-      = az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL);
+      = az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL);
   az_iot_log_set_global_sink(NULL);
 
   assert_int_equal(result, AZ_IOT_OK);
@@ -461,7 +479,8 @@ static void an_unknown_system_property_still_travels(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(az_iot_mock_call_user_property(publish, "$.unknown"), "keep-me");
@@ -483,7 +502,8 @@ static void content_type_is_matched_case_sensitively(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(publish->content_type, "application/json");
@@ -507,7 +527,8 @@ static void a_repeated_content_type_resolves_to_the_first(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(publish->content_type, "text/plain");
@@ -544,7 +565,7 @@ static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** s
   log_capture log;
   install_capture(&log, AZ_IOT_LOG_LEVEL_WARN);
   az_iot_result result
-      = az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL);
+      = az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL);
   az_iot_log_set_global_sink(NULL);
 
   assert_int_equal(result, AZ_IOT_OK);
@@ -575,7 +596,8 @@ static void values_are_not_encoded_on_the_v5_path(void** state)
     .properties_count = ARRAY_SIZE(properties),
   };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(az_iot_mock_call_user_property(publish, "reserved"), "a&b=c d%e/f");
@@ -592,7 +614,8 @@ static void content_type_defaults_to_json(void** state)
 
   az_iot_telemetry_message message = { 0 };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_string_equal(publish->content_type, "application/json");
   assert_string_equal(az_iot_mock_call_user_property(publish, "content-type"), "application/json");
@@ -605,7 +628,7 @@ static void empty_payload_is_valid_and_publish_failures_are_returned(void** stat
 
   az_iot_telemetry_message empty = { 0 };
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &empty, NULL, NULL), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &empty, ignore_send, NULL), AZ_IOT_OK);
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
   assert_int_equal(publish->payload_len, 0);
 
