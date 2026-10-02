@@ -83,8 +83,12 @@ static bool put_url_encoded(char* dst, size_t cap, size_t* pos, const char* src,
 /**
  * @brief Signs `<resource_uri>\n<expiry>` and formats the token. Replace with
  * your key store: only this function touches the key.
+ *
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token does not fit
+ * @p out; AZ_IOT_ERR_INVALID_ARG for a resource URI longer than this sample
+ * signs; AZ_IOT_ERR_INTERNAL when signing or encoding fails.
  */
-static bool sign_token(
+static az_iot_result sign_token(
     const key_store* store,
     const az_iot_sas_token_request* request,
     uint64_t expiry,
@@ -94,10 +98,13 @@ static bool sign_token(
 {
   char expiry_text[24];
   int expiry_len = snprintf(expiry_text, sizeof(expiry_text), "%llu", (unsigned long long)expiry);
-  char to_sign[256];
+  if (expiry_len <= 0 || (size_t)expiry_len >= sizeof(expiry_text))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  char to_sign[AZ_IOT_SAS_TOKEN_BUF];
   size_t to_sign_len = 0;
-  if (expiry_len <= 0
-      || !put(
+  if (!put(
           to_sign,
           sizeof(to_sign),
           &to_sign_len,
@@ -106,7 +113,7 @@ static bool sign_token(
       || !put(to_sign, sizeof(to_sign), &to_sign_len, "\n", 1)
       || !put(to_sign, sizeof(to_sign), &to_sign_len, expiry_text, (size_t)expiry_len))
   {
-    return false;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   uint8_t mac[32];
@@ -122,7 +129,7 @@ static bool sign_token(
           == NULL
       || mac_len != sizeof(mac))
   {
-    return false;
+    return AZ_IOT_ERR_INTERNAL;
   }
   char sig_b64[64];
   int32_t sig_len = 0;
@@ -131,7 +138,7 @@ static bool sign_token(
           az_span_create(mac, (int32_t)sizeof(mac)),
           &sig_len)))
   {
-    return false;
+    return AZ_IOT_ERR_INTERNAL;
   }
 
   static const char k_prefix[] = "SharedAccessSignature sr=";
@@ -156,7 +163,7 @@ static bool sign_token(
              (size_t)az_span_size(request->key_name));
   }
   *out_len = pos;
-  return ok;
+  return ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 }
 
 /** @brief az_iot_sas_token_callback: issues a token for DPS or the hub. */
@@ -168,17 +175,23 @@ static az_iot_result get_token(
     void* user_ctx)
 {
   const key_store* store = (const key_store*)user_ctx;
-  uint64_t expiry = (uint64_t)time(NULL) + SAMPLE_TOKEN_LIFETIME_S;
-  size_t len = 0;
-  if (!sign_token(
-          store,
-          request,
-          expiry,
-          (char*)az_span_ptr(token_buffer),
-          (size_t)az_span_size(token_buffer),
-          &len))
+  time_t now = time(NULL);
+  if (now == (time_t)-1)
   {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return AZ_IOT_ERR_INTERNAL; /* no clock yet; the SDK retries */
+  }
+  uint64_t expiry = (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S;
+  size_t len = 0;
+  az_iot_result r = sign_token(
+      store,
+      request,
+      expiry,
+      (char*)az_span_ptr(token_buffer),
+      (size_t)az_span_size(token_buffer),
+      &len);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
   }
   fprintf(
       stderr,

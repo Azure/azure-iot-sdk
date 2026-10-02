@@ -235,11 +235,14 @@ extern "C"
    * @param[in] request             What the token must be valid for.
    * @param[out] token_buffer       Destination; AZ_IOT_SAS_TOKEN_BUF bytes.
    * @param[out] out_token_len      Bytes written, without a terminator.
-   * @param[out] out_valid_seconds  Seconds the token stays valid from now. The
-   *                                SDK requests a new one at 80% of it.
+   * @param[out] out_valid_seconds  Seconds the token stays valid from now;
+   *                                must be non-zero. The SDK requests a new
+   *                                one at 80% of it.
    * @param[in] user_ctx            az_iot_auth::sas_token::user_ctx.
-   * @return AZ_IOT_OK. Any other result fails the connect attempt, which is
-   * retried under az_iot_connection_client_options::reconnection_policy.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token does not fit
+   * @p token_buffer. Any result other than AZ_IOT_OK, or a zero validity,
+   * fails the connect attempt, which is retried under
+   * az_iot_connection_client_options::reconnection_policy.
    */
   typedef az_iot_result (*az_iot_sas_token_callback)(
       const az_iot_sas_token_request* request,
@@ -255,7 +258,14 @@ extern "C"
    */
   typedef uint64_t (*az_iot_unix_time_callback)(void* user_ctx);
 
-  /** @brief Credentials for one role. Zeroed: X.509. */
+  /**
+   * @brief Credentials for one role. Zeroed: X.509.
+   *
+   * init() fails with AZ_IOT_ERR_INVALID_ARG for an unknown kind,
+   * AZ_IOT_AUTH_SAS_KEY without key_base64 or without
+   * az_iot_connection_client_options::crypto, and
+   * AZ_IOT_AUTH_SAS_TOKEN_CALLBACK without get_token.
+   */
   typedef struct az_iot_auth
   {
     /** @brief Which of the fields below applies. */
@@ -656,16 +666,19 @@ extern "C"
      * @brief How the hub session authenticates, for DPS-assigned and direct
      * hub connections. Zeroed: X.509.
      *
-     * Must be X.509 when dps.request_operational_certificate is set: the hub
-     * then uses the issued certificate. A hub that refuses SAS -- mqttv5 does
-     * today -- fails the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
+     * Must be X.509 when dps.request_operational_certificate is set (the hub
+     * then uses the issued certificate); init() otherwise fails with
+     * AZ_IOT_ERR_INVALID_ARG. A hub that refuses SAS -- mqttv5 does today --
+     * fails the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
      */
     az_iot_auth hub_auth;
 
     /**
      * @brief Trust anchors for every TLS connection, whatever the auth kind.
-     * Both NULL: the X.509 provider's trusted CA if there is one, otherwise
-     * the adapter's default trust store.
+     * Set at most one of pem and path; init() fails with
+     * AZ_IOT_ERR_INVALID_ARG when both are set. Both NULL: the X.509
+     * provider's trusted CA if there is one, otherwise the adapter's default
+     * trust store.
      */
     struct
     {
@@ -947,9 +960,10 @@ extern "C"
 #define AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS 3600
 #endif
 /** @brief Bytes of the buffer a SAS token is built in, or handed to
- * az_iot_sas_token_callback. */
+ * az_iot_sas_token_callback. Fits a hub token for a 128-character device ID
+ * that is fully URL-encoded. */
 #ifndef AZ_IOT_SAS_TOKEN_BUF
-#define AZ_IOT_SAS_TOKEN_BUF 512
+#define AZ_IOT_SAS_TOKEN_BUF 1024
 #endif
 /* Matches the presence birth-ack timeout: both bound "the broker accepted the
  * connection and then went quiet", and having two different windows for that on
