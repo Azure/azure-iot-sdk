@@ -63,7 +63,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     az_iot_telemetry_send_callback callback,
     void* user_ctx)
 {
-  if (client == NULL || message == NULL || (message->payload_len > 0 && message->payload == NULL)
+  if (client == NULL || message == NULL || callback == NULL
+      || (message->payload_len > 0 && message->payload == NULL)
       || (message->properties_count > 0 && message->properties == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;

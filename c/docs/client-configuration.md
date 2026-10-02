@@ -68,7 +68,7 @@ The tables state each outcome that is not a failed call or a dropped message.
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, the message is still sent but the call returns `AZ_IOT_ERR_NOT_SUPPORTED` and the callback is not called; do not resend it. |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback. When full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
@@ -136,6 +136,24 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MAX_INBOUND_HANDLERS` | 8 | Inbound topic handlers in one dispatch table. |
 | `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. |
 | `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated. |
+
+#### In-flight QoS 1 publishes
+
+A QoS 1 publish sent with a completion callback holds one `AZ_IOT_MAX_PENDING_PUBACKS` slot until
+its acknowledgement arrives or the session ends. All feature clients on a connection share the
+slots.
+
+| Feature client | QoS 1 publishes | Own bound | Takes a slot |
+| --- | --- | --- | --- |
+| mqttv3 and mqttv5 telemetry `send` | 1 per call | Only this table | Yes; the callback is required. |
+| mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Refused probes are also acknowledged, so probe acks are not bounded. | When one is free; otherwise sent without one. |
+| Certificate renewal | 1 request | 1 operation at a time | No |
+
+Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
+`AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
+
+To size it, add the telemetry sends you keep in flight to about `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`
+(a probe ack plus a result or abandon per mqttv5 invocation). A slot is 16 bytes on 32-bit targets and 32 bytes on 64-bit targets.
 
 ## Run time
 

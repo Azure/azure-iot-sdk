@@ -851,7 +851,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | Constant | Value | What it bounds | Result when exceeded |
 | --- | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | Registered adapter factories | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback** | `AZ_IOT_ERR_NOT_SUPPORTED` — the publish itself already succeeded |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback** | `AZ_IOT_ERR_BUSY` — nothing is sent |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Persistent topic-filter string | `AZ_IOT_ERR_INVALID_ARG` |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Session-end handlers (re-registering the same context upserts) | `AZ_IOT_ERR_NOT_SUPPORTED` |
@@ -1009,7 +1009,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | --- | --- | --- | --- | --- | --- |
 | Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY` | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect attempt fails with that error and does not connect (the hub path first retries `NOT_FOUND` / `NOT_INITIALIZED` with the bootstrap identity) | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI and duplicated option strings. |
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
-| Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the publish has already been sent; the ack callback is not registered | The table is checked after the publish, not before. |
+| Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_BUSY` | connection client | nothing is sent | The slot is reserved before the publish and released if the publish fails. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
 | Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |

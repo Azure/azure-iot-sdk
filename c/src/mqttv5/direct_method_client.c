@@ -355,19 +355,18 @@ static az_iot_result publish_typed(
   out.content_type = DM_CONTENT_TYPE;
   out.message_expiry_seconds = expiry_seconds;
 
-  az_iot_result result
-      = az_iot_connection_client__publish(DI(dm).conn, &out, on_publish_ack, (void*)type_value);
-  if (result == AZ_IOT_ERR_NOT_SUPPORTED)
+  /* The ack only feeds a log line, so a full pending-ack table must not cost
+   * the message: send it untracked instead. */
+  az_iot_publish_ack_callback ack_cb = on_publish_ack;
+  if (!az_iot_connection_client__has_free_puback_slot(DI(dm).conn))
   {
-    /* The message went out; only the pending-ack table was full, so the PUBACK
-     * will be absorbed silently. Losing that observability is not a send
-     * failure, and reporting one would have the caller treat a delivered
-     * result as lost. */
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: sent '%s' without ack tracking, the pending-ack table is full",
+        "mqttv5_direct_method: sending '%s' without ack tracking, the pending-ack table is full",
         type_value);
-    return AZ_IOT_OK;
+    ack_cb = NULL;
   }
+  az_iot_result result
+      = az_iot_connection_client__publish(DI(dm).conn, &out, ack_cb, (void*)type_value);
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
