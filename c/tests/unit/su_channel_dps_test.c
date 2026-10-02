@@ -778,6 +778,171 @@ static void a_failure_without_a_retry_after_defers_nothing(void** state)
       AZ_IOT_OK);
 }
 
+/* Publish one operation and answer it on `status` with `body`, using the
+ * request's own $rid. `query` is appended after the $rid (e.g. "&retry-after=2"). */
+static void answer_operation(
+    fixture* fx,
+    az_iot_su_operation operation,
+    int status,
+    const char* query,
+    const char* body)
+{
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    az_iot_su_report report = { 0 };
+    report.workflow_id = "wf-1";
+    report.extended_result_codes = "00000000";
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  }
+  else
+  {
+    assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+  }
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  int n
+      = snprintf(topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=%s%s", status, rid, query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_op, operation);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_DPS);
+}
+
+/* A bodyless 429 is throttling: the transport status classifies it when the
+ * body carries no code, and the topic delay is honoured. The missing service
+ * code stays 0 rather than being synthesized. */
+static void a_bodyless_429_fetch_is_throttled_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 429, "&retry-after=2", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(fx->last_retry_after_ms, 2000u);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_true(fx->channel_state.retry_after_deadline_ms != 0);
+  /* Retryable: the pre-registration hold is kept. */
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+}
+
+static void a_bodyless_429_report_is_throttled_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 429, "&retry-after=2", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(fx->last_retry_after_ms, 2000u);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+static void a_bodyless_503_fetch_is_retryable_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_retry_after_ms, 0u);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+}
+
+static void a_bodyless_503_report_is_retryable_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 503, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A body with no recognizable error signal (e.g. a gateway HTML page) is the
+ * same as no body: the status decides. */
+static void an_unparseable_503_body_falls_back_to_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "<html>busy</html>");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A truncated body is rejected whole: a code read before the cut must not
+ * override the status, nor drop the ETags. */
+static void a_truncated_503_body_falls_back_to_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  memcpy(fx->channel_state.agent_info_etag, "agent", sizeof("agent"));
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"errorCode\":400004,\"message\":\"x\"");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->channel_state.agent_info_etag, "agent");
+}
+
+/* An oversized string code does not discard the body: its numeric code still
+ * takes precedence over the status. */
+static void an_oversized_string_code_still_classifies_by_the_body(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char body[512];
+  int n = snprintf(
+      body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
+  assert_true(n > 0 && (size_t)n < sizeof(body));
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", body);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(fx->last_error_code, 400004);
+}
+
+/* The status fallback must not widen every bodyless failure into a retry. */
+static void a_bodyless_4xx_stays_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 401, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A bodyless 409 is not assumed to be either documented 409 meaning. */
+static void a_bodyless_409_report_stays_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 409, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+/* A typed body still takes precedence over the transport status. */
+/* A string code without errorCode: a recognized one beats the status; prose
+ * does not, so it cannot turn a transient status fatal. */
+static void a_string_only_body_is_classified_by_code_then_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"INVALID_REQUEST\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+static void a_prose_only_503_body_is_retryable(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"Service is busy.\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_string_equal(fx->last_error_text, "Service is busy.");
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+static void a_typed_body_takes_precedence_over_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx,
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      503,
+      "",
+      "{\"errorCode\":400000,\"message\":\"INVALID_REQUEST\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(fx->last_error_code, 400000);
+}
+
 static void invalid_replacements_preserve_channel_state_and_outstanding_body(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2805,6 +2970,21 @@ int main(void)
         the_hub_is_still_pumped_while_a_provisioning_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_429_fetch_is_throttled_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_429_report_is_throttled_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_503_fetch_is_retryable_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_503_report_is_retryable_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unparseable_503_body_falls_back_to_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_truncated_503_body_falls_back_to_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_4xx_stays_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_string_code_still_classifies_by_the_body, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_string_only_body_is_classified_by_code_then_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_prose_only_503_body_is_retryable, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
