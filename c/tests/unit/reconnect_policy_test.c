@@ -240,7 +240,7 @@ static void an_oversized_result_saturates_rather_than_wrapping(void** state)
 static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
 {
   (void)state;
-  az_iot_retry_policy p = az_iot_retry_policy_get_default();
+  az_iot_retry_policy p = az_iot_connection_client_get_default_retry_policy();
   p.jitter_pct = 0; /* the ladder, without the randomization on top */
   uint64_t rng = 99;
 
@@ -257,7 +257,7 @@ static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
 static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
 {
   (void)state;
-  az_iot_retry_policy p = az_iot_retry_policy_get_retry_disabled();
+  az_iot_retry_policy p = az_iot_connection_client_get_disabled_retry_policy();
   uint64_t rng = 1;
 
   /* 0 is how the caller of this function learns retrying is off. */
@@ -271,7 +271,7 @@ static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
 static void the_fixed_interval_getter_yields_a_flat_curve(void** state)
 {
   (void)state;
-  az_iot_retry_policy p = az_iot_retry_policy_get_fixed_interval(5000, 360);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(5000, 360);
   uint64_t rng = 4242;
 
   for (uint32_t attempt = 1; attempt <= 12; ++attempt)

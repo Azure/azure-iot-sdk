@@ -346,7 +346,7 @@ static void the_default_options_enable_reconnection(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  az_iot_retry_policy expected = az_iot_retry_policy_get_default();
+  az_iot_retry_policy expected = az_iot_connection_client_get_default_retry_policy();
 
   assert_true(opts.reconnection_policy.initial_delay_ms > 0);
   assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
@@ -449,7 +449,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.reconnection_policy = az_iot_retry_policy_get_retry_disabled();
+  opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
   opts.host = "broker.example";
   opts.client_id = "ut-device";
 

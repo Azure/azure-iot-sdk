@@ -368,7 +368,7 @@ Reset points differ per ladder:
 ### 5.1 Backoff policy
 
 `az_iot_retry_policy` in
-[az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h), computed by
+[az_iot_retry_policy.h](../../inc/azure/iot/az_iot_retry_policy.h), computed by
 `az_iot_reconnect_delay_ms()` in [reconnect.c](../../src/core/reconnect.c):
 
 ```text

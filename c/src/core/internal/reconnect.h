@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_retry_policy.h"
 
 #ifdef __cplusplus
 extern "C"

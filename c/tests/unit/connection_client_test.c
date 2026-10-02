@@ -2203,7 +2203,7 @@ static az_iot_mqtt_factory* tls_client_init(
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   if (!reconnect)
   {
-    opts.reconnection_policy = az_iot_retry_policy_get_retry_disabled();
+    opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
   }
   else
   {

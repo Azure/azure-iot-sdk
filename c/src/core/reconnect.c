@@ -5,6 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "internal/reconnect.h"
 
+#include "azure/iot/az_iot_connection_client.h"
+
 #include <stddef.h>
 
 #if defined(_WIN32)
@@ -119,7 +121,7 @@ uint32_t az_iot_reconnect_delay_ms(
   return (uint32_t)result;
 }
 
-az_iot_retry_policy az_iot_retry_policy_get_default(void)
+az_iot_retry_policy az_iot_connection_client_get_default_retry_policy(void)
 {
   az_iot_retry_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
@@ -130,7 +132,7 @@ az_iot_retry_policy az_iot_retry_policy_get_default(void)
   return p;
 }
 
-az_iot_retry_policy az_iot_retry_policy_get_retry_disabled(void)
+az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void)
 {
   /* initial_delay_ms == 0 is what disables retrying. Returning it from a named
    * getter is the whole point: the value is identical to a zeroed struct, so
@@ -144,7 +146,7 @@ az_iot_retry_policy az_iot_retry_policy_get_retry_disabled(void)
   return p;
 }
 
-az_iot_retry_policy az_iot_retry_policy_get_fixed_interval(
+az_iot_retry_policy az_iot_connection_client_get_fixed_interval_retry_policy(
     uint32_t interval_ms,
     uint32_t max_attempts)
 {

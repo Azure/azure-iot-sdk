@@ -166,7 +166,7 @@ always the same thing.
 | Struct | Configures | Reference |
 | --- | --- | --- |
 | `az_iot_connection_client_options` (`az_iot_connection_client_options_default()`) | DPS or direct hub connection, certificates, reconnection policy, timeouts, WebSockets, HTTP proxy, MQTT session terms, Last Will, mqttv5 twin push | [Connecting a device](connecting.md), [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h) |
-| `az_iot_retry_policy` (`az_iot_retry_policy_get_default()`, `_get_retry_disabled()`, `_get_fixed_interval()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection) |
+| `az_iot_retry_policy` (`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()`, `_get_fixed_interval_retry_policy()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection), [az_iot_retry_policy.h](../inc/azure/iot/az_iot_retry_policy.h) |
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
 | `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform and crypto hooks, root keys, device properties | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
