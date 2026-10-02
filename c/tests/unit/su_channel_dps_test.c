@@ -734,7 +734,9 @@ static void answer_operation(
   char rid[64];
   last_rid(m, rid, sizeof(rid));
   char topic[256];
-  snprintf(topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=%s%s", status, rid, query);
+  int n
+      = snprintf(topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=%s%s", status, rid, query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
   assert_true(inject(fx, m, topic, body));
   assert_int_equal(fx->result_count, 1);
   assert_int_equal(fx->last_op, operation);
@@ -814,7 +816,9 @@ static void an_oversized_string_code_still_classifies_by_the_body(void** state)
 {
   fixture* fx = (fixture*)*state;
   char body[512];
-  snprintf(body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
+  int n = snprintf(
+      body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
+  assert_true(n > 0 && (size_t)n < sizeof(body));
   answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", body);
   assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(fx->last_error_code, 400004);
