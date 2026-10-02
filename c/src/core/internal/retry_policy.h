@@ -44,12 +44,13 @@ extern "C"
   /**
    * @brief Count a failure on @p attempt and compute the delay before the retry.
    *
-   * Does not check whether retrying is enabled; see az_iot_retry_policy_is_enabled().
+   * Allows max_attempts retries (any number when 0). Does not check whether
+   * retrying is enabled; see az_iot_retry_policy_is_enabled().
    *
    * @param[in] policy The policy.
    * @param[in,out] attempt Retry counter; incremented, saturating.
    * @param[in,out] rng_state xorshift64 state for jitter.
-   * @param[out] delay_ms Delay before the retry.
+   * @param[out] delay_ms Delay before the retry; not written when false is returned.
    * @return false if max_attempts is spent, so no retry is due.
    */
   bool az_iot_retry_policy__next(
@@ -61,7 +62,7 @@ extern "C"
   /**
    * @brief Count a failure and schedule the retry az_iot_retry_policy__next() allows.
    *
-   * @return false if max_attempts is spent; nothing is then scheduled.
+   * @return false if max_attempts is spent; any scheduled retry is then dropped.
    */
   bool az_iot_retry_state__schedule(
       az_iot_retry_state* state,

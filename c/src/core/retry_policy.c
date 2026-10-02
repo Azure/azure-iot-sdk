@@ -62,7 +62,7 @@ uint32_t az_iot_retry_policy__delay_ms(
   }
 
   uint64_t result = base;
-  if (pct > 0 && base > 0)
+  if (pct > 0)
   {
     /* Jitter the backoff by [-pct%, +pct%], computed WITHOUT a signed
      * intermediate.
@@ -119,11 +119,14 @@ bool az_iot_retry_policy__next(
     uint64_t* rng_state,
     uint32_t* delay_ms)
 {
+  /* Checked before counting: the counter saturates, so "count > max" could
+   * never hold for max_attempts == UINT32_MAX. */
+  bool spent = policy->max_attempts > 0u && *attempt >= policy->max_attempts;
   if (*attempt < UINT32_MAX)
   {
     (*attempt)++;
   }
-  if (policy->max_attempts > 0u && *attempt > policy->max_attempts)
+  if (spent)
   {
     return false;
   }
@@ -142,9 +145,7 @@ bool az_iot_retry_state__schedule(
     state->_internal.due_ms = 0u;
     return false;
   }
-  /* 0 means nothing is scheduled; a 0 ms delay from a disabled policy is due at once. */
-  uint64_t due = az_iot_time_mono_ms() + (uint64_t)delay_ms;
-  state->_internal.due_ms = (due == 0u) ? 1u : due;
+  state->_internal.due_ms = az_iot_time_mono_ms() + (uint64_t)delay_ms;
   return true;
 }
 
