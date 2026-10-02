@@ -1414,7 +1414,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 |---|----------|----------|
 | 1 | Chunked vs blocking download | **Both.** `download_fn` MUST return `IN_PROGRESS` for chunked (re-invoked next do_work) or `SUCCESS` for blocking completion. Adapters MAY choose their model. |
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
-| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256`. |
+| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; the crypto backend MUST implement `verify_rs256`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
 | 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The software updates client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |

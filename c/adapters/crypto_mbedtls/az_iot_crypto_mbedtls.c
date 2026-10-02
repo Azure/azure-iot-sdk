@@ -261,12 +261,12 @@ static az_iot_result psa_sha256_init(const az_iot_crypto* self, az_iot_sha256_ct
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  psa_hash_operation_t* op = op_of(ctx);
+  *op = psa_hash_operation_init(); /* inactive: safe to abort until setup succeeds */
   if (psa_crypto_init() != PSA_SUCCESS)
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  psa_hash_operation_t* op = op_of(ctx);
-  *op = psa_hash_operation_init();
   if (psa_hash_setup(op, PSA_ALG_SHA_256) != PSA_SUCCESS)
   {
     psa_hash_abort(op);
@@ -310,7 +310,7 @@ static az_iot_result psa_sha256_final(
     psa_hash_abort(op_of(ctx));
     return AZ_IOT_ERR_INTERNAL;
   }
-  return AZ_IOT_OK;
+  return hash_len == AZ_IOT_SHA256_SIZE ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
 }
 
 static const az_iot_crypto k_mbedtls = {

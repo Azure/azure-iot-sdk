@@ -157,6 +157,7 @@ static az_iot_result openssl_sha256_init(const az_iot_crypto* self, az_iot_sha25
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  ctx->opaque[0] = 0; /* nothing to release until init succeeds */
   EVP_MD_CTX* md = EVP_MD_CTX_new();
   if (md == NULL)
   {

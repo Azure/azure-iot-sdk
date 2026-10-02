@@ -132,6 +132,27 @@ static void sha256_contexts_are_independent(void** state)
   assert_memory_equal(out_b, b->digest, 32);
 }
 
+/* init() must not read what the caller's context held before: it is stack
+ * memory in practice. Run under ASan in CI. */
+static void sha256_init_ignores_prior_context_contents(void** state)
+{
+  (void)state;
+  const su_sha256_vector* abc = &k_su_sha256_kat[1];
+  az_iot_sha256_ctx ctx;
+  uint8_t out[AZ_IOT_SHA256_SIZE];
+
+  memset(&ctx, 0xA5, sizeof(ctx));
+  assert_int_equal(g_crypto->sha256_init(g_crypto, &ctx), AZ_IOT_OK);
+  assert_int_equal(
+      g_crypto->sha256_update(g_crypto, &ctx, abc->message, abc->message_len), AZ_IOT_OK);
+  assert_int_equal(g_crypto->sha256_final(g_crypto, &ctx, out), AZ_IOT_OK);
+  assert_memory_equal(out, abc->digest, AZ_IOT_SHA256_SIZE);
+
+  memset(&ctx, 0xA5, sizeof(ctx));
+  assert_int_equal(g_crypto->sha256_init(g_crypto, &ctx), AZ_IOT_OK);
+  assert_int_equal(g_crypto->sha256_final(g_crypto, &ctx, NULL), AZ_IOT_OK);
+}
+
 /* Run under valgrind in CI: every final, with or without output, releases the context. */
 static void sha256_rejects_bad_arguments_without_leaking(void** state)
 {
@@ -450,7 +471,7 @@ static void rs256_rejects_oversized_keys_safely(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Through core: the adapter only ever sees primitive inputs                 */
+/* Through core: the backend only ever sees primitive inputs                 */
 /* ------------------------------------------------------------------------- */
 
 #define SU_MAX_RECORDED 4
@@ -707,6 +728,7 @@ int crypto_contract_run(const char* group_name, const az_iot_crypto* crypto)
     cmocka_unit_test(sha256_oneshot_matches_known_answers),
     cmocka_unit_test(sha256_incremental_matches_known_answers_for_any_chunking),
     cmocka_unit_test(sha256_contexts_are_independent),
+    cmocka_unit_test(sha256_init_ignores_prior_context_contents),
     cmocka_unit_test(sha256_rejects_bad_arguments_without_leaking),
     cmocka_unit_test(hmac_sha256_matches_known_answers),
     cmocka_unit_test(hmac_sha256_rejects_bad_arguments),
