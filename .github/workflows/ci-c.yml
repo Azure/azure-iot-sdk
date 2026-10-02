@@ -430,7 +430,7 @@ jobs:
         # Disable Paho here: pulling it in through FetchContent forces the
         # /MD[d] runtime which conflicts with /fsanitize=address's internal
         # runtime selection on some toolchain builds. The first-party suites
-        # (smoke / mqtt_iface_contract / connection_client / reconnect_policy
+        # (smoke / mqtt_iface_contract / connection_client / retry_policy
         # / protocol_profile_dispatch / telemetry / direct_method / twin /
         # dps_client / dps_handoff / certificate_provider_pem / easy_client /
         # rust_mqtt_adapter) cover everything we want ASan to vet.

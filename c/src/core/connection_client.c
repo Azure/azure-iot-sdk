@@ -42,7 +42,8 @@
 #include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 #include "internal/span_writer.h"
 
 #include <azure/az_core.h>
@@ -205,11 +206,6 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
     default:
       return "ROLE?";
   }
-}
-
-static bool reconnect_enabled(const az_iot_connection_client* c)
-{
-  return c->opts.reconnection_policy.initial_delay_ms > 0;
 }
 
 /* Dispatch one transition to every registered observer.
@@ -952,19 +948,15 @@ static void schedule_reconnect(
    * copy of this one. */
   az_iot_connection_scope scope
       = c->needs_reprovision ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
-  c->retry_attempt[scope]++;
-
   /* Per ladder, so a long hub outage cannot spend the budget a registration
    * that has not been tried yet would need. */
-  if (c->opts.reconnection_policy.max_attempts > 0
-      && c->retry_attempt[scope] > c->opts.reconnection_policy.max_attempts)
+  uint32_t delay = 0;
+  if (!az_iot_retry_policy__next(
+          &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay))
   {
     set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_FAULTED, reason);
     return;
   }
-
-  uint32_t delay = az_iot_reconnect_delay_ms(
-      &c->opts.reconnection_policy, c->retry_attempt[scope], &c->rng_state);
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
   /* Reported against the scope that FAILED, not the ladder the retry climbs:
    * a hub CONNACK that rejects the identity is a HUB session going down, even
@@ -987,8 +979,7 @@ static bool dps_configured(const az_iot_connection_client* c)
  * provisioning service is reachable again, or the demand has been rebuilt. */
 static void dps_user_retry_reset(az_iot_connection_client* c)
 {
-  c->dps_user_retry_attempt = 0;
-  c->dps_user_retry_due_ms = 0;
+  az_iot_retry_state__reset(&c->dps_user_retry);
   c->dps_user_retry_blocked = false;
 }
 
@@ -1001,40 +992,31 @@ static void dps_user_retry_reset(az_iot_connection_client* c)
  * runs; all that is recorded is when a holder may ask again. */
 static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_after_secs)
 {
-  /* 0 disables retrying, and az_iot_reconnect_delay_ms() would return a 0 ms
+  /* 0 disables retrying, and az_iot_retry_policy__delay_ms() would return a 0 ms
    * delay for it -- which is the hot loop, not a fix for it. An application
    * that turned retries off owns the decision to try again, and reaches it by
    * closing the client or by dropping and re-taking the ref. */
-  if (c->opts.reconnection_policy.initial_delay_ms == 0)
+  if (!az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
   {
     c->dps_user_retry_blocked = true;
-    c->dps_user_retry_due_ms = 0;
+    c->dps_user_retry._internal.due_ms = 0;
     return;
   }
 
-  c->dps_user_retry_attempt++;
-  if (c->opts.reconnection_policy.max_attempts > 0
-      && c->dps_user_retry_attempt > c->opts.reconnection_policy.max_attempts)
+  if (!az_iot_retry_state__schedule(
+          &c->dps_user_retry, &c->opts.reconnection_policy, &c->rng_state))
   {
     c->dps_user_retry_blocked = true;
-    c->dps_user_retry_due_ms = 0;
     return;
   }
-
-  uint32_t delay = az_iot_reconnect_delay_ms(
-      &c->opts.reconnection_policy, c->dps_user_retry_attempt, &c->rng_state);
-  c->dps_user_retry_due_ms = az_iot_time_mono_ms() + delay;
 
   /* The service's retry-after is a floor, never a ceiling -- the same rule the
    * registration ladder applies. Backing off further than asked is allowed;
    * coming back sooner is not. */
   if (retry_after_secs > 0)
   {
-    uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
-    if (c->dps_user_retry_due_ms < floor_ms)
-    {
-      c->dps_user_retry_due_ms = floor_ms;
-    }
+    az_iot_retry_state__defer(
+        &c->dps_user_retry, az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull);
   }
 }
 
@@ -2160,7 +2142,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * needs_reprovision is what makes the retry a re-registration. Without it
      * the scheduled attempt would take the ordinary connect path, which has no
      * host on a DPS client. */
-    if (reconnect_enabled(c) && !c->user_close)
+    if (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
     {
       c->needs_reprovision = true;
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, status);
@@ -2497,8 +2479,8 @@ static void announce_connected(az_iot_connection_client* c)
 static void fail_subscription_restore(az_iot_connection_client* c, az_iot_result reason)
 {
   memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
-  c->deferred
-      = (reason != AZ_IOT_ERR_SUBSCRIPTION_REFUSED && reconnect_enabled(c) && !c->user_close)
+  c->deferred = (reason != AZ_IOT_ERR_SUBSCRIPTION_REFUSED
+                 && az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
       ? DEFER_RECONNECT
       : DEFER_FAULT;
   c->deferred_reason = reason;
@@ -2880,7 +2862,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           if (pr != AZ_IOT_OK)
           {
             c->presence.phase = PRESENCE_PHASE_NONE;
-            c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+            c->deferred
+                = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+                ? DEFER_RECONNECT
+                : DEFER_FAULT;
             c->deferred_reason = pr;
           }
           break;
@@ -2899,7 +2884,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * and max_attempts continue to bound it (a device whose enrollment has
          * been deleted must not hammer DPS either).
          *
-         * NOT gated on reconnect_enabled(). It used to be, on the reasoning
+         * NOT gated on az_iot_retry_policy_is_enabled(). It used to be, on the reasoning
          * that only the RECONNECTING branch of do_work() consumed the flag, so
          * with no policy nothing would act on it. That is no longer true:
          * open() consumes it as well, and routes to DPS even when a hub is
@@ -2917,13 +2902,16 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
           c->needs_reprovision = true;
         }
-        c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+        c->deferred
+            = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+            ? DEFER_RECONNECT
+            : DEFER_FAULT;
         c->deferred_reason = evt->status;
       }
       break;
 
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
-      if (c->user_close || !reconnect_enabled(c))
+      if (c->user_close || !az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
       {
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
@@ -2938,7 +2926,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_ERROR:
     {
       az_iot_result r = (evt->status != AZ_IOT_OK) ? evt->status : AZ_IOT_ERR_MQTT;
-      c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+      c->deferred = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+          ? DEFER_RECONNECT
+          : DEFER_FAULT;
       c->deferred_reason = r;
       break;
     }
@@ -3021,7 +3011,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         if (pr != AZ_IOT_OK)
         {
           c->presence.phase = PRESENCE_PHASE_NONE;
-          c->deferred = (reconnect_enabled(c) && !c->user_close) ? DEFER_RECONNECT : DEFER_FAULT;
+          c->deferred
+              = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+              ? DEFER_RECONNECT
+              : DEFER_FAULT;
           c->deferred_reason = pr;
         }
         break;
@@ -4237,7 +4230,7 @@ az_iot_result az_iot_connection_client_do_work(
       && az_iot_time_mono_ms() >= client->presence.deadline_ms)
   {
     client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
-    if (reconnect_enabled(client) && !client->user_close)
+    if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
     {
       schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
     }
@@ -4275,7 +4268,7 @@ az_iot_result az_iot_connection_client_do_work(
       && az_iot_time_mono_ms() >= client->subscription_gate.deadline_ms)
   {
     memset(&client->subscription_gate, 0, sizeof(client->subscription_gate));
-    if (reconnect_enabled(client) && !client->user_close)
+    if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
     {
       schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
     }
@@ -4892,12 +4885,11 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
      * stable answer it can report, rather than a session attempt per tick. */
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-  if (client->dps_user_retry_due_ms != 0 && az_iot_time_mono_ms() < client->dps_user_retry_due_ms)
+  /* Consumed on firing, so the deadline cannot re-authorize a second attempt. */
+  if (!az_iot_retry_state__due(&client->dps_user_retry))
   {
     return AZ_IOT_ERR_BUSY;
   }
-  /* Consumed on firing, so the deadline cannot re-authorize a second attempt. */
-  client->dps_user_retry_due_ms = 0;
 
   client->dps_phase = DPS_PHASE_NONE;
   az_iot_result r = dps_start(client);

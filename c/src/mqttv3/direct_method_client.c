@@ -18,7 +18,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define METHODS_RESPONSE_PREFIX "$iothub/methods/res/"

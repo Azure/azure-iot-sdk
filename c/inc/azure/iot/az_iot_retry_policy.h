@@ -10,6 +10,7 @@
 #ifndef AZ_IOT_RETRY_POLICY_H
 #define AZ_IOT_RETRY_POLICY_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -42,6 +43,28 @@ extern "C"
     /** Jitter, 0..100 percent, applied around each delay. */
     uint8_t jitter_pct;
   } az_iot_retry_policy;
+
+  /**
+   * @brief Progress along a retry schedule, kept by the SDK client that retries.
+   *
+   * Fields are internal and not for application use.
+   */
+  typedef struct az_iot_retry_state
+  {
+    struct
+    {
+      uint64_t due_ms; /**< Monotonic ms the retry may run at; 0 = none scheduled. */
+      uint32_t attempt; /**< Failures counted since the last reset. */
+    } _internal;
+  } az_iot_retry_state;
+
+  /**
+   * @brief Whether @p policy retries at all.
+   *
+   * @param[in] policy The policy.
+   * @return false if @p policy is NULL or its initial_delay_ms is 0.
+   */
+  bool az_iot_retry_policy_is_enabled(const az_iot_retry_policy* policy);
 
 #ifdef __cplusplus
 }

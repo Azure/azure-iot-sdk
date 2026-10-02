@@ -1084,14 +1084,13 @@ extern "C"
      * it adds no public vocabulary: the pacing, the jitter and the bound all
      * come from opts.reconnection_policy.
      *
-     * dps_user_retry_due_ms is a consumed token, like reconnect_due_ms: firing
-     * clears it. dps_user_retry_blocked latches when the policy disables
+     * dps_user_retry's scheduled time is a consumed token, like reconnect_due_ms:
+     * firing clears it. dps_user_retry_blocked latches when the policy disables
      * retries (initial_delay_ms == 0, where the computed delay would be 0 and
      * pace nothing) or when max_attempts is spent; it is cleared by a session
      * that comes up, by a successful registration, by open()/close(), and by
      * the last user releasing its ref -- a new holder is new demand. */
-    uint32_t dps_user_retry_attempt;
-    uint64_t dps_user_retry_due_ms;
+    az_iot_retry_state dps_user_retry;
     bool dps_user_retry_blocked;
 
     /* Set by dps_start() when an observer closed the client from inside the

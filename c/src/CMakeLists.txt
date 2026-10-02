@@ -8,7 +8,8 @@ add_library(az_iot_core
     core/mqtt_iface.c
     core/connection_client.c
     core/cert_util.c
-    core/reconnect.c
+    core/mono_time.c
+    core/retry_policy.c
     core/env.c
     core/dispatch.c
     core/proto3.c
@@ -39,7 +40,7 @@ target_include_directories(az_iot_core
         ${CMAKE_CURRENT_SOURCE_DIR}/features/su
 )
 
-# reconnect.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
+# mono_time.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
 if(UNIX)
     target_compile_definitions(az_iot_core PRIVATE
         _POSIX_C_SOURCE=200809L

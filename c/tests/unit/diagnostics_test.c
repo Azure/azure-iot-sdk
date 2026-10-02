@@ -292,7 +292,7 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
 
 /* Never retry. The bytes are the same as a zeroed struct -- the value of the
  * getter is that the call site says so. The behaviour that follows from
- * initial_delay_ms == 0 is asserted in reconnect_policy_test.c. */
+ * initial_delay_ms == 0 is asserted in retry_policy_test.c. */
 static void retry_disabled_policy_disables_retrying(void** state)
 {
   (void)state;

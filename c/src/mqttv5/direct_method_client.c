@@ -33,7 +33,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/direct_method_codec.h"
 #include "internal/log_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define DI(d) ((d)->_internal)

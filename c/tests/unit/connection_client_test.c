@@ -22,7 +22,8 @@
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"

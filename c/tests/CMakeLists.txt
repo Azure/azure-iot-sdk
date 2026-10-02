@@ -119,7 +119,7 @@ az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client unit/connection_client_test.c)
 target_link_libraries(az_iot_tests_connection_client PRIVATE az_iot_test_support)
-# connection_client_test pulls internal headers (reconnect.h, connection_client_internal.h)
+# connection_client_test pulls internal headers (retry_policy.h, connection_client_internal.h)
 # to drive RNG seeding and time helpers deterministically.
 target_include_directories(az_iot_tests_connection_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -150,8 +150,8 @@ az_iot_add_cmocka_test(az_iot_tests_connection_dps_payload unit/connection_dps_p
 target_link_libraries(az_iot_tests_connection_dps_payload PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_dps_payload PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
-az_iot_add_cmocka_test(az_iot_tests_reconnect_policy unit/reconnect_policy_test.c)
-target_include_directories(az_iot_tests_reconnect_policy PRIVATE
+az_iot_add_cmocka_test(az_iot_tests_retry_policy unit/retry_policy_test.c)
+target_include_directories(az_iot_tests_retry_policy PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE

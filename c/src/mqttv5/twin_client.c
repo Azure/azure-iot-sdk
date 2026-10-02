@@ -26,7 +26,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX 192

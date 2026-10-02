@@ -768,15 +768,13 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Earliest az_iot_time_mono_ms() for retrying a failed persist_state_fn write. */
-      uint64_t persist_retry_ms;
-      /** Consecutive failed persist_state_fn writes; 0 after any success. */
-      uint32_t persist_failures;
+      /** Failed persist_state_fn writes since the last success, and when to retry. */
+      az_iot_retry_state persist_retry;
       /** AZ_IOT_SU_PERSIST_MAX_ATTEMPTS, copied at initialization. */
       uint32_t persist_max_attempts;
       /** Return value of the last failed persist_state_fn write. */
       int32_t persist_last_error;
-      /** The terminal record's write failed; further attempts wait for persist_retry_ms. */
+      /** The terminal record's write failed; further attempts wait for persist_retry. */
       bool terminal_write_failed;
       /** The stored checkpoint is the terminal-report record, not a workflow position. */
       bool checkpoint_terminal;
@@ -889,15 +887,14 @@ extern "C"
       } observers[AZ_IOT_MAX_SU_OBSERVERS];
       bool dispatching;
 
-      /** Earliest az_iot_time_mono_ms() for a paced retry; 0 when none is in force. */
-      uint64_t retry_due_ms;
-      /** Jitter PRNG state for retry_due_ms. */
+      /** Backoff after retryable verdicts with no service delay; reset by any accepted operation.
+       */
+      az_iot_retry_state retry;
+      /** Jitter PRNG state for retry and persist_retry. */
       uint64_t retry_rng;
-      /** Consecutive retryable verdicts with no service delay; 0 after any accepted operation. */
-      uint32_t retry_attempts;
-      /** pending_fetch was re-armed by a verdict that armed retry_due_ms. */
+      /** pending_fetch was re-armed by a verdict that armed retry. */
       bool pending_fetch_paced;
-      /** The pending report was re-armed by a verdict that armed retry_due_ms. */
+      /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
     } _internal;
   } az_iot_su_client;

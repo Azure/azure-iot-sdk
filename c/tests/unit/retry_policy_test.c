@@ -3,25 +3,27 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Phase 2.2 - reconnect-policy unit tests for the pure delay calculator. */
+/* Retry policy: delay calculator, enablement and retry state. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 
 static void disabled_when_initial_delay_is_zero(void** state)
 {
   (void)state;
   az_iot_retry_policy p = { 0 };
   uint64_t rng = 1;
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 0);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 0);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), 0);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 5, &rng), 0);
 }
 
 static void no_jitter_doubles_until_cap(void** state)
@@ -33,13 +35,13 @@ static void no_jitter_doubles_until_cap(void** state)
   p.jitter_pct = 0;
 
   uint64_t rng = 42;
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 100);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 2, &rng), 200);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 3, &rng), 400);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 4, &rng), 800);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), 100);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 2, &rng), 200);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 3, &rng), 400);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 4, &rng), 800);
   /* 100 << 4 = 1600 > cap; clamped. */
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 1000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 100, &rng), 1000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 5, &rng), 1000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 100, &rng), 1000);
 }
 
 /* Jitter varies AROUND the backoff, so the band is symmetric and the top of it
@@ -58,7 +60,7 @@ static void jitter_stays_within_band(void** state)
   int above_cap = 0;
   for (int i = 0; i < 200; ++i)
   {
-    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    uint32_t d = az_iot_retry_policy__delay_ms(&p, 1, &rng);
     /* base = 1000, jitter +/- 200, floored at 1. So [800, 1200]. */
     assert_true(d >= 800);
     assert_true(d <= 1200);
@@ -89,7 +91,7 @@ static void jitter_is_centred_on_the_backoff(void** state)
   int on_cap = 0;
   for (int i = 0; i < n; ++i)
   {
-    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    uint32_t d = az_iot_retry_policy__delay_ms(&p, 1, &rng);
     sum += d;
     if (d == 5000)
     {
@@ -113,8 +115,8 @@ static void zero_max_delay_means_initial_is_the_cap(void** state)
   p.jitter_pct = 0;
 
   uint64_t rng = 7;
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 250);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 10, &rng), 250);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), 250);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 10, &rng), 250);
 }
 
 static void attempt_zero_treated_as_one(void** state)
@@ -125,7 +127,7 @@ static void attempt_zero_treated_as_one(void** state)
   p.max_delay_ms = 1000;
 
   uint64_t rng = 1;
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 0, &rng), 100);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 0, &rng), 100);
 }
 
 static void shift_saturates_no_ub(void** state)
@@ -137,8 +139,8 @@ static void shift_saturates_no_ub(void** state)
 
   uint64_t rng = 1;
   /* Big attempts shouldn't UB or wrap; result must be the cap. */
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1000, &rng), 60000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, UINT32_MAX, &rng), 60000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1000, &rng), 60000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, UINT32_MAX, &rng), 60000);
 }
 
 /* A policy at the very top of the representable range must not wrap. The
@@ -179,7 +181,7 @@ static void top_of_range_policy_does_not_wrap(void** state)
   int on_max = 0;
   for (int i = 0; i < 2000; ++i)
   {
-    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    uint32_t d = az_iot_retry_policy__delay_ms(&p, 1, &rng);
     assert_true(d >= 1u); /* the floor still holds */
     if (d < 2147483648u)
     {
@@ -201,8 +203,8 @@ static void top_of_range_policy_does_not_wrap(void** state)
   /* With no jitter the answer is exact, proving the cast path itself is sound
    * at the top of the range. */
   p.jitter_pct = 0;
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), UINT32_MAX);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 64, &rng), UINT32_MAX);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), UINT32_MAX);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 64, &rng), UINT32_MAX);
 }
 
 /* The saturation clamp on its own, with a narrow band so the assertion is a
@@ -225,7 +227,7 @@ static void an_oversized_result_saturates_rather_than_wrapping(void** state)
   int on_max = 0;
   for (int i = 0; i < 500; ++i)
   {
-    uint32_t d = az_iot_reconnect_delay_ms(&p, 1, &rng);
+    uint32_t d = az_iot_retry_policy__delay_ms(&p, 1, &rng);
     assert_true(d >= 4252017623u);
     if (d == UINT32_MAX)
     {
@@ -244,14 +246,14 @@ static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
   p.jitter_pct = 0; /* the ladder, without the randomization on top */
   uint64_t rng = 99;
 
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 1000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 2, &rng), 2000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 3, &rng), 4000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 4, &rng), 8000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 16000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 6, &rng), 32000);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 7, &rng), 60000); /* capped */
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 20, &rng), 60000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), 1000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 2, &rng), 2000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 3, &rng), 4000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 4, &rng), 8000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 5, &rng), 16000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 6, &rng), 32000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 7, &rng), 60000); /* capped */
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 20, &rng), 60000);
 }
 
 static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
@@ -261,13 +263,13 @@ static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
   uint64_t rng = 1;
 
   /* 0 is how the caller of this function learns retrying is off. */
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 0);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 7, &rng), 0);
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, UINT32_MAX, &rng), 0);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1, &rng), 0);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 7, &rng), 0);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, UINT32_MAX, &rng), 0);
 }
 
 /* The mechanism is max_delay_ms == initial_delay_ms, which pins the backoff at
- * the first rung. Nothing in az_iot_reconnect_delay_ms() special-cases it. */
+ * the first rung. Nothing in az_iot_retry_policy__delay_ms() special-cases it. */
 static void the_fixed_interval_getter_yields_a_flat_curve(void** state)
 {
   (void)state;
@@ -276,9 +278,96 @@ static void the_fixed_interval_getter_yields_a_flat_curve(void** state)
 
   for (uint32_t attempt = 1; attempt <= 12; ++attempt)
   {
-    assert_int_equal(az_iot_reconnect_delay_ms(&p, attempt, &rng), 5000);
+    assert_int_equal(az_iot_retry_policy__delay_ms(&p, attempt, &rng), 5000);
   }
-  assert_int_equal(az_iot_reconnect_delay_ms(&p, 1000, &rng), 5000);
+  assert_int_equal(az_iot_retry_policy__delay_ms(&p, 1000, &rng), 5000);
+}
+
+/* Only a non-NULL policy with a non-zero initial delay retries. */
+static void is_enabled_follows_initial_delay(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = az_iot_connection_client_get_default_retry_policy();
+  assert_true(az_iot_retry_policy_is_enabled(&p));
+  p = az_iot_connection_client_get_disabled_retry_policy();
+  assert_false(az_iot_retry_policy_is_enabled(&p));
+  assert_false(az_iot_retry_policy_is_enabled(NULL));
+}
+
+/* Each failure climbs one rung; max_attempts retries are allowed, then none. */
+static void next_counts_and_stops_at_max_attempts(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 100, .max_delay_ms = 1000, .max_attempts = 2 };
+  uint64_t rng = 1;
+  uint32_t attempt = 0;
+  uint32_t delay = 0;
+  assert_true(az_iot_retry_policy__next(&p, &attempt, &rng, &delay));
+  assert_int_equal(attempt, 1);
+  assert_int_equal(delay, 100);
+  assert_true(az_iot_retry_policy__next(&p, &attempt, &rng, &delay));
+  assert_int_equal(delay, 200);
+  assert_false(az_iot_retry_policy__next(&p, &attempt, &rng, &delay));
+  assert_int_equal(attempt, 3);
+
+  /* No limit: the counter saturates instead of wrapping back to the first rung. */
+  p.max_attempts = 0;
+  attempt = UINT32_MAX;
+  assert_true(az_iot_retry_policy__next(&p, &attempt, &rng, &delay));
+  assert_int_equal(attempt, UINT32_MAX);
+  assert_int_equal(delay, 1000);
+}
+
+/* A scheduled retry is pending until due, fires once, and reset clears it. */
+static void state_schedules_fires_once_and_resets(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_false(az_iot_retry_state__pending(&s));
+  assert_true(az_iot_retry_state__due(&s));
+
+  uint64_t before = az_iot_time_mono_ms();
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  assert_int_equal(az_iot_retry_state__attempts(&s), 1);
+  assert_true(s._internal.due_ms >= before + 60000u);
+  assert_true(az_iot_retry_state__pending(&s));
+  assert_false(az_iot_retry_state__due(&s));
+
+  s._internal.due_ms = az_iot_time_mono_ms();
+  assert_false(az_iot_retry_state__pending(&s));
+  assert_true(az_iot_retry_state__due(&s));
+  assert_int_equal(s._internal.due_ms, 0);
+
+  az_iot_retry_state__reset(&s);
+  assert_int_equal(az_iot_retry_state__attempts(&s), 0);
+  assert_int_equal(s._internal.due_ms, 0);
+}
+
+/* A spent budget schedules nothing. */
+static void state_schedules_nothing_once_max_attempts_is_spent(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 100, .max_attempts = 1 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  assert_false(az_iot_retry_state__schedule(&s, &p, &rng));
+  assert_int_equal(s._internal.due_ms, 0);
+  assert_int_equal(az_iot_retry_state__attempts(&s), 2);
+}
+
+/* defer() only ever pushes the retry later. */
+static void defer_raises_but_never_lowers_the_due_time(void** state)
+{
+  (void)state;
+  az_iot_retry_state s = { 0 };
+  s._internal.due_ms = 5000;
+  az_iot_retry_state__defer(&s, 4000);
+  assert_int_equal(s._internal.due_ms, 5000);
+  az_iot_retry_state__defer(&s, 9000);
+  assert_int_equal(s._internal.due_ms, 9000);
 }
 
 int main(void)
@@ -296,6 +385,11 @@ int main(void)
     cmocka_unit_test(the_default_getter_backs_off_and_then_holds_at_the_cap),
     cmocka_unit_test(the_retry_disabled_getter_yields_no_delay_at_all),
     cmocka_unit_test(the_fixed_interval_getter_yields_a_flat_curve),
+    cmocka_unit_test(is_enabled_follows_initial_delay),
+    cmocka_unit_test(next_counts_and_stops_at_max_attempts),
+    cmocka_unit_test(state_schedules_fires_once_and_resets),
+    cmocka_unit_test(state_schedules_nothing_once_max_attempts_is_spent),
+    cmocka_unit_test(defer_raises_but_never_lowers_the_due_time),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -369,7 +369,7 @@ Reset points differ per ladder:
 
 `az_iot_retry_policy` in
 [az_iot_retry_policy.h](../../inc/azure/iot/az_iot_retry_policy.h), computed by
-`az_iot_reconnect_delay_ms()` in [reconnect.c](../../src/core/reconnect.c):
+`az_iot_retry_policy__delay_ms()` in [retry_policy.c](../../src/core/retry_policy.c):
 
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
@@ -675,7 +675,7 @@ complete first.
 | --- | --- | --- |
 | State enum, policy, options | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |
 | State transitions, connect attempt, event handling | [connection_client.c](../../src/core/connection_client.c) | implemented |
-| Backoff computation and defaults | [reconnect.c](../../src/core/reconnect.c) | implemented |
+| Backoff computation and defaults | [retry_policy.c](../../src/core/retry_policy.c) | implemented |
 | Certificate provider contract | [az_iot_certificate_provider.h](../../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |
