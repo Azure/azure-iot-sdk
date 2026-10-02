@@ -36,8 +36,8 @@ set(_az_iot_export_names
     az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
     az_iot_adapter_rust_mqtt             adapter_rust_mqtt
-    az_iot_su_crypto_openssl             su_crypto_openssl
-    az_iot_su_crypto_mbedtls             su_crypto_mbedtls
+    az_iot_crypto_openssl                crypto_openssl
+    az_iot_crypto_mbedtls                crypto_mbedtls
     az_iot_certificate_provider_managed  certificate_provider_managed
 )
 
@@ -111,8 +111,8 @@ install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
 set(_az_iot_adapter_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure/iot/adapters")
 set(_az_iot_adapter_headers
     az_iot_adapter_rust_mqtt             adapters/rust_mqtt/az_iot_mqtt_rust_ffi.h
-    az_iot_su_crypto_openssl             adapters/su/crypto_openssl/az_iot_su_crypto_openssl.h
-    az_iot_su_crypto_mbedtls             adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.h
+    az_iot_crypto_openssl                adapters/crypto_openssl/az_iot_crypto_openssl.h
+    az_iot_crypto_mbedtls                adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h
     az_iot_certificate_provider_managed  adapters/cert_openssl/az_iot_certificate_provider_managed.h
 )
 list(LENGTH _az_iot_adapter_headers _n)
@@ -149,11 +149,11 @@ if(TARGET az_iot_adapter_paho)
     endif()
     unset(_defs)
 endif()
-if(TARGET az_iot_su_crypto_openssl OR TARGET az_iot_certificate_provider_managed)
+if(TARGET az_iot_crypto_openssl OR TARGET az_iot_certificate_provider_managed)
     set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
     set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
 endif()
-if(TARGET az_iot_su_crypto_mbedtls)
+if(TARGET az_iot_crypto_mbedtls)
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS ON)
 else()
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS OFF)

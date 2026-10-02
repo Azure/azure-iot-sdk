@@ -45,7 +45,7 @@ jobs:
       contents: read
       id-token: write   # azure/login OIDC
     name: setup (provision)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -90,7 +90,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             device-index: 0
           - os: windows-latest
             device-index: 1
@@ -216,13 +216,13 @@ jobs:
         run: echo "Test Report $REPORT_URL" >> "$GITHUB_STEP_SUMMARY"
 
   report-coverage:
-    runs-on: ubuntu-latest # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
+    runs-on: ubuntu-24.04 # Irongut tool is only usable on linux, so this is a separate job from the windows and linux jobs that runs the tests
     name: Code coverage
     strategy:
           fail-fast: false
           matrix:
             include:
-              - os: ubuntu-latest
+              - os: ubuntu-24.04
               - os: windows-latest
     needs: [test]
     permissions:
@@ -254,7 +254,7 @@ jobs:
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
     # down; the destroy action no-ops when the group was never created.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

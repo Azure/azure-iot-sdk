@@ -163,12 +163,12 @@ if(AZ_IOT_WITH_RUST_MQTT)
     add_subdirectory(adapters/rust_mqtt)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
-    add_subdirectory(adapters/su/crypto_openssl)
+if(AZ_IOT_WITH_CRYPTO_OPENSSL)
+    add_subdirectory(adapters/crypto_openssl)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS)
-    add_subdirectory(adapters/su/crypto_mbedtls)
+if(AZ_IOT_WITH_CRYPTO_MBEDTLS)
+    add_subdirectory(adapters/crypto_mbedtls)
 endif()
 
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)

@@ -440,20 +440,19 @@ if(AZ_IOT_WITH_RUST_MQTT)
     target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
 endif()
 
-# Software updates crypto adapters: the shared known-answer contract suite
-# (support/su_crypto_contract.c), once per adapter target that was built.
-if(TARGET az_iot_su_crypto_openssl)
-    az_iot_add_cmocka_test(az_iot_tests_su_crypto_openssl
-        unit/su_crypto_openssl_test.c support/su_crypto_contract.c)
-    target_link_libraries(az_iot_tests_su_crypto_openssl PRIVATE
-        az_iot_su_crypto_openssl az_iot_test_support)
-endif()
-if(TARGET az_iot_su_crypto_mbedtls)
-    az_iot_add_cmocka_test(az_iot_tests_su_crypto_mbedtls
-        unit/su_crypto_mbedtls_test.c support/su_crypto_contract.c)
-    target_link_libraries(az_iot_tests_su_crypto_mbedtls PRIVATE
-        az_iot_su_crypto_mbedtls az_iot_test_support)
-endif()
+# Crypto backends: the shared known-answer contract suite
+# (support/crypto_contract.c), once per backend target that was built. It also
+# drives the SDK's composed SHA-256 and HMAC-SHA256 (src/core/crypto.c).
+foreach(_backend openssl mbedtls)
+    if(TARGET az_iot_crypto_${_backend})
+        az_iot_add_cmocka_test(az_iot_tests_crypto_${_backend}
+            unit/crypto_${_backend}_test.c support/crypto_contract.c)
+        target_link_libraries(az_iot_tests_crypto_${_backend} PRIVATE
+            az_iot_crypto_${_backend} az_iot_test_support)
+        target_include_directories(az_iot_tests_crypto_${_backend} PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/core)
+    endif()
+endforeach()
 
 # Managed OpenSSL certificate provider (only when the adapter target was built,
 # i.e. OpenSSL 3.0+ was found). Links OpenSSL to decode/verify the CSR.

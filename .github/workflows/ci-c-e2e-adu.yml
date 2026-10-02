@@ -46,7 +46,7 @@ permissions:
 jobs:
   e2e-su:
     name: software updates e2e (linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Above the sum of the step budgets (215 min), so the always() cleanup runs.
     timeout-minutes: 240
     env:

@@ -12,7 +12,7 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 inc/azure/iot/      public headers
 src/                core, mqttv3 and mqttv5 feature clients, software updates
 adapters/           MQTT adapters (Paho, Rust shell), OpenSSL certificate provider,
-                    software updates crypto and platform adapters
+                    crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
 platforms/yocto/    Yocto layer
@@ -37,11 +37,11 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_rust_mqtt`, `su_crypto_openssl`, `su_crypto_mbedtls`,
+  `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
   `certificate_provider_managed`).
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
-- OpenSSL, and mbedTLS for `su_crypto_mbedtls`, must be findable by the consumer.
+- OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
 - MSVC: the libraries use the static CRT; set
   `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
 - `-DBUILD_SHARED_LIBS=ON` builds `core`, `mqttv3` and `mqttv5` as shared

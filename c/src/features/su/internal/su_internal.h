@@ -38,12 +38,14 @@ extern "C"
    * Returns AZ_IOT_OK when the channel accepted the report. */
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
-  /* Internal entry point: bind the engine to an explicit channel. The public
-   * az_iot_su_client_init() builds the shipping channel and calls this.
-   * Kept internal so the engine can be exercised against a fake channel. */
+  /* Internal entry point: bind the engine to an explicit channel and crypto
+   * backend. The public az_iot_su_client_init() builds the shipping channel,
+   * takes the connection client's backend and calls this. Kept internal so
+   * the engine can be exercised against a fake channel. */
   az_iot_result az_iot_su_client__initialize_with_channel(
       az_iot_su_client* client,
       const az_iot_su_channel* channel,
+      const az_iot_crypto* crypto,
       const az_iot_su_client_config_options* options);
 #ifdef __cplusplus
 }

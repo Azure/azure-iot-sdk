@@ -38,6 +38,7 @@
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
+#include "internal/crypto.h"
 #include "internal/dispatch.h"
 #include "internal/env.h"
 #include "internal/log_internal.h"
@@ -3337,6 +3338,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
       && opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     AZ_IOT_LOG_ERROR("connection_client_init: connection_profile is not a profile this SDK speaks");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (opts->crypto != NULL && az_iot_crypto__validate(opts->crypto) != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: crypto backend has another version or lacks SHA-256");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   memset(client, 0, sizeof(*client));

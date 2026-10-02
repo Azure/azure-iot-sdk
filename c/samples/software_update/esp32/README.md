@@ -311,7 +311,7 @@ samples/software_update/esp32/
 ```
 
 `main/CMakeLists.txt` also compiles two adapters from outside the sample:
-[`adapters/su/crypto_mbedtls`](../../../adapters/su/crypto_mbedtls/) (RS256 /
+[`adapters/crypto_mbedtls`](../../../adapters/crypto_mbedtls/) (RS256 /
 SHA-256 over PSA Crypto) and [`adapters/su/esp32`](../../../adapters/su/esp32/)
 (OTA platform hooks).
 
@@ -369,7 +369,8 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 |------|------|
 | Embedded certificates | `az_iot_cert_embedded_init()` |
 | esp-mqtt transports (3.1.1 + 5) | `az_iot_esp_mqtt_factory_create_v3_1_1()`, `az_iot_esp_mqtt_factory_create_v5()` |
-| OTA hooks, crypto, root keys | `su_esp32_ota_hooks()`, `az_iot_su_crypto_mbedtls_hooks()`, `az_iot_su_microsoft_root_keys()` |
+| Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
+| OTA hooks, root keys | `su_esp32_ota_hooks()`, `az_iot_su_microsoft_root_keys()` |
 | Compatibility properties | `dp.manufacturer`, `dp.model` |
 | Resume after the OTA reboot | `az_iot_su_client_resume()` |
 | Route selection | `app_request_check()`, `app_is_registered()` |

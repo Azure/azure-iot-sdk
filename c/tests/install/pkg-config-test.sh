@@ -38,8 +38,8 @@ build() {
     local defines=()
     shift 2
     case "$source" in
-        su_crypto_test.c)
-            defines=("-DAZ_IOT_TEST_HOOKS_HEADER=\"az_iot_$1.h\"" "-DAZ_IOT_TEST_HOOKS=az_iot_$1_hooks")
+        crypto_test.c)
+            defines=("-DAZ_IOT_TEST_CRYPTO_HEADER=\"az_iot_$1.h\"" "-DAZ_IOT_TEST_CRYPTO=az_iot_$1")
             ;;
     esac
     flags="$("$pkg_config" --static --cflags --libs "${@/#/azure-iot-sdk-}")"
@@ -52,7 +52,7 @@ build() {
 
 for comp in "$@"; do
     case "$comp" in
-        su_crypto_openssl | su_crypto_mbedtls) source=su_crypto_test.c ;;
+        crypto_openssl | crypto_mbedtls) source=crypto_test.c ;;
         core | mqttv3 | mqttv5 | adapter_paho | adapter_rust_mqtt | certificate_provider_managed)
             source="${comp}_test.c"
             ;;

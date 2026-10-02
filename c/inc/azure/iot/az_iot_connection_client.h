@@ -13,6 +13,7 @@
 #include "az_iot_log.h"
 #include "az_iot_mqtt_iface.h"
 #include "az_iot_certificate_provider.h"
+#include "az_iot_crypto.h"
 #include "az_iot_dispatch.h"
 #include "az_iot_retry_policy.h"
 
@@ -523,6 +524,16 @@ extern "C"
      * disconnected session is also bounded by its queue (100 messages / 1 MB) --
      * overflowing that destroys the session regardless of this value. */
     uint32_t session_expiry_seconds;
+
+    /**
+     * @brief Cryptographic backend, e.g. az_iot_crypto_openssl(). Borrowed;
+     * must outlive the client.
+     *
+     * Required by software updates, which also need verify_rs256. NULL is
+     * fine for a client without software updates. init() rejects a backend
+     * without SHA-256 or of another version with AZ_IOT_ERR_INVALID_ARG.
+     */
+    const az_iot_crypto* crypto;
   } az_iot_connection_client_options;
 
   /* Which of the client's two lifecycles something refers to.
