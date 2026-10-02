@@ -441,7 +441,7 @@ static int32_t verify_manifest_core(
     SU_VERIFY_FAIL("crypto hooks not configured (verify_rs256_fn/sha256_fn)");
   }
 
-  /* `manifest` is the UNESCAPED manifest body. parse_manifest() unescapes the
+  /* `manifest` is the UNESCAPED manifest body. decode_manifest() unescapes the
    * service-supplied manifest IN PLACE (the unescaped form is never longer)
    * and records that span; the service signs the hash of the unescaped body,
    * so step 6 must hash exactly these bytes (not the original escaped span,
@@ -987,40 +987,47 @@ static void reset_to_idle(az_iot_su_client* client)
   SU_I(client).request_len = 0;
 }
 
-/* Parse the manifest body (an escaped JSON string in the request) into
- * current_manifest. Returns AZ_IOT_OK on success. The unescape happens into the
- * tail of a caller-independent scratch buffer owned by the request span; since
- * the upstream manifest parser only stores spans pointing into the unescaped
- * text, that text MUST remain valid as long as current_manifest is used — so we
- * unescape in place within a client-owned scratch buffer. */
-static az_iot_result parse_manifest(az_iot_su_client* client)
+/**
+ * @brief Unescape the request's `updateManifest` in place into manifest_text.
+ *
+ * Only removes the JSON string escaping: the signature covers the unescaped
+ * bytes. The manifest is not interpreted until verify_manifest() accepts it.
+ *
+ * @param client The client.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when empty or undecodable.
+ */
+static az_iot_result decode_manifest(az_iot_su_client* client)
 {
   az_span manifest = SU_I(client).current_request.update_manifest;
-  if (az_span_size(manifest) <= 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  /* Decode in place: the decoded form is never longer than the source. */
   az_span unescaped;
-  if (az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
+  if (az_span_size(manifest) <= 0
+      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
       || az_span_size(unescaped) <= 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, unescaped, NULL)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (az_result_failed(az_iot_adu_client_parse_update_manifest(
-          &SU_I(client).az, &jr, &SU_I(client).current_manifest)))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   SU_I(client).current_request.update_manifest = unescaped;
   SU_I(client).manifest_text = unescaped;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Parse the verified manifest_text into current_manifest.
+ *
+ * current_manifest holds spans into manifest_text (client-owned request_buffer).
+ *
+ * @param client The client; decode_manifest() and verify_manifest() succeeded.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when malformed.
+ */
+static az_iot_result parse_manifest(az_iot_su_client* client)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, SU_I(client).manifest_text, NULL))
+      || az_result_failed(az_iot_adu_client_parse_update_manifest(
+          &SU_I(client).az, &jr, &SU_I(client).current_manifest)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   return AZ_IOT_OK;
 }
 
@@ -2960,6 +2967,30 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
 
     case AZ_IOT_SU_STATE_MANIFEST_RECEIVED:
     {
+      if (decode_manifest(client) != AZ_IOT_OK)
+      {
+        result_init_steps(client, 1);
+        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
+        fail_workflow(client);
+        (void)az_iot_su__report_state(client);
+        break;
+      }
+      set_su_state(client, AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+      (void)az_iot_su__report_state(client);
+      break;
+    }
+
+    case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
+    {
+      /* The manifest is parsed only after its signature verifies. */
+      if (verify_manifest(client) != AZ_IOT_SU_RESULT_SUCCESS)
+      {
+        result_init_steps(client, 1);
+        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, 0);
+        fail_workflow(client);
+        (void)az_iot_su__report_state(client);
+        break;
+      }
       if (parse_manifest(client) != AZ_IOT_OK)
       {
         result_init_steps(client, 1);
@@ -2969,20 +3000,6 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         break;
       }
       result_init_steps(client, (int32_t)SU_I(client).current_manifest.instructions.steps_count);
-      set_su_state(client, AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
-      (void)az_iot_su__report_state(client);
-      break;
-    }
-
-    case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
-    {
-      if (verify_manifest(client) != AZ_IOT_SU_RESULT_SUCCESS)
-      {
-        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, 0);
-        fail_workflow(client);
-        (void)az_iot_su__report_state(client);
-        break;
-      }
       /* Already installed. There is no accept/reject acknowledgement, so it is
        * reported as a SKIPPED outcome. */
       int32_t inst = (h->is_installed_fn != NULL)
