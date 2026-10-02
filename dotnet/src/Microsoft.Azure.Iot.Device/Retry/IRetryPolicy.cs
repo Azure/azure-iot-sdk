@@ -28,6 +28,6 @@ namespace Microsoft.Azure.Iot.Device.Retry
         /// }
         /// </code>
         /// </example>
-        bool ShouldRetry(uint currentRetryCount, Exception? lastException, out TimeSpan retryDelay);
+        bool ShouldRetry(uint currentRetryCount, Exception? lastException, out TimeSpan retryDelay); //TODO should allow user to specify whether to "retry" by reprovisioning vs re-connecting to Hub?
     }
 }

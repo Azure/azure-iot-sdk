@@ -191,6 +191,11 @@ namespace Microsoft.Azure.Iot.Device
 
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
+            if (provisioningResult.Status != ProvisioningRegistrationStatus.Assigned)
+            { 
+                //TODO
+            }
+
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId!,
@@ -219,6 +224,8 @@ namespace Microsoft.Azure.Iot.Device
             return CurrentConnectionContext;
         }
 
+        //TODO this should fall back to reprovisioning if necessary
+        //TODO 
         public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);

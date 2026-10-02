@@ -100,6 +100,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 CertificateSigningRequest = new(operationalKey, csrBase64),
             };
 
+            connectionClient.HandleCertificateSigningCompleteAsync += (issuedCertificates) =>
+            {
+#pragma warning disable SYSLIB0026 // Type or member is obsolete    using this as a stub method since this code path is not actually exercised in this test
+                return Task.FromResult(new X509AuthenticationProvider(new X509Certificate2()));
+#pragma warning restore SYSLIB0026 // Type or member is obsolete
+            };
+
             Exception exception = await Assert.ThrowsAnyAsync<Exception>(
                 async () => await connectionClient
                     .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
