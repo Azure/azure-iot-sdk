@@ -910,6 +910,26 @@ static void a_bodyless_409_report_stays_fatal(void** state)
 }
 
 /* A typed body still takes precedence over the transport status. */
+/* A string code without errorCode: a recognized one beats the status; prose
+ * does not, so it cannot turn a transient status fatal. */
+static void a_string_only_body_is_classified_by_code_then_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"INVALID_REQUEST\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+static void a_prose_only_503_body_is_retryable(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"Service is busy.\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_string_equal(fx->last_error_text, "Service is busy.");
+  assert_int_equal(fx->last_error_code, 0);
+}
+
 static void a_typed_body_takes_precedence_over_the_status(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2962,6 +2982,9 @@ int main(void)
         an_oversized_string_code_still_classifies_by_the_body, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_string_only_body_is_classified_by_code_then_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_prose_only_503_body_is_retryable, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

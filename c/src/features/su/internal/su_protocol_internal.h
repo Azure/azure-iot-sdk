@@ -321,10 +321,9 @@ extern "C"
    * string it does not recognize.
    *
    * @param out_code          Receives info.aduErrorCode, else `message`, else
-   *                          "". A value too long for out_code_size is dropped
-   *                          rather than truncated -- a truncated token must
-   *                          never be compared -- and the numeric code still
-   *                          reported.
+   *                          "". A value too long for out_code_size is never
+   *                          truncated; it is skipped and the next source used.
+   *                          The numeric code is still reported.
    * @param out_numeric_code  Receives errorCode, or 0 when absent. May be NULL.
    * @return AZ_IOT_OK when ANY signal was found; AZ_IOT_ERR_NOT_FOUND when the
    *         body carried none or is malformed or truncated. On any result but

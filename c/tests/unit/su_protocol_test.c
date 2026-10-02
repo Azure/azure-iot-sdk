@@ -1378,6 +1378,24 @@ static void an_oversized_string_code_is_dropped_not_truncated(void** state)
       AZ_IOT_OK);
   assert_string_equal(code, "");
   assert_int_equal(numeric, 400004);
+
+  /* An oversized aduErrorCode falls back to `message`, whichever comes first. */
+  char wide[16];
+  const char* message_first = "{\"errorCode\":400000,\"message\":\"INVALID_REQUEST\","
+                              "\"info\":{\"aduErrorCode\":\"A_CODE_TOO_LONG_FOR_THE_BUFFER\"}}";
+  const char* info_first
+      = "{\"errorCode\":400000,\"info\":{\"aduErrorCode\":\"A_CODE_TOO_LONG_FOR_THE_BUFFER\"},"
+        "\"message\":\"INVALID_REQUEST\"}";
+  assert_int_equal(
+      az_iot_su__parse_error_code(
+          (const uint8_t*)message_first, strlen(message_first), wide, sizeof(wide), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(wide, "INVALID_REQUEST");
+  assert_int_equal(
+      az_iot_su__parse_error_code(
+          (const uint8_t*)info_first, strlen(info_first), wide, sizeof(wide), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(wide, "INVALID_REQUEST");
 }
 
 /* The service correlation GUID is the one value a support request needs, so it
