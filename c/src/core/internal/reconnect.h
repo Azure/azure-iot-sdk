@@ -46,7 +46,7 @@ extern "C"
    * seed it deterministically; production seeds it from time_mono.
    */
   uint32_t az_iot_reconnect_delay_ms(
-      const az_iot_reconnection_policy* policy,
+      const az_iot_retry_policy* policy,
       uint32_t attempt,
       uint64_t* rng_state);
 

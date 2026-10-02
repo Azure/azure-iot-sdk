@@ -3323,7 +3323,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
    * Callers who genuinely want a single attempt set
    * reconnection_policy.initial_delay_ms = 0 on the returned struct, or build
    * their options from { 0 } instead. */
-  opts.reconnection_policy = az_iot_reconnection_policy_get_default();
+  opts.reconnection_policy = az_iot_retry_policy_get_default();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   return opts;

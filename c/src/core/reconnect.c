@@ -36,7 +36,7 @@ static uint64_t xorshift64(uint64_t* s)
 }
 
 uint32_t az_iot_reconnect_delay_ms(
-    const az_iot_reconnection_policy* policy,
+    const az_iot_retry_policy* policy,
     uint32_t attempt,
     uint64_t* rng_state)
 {
@@ -119,9 +119,9 @@ uint32_t az_iot_reconnect_delay_ms(
   return (uint32_t)result;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
+az_iot_retry_policy az_iot_retry_policy_get_default(void)
 {
-  az_iot_reconnection_policy p = {
+  az_iot_retry_policy p = {
     .initial_delay_ms = 1000u, /* first retry after 1s           */
     .max_delay_ms = 60000u, /* cap exponential backoff at 60s */
     .max_attempts = 0u, /* 0 = retry forever              */
@@ -130,12 +130,12 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void)
   return p;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
+az_iot_retry_policy az_iot_retry_policy_get_retry_disabled(void)
 {
   /* initial_delay_ms == 0 is what disables retrying. Returning it from a named
    * getter is the whole point: the value is identical to a zeroed struct, so
    * the difference this makes is at the call site, not in the bytes. */
-  az_iot_reconnection_policy p = {
+  az_iot_retry_policy p = {
     .initial_delay_ms = 0u,
     .max_delay_ms = 0u,
     .max_attempts = 0u,
@@ -144,7 +144,7 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void)
   return p;
 }
 
-az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+az_iot_retry_policy az_iot_retry_policy_get_fixed_interval(
     uint32_t interval_ms,
     uint32_t max_attempts)
 {
@@ -158,7 +158,7 @@ az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
    * calculator can represent (it floors every result at 1), so it is the
    * nearest thing to the caller's request that is still a retry. */
   uint32_t interval = interval_ms ? interval_ms : 1u;
-  az_iot_reconnection_policy p = {
+  az_iot_retry_policy p = {
     .initial_delay_ms = interval,
     .max_delay_ms = interval,
     .max_attempts = max_attempts,

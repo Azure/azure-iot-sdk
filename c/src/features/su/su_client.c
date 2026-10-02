@@ -1590,10 +1590,10 @@ static bool arm_retry_backoff(
   {
     return false;
   }
-  const az_iot_reconnection_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
-                                              .max_delay_ms = AZ_IOT_SU_RETRY_MAX_MS,
-                                              .max_attempts = 0,
-                                              .jitter_pct = AZ_IOT_SU_RETRY_JITTER_PCT };
+  const az_iot_retry_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
+                                       .max_delay_ms = AZ_IOT_SU_RETRY_MAX_MS,
+                                       .max_attempts = 0,
+                                       .jitter_pct = AZ_IOT_SU_RETRY_JITTER_PCT };
   uint64_t now = az_iot_time_mono_ms();
   if (SU_I(client).retry_rng == 0)
   {

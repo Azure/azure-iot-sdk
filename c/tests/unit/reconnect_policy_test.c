@@ -18,7 +18,7 @@
 static void disabled_when_initial_delay_is_zero(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   uint64_t rng = 1;
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 1, &rng), 0);
   assert_int_equal(az_iot_reconnect_delay_ms(&p, 5, &rng), 0);
@@ -27,7 +27,7 @@ static void disabled_when_initial_delay_is_zero(void** state)
 static void no_jitter_doubles_until_cap(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 100;
   p.max_delay_ms = 1000;
   p.jitter_pct = 0;
@@ -49,7 +49,7 @@ static void no_jitter_doubles_until_cap(void** state)
 static void jitter_stays_within_band(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 1000;
   p.max_delay_ms = 1000;
   p.jitter_pct = 20; /* +/- 20% of base */
@@ -78,7 +78,7 @@ static void jitter_stays_within_band(void** state)
 static void jitter_is_centred_on_the_backoff(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 5000;
   p.max_delay_ms = 5000; /* fixed interval: base == cap from attempt 1 */
   p.jitter_pct = 20;
@@ -107,7 +107,7 @@ static void jitter_is_centred_on_the_backoff(void** state)
 static void zero_max_delay_means_initial_is_the_cap(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 250;
   p.max_delay_ms = 0; /* unset; should be treated as = initial_delay */
   p.jitter_pct = 0;
@@ -120,7 +120,7 @@ static void zero_max_delay_means_initial_is_the_cap(void** state)
 static void attempt_zero_treated_as_one(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 100;
   p.max_delay_ms = 1000;
 
@@ -131,7 +131,7 @@ static void attempt_zero_treated_as_one(void** state)
 static void shift_saturates_no_ub(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = 1;
   p.max_delay_ms = 60000;
 
@@ -166,7 +166,7 @@ static void shift_saturates_no_ub(void** state)
 static void top_of_range_policy_does_not_wrap(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = UINT32_MAX;
   p.max_delay_ms = UINT32_MAX;
   p.jitter_pct = 100;
@@ -216,7 +216,7 @@ static void top_of_range_policy_does_not_wrap(void** state)
 static void an_oversized_result_saturates_rather_than_wrapping(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = { 0 };
+  az_iot_retry_policy p = { 0 };
   p.initial_delay_ms = UINT32_MAX;
   p.max_delay_ms = UINT32_MAX;
   p.jitter_pct = 1;
@@ -240,7 +240,7 @@ static void an_oversized_result_saturates_rather_than_wrapping(void** state)
 static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy p = az_iot_retry_policy_get_default();
   p.jitter_pct = 0; /* the ladder, without the randomization on top */
   uint64_t rng = 99;
 
@@ -257,7 +257,7 @@ static void the_default_getter_backs_off_and_then_holds_at_the_cap(void** state)
 static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  az_iot_retry_policy p = az_iot_retry_policy_get_retry_disabled();
   uint64_t rng = 1;
 
   /* 0 is how the caller of this function learns retrying is off. */
@@ -271,7 +271,7 @@ static void the_retry_disabled_getter_yields_no_delay_at_all(void** state)
 static void the_fixed_interval_getter_yields_a_flat_curve(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000, 360);
+  az_iot_retry_policy p = az_iot_retry_policy_get_fixed_interval(5000, 360);
   uint64_t rng = 4242;
 
   for (uint32_t attempt = 1; attempt <= 12; ++attempt)

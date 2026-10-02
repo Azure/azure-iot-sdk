@@ -103,7 +103,7 @@ extern "C"
    * az_iot_connection_scope), and these numbers apply to each of them
    * independently -- including max_attempts, which is a budget per ladder, not
    * one shared across both. */
-  typedef struct az_iot_reconnection_policy
+  typedef struct az_iot_retry_policy
   {
     /* Delay before the first retry, doubled on each subsequent one up to
      * max_delay_ms.
@@ -111,7 +111,7 @@ extern "C"
      * 0 DISABLES retrying: every failure becomes terminal. It is a sentinel,
      * not a duration, so a zero-initialized policy has retries off whether or
      * not that was intended -- prefer
-     * az_iot_reconnection_policy_get_retry_disabled() to say it deliberately.
+     * az_iot_retry_policy_get_retry_disabled() to say it deliberately.
      * There is deliberately no way to express "retry immediately, forever":
      * that is a hot loop against a service that is already failing. */
     uint32_t initial_delay_ms;
@@ -124,15 +124,15 @@ extern "C"
      * Setting this EQUAL to initial_delay_ms (or leaving it 0) pins the delay
      * at initial_delay_ms from the first retry, which is a FIXED-INTERVAL
      * schedule -- a supported configuration, not a degenerate one. See
-     * az_iot_reconnection_policy_get_fixed_interval(). */
+     * az_iot_retry_policy_get_fixed_interval(). */
     uint32_t max_delay_ms;
     uint32_t max_attempts; /* 0 = infinite; applies PER ladder */
     uint8_t jitter_pct; /* 0..100, applied around the backoff */
-  } az_iot_reconnection_policy;
+  } az_iot_retry_policy;
 
   /* Exponential backoff with jitter: 1s initial delay, 60s cap, retry forever,
    * +/-20% jitter. What az_iot_connection_client_options_default() installs. */
-  az_iot_reconnection_policy az_iot_reconnection_policy_get_default(void);
+  az_iot_retry_policy az_iot_retry_policy_get_default(void);
 
   /* Never retry: every dropped link, refused CONNACK, stalled handshake and
    * failed registration ends the session rather than being retried.
@@ -148,7 +148,7 @@ extern "C"
    * This is the spelling for "no retries". It is what a zero-initialized
    * policy already means, but saying it through this getter states the intent
    * at the call site rather than leaving it to a zeroed field. */
-  az_iot_reconnection_policy az_iot_reconnection_policy_get_retry_disabled(void);
+  az_iot_retry_policy az_iot_retry_policy_get_retry_disabled(void);
 
   /* Retry at a constant interval rather than backing off: every
    * @p interval_ms, up to @p max_attempts tries per ladder (0 = forever).
@@ -159,11 +159,11 @@ extern "C"
    * (see initial_delay_ms), so a zero interval cannot mean "retry with no
    * delay" -- it is clamped to 1 ms rather than silently returning the
    * opposite of what this function's name promises. Use
-   * az_iot_reconnection_policy_get_retry_disabled() to disable retrying.
+   * az_iot_retry_policy_get_retry_disabled() to disable retrying.
    *
    * For a device on a link that is either up or down, where doubling the delay
    * only delays recovery. */
-  az_iot_reconnection_policy az_iot_reconnection_policy_get_fixed_interval(
+  az_iot_retry_policy az_iot_retry_policy_get_fixed_interval(
       uint32_t interval_ms,
       uint32_t max_attempts);
 
@@ -279,7 +279,7 @@ extern "C"
      */
     az_iot_certificate_provider* certificate_provider;
 
-    /* How the client retries after a failure. See az_iot_reconnection_policy
+    /* How the client retries after a failure. See az_iot_retry_policy
      * for the fields and the getters that name the usual shapes.
      *
      * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
@@ -303,9 +303,9 @@ extern "C"
      * automatic attempts, and with retries off there is no such run to count.
      *
      * az_iot_connection_client_options_default() fills this with
-     * az_iot_reconnection_policy_get_default(). Use
-     * az_iot_reconnection_policy_get_retry_disabled() to opt out. */
-    az_iot_reconnection_policy reconnection_policy;
+     * az_iot_retry_policy_get_default(). Use
+     * az_iot_retry_policy_get_retry_disabled() to opt out. */
+    az_iot_retry_policy reconnection_policy;
 
     /* Caller-provided scratch buffer used to BUILD the outbound CSR request
      * payload - the DPS registration body when dps.request_operational_certificate
@@ -1287,7 +1287,7 @@ extern "C"
   /* Returns an options struct with optional fields defaulted (port derived from
    * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy,
    * and the default reconnection policy from
-   * az_iot_reconnection_policy_get_default(): 1s initial delay, 60s cap, retry
+   * az_iot_retry_policy_get_default(): 1s initial delay, 60s cap, retry
    * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
    * the returned struct to make every failure terminal instead.
    *

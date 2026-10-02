@@ -3753,7 +3753,7 @@ static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(voi
   }
 
   /* The application owns the retry ladder. */
-  fx->client->opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  fx->client->opts.reconnection_policy = az_iot_retry_policy_get_retry_disabled();
 
   /* 0x97 quota exceeded, classified by the adapter as a failure. */
   fx->log.count = 0;
