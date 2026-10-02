@@ -103,7 +103,7 @@ jobs:
       id-token: write   # azure/login OIDC
     name: setup (provision)
     if: ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -168,7 +168,7 @@ jobs:
           # would double the Azure resources this workflow consumes, so it runs
           # once, instrumented. gcov overhead is CPU-only and this suite is
           # network-bound, so it does not move the wall clock.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
@@ -472,7 +472,7 @@ jobs:
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
     if: ${{ always() && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

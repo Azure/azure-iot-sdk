@@ -28,7 +28,7 @@ defaults:
 jobs:
   changes:
     name: detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
     # Without pull-requests:read it fails with "Resource not accessible by
     # integration".
@@ -67,11 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-gcc-debug
             build_type: Debug
             with_paho: ON
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-clang-debug
             build_type: Debug
             with_paho: ON
@@ -87,7 +87,7 @@ jobs:
     # not registered there and nothing needs a broker.
     services:
       mosquitto:
-        image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only once the broker is
@@ -148,7 +148,7 @@ jobs:
     name: coding conventions (c/src)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -179,7 +179,7 @@ jobs:
     name: ${{ matrix.std }}-strict (gcc -pedantic)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -283,7 +283,7 @@ jobs:
     name: linux-gcc / valgrind
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -359,7 +359,7 @@ jobs:
     name: linux-gcc / helgrind + drd
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -459,7 +459,7 @@ jobs:
     name: linux-clang / ASan + UBSan
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     services:
@@ -515,7 +515,7 @@ jobs:
     name: crypto / mbedTLS ${{ matrix.mbedtls }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -557,7 +557,7 @@ jobs:
       matrix:
         compiler: [ gcc, clang ]
         shared: [ 'OFF', 'ON' ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -642,12 +642,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
             components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
@@ -809,7 +809,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc
           - os: windows-latest
             name: windows-msvc
@@ -858,7 +858,7 @@ jobs:
     name: coverage (linux-gcc)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Exact number of CTest suites the coverage preset must register. An
       # inequality only caught the build collapsing to nothing; it could not
@@ -1062,7 +1062,7 @@ jobs:
     name: coverage-gate
     needs: [changes, coverage-c]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # This job does not check out the repo, so the workflow-level
     # working-directory of c/ would not exist.
     defaults:
