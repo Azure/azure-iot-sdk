@@ -1718,8 +1718,12 @@ static void on_channel_result(
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
       SU_I(client).terminal_report_in_flight = false;
-      SU_I(client).device_properties_report_pending = true;
-      SU_I(client).report_paced = paced;
+      /* A report queued since keeps its own pacing; one send covers both. */
+      if (!SU_I(client).device_properties_report_pending)
+      {
+        SU_I(client).device_properties_report_pending = true;
+        SU_I(client).report_paced = paced;
+      }
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_SU_OP_GET_UPDATE:
@@ -2914,15 +2918,17 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   /* A pending device-properties / startup report takes priority. */
   if (SU_I(client).device_properties_report_pending)
   {
-    /* Clear the flag only once the report is actually accepted. Clearing it up
-     * front drops the report on a transient channel failure with no retry,
-     * which matters because a status report is the only record the service
-     * gets of what this device did. Same retry-on-success rule as the update
-     * check below. */
-    if ((!SU_I(client).report_paced || retry_backoff_due(client))
-        && az_iot_su__report_state(client) == AZ_IOT_OK)
+    /* Cleared BEFORE the send, as for the update check: a synchronous channel
+     * may re-arm it from inside report(). Restored on refusal, so a status
+     * report -- the service's only record of what this device did -- is not
+     * dropped on a transient channel failure. */
+    if (!SU_I(client).report_paced || retry_backoff_due(client))
     {
       SU_I(client).device_properties_report_pending = false;
+      if (az_iot_su__report_state(client) != AZ_IOT_OK)
+      {
+        SU_I(client).device_properties_report_pending = true;
+      }
     }
     /* Piggyback a requested update check on the same startup tick so a
      * deployment already waiting is consumed without needing a fresh

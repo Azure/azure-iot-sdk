@@ -488,6 +488,8 @@ typedef struct
   /* An accepted report gets an OK verdict from inside report(), as from a
    * service that accepts it; true leaves the verdict to the test. */
   bool report_verdict_deferred;
+  /* The next accepted report gets a no-hint retryable verdict from inside report(). */
+  bool report_sync_retry_once;
   /* Opaque state handed out by save_state(); empty means nothing to keep. */
   char saved_state[32];
   uint8_t restored_state[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
@@ -613,6 +615,19 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
         fc->last_installed_version,
         sizeof(fc->last_installed_version),
         report->installed_update_id->version);
+  }
+  if (fc->report_result == AZ_IOT_OK && fc->report_sync_retry_once && fc->result_cb != NULL)
+  {
+    az_iot_su_service_error se
+        = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+    fc->report_sync_retry_once = false;
+    fc->result_cb(
+        AZ_IOT_SU_OP_REPORT_STATUS,
+        AZ_IOT_ERR_DPS,
+        AZ_IOT_SU_ERROR_ACTION_RETRY,
+        &se,
+        fc->engine_ctx);
+    return AZ_IOT_OK;
   }
   if (fc->report_result == AZ_IOT_OK && !fc->report_verdict_deferred && fc->result_cb != NULL)
   {
@@ -5658,6 +5673,51 @@ static void a_stale_fallback_does_not_hold_an_excluded_report_retry(void** state
   assert_int_equal(fx->chan.report_count, sent + 1);
 }
 
+/* A retryable verdict delivered from inside report() keeps the report queued
+ * and paced, rather than being cleared by report() returning OK. */
+static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+
+  fx->chan.report_sync_retry_once = true;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 2);
+}
+
+/* A late verdict for an older report does not pace a report the application
+ * queued since. */
+static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar2";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.1";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_true(fx->su._internal.retry_due_ms > az_iot_time_mono_ms());
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
 /* The fallback doubles to a cap, and an accepted operation resets it. */
 static void the_fallback_backs_off_and_resets_on_success(void** state)
 {
@@ -5784,6 +5844,10 @@ int main(void)
         a_stale_fallback_does_not_hold_an_excluded_fetch_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_stale_fallback_does_not_hold_an_excluded_report_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_late_report_verdict_does_not_pace_a_newer_report, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
