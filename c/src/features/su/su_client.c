@@ -1575,8 +1575,10 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
  * Exponential backoff with jitter. Service verdicts only: a lost session is
  * paced by the connection client, and a service-named delay by the channel.
  * Never moves a fetch deadline.
+ *
+ * @return true if this verdict armed the backoff.
  */
-static void arm_retry_backoff(
+static bool arm_retry_backoff(
     az_iot_su_client* client,
     az_iot_result result,
     az_iot_su_error_action action,
@@ -1586,7 +1588,7 @@ static void arm_retry_backoff(
       || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
       || (service_error != NULL && service_error->retry_after_ms != 0))
   {
-    return;
+    return false;
   }
   const az_iot_reconnection_policy policy = { .initial_delay_ms = AZ_IOT_SU_RETRY_BASE_MS,
                                               .max_delay_ms = AZ_IOT_SU_RETRY_MAX_MS,
@@ -1603,6 +1605,7 @@ static void arm_retry_backoff(
   }
   SU_I(client).retry_due_ms = now
       + az_iot_reconnect_delay_ms(&policy, SU_I(client).retry_attempts, &SU_I(client).retry_rng);
+  return true;
 }
 
 /** @brief Whether a paced fetch/report retry may be sent now. */
@@ -1710,12 +1713,13 @@ static void on_channel_result(
     return;
   }
 
-  arm_retry_backoff(client, result, action, service_error);
+  bool paced = arm_retry_backoff(client, result, action, service_error);
   switch (operation)
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
       SU_I(client).terminal_report_in_flight = false;
       SU_I(client).device_properties_report_pending = true;
+      SU_I(client).report_paced = paced;
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
     case AZ_IOT_SU_OP_GET_UPDATE:
@@ -1755,7 +1759,7 @@ static void on_channel_result(
         SU_I(client).pending_fetch = (operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE)
             ? SU_FETCH_ONBOARDING
             : SU_FETCH_REGULAR;
-        SU_I(client).pending_fetch_paced = true;
+        SU_I(client).pending_fetch_paced = paced;
         /* A re-armed request is always bounded. Without this a LATE verdict
          * could resurrect an operation after the slot had been abandoned: the
          * abandonment cleared the deadline, this puts the request back, and it
@@ -2627,6 +2631,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     SU_I(client).checkpoint_terminal = true;
     SU_I(client).checkpoint_superseded = false;
     SU_I(client).device_properties_report_pending = true;
+    SU_I(client).report_paced = false;
     restore_channel_state(client, &blob[ch_at], ch_len);
     set_su_state(client, AZ_IOT_SU_STATE_IDLE);
     return AZ_IOT_OK;
@@ -2914,7 +2919,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
      * which matters because a status report is the only record the service
      * gets of what this device did. Same retry-on-success rule as the update
      * check below. */
-    if (retry_backoff_due(client) && az_iot_su__report_state(client) == AZ_IOT_OK)
+    if ((!SU_I(client).report_paced || retry_backoff_due(client))
+        && az_iot_su__report_state(client) == AZ_IOT_OK)
     {
       SU_I(client).device_properties_report_pending = false;
     }
@@ -3351,6 +3357,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
 
   commit_device_properties_cache(client, &snapshot);
   SU_I(client).device_properties_report_pending = true;
+  SU_I(client).report_paced = false;
   return AZ_IOT_OK;
 }
 

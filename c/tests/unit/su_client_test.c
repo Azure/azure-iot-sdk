@@ -5597,6 +5597,67 @@ static void a_new_application_request_is_not_paced(void** state)
   assert_int_equal(fx->chan.request_update_count, 2);
 }
 
+/* A fallback already running does not hold a retry whose own verdict did not
+ * arm it: session loss, a corrective resend, or a service-named delay. */
+static void a_stale_fallback_does_not_hold_an_excluded_fetch_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_su_service_error hinted
+      = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  struct
+  {
+    az_iot_result result;
+    az_iot_su_error_action action;
+    const az_iot_su_service_error* service_error;
+  } verdicts[] = {
+    { AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, &hinted },
+  };
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  /* The application asks again, bypassing the fallback, which stays armed. */
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+
+  for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); ++i)
+  {
+    assert_true(fx->su._internal.retry_due_ms > az_iot_time_mono_ms());
+    fx->chan.result_cb(
+        AZ_IOT_SU_OP_GET_UPDATE,
+        verdicts[i].result,
+        verdicts[i].action,
+        verdicts[i].service_error,
+        fx->chan.engine_ctx);
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->chan.request_update_count, 3 + i);
+  }
+}
+
+/* Likewise for a report: a fallback armed by a fetch does not hold a report
+ * retried after a session loss. */
+static void a_stale_fallback_does_not_hold_an_excluded_report_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  fx->su._internal.retry_due_ms = az_iot_time_mono_ms() + 60000u;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
 /* The fallback doubles to a cap, and an accepted operation resets it. */
 static void the_fallback_backs_off_and_resets_on_success(void** state)
 {
@@ -5719,6 +5780,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         only_a_no_hint_service_verdict_arms_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_application_request_is_not_paced, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_stale_fallback_does_not_hold_an_excluded_fetch_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_stale_fallback_does_not_hold_an_excluded_report_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
