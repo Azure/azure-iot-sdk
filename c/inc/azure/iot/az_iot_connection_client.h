@@ -530,8 +530,8 @@ extern "C"
      * must outlive the client.
      *
      * Required by software updates, which also need verify_rs256. NULL is
-     * fine for a client without software updates. init() rejects an
-     * incomplete backend with AZ_IOT_ERR_INVALID_ARG.
+     * fine for a client without software updates. init() rejects a backend
+     * without SHA-256 or of another version with AZ_IOT_ERR_INVALID_ARG.
      */
     const az_iot_crypto* crypto;
   } az_iot_connection_client_options;

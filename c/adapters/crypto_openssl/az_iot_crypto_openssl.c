@@ -12,6 +12,7 @@
  */
 #include "az_iot_crypto_openssl.h"
 
+#include <limits.h>
 #include <stdint.h>
 
 #include <openssl/evp.h>
@@ -114,6 +115,11 @@ static az_iot_result openssl_verify_rs256(
       || signature == NULL || signature_len == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* BN_bin2bn() takes an int length. */
+  if (modulus_len > (size_t)INT_MAX || exponent_len > (size_t)INT_MAX)
+  {
+    return AZ_IOT_ERR_AUTH;
   }
 
   EVP_PKEY* pkey = rsa_pubkey_from_raw(modulus, modulus_len, exponent, exponent_len);

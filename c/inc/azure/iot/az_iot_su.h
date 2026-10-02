@@ -1141,7 +1141,7 @@ extern "C"
    *
    * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
    * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * outputs stay zeroed on any error.
+   * non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The
@@ -1176,8 +1176,8 @@ extern "C"
    * of @p crypto, not verify_rs256.
    *
    * Returns AZ_IOT_OK when the hash matches, AZ_IOT_ERR_INVALID_ARG on bad
-   * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
-   * or a hash mismatch.
+   * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a backend or read
+   * error, or a hash mismatch.
    */
   AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
       const az_iot_su_client_update_manifest_file* file,

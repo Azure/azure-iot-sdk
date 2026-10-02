@@ -34,7 +34,8 @@ extern "C"
 
   /**
    * @brief Caller-owned SHA-256 state. Layout is backend-defined; a backend
-   * whose state does not fit keeps a pointer here.
+   * whose state does not fit keeps a pointer here. Must not be copied between
+   * sha256_init() and sha256_final().
    */
   typedef struct az_iot_sha256_ctx
   {
@@ -62,7 +63,9 @@ extern "C"
      * @brief Hashes @p len bytes of @p data. @p data may be NULL when @p len
      * is 0. Required.
      *
-     * On failure the stream is unchanged; @p ctx must still be finalized.
+     * Rejected arguments (AZ_IOT_ERR_INVALID_ARG) leave the stream unchanged;
+     * after any other failure the digest is unusable. Either way @p ctx must
+     * still be passed to sha256_final().
      */
     az_iot_result (*sha256_update)(
         const az_iot_crypto* self,
@@ -92,7 +95,9 @@ extern "C"
      * @param[in] data_len      Bytes in @p data.
      * @param[in] signature     Signature.
      * @param[in] signature_len Bytes in @p signature.
-     * @return AZ_IOT_OK only for a valid signature.
+     * @return AZ_IOT_OK only for a valid signature; AZ_IOT_ERR_INVALID_ARG
+     * for a NULL or empty key or signature, or NULL @p data; another error
+     * otherwise.
      */
     az_iot_result (*verify_rs256)(
         const az_iot_crypto* self,

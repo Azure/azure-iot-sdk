@@ -243,7 +243,7 @@ static az_iot_result psa_sha256_init(const az_iot_crypto* self, az_iot_sha256_ct
     return AZ_IOT_ERR_INTERNAL;
   }
   psa_hash_operation_t* op = op_of(ctx);
-  memset(op, 0, sizeof(*op)); /* equivalent to PSA_HASH_OPERATION_INIT */
+  *op = psa_hash_operation_init();
   if (psa_hash_setup(op, PSA_ALG_SHA_256) != PSA_SUCCESS)
   {
     psa_hash_abort(op);
@@ -278,8 +278,7 @@ static az_iot_result psa_sha256_final(
   }
   if (out == NULL)
   {
-    psa_hash_abort(op_of(ctx));
-    return AZ_IOT_OK;
+    return psa_hash_abort(op_of(ctx)) == PSA_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
   }
   size_t hash_len = 0;
   psa_status_t st = psa_hash_finish(op_of(ctx), out, AZ_IOT_SHA256_SIZE, &hash_len);

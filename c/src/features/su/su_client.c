@@ -3374,6 +3374,15 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     az_iot_su_client_update_request* out_request,
     az_iot_su_client_update_manifest* out_manifest)
 {
+  /* Fail-closed: outputs are zeroed first and stay so unless every stage succeeds. */
+  if (out_request != NULL)
+  {
+    memset(out_request, 0, sizeof(*out_request));
+  }
+  if (out_manifest != NULL)
+  {
+    memset(out_manifest, 0, sizeof(*out_manifest));
+  }
   if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || out_request == NULL || out_manifest == NULL
       || az_span_size(request_json) <= 0)
   {
@@ -3383,10 +3392,6 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-
-  /* Fail-closed: outputs stay zeroed unless every stage succeeds. */
-  memset(out_request, 0, sizeof(*out_request));
-  memset(out_manifest, 0, sizeof(*out_manifest));
 
   az_iot_adu_client az;
   if (az_result_failed(az_iot_adu_client_init(&az, NULL)))

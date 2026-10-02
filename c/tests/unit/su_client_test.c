@@ -4715,15 +4715,34 @@ static void standalone_entry_points_check_the_backend_they_need(void** state)
   az_iot_su_client_update_request req;
   az_iot_su_client_update_manifest manifest;
 
+  static const az_iot_su_client_update_request k_zero_req;
+  static const az_iot_su_client_update_manifest k_zero_manifest;
+
+  /* Outputs are zeroed on every error, including the argument checks. */
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
   assert_int_equal(
       az_iot_su_parse_update_request(json, NULL, k_root_keys, 1, &req, &manifest),
       AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&req, &k_zero_req, sizeof(req));
+  assert_memory_equal(&manifest, &k_zero_manifest, sizeof(manifest));
 
   mock_crypto no_verify = make_mock_crypto(&fx->log);
   no_verify.base.verify_rs256 = NULL;
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
   assert_int_equal(
       az_iot_su_parse_update_request(json, &no_verify.base, k_root_keys, 1, &req, &manifest),
       AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_memory_equal(&req, &k_zero_req, sizeof(req));
+  assert_memory_equal(&manifest, &k_zero_manifest, sizeof(manifest));
+
+  /* With one output missing, the other is still cleared. */
+  memset(&req, 0xA5, sizeof(req));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, &fx->crypto.base, k_root_keys, 1, &req, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&req, &k_zero_req, sizeof(req));
 
   az_iot_su_client_update_manifest_file file;
   memset(&file, 0, sizeof(file));
