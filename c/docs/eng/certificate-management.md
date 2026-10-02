@@ -83,7 +83,7 @@ are the reference.
 ### Certificate provider
 
 `az_iot_certificate_provider_vtable`, versioned (`version` =
-`AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION`, currently 2; D1):
+`AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION`, currently 2; 3 proposed; D1):
 
 | Slot | Since | Purpose |
 | --- | --- | --- |
@@ -93,9 +93,10 @@ are the reference.
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
 | `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: base64 DER, leaf first, valid for the call only). |
 | `sign(self, digest, ...)` | v2, optional | Sign for the TLS handshake with a non-extractable key (D8). |
+| `sign_sas(self, role, data, ...)` | v3 (proposed), required for a SAS role | HMAC-SHA256 over the SAS string to sign with the role's symmetric key. |
 
 `az_iot_certificate_material` carries the credential as PEM strings, file paths, or a key
-reference (`client_key_uri` + `crypto_engine_id`).
+reference (`client_key_uri` + `crypto_engine_id`); from v3 (proposed), `kind` selects X.509 or SAS.
 
 Providers in the tree:
 

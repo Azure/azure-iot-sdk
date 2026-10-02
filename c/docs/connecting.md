@@ -150,6 +150,9 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
+> **Proposed, not implemented.** SAS (`kind`, `sign_sas()`, `sas_token_lifetime_seconds`) is a design
+> proposal; today every connection authenticates with X.509.
+
 Every connection uses TLS. `certificate_provider` supplies the trusted CA and, per role, the
 device credential: an X.509 client certificate, or a SAS token signed through the provider's
 `sign_sas()` (`az_iot_certificate_material::kind`). The DPS (onboarding) and hub (operational)
