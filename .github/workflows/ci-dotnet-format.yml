@@ -1,0 +1,68 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Fails when .NET code under dotnet/ is not formatted per dotnet/.editorconfig (whitespace and code
+# style), in Project.slnx and in every project it does not list. Fix with: dotnet/eng/check-format.sh --fix
+name: ci-dotnet-format
+
+on:
+  push:
+    branches: [ main ]
+  # No workflow-level `paths:` filter: a workflow that never triggers reports no check, which
+  # would block a required check. The `changes` job below skips work instead.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # dorny/paths-filter lists PR files through the API.
+    outputs:
+      dotnet: ${{ steps.filter.outputs.dotnet == 'true' || steps.filter.outputs.workflow == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            dotnet:
+              - 'dotnet/**'
+              - '!dotnet/**/*.md'
+            workflow:
+              - '.github/workflows/ci-dotnet-format.yml'
+
+  format:
+    name: dotnet format
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      # Analyzer diagnostics belong to the build, not to this check.
+      - name: Check formatting
+        run: bash dotnet/eng/check-format.sh
