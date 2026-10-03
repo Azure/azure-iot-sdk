@@ -11,7 +11,7 @@ namespace Microsoft.Azure.Iot.Device.Retry
     public interface IRetryPolicy
     {
         /// <summary>
-        /// Method called by the client when an operation fails to determine if a retry should be attempted,
+        /// Method called by the client when an operation fails to determine how the failure should be handled,
         /// and how long to wait until retrying the operation.
         /// </summary>
         /// <param name="currentRetryCount">The number of times the current operation has been attempted.</param>
@@ -21,19 +21,23 @@ namespace Microsoft.Azure.Iot.Device.Retry
         /// IoT hub (<see cref="ConnectionEndpoint.IotHub"/>) or to re-provision and/or reconnect with Device Provisioning Service
         /// (<see cref="ConnectionEndpoint.DeviceProvisioningService"/>) and decide accordingly.
         /// </param>
-        /// <param name="retryDelay">Set this to the desired time to delay before the next attempt.</param>
-        /// <returns>True if the operation should be retried; otherwise false.</returns>
+        /// <param name="retryDelay">
+        /// Set this to the desired time to delay before the next attempt. Only consulted when this method returns
+        /// <see cref="RetryGuidance.Retry"/> (or <see cref="RetryGuidance.Reprovision"/> for a
+        /// Device Provisioning Service endpoint, which is treated the same as <see cref="RetryGuidance.Retry"/>).
+        /// </param>
+        /// <returns>The <see cref="RetryGuidance"/> describing how the client should handle this failure.</returns>
         /// <example>
         /// <code language="csharp">
         /// class CustomRetryPolicy : IRetryPolicy
         /// {
-        ///     public bool ShouldRetry(uint currentRetryCount, Exception lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+        ///     public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
         ///     {
-        ///         // Add custom logic as needed upon determining if it should retry and set the retryDelay out parameter
+        ///         // Add custom logic as needed upon determining how to handle the failure and set the retryDelay out parameter
         ///     }
         /// }
         /// </code>
         /// </example>
-        bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay);
+        RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay);
     }
 }

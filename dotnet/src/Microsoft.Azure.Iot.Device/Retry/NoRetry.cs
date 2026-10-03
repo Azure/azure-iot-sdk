@@ -10,12 +10,12 @@ namespace Microsoft.Azure.Iot.Device.Retry
 {
     public class NoRetry : IRetryPolicy
     {
-        public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+        public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
         {
             retryDelay = TimeSpan.Zero;
 
             // never retry
-            return false;
+            return RetryGuidance.AbandonRetry;
         }
     }
 }

@@ -635,12 +635,17 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     attempt++;
 
-                    if (!_connectionRetryPolicy.ShouldRetry(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay))
+                    // This loop is itself the re-provisioning recovery, so it always consults the policy for a Device
+                    // Provisioning Service endpoint. Only AbandonRetry stops it; both Retry and
+                    // AbandonHubRetryAndReprovision (which is treated the same as Retry for a DPS endpoint) continue it.
+                    RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay);
+
+                    if (guidance == RetryGuidance.AbandonRetry)
                     {
-                        // The retry policy will not allow another attempt, so this recovery has run out of options. This
-                        // was the only thing left that could have re-established the connection, so anything waiting for
-                        // it is waiting for something that will never happen.
-                        Trace.TraceError("Giving up on re-provisioning this device after {0} attempt(s) because the retry policy is exhausted. {1}", attempt, e);
+                        // The retry policy asked this device to stop retrying, so this recovery has run out of options.
+                        // This was the only thing left that could have re-established the connection, so anything waiting
+                        // for it is waiting for something that will never happen.
+                        Trace.TraceError("Giving up on re-provisioning this device after {0} attempt(s) because the retry policy asked to abandon retrying. {1}", attempt, e);
                         await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
                         return;
                     }

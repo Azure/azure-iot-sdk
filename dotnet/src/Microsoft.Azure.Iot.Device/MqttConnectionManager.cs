@@ -403,22 +403,22 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
-                if ((isReconnection || attemptCount > 1)
-                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException, ConnectionEndpoint, out retryDelay))
+                if (isReconnection || attemptCount > 1)
                 {
-                    // The retry policy declined another attempt. When that happens while reconnecting to a hub and
-                    // re-provisioning is available (the same condition that arms the unreachable-hub threshold above),
-                    // treat it like reaching that threshold: stop retrying the hub and cross over to DPS for a fresh
-                    // assignment rather than giving up on the connection entirely. This lets a policy that refuses hub
-                    // retries force an immediate re-provision instead of exhausting a hub retry count first.
-                    if (isReconnection
-                        && ConnectionEndpoint == ConnectionEndpoint.IotHub
-                        && ReprovisionAfterConsecutiveReconnectFailures > 0)
+                    RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
+
+                    // The policy wants this device to stop retrying the hub and re-provision through DPS instead. This is
+                    // only meaningful for a hub connection; for a DPS connection it is treated the same as Retry, per the
+                    // RetryGuidance documentation. End maintenance with a fault the owning client turns into a
+                    // re-provisioning attempt (and which it degrades to an unrecoverable fault if the device holds no
+                    // provisioning inputs to re-provision from).
+                    if (guidance == RetryGuidance.Reprovision
+                        && ConnectionEndpoint == ConnectionEndpoint.IotHub)
                     {
-                        Trace.TraceWarning("Retry policy declined another hub connect attempt; re-provisioning through DPS. {0}", lastException);
+                        Trace.TraceWarning("Retry policy asked to abandon hub reconnection and re-provision through DPS. {0}", lastException);
 
                         var policyReprovisionFault = new DeviceException(
-                            "The retry policy declined another IoT hub connection attempt, so this device will re-provision through Device Provisioning Service.",
+                            "The retry policy asked this device to abandon reconnecting to the IoT hub and re-provision through Device Provisioning Service.",
                             lastException!)
                         {
                             Retryability = ErrorRetryability.Terminal,
@@ -429,25 +429,33 @@ namespace Microsoft.Azure.Iot.Device
                         return null;
                     }
 
-                    // Should not occur with the default policy as it's indefinite retry
-                    Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
-                    var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException!);
-
-                    // An exhausted policy is terminal by construction: there are no attempts left to make.
-                    var exhaustedException = new DeviceException("Retry policy has been exhausted while maintaining the connection.", retryException)
+                    // The policy wants this device to stop retrying altogether, which puts it in a terminal state.
+                    if (guidance == RetryGuidance.AbandonRetry)
                     {
-                        Retryability = ErrorRetryability.Terminal,
-                        IsContained = false,
-                    };
+                        // Should not occur with the default policy as it's indefinite retry
+                        Trace.TraceError("Retry policy asked to abandon retrying while maintaining a connection {0}", lastException);
+                        var retryException = new RetryExpiredException("Retry policy asked to abandon retrying. See inner exception for the latest exception encountered while retrying.", lastException!);
 
-                    await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+                        // Abandoning retries is terminal by construction: there are no attempts left to make.
+                        var exhaustedException = new DeviceException("Retry policy asked to abandon retrying while maintaining the connection.", retryException)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
 
-                    if (isReconnection)
-                    {
-                        return null;
+                        await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        throw exhaustedException;
                     }
 
-                    throw exhaustedException;
+                    // Otherwise the policy allows another attempt (RetryGuidance.Retry, or
+                    // RetryGuidance.AbandonHubRetryAndReprovision on a DPS connection), so fall through and retry after
+                    // the delay the policy provided.
                 }
 
                 // With all the above conditions checked, the client should attempt to connect again after a delay

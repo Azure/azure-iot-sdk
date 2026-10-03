@@ -64,12 +64,12 @@ namespace Microsoft.Azure.Iot.Device.Retry
         }
 
         /// <inheritdoc/>
-        public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+        public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
         {
             if (_maxRetries == 0 || currentRetryCount > _maxRetries)
             {
                 retryDelay = TimeSpan.Zero;
-                return false;
+                return RetryGuidance.AbandonRetry;
             }
 
             // Avoid integer overflow and clamp max delay.
@@ -96,7 +96,7 @@ namespace Microsoft.Azure.Iot.Device.Retry
                 ? UpdateWithJitter(clampedWaitMs)
                 : TimeSpan.FromMilliseconds(clampedWaitMs);
 
-            return true;
+            return RetryGuidance.Retry;
         }
 
         /// <summary>

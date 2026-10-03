@@ -194,14 +194,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             /// <summary>How many times this policy has been consulted for a Device Provisioning Service retry.</summary>
             public int DeviceProvisioningServiceConsultations => Volatile.Read(ref _deviceProvisioningServiceConsultations);
 
-            public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+            public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
             {
                 if (connectionEndpoint == ConnectionEndpoint.DeviceProvisioningService)
                 {
                     Interlocked.Increment(ref _deviceProvisioningServiceConsultations);
                 }
 
-                return _inner.ShouldRetry(currentRetryCount, lastException, connectionEndpoint, out retryDelay);
+                return _inner.GetRetryGuidance(currentRetryCount, lastException, connectionEndpoint, out retryDelay);
             }
         }
     }
