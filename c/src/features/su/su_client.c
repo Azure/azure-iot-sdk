@@ -1312,11 +1312,9 @@ static void process_update_metadata(
     return;
   }
 
-  AZ_IOT_LOG_DEBUGF(
-      "su: update payload received (%u bytes): %.*s",
-      (unsigned)patch_len,
-      (int)patch_len,
-      (const char*)patch);
+  /* The body carries service-issued download URLs (fileUrls): TRACE only. */
+  AZ_IOT_LOG_DEBUGF("su: update payload received (%u bytes)", (unsigned)patch_len);
+  AZ_IOT_LOG_TRACEF("su: update payload: %.*s", (int)patch_len, (const char*)patch);
 
   /* Probe the transient buffer for the workflow identity. These spans are only
    * valid for the duration of this call, which is enough to decide what to do. */

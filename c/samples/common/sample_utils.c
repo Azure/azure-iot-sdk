@@ -160,6 +160,30 @@ void sample_apply_dps_options(
   }
 }
 
+az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
+{
+  /* Static: the sink writes through this state for the life of the process. */
+  static az_iot_log_file_sink s_file_sink;
+  az_iot_log_sink sink;
+  char* path = sample_env_dup("AZ_IOT_SAMPLE_LOG_FILE", NULL);
+  if (path == NULL)
+  {
+    return az_iot_log_stderr_sink(min_level);
+  }
+  az_iot_result r = az_iot_log_file_sink_open(&s_file_sink, path, NULL, min_level, &sink);
+  if (r != AZ_IOT_OK)
+  {
+    fprintf(
+        stderr,
+        "AZ_IOT_SAMPLE_LOG_FILE: cannot open '%s' (%s); logging to stderr\n",
+        path,
+        az_iot_result_to_string(r));
+    sink = az_iot_log_stderr_sink(min_level);
+  }
+  free(path);
+  return sink;
+}
+
 char* sample_env_dup(const char* name, const char* fallback)
 {
 #ifdef _WIN32

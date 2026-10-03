@@ -3506,6 +3506,51 @@ static void su_error_log_sink(
   }
 }
 
+/* Counts DEBUG and TRACE lines containing `needle` and a JSON body. */
+typedef struct
+{
+  const char* needle;
+  int debug_count;
+  int trace_count;
+} su_level_log_capture;
+
+static void su_level_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  su_level_log_capture* cap = (su_level_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  /* A body is JSON, so a line carrying one has a '{'. */
+  if (msg == NULL || strstr(msg, cap->needle) == NULL || strchr(msg, '{') == NULL)
+  {
+    return;
+  }
+  cap->debug_count += level == AZ_IOT_LOG_LEVEL_DEBUG ? 1 : 0;
+  cap->trace_count += level == AZ_IOT_LOG_LEVEL_TRACE ? 1 : 0;
+}
+
+/* The update body carries service-issued download URLs; DEBUG logs only its
+ * size, TRACE the body. */
+static void update_payload_body_is_logged_only_at_trace(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  su_level_log_capture cap = { .needle = "su: update payload", .debug_count = 0, .trace_count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_level_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_TRACE };
+
+  az_iot_log_set_global_sink(&sink);
+  inject_patch(fx, signed_patch());
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.debug_count, 0);
+  assert_int_equal(cap.trace_count, 1);
+}
+
 /* A checkpoint written before oversized ids were refused holds the id only in
  * its stored request (the kept-id field is empty). Resuming it continues the
  * install but logs that the workflow cannot be reported. */
@@ -6071,6 +6116,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(update_payload_body_is_logged_only_at_trace, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),

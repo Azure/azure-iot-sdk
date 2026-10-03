@@ -311,7 +311,7 @@ static int initialize_connection_client(sample_state* state)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
+  az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
   (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */

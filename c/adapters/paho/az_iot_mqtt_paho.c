@@ -550,7 +550,7 @@ static int paho_ssl_error_callback(const char* str, size_t len, void* u)
   {
     n = (size_t)INT_MAX;
   }
-  AZ_IOT_LOG_ERRORF("paho ssl: %.*s", (int)n, str);
+  AZ_IOT_LOG_ERRORF("paho: ssl: %.*s", (int)n, str);
   return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
 #endif

@@ -109,9 +109,11 @@ The `unified/` and `mqttv5/` samples read:
 | `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
+| `AZ_IOT_SAMPLE_LOG_FILE` | no | Write SDK logs to this rotating file instead of stderr. See [Logging](../docs/logging.md). |
 
 A sample with a missing required variable names it and exits 1. Other samples add or replace
-variables; their READMEs list them.
+variables; their READMEs list them. `AZ_IOT_SAMPLE_LOG_FILE` applies to every sample except
+`authentication/hsm_sign_callback` and the ESP32 one.
 
 ## Build
 

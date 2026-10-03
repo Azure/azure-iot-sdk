@@ -162,6 +162,8 @@ jobs:
         run: bash eng/check-layering.sh
       - name: Check version consistency
         run: bash eng/check-version.sh
+      - name: Check log message prefixes
+        run: bash eng/check-log-prefixes.sh
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format

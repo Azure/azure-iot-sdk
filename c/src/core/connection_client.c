@@ -418,6 +418,100 @@ static bool reason_is_retriable(az_iot_result reason)
   }
 }
 
+/** @brief Log name of @p scope. */
+static const char* scope_name(az_iot_connection_scope scope)
+{
+  return scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub";
+}
+
+/** @brief Log name of @p profile. */
+static const char* profile_name(az_iot_connection_profile profile)
+{
+  switch (profile)
+  {
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
+      return "mqttv3";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "mqttv5";
+    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+/** @brief @p s, or "(none)" when NULL or empty. */
+static const char* text_or_none(const char* s)
+{
+  return (s != NULL && s[0] != '\0') ? s : "(none)";
+}
+
+/** @brief Log name of @p source. */
+static const char* error_source_name(az_iot_connection_error_source source)
+{
+  switch (source)
+  {
+    case AZ_IOT_CONN_ERR_SRC_TRANSPORT:
+      return "transport";
+    case AZ_IOT_CONN_ERR_SRC_MQTT:
+      return "mqtt";
+    case AZ_IOT_CONN_ERR_SRC_DPS:
+      return "dps";
+    case AZ_IOT_CONN_ERR_SRC_NONE:
+    default:
+      return "none";
+  }
+}
+
+/** @brief One INFO line per state change; WARN when it reports a failure. */
+static void log_state_transition(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_connection_state next,
+    az_iot_result reason)
+{
+  az_iot_log_level level = reason == AZ_IOT_OK ? AZ_IOT_LOG_LEVEL_INFO : AZ_IOT_LOG_LEVEL_WARN;
+  if (!az_iot_log_is_enabled(level))
+  {
+    return;
+  }
+  if (reason == AZ_IOT_OK)
+  {
+    az_iot_log_emitf(
+        level,
+        __FILE__,
+        __LINE__,
+        "connection: %s state=%s",
+        scope_name(scope),
+        az_iot_connection_state_to_string(next));
+    return;
+  }
+  if (c->error_source != AZ_IOT_CONN_ERR_SRC_NONE && c->error_scope == scope)
+  {
+    az_iot_log_emitf(
+        level,
+        __FILE__,
+        __LINE__,
+        "connection: %s state=%s reason=%s source=%s code=%ld%s%.*s",
+        scope_name(scope),
+        az_iot_connection_state_to_string(next),
+        az_iot_result_to_string(reason),
+        error_source_name(c->error_source),
+        (long)c->error_code,
+        c->error_message_len > 0 ? " message=" : "",
+        (int)c->error_message_len,
+        c->error_message);
+    return;
+  }
+  az_iot_log_emitf(
+      level,
+      __FILE__,
+      __LINE__,
+      "connection: %s state=%s reason=%s",
+      scope_name(scope),
+      az_iot_connection_state_to_string(next),
+      az_iot_result_to_string(reason));
+}
+
 static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -447,6 +541,7 @@ static void set_state_to(
     return;
   }
   c->state[scope] = next;
+  log_state_transition(c, scope, next, reason);
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. */
   if (scope == AZ_IOT_CONN_SCOPE_HUB && next == AZ_IOT_CONN_STATE_CONNECTED)
@@ -959,6 +1054,11 @@ static void schedule_reconnect(
     return;
   }
   c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
+  AZ_IOT_LOG_INFOF(
+      "connection: %s retry %u in %u ms",
+      scope_name(scope),
+      (unsigned)c->retry_attempt[scope],
+      (unsigned)delay);
   /* Reported against the scope that FAILED, not the ladder the retry climbs:
    * a hub CONNACK that rejects the identity is a HUB session going down, even
    * though the recovery attempt is a DPS registration. The ladder scope is
@@ -1241,7 +1341,7 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
     az_span body_buffer = dps_register_body_buffer(c);
     if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
     {
-      AZ_IOT_LOG_ERROR("dps register: a registration body was configured but neither "
+      AZ_IOT_LOG_ERROR("dps: register: a registration body was configured but neither "
                        "opts.dps.registration_body_buffer nor opts.csr_payload_buffer was "
                        "provided to build it in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -1254,8 +1354,9 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
       provider = c->opts.certificate_provider;
       if (provider == NULL || provider->vtable->get_csr == NULL)
       {
-        AZ_IOT_LOG_ERROR("dps register: request_operational_certificate is set but the certificate "
-                         "provider does not implement get_csr");
+        AZ_IOT_LOG_ERROR(
+            "dps: register: request_operational_certificate is set but the certificate "
+            "provider does not implement get_csr");
         return AZ_IOT_ERR_NOT_SUPPORTED;
       }
 
@@ -1263,7 +1364,7 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
           = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
       if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
       {
-        AZ_IOT_LOG_ERROR("dps register: certificate provider get_csr failed");
+        AZ_IOT_LOG_ERROR("dps: register: certificate provider get_csr failed");
         return (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
       }
     }
@@ -1278,7 +1379,7 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
     }
     if (body_result != AZ_IOT_OK)
     {
-      AZ_IOT_LOG_ERROR("dps register: the registration body build buffer is too small for the "
+      AZ_IOT_LOG_ERROR("dps: register: the registration body build buffer is too small for the "
                        "configured CSR and/or custom payload");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -1389,7 +1490,7 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
   if (truncated)
   {
     AZ_IOT_LOG_ERRORF(
-        "connectionProfile is longer than %u bytes and was truncated to \"%s\"",
+        "dps: connectionProfile is longer than %u bytes and was truncated to \"%s\"",
         (unsigned)sizeof(c->connection_profile_raw),
         c->connection_profile_raw);
     c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
@@ -1704,7 +1805,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
        * registration response has no parseable outcome in any case. */
       if (evt->message->payload == NULL || evt->message->payload_len == 0)
       {
-        AZ_IOT_LOG_ERRORF("dps register: empty response body on topic %s", evt->message->topic);
+        AZ_IOT_LOG_ERRORF("dps: register: empty response body on topic %s", evt->message->topic);
         dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
         return;
       }
@@ -1727,7 +1828,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * body so the cause is recoverable from a log. The reconnection
          * policy (if any) decides whether to try again. */
         AZ_IOT_LOG_ERRORF(
-            "dps register: unparsable response on topic %s; body: %.*s",
+            "dps: register: unparsable response on topic %s; body: %.*s",
             evt->message->topic,
             (int)az_span_size(payload_span),
             (const char*)az_span_ptr(payload_span));
@@ -1781,6 +1882,11 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * good, so an application never acts on an allocation result for a
            * provisioning attempt that then fails. The span dies with this
            * callback -- the message buffer is reused. */
+          AZ_IOT_LOG_INFOF(
+              "dps: assigned hub=%s device_id=%s profile=%s",
+              c->dps_assigned_hub,
+              c->dps_assigned_device_id,
+              profile_name(c->connection_profile));
           if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
           {
             c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
@@ -1808,12 +1914,12 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           /* An empty span may carry a NULL pointer, which %.*s must not get. */
           az_span err_msg = resp.registration_state.error_message;
           AZ_IOT_LOG_ERRORF(
-              "dps register: errorCode=%ld errorMessage=%.*s",
+              "dps: register: errorCode=%ld errorMessage=%.*s",
               (long)resp.registration_state.extended_error_code,
               (int)az_span_size(err_msg),
               az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
           AZ_IOT_LOG_ERRORF(
-              "dps register: provisioning failed/disabled; DPS response: %.*s",
+              "dps: register: provisioning failed/disabled; DPS response: %.*s",
               (int)az_span_size(payload_span),
               az_span_size(payload_span) > 0 ? (const char*)az_span_ptr(payload_span) : "");
           /* The service's own verdict -- 401001 "IoTHub not found" is this
@@ -1884,12 +1990,12 @@ static az_iot_result dps_start(az_iot_connection_client* c)
    * open() instead of getting an error back. */
   if (!is_nonempty_cstr(c->opts.dps.id_scope))
   {
-    AZ_IOT_LOG_ERROR("dps_start: dps.id_scope is required for DPS provisioning");
+    AZ_IOT_LOG_ERROR("dps: start: dps.id_scope is required for DPS provisioning");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (!is_nonempty_cstr(c->opts.dps.registration_id))
   {
-    AZ_IOT_LOG_ERROR("dps_start: dps.registration_id is required for DPS provisioning");
+    AZ_IOT_LOG_ERROR("dps: start: dps.registration_id is required for DPS provisioning");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -1960,13 +2066,18 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     if (lr == AZ_IOT_OK)
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, c->opts.certificate_provider);
+      /* A key URI's query may carry a PIN (pin-value): log only what precedes it. */
+      const char* key_uri = text_or_none(mat.client_key_uri);
+      const char* key_query = strchr(key_uri, '?');
       AZ_IOT_LOG_DEBUGF(
-          "dps: bootstrap TLS ca=%s cert=%s key=%s key_uri=%s engine=%s",
-          mat.trusted_ca_path ? mat.trusted_ca_path : "(none)",
-          mat.client_cert_path ? mat.client_cert_path : "(none)",
-          mat.client_key_path ? mat.client_key_path : "(none)",
-          mat.client_key_uri ? mat.client_key_uri : "(none)",
-          mat.crypto_engine_id ? mat.crypto_engine_id : "(none)");
+          "dps: bootstrap TLS ca=%s cert=%s key=%s key_uri=%.*s%s engine=%s",
+          text_or_none(mat.trusted_ca_path),
+          text_or_none(mat.client_cert_path),
+          text_or_none(mat.client_key_path),
+          (int)(key_query != NULL ? (size_t)(key_query - key_uri) : strlen(key_uri)),
+          key_uri,
+          key_query != NULL ? "?<redacted>" : "",
+          text_or_none(mat.crypto_engine_id));
       c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
       if (cr != AZ_IOT_OK)
       {
@@ -2843,7 +2954,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * session to IDLE. */
         if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
         {
-          AZ_IOT_LOG_DEBUG("connack ignored: close already requested");
+          AZ_IOT_LOG_DEBUG("connection: connack ignored: close already requested");
           break;
         }
 
@@ -2900,7 +3011,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * count. Each open() is a fresh decision by the application. */
         if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close)
         {
-          AZ_IOT_LOG_WARN("connack: identity rejected; re-provisioning through DPS");
+          AZ_IOT_LOG_WARN("connection: connack: identity rejected; re-provisioning through DPS");
           c->needs_reprovision = true;
         }
         c->deferred
@@ -2953,7 +3064,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * the state is DISCONNECTING. */
           if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
           {
-            AZ_IOT_LOG_DEBUG("birth-ack ignored: close already requested");
+            AZ_IOT_LOG_DEBUG("connection: birth-ack ignored: close already requested");
             break;
           }
           presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
@@ -2994,7 +3105,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       if (!matched && evt->status != AZ_IOT_OK)
       {
         AZ_IOT_LOG_ERRORF(
-            "publish with packet id %u failed (%s); it had no completion callback",
+            "connection: publish with packet id %u failed (%s); it had no completion callback",
             (unsigned)evt->packet_id,
             az_iot_result_to_string(evt->status));
       }
@@ -3329,7 +3440,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
 {
   if (!client || !opts)
   {
-    AZ_IOT_LOG_ERROR("connection_client_init: invalid arguments");
+    AZ_IOT_LOG_ERROR("connection: init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   /* UNKNOWN only ever comes back FROM the service; a caller cannot meaningfully
@@ -3337,12 +3448,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3
       && opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    AZ_IOT_LOG_ERROR("connection_client_init: connection_profile is not a profile this SDK speaks");
+    AZ_IOT_LOG_ERROR("connection: init: connection_profile is not a profile this SDK speaks");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (opts->crypto != NULL && az_iot_crypto__validate(opts->crypto) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("connection_client_init: crypto backend has another version or lacks SHA-256");
+    AZ_IOT_LOG_ERROR("connection: init: crypto backend has another version or lacks SHA-256");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   memset(client, 0, sizeof(*client));
@@ -3448,7 +3559,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
 {
   if (!client || !factory || !factory->create)
   {
-    AZ_IOT_LOG_ERROR("register_mqtt_factory: invalid arguments");
+    AZ_IOT_LOG_ERROR("connection: register_mqtt_factory: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -3656,11 +3767,41 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
+/** @brief The configuration support needs first, once per open(). Identifiers only, no secrets. */
+static void log_open_summary(const az_iot_connection_client* c)
+{
+  const char* transport
+      = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
+  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  {
+    AZ_IOT_LOG_INFOF(
+        "connection: open: sdk=%s route=dps endpoint=%s id_scope=%s registration_id=%s csr=%s "
+        "provision_only=%s transport=%s",
+        az_iot_version_string(),
+        is_nonempty_cstr(c->opts.dps.global_endpoint) ? c->opts.dps.global_endpoint
+                                                      : "global.azure-devices-provisioning.net",
+        text_or_none(c->opts.dps.id_scope),
+        text_or_none(c->opts.dps.registration_id),
+        c->opts.dps.request_operational_certificate ? "yes" : "no",
+        c->opts.dps.provision_only ? "yes" : "no",
+        transport);
+    return;
+  }
+  AZ_IOT_LOG_INFOF(
+      "connection: open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
+      az_iot_version_string(),
+      text_or_none(c->opts.host),
+      text_or_none(c->opts.client_id),
+      profile_name(c->opts.connection_profile),
+      text_or_none(c->opts.model_id),
+      transport);
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client)
 {
   if (!client)
   {
-    AZ_IOT_LOG_ERROR("connection_client_open: NULL client");
+    AZ_IOT_LOG_ERROR("connection: open: NULL client");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   /* What "already open" means, now that there are two lifecycles.
@@ -3679,7 +3820,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
           && client->dps_registration_ref)
       || client->dps_standing_ref)
   {
-    AZ_IOT_LOG_ERROR("connection_client_open: client not in IDLE state");
+    AZ_IOT_LOG_ERROR("connection: open: client not in IDLE state");
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
@@ -3690,18 +3831,17 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   {
     if (!dps_configured(client))
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: dps.provision_only requires dps.id_scope");
+      AZ_IOT_LOG_ERROR("connection: open: dps.provision_only requires dps.id_scope");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     if (is_nonempty_cstr(client->opts.host))
     {
-      AZ_IOT_LOG_ERROR(
-          "connection_client_open: dps.provision_only is set, but opts.host names a hub");
+      AZ_IOT_LOG_ERROR("connection: open: dps.provision_only is set, but opts.host names a hub");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     if (client->opts.dps.request_operational_certificate)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: dps.provision_only cannot be combined with "
+      AZ_IOT_LOG_ERROR("connection: open: dps.provision_only cannot be combined with "
                        "request_operational_certificate; the certificate is issued by a "
                        "registration, which this device never performs");
       return AZ_IOT_ERR_INVALID_ARG;
@@ -3713,7 +3853,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * missing capability below. */
   if (!client->opts.certificate_provider)
   {
-    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
+    AZ_IOT_LOG_ERROR("connection: open: opts.certificate_provider is required; every DPS and "
                      "hub connection uses TLS");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
@@ -3726,13 +3866,13 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2
         || p->vtable->get_csr == NULL)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate set but provider "
+      AZ_IOT_LOG_ERROR("connection: open: request_operational_certificate set but provider "
                        "does not support CSR enrollment");
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     if (az_span_size(client->opts.csr_payload_buffer) <= 0)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: request_operational_certificate requires "
+      AZ_IOT_LOG_ERROR("connection: open: request_operational_certificate requires "
                        "opts.csr_payload_buffer");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
@@ -3747,21 +3887,21 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   {
     if (dps_validate_registration_payload(client->opts.dps.registration_payload) != AZ_IOT_OK)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload must be a single "
+      AZ_IOT_LOG_ERROR("connection: open: opts.dps.registration_payload must be a single "
                        "well-formed JSON object");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     az_span body_buffer = dps_register_body_buffer(client);
     if (az_span_ptr(body_buffer) == NULL || az_span_size(body_buffer) <= 0)
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload requires "
+      AZ_IOT_LOG_ERROR("connection: open: opts.dps.registration_payload requires "
                        "opts.dps.registration_body_buffer (or opts.csr_payload_buffer) to build "
                        "the registration body in");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     if (spans_overlap(client->opts.dps.registration_payload, body_buffer))
     {
-      AZ_IOT_LOG_ERROR("connection_client_open: opts.dps.registration_payload overlaps the buffer "
+      AZ_IOT_LOG_ERROR("connection: open: opts.dps.registration_payload overlaps the buffer "
                        "the registration body is built in; they must be separate storage");
       return AZ_IOT_ERR_INVALID_ARG;
     }
@@ -3782,7 +3922,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       /* load() is the one hook every vtable version requires. Without it the
        * connect paths have nothing to ask for credentials, so the client would
        * dereference NULL a few frames later. */
-      AZ_IOT_LOG_ERROR("connection_client_open: certificate provider vtable has no load()");
+      AZ_IOT_LOG_ERROR("connection: open: certificate provider vtable has no load()");
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     az_iot_certificate_material mat = { 0 };
@@ -3801,6 +3941,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       }
     }
   }
+
+  log_open_summary(client);
 
   client->user_close = false;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
@@ -3855,7 +3997,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       return AZ_IOT_OK;
     }
     client->dps_standing_ref = false;
-    AZ_IOT_LOG_ERRORF("connection_client_open: provision_only session did not start (%d)", (int)r);
+    AZ_IOT_LOG_ERRORF("connection: open: provision_only session did not start (%d)", (int)r);
     return r;
   }
 
@@ -3897,7 +4039,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
 
   if (!client->opts.host || !client->opts.client_id)
   {
-    AZ_IOT_LOG_ERROR("connection_client_open: host or client_id not set (and DPS not configured)");
+    AZ_IOT_LOG_ERROR("connection: open: host or client_id not set (and DPS not configured)");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -5023,7 +5165,7 @@ void az_iot_connection_client__set_dps_message_observer(
   if (observer != NULL && client->dps_message_observer != NULL
       && client->dps_message_observer != observer)
   {
-    AZ_IOT_LOG_ERROR("a provisioning-session message observer is already registered");
+    AZ_IOT_LOG_ERROR("dps: a provisioning-session message observer is already registered");
     return;
   }
   client->dps_message_observer = observer;
@@ -5579,7 +5721,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
           client->opts.csr_payload_buffer, &body_len, body_parts, with_replace ? 7u : 5u)
       != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("send_csr: opts.csr_payload_buffer is too small for the request body");
+    AZ_IOT_LOG_ERROR(
+        "connection: send_csr: opts.csr_payload_buffer is too small for the request body");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 

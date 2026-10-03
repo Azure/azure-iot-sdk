@@ -7,6 +7,9 @@
 #define AZ_IOT_LOG_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include "azure/iot/az_iot_result.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -37,18 +40,113 @@ extern "C"
     az_iot_log_level min_level;
   } az_iot_log_sink;
 
-  /* Register a process-wide log sink. Pass NULL to disable logging (default). */
+  /**
+   * @brief Register the process-wide log sink. NULL disables logging (default).
+   *
+   * Not thread-safe: set it before creating any client and do not change it
+   * while a client or MQTT adapter thread may log.
+   *
+   * @param[in] sink Copied; NULL to disable.
+   */
   void az_iot_log_set_global_sink(const az_iot_log_sink* sink);
 
-  /* Built-in sink that writes to stderr. Usage:
-   *   az_iot_log_sink sink = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_ERROR);
-   *   az_iot_log_set_global_sink(&sink); */
+  /**
+   * @brief Built-in sink that writes one line per message to stderr.
+   *
+   * Line format, shared with the file sink:
+   * `<UTC ISO 8601 time> [<LEVEL>] [t:<thread id>] <file>:<line>: <message>`.
+   * The thread id is omitted where the platform has none.
+   *
+   * @param[in] min_level Lowest level written.
+   * @return Sink to pass to az_iot_log_set_global_sink().
+   */
   az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level);
 
+/** @brief Recommended log file name, so support can ask for it by name. */
+#define AZ_IOT_LOG_FILE_DEFAULT_NAME "azure-iot-sdk-c.log"
+
+/** @brief Default size at which the active log file is rotated. */
+#ifndef AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES
+#define AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES (1024u * 1024u)
+#endif
+
+/** @brief Default number of rotated files kept: `<path>.1` (newest) to `<path>.N`. */
+#ifndef AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES
+#define AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES 3u
+#endif
+
+/** @brief Capacity, terminator included, of the stored log file path. */
+#ifndef AZ_IOT_LOG_FILE_PATH_MAX
+#define AZ_IOT_LOG_FILE_PATH_MAX 256
+#endif
+
+  /** @brief File sink options. Zero selects the default for each field. */
+  typedef struct az_iot_log_file_sink_options
+  {
+    /** @brief Rotate before a line would take the active file past this size. */
+    uint32_t max_file_bytes;
+    /** @brief Rotated files kept, at most 99. */
+    uint32_t max_files;
+  } az_iot_log_file_sink_options;
+
+  /** @brief File sink state. Caller-allocated; fields are private. */
+  typedef struct az_iot_log_file_sink
+  {
+    struct
+    {
+      void* stream;
+      uint32_t bytes;
+      az_iot_log_file_sink_options options;
+      long lock;
+      char path[AZ_IOT_LOG_FILE_PATH_MAX];
+    } _internal;
+  } az_iot_log_file_sink;
+
+  /**
+   * @brief Default file sink options.
+   *
+   * @return AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES and AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES.
+   */
+  AZ_NODISCARD az_iot_log_file_sink_options az_iot_log_file_sink_options_default(void);
+
+  /**
+   * @brief Open a rotating log file and build a sink that writes to it.
+   *
+   * Appends to an existing file. Each line is flushed as it is written, so the
+   * file is complete up to a crash. On POSIX a new file is created owner-only
+   * (0600). Safe to call from several threads: writes and rotation are
+   * serialized. Hosted platforms only (Windows, Linux, macOS).
+   *
+   * @param[out] file_sink State; must outlive every use of @p out_sink.
+   * @param[in] path File path, copied. Rotated files are `<path>.1` .. `<path>.N`.
+   * @param[in] options NULL for defaults.
+   * @param[in] min_level Lowest level written.
+   * @param[out] out_sink Sink to pass to az_iot_log_set_global_sink().
+   * @retval AZ_IOT_OK Opened.
+   * @retval AZ_IOT_ERR_INVALID_ARG A NULL argument, an empty path, or max_files > 99.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p path plus a rotation suffix does not fit
+   * AZ_IOT_LOG_FILE_PATH_MAX.
+   * @retval AZ_IOT_ERR_NOT_FOUND The file could not be opened.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED Not a hosted platform.
+   */
+  AZ_NODISCARD az_iot_result az_iot_log_file_sink_open(
+      az_iot_log_file_sink* file_sink,
+      const char* path,
+      const az_iot_log_file_sink_options* options,
+      az_iot_log_level min_level,
+      az_iot_log_sink* out_sink);
+
+  /**
+   * @brief Close the file. Unregister the sink first if it is the global one.
+   *
+   * @param[in,out] file_sink State from az_iot_log_file_sink_open(); NULL is ignored.
+   */
+  void az_iot_log_file_sink_close(az_iot_log_file_sink* file_sink);
+
 /* Maximum length, terminator included, of a message built by
- * az_iot_log_emitf(). Longer messages are truncated rather than dropped: a
- * shortened diagnostic is more useful than none. Override to trade stack
- * footprint for detail. */
+ * az_iot_log_emitf(). Longer messages are truncated rather than dropped, and end
+ * in "..." so the cut is visible. Override to trade stack footprint for
+ * detail. */
 #ifndef AZ_IOT_LOG_MESSAGE_MAX
 #define AZ_IOT_LOG_MESSAGE_MAX 384
 #endif

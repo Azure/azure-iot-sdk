@@ -9,14 +9,43 @@
  * library and writes to a stream. Everything downstream of az_iot_log_emit is
  * the application's choice of sink.
  *
- * az-iot-allow: vsnprintf -- builds the message emitf hands to the sink
- * az-iot-allow: fprintf -- the built-in stderr sink itself */
+ * az-iot-allow: vsnprintf -- builds the message emitf hands to the sink */
 #include "azure/iot/az_iot_log.h"
 #include "internal/log_internal.h"
 
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <share.h>
+#include <windows.h>
+#define LOG_HOSTED 1
+#elif defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sched.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+#define LOG_HOSTED 1
+#else
+#define LOG_HOSTED 0
+#endif
+
+/** @brief Room for the line prefix (time, level, thread, file:line) and newline. */
+#define LOG_LINE_PREFIX_MAX 128
+/** @brief Capacity of one formatted line. */
+#define LOG_LINE_MAX (AZ_IOT_LOG_MESSAGE_MAX + LOG_LINE_PREFIX_MAX)
+/** @brief Marker that ends a truncated message. */
+#define LOG_ELLIPSIS "..."
+#define LOG_ELLIPSIS_LEN (sizeof(LOG_ELLIPSIS) - 1u)
+#define LOG_FILE_MAX_FILES_LIMIT 99u
 
 static az_iot_log_sink s_global_sink;
 static int s_sink_active;
@@ -40,13 +69,23 @@ bool az_iot_log_is_enabled(az_iot_log_level level)
   return s_sink_active && s_global_sink.sink != NULL && level >= s_global_sink.min_level;
 }
 
-/* Sinks are handed to plain "%s" formatting far more often than not -- the
- * built-in stderr sink does exactly that -- so a NULL reaching one is
- * undefined behaviour in code the SDK does not own. Now that emit is public,
- * substitute here rather than trusting every caller and every sink. */
+/* Sinks are handed to plain "%s" formatting far more often than not, so a NULL
+ * reaching one is undefined behaviour in code the SDK does not own. Substitute
+ * here rather than trusting every caller and every sink. */
+/** @brief @p value, or @p fallback when NULL. */
 static const char* log_text_or(const char* value, const char* fallback)
 {
   return value != NULL ? value : fallback;
+}
+
+/** @brief Overwrite the tail of a full buffer with LOG_ELLIPSIS. */
+static void mark_truncated(char* buf, size_t cap)
+{
+  if (cap > LOG_ELLIPSIS_LEN)
+  {
+    memcpy(buf + cap - 1u - LOG_ELLIPSIS_LEN, LOG_ELLIPSIS, LOG_ELLIPSIS_LEN);
+    buf[cap - 1u] = '\0';
+  }
 }
 
 void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
@@ -74,17 +113,221 @@ void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const 
   int written = vsnprintf(msg, sizeof(msg), fmt, args);
   va_end(args);
 
-  /* vsnprintf truncates on its own when the text does not fit; a negative
-   * count is a genuine encoding failure and there is nothing to report. */
+  /* A negative count is a genuine encoding failure and there is nothing to
+   * report. */
   if (written < 0)
   {
     return;
+  }
+  if ((size_t)written >= sizeof(msg))
+  {
+    mark_truncated(msg, sizeof(msg));
   }
 
   s_global_sink.sink(s_global_sink.user_ctx, level, log_text_or(file, "?"), line, msg);
 }
 
-/* Built-in stderr sink implementation. */
+/* ------------------------------------------------------------------------- */
+/* Line formatting shared by the built-in sinks                               */
+/* ------------------------------------------------------------------------- */
+
+/** @brief Bounded append-only writer; latches truncation. */
+typedef struct line_writer
+{
+  char* buf;
+  size_t cap;
+  size_t len;
+  bool truncated;
+} line_writer;
+
+/** @brief Append up to @p n bytes of @p s; latches truncation. */
+static void put_bytes(line_writer* w, const char* s, size_t n)
+{
+  size_t room = w->cap - w->len;
+  if (n > room)
+  {
+    n = room;
+    w->truncated = true;
+  }
+  memcpy(w->buf + w->len, s, n);
+  w->len += n;
+}
+
+/** @brief Append NUL-terminated @p s. */
+static void put_str(line_writer* w, const char* s) { put_bytes(w, s, strlen(s)); }
+
+/** @brief Decimal @p v, zero-padded to at least @p width digits. */
+static void put_uint(line_writer* w, uint64_t v, int width)
+{
+  char digits[20];
+  int n = 0;
+  do
+  {
+    digits[n++] = (char)('0' + (int)(v % 10u));
+    v /= 10u;
+  } while (v != 0u && n < (int)sizeof(digits));
+  while (n < width && n < (int)sizeof(digits))
+  {
+    digits[n++] = '0';
+  }
+  while (n > 0)
+  {
+    char c = digits[--n];
+    put_bytes(w, &c, 1u);
+  }
+}
+
+/** @brief UTC wall-clock time as seconds since the Unix epoch plus milliseconds. */
+static void wall_clock(int64_t* out_sec, uint32_t* out_ms)
+{
+#if defined(_WIN32)
+  FILETIME ft;
+  ULARGE_INTEGER t;
+  GetSystemTimeAsFileTime(&ft);
+  t.LowPart = ft.dwLowDateTime;
+  t.HighPart = ft.dwHighDateTime;
+  /* 100 ns ticks since 1601-01-01; 11644473600 s separate it from 1970. */
+  *out_sec = (int64_t)(t.QuadPart / 10000000ull) - 11644473600ll;
+  *out_ms = (uint32_t)((t.QuadPart / 10000ull) % 1000ull);
+#elif LOG_HOSTED
+  struct timespec ts;
+  if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+  {
+    ts.tv_sec = time(NULL);
+    ts.tv_nsec = 0;
+  }
+  *out_sec = (int64_t)ts.tv_sec;
+  *out_ms = (uint32_t)(ts.tv_nsec / 1000000L);
+#else
+  *out_sec = (int64_t)time(NULL);
+  *out_ms = 0;
+#endif
+}
+
+/** @brief `YYYY-MM-DDTHH:MM:SS.mmmZ` for @p sec/@p ms (proleptic Gregorian, UTC). */
+static void put_timestamp(line_writer* w, int64_t sec, uint32_t ms)
+{
+  int64_t days = sec / 86400;
+  int64_t rem = sec % 86400;
+  if (rem < 0)
+  {
+    rem += 86400;
+    days -= 1;
+  }
+  /* H. Hinnant's days-to-civil. */
+  int64_t z = days + 719468;
+  int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  int64_t doe = z - era * 146097;
+  int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  int64_t mp = (5 * doy + 2) / 153;
+  int64_t d = doy - (153 * mp + 2) / 5 + 1;
+  int64_t m = mp < 10 ? mp + 3 : mp - 9;
+  int64_t y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+  if (y < 0)
+  {
+    y = 0;
+  }
+
+  put_uint(w, (uint64_t)y, 4);
+  put_str(w, "-");
+  put_uint(w, (uint64_t)m, 2);
+  put_str(w, "-");
+  put_uint(w, (uint64_t)d, 2);
+  put_str(w, "T");
+  put_uint(w, (uint64_t)(rem / 3600), 2);
+  put_str(w, ":");
+  put_uint(w, (uint64_t)((rem / 60) % 60), 2);
+  put_str(w, ":");
+  put_uint(w, (uint64_t)(rem % 60), 2);
+  put_str(w, ".");
+  put_uint(w, ms, 3);
+  put_str(w, "Z");
+}
+
+/** @brief OS thread id, or 0 where the platform has none. */
+static uint64_t thread_id(void)
+{
+#if defined(_WIN32)
+  return (uint64_t)GetCurrentThreadId();
+#elif defined(__linux__)
+  return (uint64_t)syscall(SYS_gettid);
+#else
+  return 0;
+#endif
+}
+
+/** @brief Final path component of @p file, so build paths stay out of logs. */
+static const char* base_name(const char* file)
+{
+  const char* base = file;
+  for (const char* p = file; *p != '\0'; ++p)
+  {
+    if (*p == '/' || *p == '\\')
+    {
+      base = p + 1;
+    }
+  }
+  return base;
+}
+
+/** @brief Fixed-width level name. */
+static const char* level_name(az_iot_log_level level)
+{
+  static const char* const names[] = { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR" };
+  return (level >= AZ_IOT_LOG_LEVEL_TRACE && level <= AZ_IOT_LOG_LEVEL_ERROR) ? names[level]
+                                                                              : "?    ";
+}
+
+/**
+ * @brief Build one newline-terminated line in @p buf.
+ *
+ * @return Line length, newline included, excluding the terminator.
+ */
+static size_t format_line(
+    char* buf,
+    size_t cap,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  /* Room is kept for the newline and terminator. */
+  line_writer w = { buf, cap - 2u, 0u, false };
+  int64_t sec = 0;
+  uint32_t ms = 0;
+  uint64_t tid = thread_id();
+
+  wall_clock(&sec, &ms);
+  put_timestamp(&w, sec, ms);
+  put_str(&w, " [");
+  put_str(&w, level_name(level));
+  put_str(&w, "] ");
+  if (tid != 0u)
+  {
+    put_str(&w, "[t:");
+    put_uint(&w, tid, 1);
+    put_str(&w, "] ");
+  }
+  put_str(&w, base_name(file));
+  put_str(&w, ":");
+  put_uint(&w, line > 0 ? (uint64_t)line : 0u, 1);
+  put_str(&w, ": ");
+  put_str(&w, msg);
+  if (w.truncated)
+  {
+    memcpy(buf + w.len - LOG_ELLIPSIS_LEN, LOG_ELLIPSIS, LOG_ELLIPSIS_LEN);
+  }
+  buf[w.len++] = '\n';
+  buf[w.len] = '\0';
+  return w.len;
+}
+
+/* ------------------------------------------------------------------------- */
+/* stderr sink                                                               */
+/* ------------------------------------------------------------------------- */
+
+/** @brief az_iot_log_sink_callback for az_iot_log_stderr_sink(). */
 static void stderr_sink_fn(
     void* user_ctx,
     az_iot_log_level level,
@@ -92,10 +335,11 @@ static void stderr_sink_fn(
     int line,
     const char* msg)
 {
+  char buf[LOG_LINE_MAX];
+  size_t n = format_line(buf, sizeof(buf), level, file, line, msg);
   (void)user_ctx;
-  static const char* level_names[] = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR" };
-  const char* lvl = (level >= 0 && level <= AZ_IOT_LOG_LEVEL_ERROR) ? level_names[level] : "?";
-  fprintf(stderr, "[%s] %s:%d: %s\n", lvl, file, line, msg);
+  /* One write per line, so lines from different threads do not interleave. */
+  (void)fwrite(buf, 1u, n, stderr);
 }
 
 az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level)
@@ -105,4 +349,216 @@ az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level)
   sink.user_ctx = NULL;
   sink.min_level = min_level;
   return sink;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Rotating file sink                                                        */
+/* ------------------------------------------------------------------------- */
+
+az_iot_log_file_sink_options az_iot_log_file_sink_options_default(void)
+{
+  az_iot_log_file_sink_options o;
+  o.max_file_bytes = AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES;
+  o.max_files = AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES;
+  return o;
+}
+
+#if LOG_HOSTED
+
+/* Spin lock: the SDK links no thread library, and adapter threads log too. */
+/** @brief Acquire @p lock. */
+static void file_lock(long* lock)
+{
+#if defined(_MSC_VER)
+  while (InterlockedExchange((volatile LONG*)lock, 1) != 0)
+  {
+    (void)SwitchToThread();
+  }
+#elif defined(_WIN32)
+  while (__atomic_exchange_n(lock, 1L, __ATOMIC_ACQUIRE) != 0L)
+  {
+    (void)SwitchToThread();
+  }
+#else
+  while (__atomic_exchange_n(lock, 1L, __ATOMIC_ACQUIRE) != 0L)
+  {
+    (void)sched_yield();
+  }
+#endif
+}
+
+/** @brief Release @p lock. */
+static void file_unlock(long* lock)
+{
+#if defined(_MSC_VER)
+  (void)InterlockedExchange((volatile LONG*)lock, 0);
+#else
+  __atomic_store_n(lock, 0L, __ATOMIC_RELEASE);
+#endif
+}
+
+/** @brief Open @p path for appending; owner-only on POSIX when created. */
+static FILE* open_append(const char* path)
+{
+#if defined(_WIN32)
+  /* Deny other writers, allow readers: the file can be inspected while in use. */
+  return _fsopen(path, "ab", _SH_DENYWR);
+#else
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
+  FILE* f;
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  f = fdopen(fd, "ab");
+  if (f == NULL)
+  {
+    (void)close(fd);
+  }
+  return f;
+#endif
+}
+
+/** @brief `<base>.<index>` into @p out; @p out holds AZ_IOT_LOG_FILE_PATH_MAX. */
+static void rotated_name(char* out, const char* base, uint32_t index)
+{
+  line_writer w = { out, AZ_IOT_LOG_FILE_PATH_MAX - 1u, 0u, false };
+  put_str(&w, base);
+  put_str(&w, ".");
+  put_uint(&w, index, 1);
+  out[w.len] = '\0';
+}
+
+/** @brief Shift `<path>.i` to `<path>.i+1`, `<path>` to `<path>.1`, reopen. Lock held. */
+static void file_rotate(az_iot_log_file_sink* fs)
+{
+  char from[AZ_IOT_LOG_FILE_PATH_MAX];
+  char to[AZ_IOT_LOG_FILE_PATH_MAX];
+  const char* path = fs->_internal.path;
+  uint32_t n = fs->_internal.options.max_files;
+
+  (void)fclose((FILE*)fs->_internal.stream);
+  fs->_internal.stream = NULL;
+
+  /* max_files is at least 1: open() replaces 0 with the default. */
+  rotated_name(to, path, n);
+  (void)remove(to);
+  for (uint32_t i = n; i > 1u; --i)
+  {
+    rotated_name(from, path, i - 1u);
+    rotated_name(to, path, i);
+    (void)rename(from, to);
+  }
+  rotated_name(to, path, 1u);
+  (void)rename(path, to);
+
+  fs->_internal.stream = open_append(path);
+  fs->_internal.bytes = 0u;
+}
+
+/** @brief az_iot_log_sink_callback for the file sink; @p user_ctx is the az_iot_log_file_sink. */
+static void file_sink_fn(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  az_iot_log_file_sink* fs = (az_iot_log_file_sink*)user_ctx;
+  char buf[LOG_LINE_MAX];
+  size_t n = format_line(buf, sizeof(buf), level, file, line, msg);
+
+  file_lock(&fs->_internal.lock);
+  if (fs->_internal.stream != NULL && fs->_internal.bytes > 0u
+      && (uint64_t)fs->_internal.bytes + n > fs->_internal.options.max_file_bytes)
+  {
+    file_rotate(fs);
+  }
+  if (fs->_internal.stream != NULL)
+  {
+    FILE* f = (FILE*)fs->_internal.stream;
+    size_t w = fwrite(buf, 1u, n, f);
+    (void)fflush(f);
+    fs->_internal.bytes += (uint32_t)w;
+  }
+  file_unlock(&fs->_internal.lock);
+}
+
+#endif /* LOG_HOSTED */
+
+az_iot_result az_iot_log_file_sink_open(
+    az_iot_log_file_sink* file_sink,
+    const char* path,
+    const az_iot_log_file_sink_options* options,
+    az_iot_log_level min_level,
+    az_iot_log_sink* out_sink)
+{
+  if (file_sink == NULL || path == NULL || path[0] == '\0' || out_sink == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_log_file_sink_options o
+      = options != NULL ? *options : az_iot_log_file_sink_options_default();
+  if (o.max_file_bytes == 0u)
+  {
+    o.max_file_bytes = AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES;
+  }
+  if (o.max_files == 0u)
+  {
+    o.max_files = AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES;
+  }
+  if (o.max_files > LOG_FILE_MAX_FILES_LIMIT)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Room for ".NN" and the terminator. */
+  if (strlen(path) + 4u > (size_t)AZ_IOT_LOG_FILE_PATH_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+#if LOG_HOSTED
+  memset(file_sink, 0, sizeof(*file_sink));
+  memcpy(file_sink->_internal.path, path, strlen(path) + 1u);
+  file_sink->_internal.options = o;
+
+  FILE* f = open_append(file_sink->_internal.path);
+  if (f == NULL)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  if (fseek(f, 0L, SEEK_END) == 0)
+  {
+    long size = ftell(f);
+    file_sink->_internal.bytes = size > 0 ? (uint32_t)size : 0u;
+  }
+  file_sink->_internal.stream = f;
+
+  out_sink->sink = file_sink_fn;
+  out_sink->user_ctx = file_sink;
+  out_sink->min_level = min_level;
+  return AZ_IOT_OK;
+#else
+  (void)min_level;
+  return AZ_IOT_ERR_NOT_SUPPORTED;
+#endif
+}
+
+void az_iot_log_file_sink_close(az_iot_log_file_sink* file_sink)
+{
+#if LOG_HOSTED
+  if (file_sink == NULL)
+  {
+    return;
+  }
+  file_lock(&file_sink->_internal.lock);
+  if (file_sink->_internal.stream != NULL)
+  {
+    (void)fclose((FILE*)file_sink->_internal.stream);
+    file_sink->_internal.stream = NULL;
+  }
+  file_unlock(&file_sink->_internal.lock);
+#else
+  (void)file_sink;
+#endif
 }
