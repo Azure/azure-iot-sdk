@@ -13,6 +13,7 @@ using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -760,9 +761,17 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             // ReprovisionWithRetryAsync returns normally both when it connected and when it gave up after the retry
-            // policy was exhausted (which it never is under the default indefinite policy). If it gave up, it marked this
-            // client unrecoverably faulted; surface that to the caller rather than returning as though connected.
-            ThrowIfUnrecoverablyFaulted();
+            // policy was exhausted (which it never is under the default indefinite policy). If it gave up, it recorded
+            // the fault that ended the recovery. Surface that real, classified (terminal) fault to the caller that asked
+            // this client to connect, rather than the OperationCanceledException that ThrowIfUnrecoverablyFaulted raises
+            // for feature operations parked waiting on the connection: a caller awaiting ConnectAsync should learn
+            // exactly why the connection could not be (re-)established, not an opaque "operation canceled". The original
+            // stack trace is preserved so the real point of failure is not lost.
+            DeviceException? reprovisioningFault = _unrecoverableFault;
+            if (reprovisioningFault != null)
+            {
+                ExceptionDispatchInfo.Capture(reprovisioningFault).Throw();
+            }
         }
 
         /// <summary>
@@ -812,7 +821,13 @@ namespace Microsoft.Azure.Iot.Device
                 }
                 catch (Exception e)
                 {
-                    attempt++;
+                    // Saturate rather than wrap: under the default indefinite policy this loop can run without bound, and
+                    // a uint that wrapped back to 0 would make the retry policy see this as a first attempt again and
+                    // reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
+                    if (attempt < uint.MaxValue)
+                    {
+                        attempt++;
+                    }
 
                     // This loop is itself the re-provisioning recovery, so it always consults the policy for a Device
                     // Provisioning Service endpoint. Only AbandonRetry stops it; both Retry and

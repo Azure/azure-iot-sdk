@@ -131,6 +131,54 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ConnectAsyncSurfacesTheRealFaultWhenReprovisioningIsAbandoned()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            mockMqttClient.OnConnect = connect =>
+            {
+                // The assigned hub rejects this device's identity at CONNACK every time. The DPS connection and every
+                // re-registration succeed, but the hub the device keeps being assigned always rejects it, so the
+                // re-provisioning recovery can never actually connect.
+                if (connect.HostName == FirstAssignedHub)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized });
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            // A retry policy that abandons retrying on the first failure, so the re-provisioning recovery gives up at
+            // once rather than retrying the hub that keeps rejecting this device.
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new AbandonRetryPolicy(),
+            });
+
+            // The initial provisioning assigns the hub, which rejects this device during the connect the caller awaits.
+            // That fault is reported to the caller and leaves a standing re-provision demand.
+            await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            // With a re-provision standing, ConnectAsync routes to DPS to recover, but the freshly assigned hub rejects
+            // this device again and the retry policy abandons retrying, so the recovery gives up. The caller that asked
+            // this client to connect must learn the real, classified fault that ended the recovery -- not an opaque
+            // OperationCanceledException that only says the operation was canceled.
+            DeviceException connectFault = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ConnectAsync(
+                    connectionClient.GetCurrentConnectionContext()!,
+                    TestContext.Current.CancellationToken));
+
+            // The surfaced fault is the real identity rejection that ended the recovery, with its classification intact.
+            Assert.Equal(ErrorRetryability.IdentityTerminal, connectFault.Retryability);
+        }
+
+        [Fact]
         public async Task ConnectAsyncReprovisionsInPlaceWhenTheCachedHubRejectsTheDevice()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -1252,6 +1300,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 }
 
                 return RetryGuidance.Retry;
+            }
+        }
+
+        /// <summary>
+        /// A retry policy that abandons retrying on the very first failure, so that a test can drive a recovery loop to
+        /// give up immediately rather than retrying forever under the default indefinite policy.
+        /// </summary>
+        private sealed class AbandonRetryPolicy : IRetryPolicy
+        {
+            public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+            {
+                retryDelay = TimeSpan.Zero;
+                return RetryGuidance.AbandonRetry;
             }
         }
 

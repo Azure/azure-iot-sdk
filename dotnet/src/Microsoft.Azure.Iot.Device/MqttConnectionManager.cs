@@ -504,7 +504,13 @@ namespace Microsoft.Azure.Iot.Device
                     Trace.TraceWarning("Encountered an exception while connecting. May attempt to reconnect. {0}", e);
                 }
 
-                attemptCount++;
+                // Saturate rather than wrap: under the default indefinite policy this reconnection loop can run without
+                // bound, and a uint that wrapped back to 0 would make the retry policy see this as a first attempt again
+                // and reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
+                if (attemptCount < uint.MaxValue)
+                {
+                    attemptCount++;
+                }
             }
         }
 
