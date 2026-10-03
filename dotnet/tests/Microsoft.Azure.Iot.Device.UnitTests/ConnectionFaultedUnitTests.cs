@@ -345,6 +345,62 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task UnrecoverableFaultReleasesAPendingOperationAndRaisesConnectionFaultedAsync()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            // A feature client's publish finds the connection gone, which parks it inside the client waiting for the
+            // connection to come back -- this is the internal waiter that the unrecoverable fault must release.
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            TaskCompletionSource publishAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                publishAttempted.TrySetResult();
+                throw new MqttClientNotConnectedException("mock client not connected exception");
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += args =>
+            {
+                connectionFaulted.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            // A feature client publishes while the connection is gone, so this operation is left waiting for the client
+            // to make the device present again. It runs on its own thread because that wait blocks the thread it is on.
+            Task pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await publishAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // This reason is terminal and says nothing about this device's identity, so nothing on this client will
+            // bring the connection back. The single fault must both release the parked publish (an internal waiter) and
+            // tell the application the connection is gone for good -- neither may suppress the other.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerMoved);
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish);
+
+            ConnectionFaultedEventArgs raisedArgs = await connectionFaulted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(ErrorRetryability.Terminal, raisedArgs.Exception.Retryability);
+        }
+
+        [Fact]
         public async Task ProvisioningThatDoesNotAssignAHubThrowsARetryableFault()
         {
             using MockConnectionMqttClient mockMqttClient = new();

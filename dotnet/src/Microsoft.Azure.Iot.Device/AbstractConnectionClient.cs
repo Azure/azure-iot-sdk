@@ -861,8 +861,30 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
             _unrecoverableFault = fault;
 
-            UnrecoverablyFaulted?.Invoke();
+            // Release everything inside this client that is waiting for the connection (for example feature operations
+            // parked in PerformWhileRespectingConnectionState) so they stop waiting for a connection that is never
+            // coming back. Each waiter is released independently: one that throws must not stop the others from being
+            // released, nor prevent the application notification below. Without this isolation a single misbehaving
+            // waiter would suppress the application's connection-faulted callback entirely, leaving it unaware that the
+            // connection is gone for good.
+            Action? unrecoverablyFaulted = UnrecoverablyFaulted;
+            if (unrecoverablyFaulted != null)
+            {
+                foreach (Delegate releaseWaiter in unrecoverablyFaulted.GetInvocationList())
+                {
+                    try
+                    {
+                        ((Action)releaseWaiter).Invoke();
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceWarning("An internal handler for the unrecoverable fault threw and was ignored. {0}", e);
+                    }
+                }
+            }
 
+            // Always let the application know, even if one of the internal waiters above threw, so that it can connect
+            // again itself if it wants to keep using this client.
             if (ConnectionFaultedAsync != null)
             {
                 await ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault });
@@ -1407,14 +1429,32 @@ namespace Microsoft.Azure.Iot.Device
             // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
             using ManualResetEventSlim latch = new();
             latch.Set();
+
+            // Release the latch, tolerating this operation having already completed and disposed it in a race with the
+            // connection event that is releasing it. The connection event (a device presence flow completing, or an
+            // unrecoverable fault) fires on the connection layer's threads and may capture this subscriber an instant
+            // before the finally below removes it, so a disposed latch here is expected and simply means there is
+            // nothing left to release. Swallowing it keeps that race from propagating into -- and aborting -- the fault
+            // notification path that raises it.
+            void ReleaseLatch()
+            {
+                try
+                {
+                    latch.Set();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
-                latch.Set();
-                return Task.CompletedTask; // Not covered? It should be, right?
+                ReleaseLatch();
+                return Task.CompletedTask;
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            Action HandleUnrecoverableFault = () => latch.Set(); // Stop waiting for a connection that is never coming back
+            Action HandleUnrecoverableFault = ReleaseLatch; // Stop waiting for a connection that is never coming back
             UnrecoverablyFaulted += HandleUnrecoverableFault;
             try
             {
