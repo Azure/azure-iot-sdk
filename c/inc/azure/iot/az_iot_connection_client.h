@@ -1030,14 +1030,19 @@ extern "C"
 #define AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT 80
 #endif
 /** @brief Bytes of the buffer a SAS token is built in, or handed to
- * az_iot_sas_token_callback. Fits a hub token for a 128-character device ID
- * that is fully URL-encoded. The client holds one per role. */
+ * az_iot_sas_token_callback; the client holds one per role. A key-signed
+ * token needs 3 * (host + device ID, or ID scope + registration ID length)
+ * + 223 bytes: 1024 allows 267 ID characters. Longer IDs fail the attempt
+ * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 #ifndef AZ_IOT_SAS_TOKEN_BUF
 #define AZ_IOT_SAS_TOKEN_BUF 1024
 #endif
 /** @brief Largest decoded symmetric key init() accepts, in bytes. */
 #ifndef AZ_IOT_SAS_KEY_MAX
 #define AZ_IOT_SAS_KEY_MAX 64
+#endif
+#if AZ_IOT_SAS_TOKEN_BUF < AZ_IOT_SAS_KEY_MAX
+#error "AZ_IOT_SAS_TOKEN_BUF must be at least AZ_IOT_SAS_KEY_MAX (it decodes group keys)"
 #endif
 /** @brief Most certificates the client loads from the provider per role
  * (indexes 0 to this - 1), even if the provider never returns
@@ -1502,6 +1507,9 @@ extern "C"
       az_iot_auth_source source;
       uint8_t x509_index;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
+    /* SAS signing scratch, wiped after each use: the HMAC and its base64. */
+    uint8_t sas_mac[AZ_IOT_SHA256_SIZE];
+    char sas_signature[48]; /* base64 of AZ_IOT_SHA256_SIZE bytes: 44 */
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

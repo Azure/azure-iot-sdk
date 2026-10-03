@@ -17,7 +17,6 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "internal/sas.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -45,6 +44,9 @@
   "SharedAccessSignature sr=0ne00000001%2fregistrations%2fut-device&sig=9nM2SzDCAOl%" \
   "2FzsYjmXT%2Fu5JwUmodICuLzA2jNfMfHAg%3D&se=1700000600&skn=registration"
 
+#define ENCODED_ID_HUB_TOKEN                                                               \
+  "SharedAccessSignature sr=broker.example%2Fdevices%2Fd%40v%201%2Fx&sig=tcKOOmzVO8ju8u3X" \
+  "MjhaYBAcaJFUnYwOhPtV5soYaiY%3D&se=1700003600"
 #define GROUP_HUB_TOKEN                                                                    \
   "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=BRrnGeCm9r2C4ThgRfkk" \
   "iZDw7C0H8EGZaA%2BwJ03WJx8%3D&se=1700003600"
@@ -194,123 +196,6 @@ static const az_iot_mock_call* last_connect(const fixture* fx)
   return call;
 }
 
-/* ---- token construction ------------------------------------------------- */
-
-static void hub_token_matches_reference(void** state)
-{
-  (void)state;
-  uint8_t key[AZ_IOT_SAS_KEY_MAX];
-  size_t key_len = 0;
-  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, sizeof(key), &key_len), AZ_IOT_OK);
-  assert_int_equal(key_len, 32);
-  char uri[256];
-  assert_int_equal(
-      az_iot_sas__resource_uri(false, "broker.example", "ut-device", uri, sizeof(uri)), AZ_IOT_OK);
-  assert_string_equal(uri, "broker.example%2Fdevices%2Fut-device");
-  char token[AZ_IOT_SAS_TOKEN_BUF];
-  assert_int_equal(
-      az_iot_sas__build_token(
-          TEST_CRYPTO(), key, key_len, uri, "", NOW + 3600u, token, sizeof(token)),
-      AZ_IOT_OK);
-  assert_string_equal(token, HUB_TOKEN);
-}
-
-static void dps_token_matches_reference(void** state)
-{
-  (void)state;
-  uint8_t key[AZ_IOT_SAS_KEY_MAX];
-  size_t key_len = 0;
-  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, sizeof(key), &key_len), AZ_IOT_OK);
-  char uri[256];
-  assert_int_equal(
-      az_iot_sas__resource_uri(true, "0ne00000001", "ut-device", uri, sizeof(uri)), AZ_IOT_OK);
-  char token[AZ_IOT_SAS_TOKEN_BUF];
-  assert_int_equal(
-      az_iot_sas__build_token(
-          TEST_CRYPTO(), key, key_len, uri, "registration", NOW + 3600u, token, sizeof(token)),
-      AZ_IOT_OK);
-  assert_string_equal(token, DPS_TOKEN);
-}
-
-static void resource_uri_url_encodes_ids(void** state)
-{
-  (void)state;
-  char uri[64];
-  assert_int_equal(az_iot_sas__resource_uri(false, "h", "d@v 1/x", uri, sizeof(uri)), AZ_IOT_OK);
-  assert_string_equal(uri, "h%2Fdevices%2Fd%40v%201%2Fx");
-  assert_int_equal(
-      az_iot_sas__resource_uri(false, "h", "", uri, sizeof(uri)), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(
-      az_iot_sas__resource_uri(false, "h", "d@v 1/x", uri, 10), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-}
-
-static void token_too_large_is_rejected_and_wiped(void** state)
-{
-  (void)state;
-  uint8_t key[AZ_IOT_SAS_KEY_MAX];
-  size_t key_len = 0;
-  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, sizeof(key), &key_len), AZ_IOT_OK);
-  char token[100];
-  memset(token, 'x', sizeof(token));
-  assert_int_equal(
-      az_iot_sas__build_token(
-          TEST_CRYPTO(),
-          key,
-          key_len,
-          "broker.example%2Fdevices%2Fut-device",
-          "",
-          NOW,
-          token,
-          sizeof(token)),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  for (size_t i = 0; i < sizeof(token); ++i)
-  {
-    assert_int_equal(token[i], 0);
-  }
-}
-
-static void token_whose_input_does_not_fit_is_wiped(void** state)
-{
-  (void)state;
-  uint8_t key[AZ_IOT_SAS_KEY_MAX];
-  size_t key_len = 0;
-  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, sizeof(key), &key_len), AZ_IOT_OK);
-  char token[20];
-  memset(token, 'x', sizeof(token));
-  assert_int_equal(
-      az_iot_sas__build_token(
-          TEST_CRYPTO(),
-          key,
-          key_len,
-          "broker.example%2Fdevices%2Fut-device",
-          "",
-          NOW,
-          token,
-          sizeof(token)),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  for (size_t i = 0; i < sizeof(token); ++i)
-  {
-    assert_int_equal(token[i], 0);
-  }
-}
-
-static void decode_key_rejects_bad_input(void** state)
-{
-  (void)state;
-  uint8_t key[AZ_IOT_SAS_KEY_MAX];
-  size_t key_len = 7;
-  memset(key, 0xAB, sizeof(key));
-  assert_int_equal(az_iot_sas__decode_key("", key, sizeof(key), &key_len), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(key_len, 0);
-  for (size_t i = 0; i < sizeof(key); ++i)
-  {
-    assert_int_equal(key[i], 0);
-  }
-  assert_int_equal(
-      az_iot_sas__decode_key("not base64!", key, sizeof(key), &key_len), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, 16, &key_len), AZ_IOT_ERR_INVALID_ARG);
-}
-
 /* ---- init() validation --------------------------------------------------- */
 
 static void init_rejects_invalid_sas_options(void** state)
@@ -336,6 +221,13 @@ static void init_rejects_invalid_sas_options(void** state)
 
   opts = hub_sas_options();
   opts.hub_auth.sas.primary_key_base64 = "not base64!";
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
+
+  opts = hub_sas_options();
+  /* 96 bytes: over AZ_IOT_SAS_KEY_MAX. */
+  opts.hub_auth.sas.primary_key_base64
+      = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v"
+        "MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5f";
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
   opts = hub_sas_options();
@@ -427,6 +319,35 @@ static void hub_group_key_derives_from_client_id(void** state)
   assert_string_equal(last_connect(fx)->password, GROUP_HUB_TOKEN);
 }
 
+static void the_device_id_is_url_encoded_in_the_token(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.client_id = "d@v 1/x";
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, ENCODED_ID_HUB_TOKEN);
+}
+
+static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char long_id[AZ_IOT_SAS_TOKEN_BUF];
+  memset(long_id, 'a', sizeof(long_id) - 1u);
+  long_id[sizeof(long_id) - 1u] = '\0';
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.client_id = long_id;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  const char* token = fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].token;
+  for (size_t i = 0; i < sizeof(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].token); ++i)
+  {
+    assert_int_equal(token[i], 0);
+  }
+}
+
 static void no_unix_time_fails_the_attempt_with_busy(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -495,12 +416,6 @@ static void deinit_wipes_keys_and_tokens(void** state)
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(hub_token_matches_reference),
-    cmocka_unit_test(dps_token_matches_reference),
-    cmocka_unit_test(resource_uri_url_encodes_ids),
-    cmocka_unit_test(token_too_large_is_rejected_and_wiped),
-    cmocka_unit_test(token_whose_input_does_not_fit_is_wiped),
-    cmocka_unit_test(decode_key_rejects_bad_input),
     cmocka_unit_test_setup_teardown(init_rejects_invalid_sas_options, setup, teardown),
     cmocka_unit_test_setup_teardown(init_does_not_support_user_provided_token_yet, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -510,6 +425,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_provider_ca_is_kept_when_the_role_falls_back_to_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_group_key_derives_from_client_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_device_id_is_url_encoded_in_the_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_token_that_does_not_fit_fails_and_is_wiped, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connects_with_a_sas_token, setup, teardown),
     cmocka_unit_test_setup_teardown(

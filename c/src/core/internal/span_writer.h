@@ -105,7 +105,6 @@ extern "C"
 
   /* Decimal, unpadded, no locale involvement. */
   void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value);
-  void az_iot_span_writer_append_u64(az_iot_span_writer* writer, uint64_t value);
   void az_iot_span_writer_append_i32(az_iot_span_writer* writer, int32_t value);
 
   /* Lowercase hexadecimal, zero-padded to @p min_digits (clamped to 1..8) and

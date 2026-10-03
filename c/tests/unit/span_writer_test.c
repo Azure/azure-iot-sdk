@@ -155,20 +155,6 @@ static void decimal_matches_snprintf_at_the_extremes(void** state)
     assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
     assert_string_equal(actual, expected);
   }
-
-  static const uint64_t k_unsigned64[] = { 0u, 4294967296u, UINT64_MAX };
-  for (size_t i = 0; i < sizeof(k_unsigned64) / sizeof(k_unsigned64[0]); ++i)
-  {
-    char expected[24];
-    char actual[24];
-    (void)snprintf(expected, sizeof(expected), "%llu", (unsigned long long)k_unsigned64[i]);
-
-    az_iot_span_writer writer;
-    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(actual));
-    az_iot_span_writer_append_u64(&writer, k_unsigned64[i]);
-    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
-    assert_string_equal(actual, expected);
-  }
 }
 
 static void hex_pads_clamps_and_widens(void** state)
