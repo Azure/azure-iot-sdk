@@ -207,8 +207,32 @@ namespace Microsoft.Azure.Iot.Device
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             if (provisioningResult.Status != ProvisioningRegistrationStatus.Assigned)
-            { 
-                //TODO
+            {
+                // Device Provisioning Service returned a terminal result other than "assigned" (for example "failed",
+                // "disabled" or "unassigned"), so there is no hub assignment to connect to and AssignedHub/DeviceId are
+                // null. Mirror the C connection client (dps_apply_deferred), which treats a registration that failed or
+                // completed without an assignment as the most transient failure a device meets -- the enrollment may
+                // not have been created yet, DPS may not have a linked IoT hub yet, or the service may simply have been
+                // unavailable -- and retries it under the reconnection policy rather than giving up. Throwing a
+                // retryable fault lets ReprovisionWithRetryAsync keep re-provisioning under the policy (indefinitely,
+                // under the default policy), and surfaces a meaningful error to a caller that provisioned directly
+                // instead of dereferencing a null assignment.
+                string errorDetails = provisioningResult.ErrorCode != null || provisioningResult.ErrorMessage != null
+                    ? $" (error code {provisioningResult.ErrorCode}, error message \"{provisioningResult.ErrorMessage}\")"
+                    : string.Empty;
+
+                Trace.TraceError(
+                    "Device Provisioning Service returned registration status '{0}' (substatus '{1}') instead of 'assigned'.{2}",
+                    provisioningResult.Status,
+                    provisioningResult.Substatus,
+                    errorDetails);
+
+                throw new DeviceException(
+                    $"Device Provisioning Service did not assign this device to an IoT hub: registration status was '{provisioningResult.Status}' (substatus '{provisioningResult.Substatus}'){errorDetails}.")
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = false,
+                };
             }
 
             CurrentConnectionContext = new ConnectionContext()

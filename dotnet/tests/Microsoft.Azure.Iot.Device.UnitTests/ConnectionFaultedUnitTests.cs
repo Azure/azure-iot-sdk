@@ -200,6 +200,39 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisioningThatDoesNotAssignAHubThrowsARetryableFault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                // DPS completes the registration with a terminal "failed" status and no hub assignment, as it does
+                // when the enrollment does not exist yet. There is no hub for this device to connect to.
+                TerminalRegistrationResult = new DeviceRegistrationResult()
+                {
+                    RegistrationId = RegistrationId,
+                    Status = ProvisioningRegistrationStatus.Failed,
+                    ErrorCode = 401002,
+                    ErrorMessage = "Invalid certificate.",
+                },
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // The device was not assigned to a hub, so provisioning must surface as a classified, retryable fault
+            // rather than a NullReferenceException from dereferencing the absent assignment. Mirrors the C connection
+            // client, which treats a registration that failed or produced no assignment as a transient failure to be
+            // retried under the reconnection policy.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
         public async Task ConnectionFaultedAsyncIsNotRaisedWhenAnIdentityFaultRecoversOnItsOwn()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -845,6 +878,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             public int RegistrationCount => Volatile.Read(ref _registrationCount);
 
             /// <summary>
+            /// When set, the registration poll completes with this terminal result (for example a "failed" status with
+            /// no hub assignment) instead of assigning the device to a hub. Lets a test drive the non-"assigned"
+            /// provisioning path.
+            /// </summary>
+            public DeviceRegistrationResult? TerminalRegistrationResult { get; set; }
+
+            /// <summary>
             /// Raised with the running registration count each time a registration request arrives, before it is
             /// answered, so that a test can hold the flow open.
             /// </summary>
@@ -869,17 +909,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 }
                 else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix))
                 {
+                    DeviceRegistrationResult registrationState = TerminalRegistrationResult ?? new DeviceRegistrationResult()
+                    {
+                        RegistrationId = RegistrationId,
+                        DeviceId = DeviceId,
+                        AssignedHub = _assignedHubSelector(RegistrationCount),
+                        Status = ProvisioningRegistrationStatus.Assigned,
+                    };
+
                     await RespondAsync(new RegistrationOperationStatus()
                     {
                         OperationId = OperationId,
-                        Status = ProvisioningRegistrationStatus.Assigned,
-                        RegistrationState = new DeviceRegistrationResult()
-                        {
-                            RegistrationId = RegistrationId,
-                            DeviceId = DeviceId,
-                            AssignedHub = _assignedHubSelector(RegistrationCount),
-                            Status = ProvisioningRegistrationStatus.Assigned,
-                        },
+                        Status = registrationState.Status,
+                        RegistrationState = registrationState,
                     });
                 }
 
