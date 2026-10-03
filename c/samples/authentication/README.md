@@ -24,16 +24,16 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 Not implemented; the three samples above show the proposed API and are not built.
 
-`dps_auth` and `hub_auth` each select one `az_iot_auth_kind`:
+Each role (DPS, hub) uses whichever of these sources are configured, tried in this order:
 
-| Kind | The device holds | SDK needs |
+| Source | The device holds | SDK needs |
 | --- | --- | --- |
-| `AZ_IOT_AUTH_X509` (default) | A certificate and key, through `certificate_provider` | — |
-| `AZ_IOT_AUTH_SAS_TOKEN` | A primary key, optionally a secondary key, and/or a `user_provided_token` callback | With keys: `crypto`, and a Unix time (`time()` unless `unix_time` is set) |
+| X.509 | Certificates and keys, through `certificate_provider` (one or more per role) | — |
+| Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, and a Unix time (`time()` unless `unix_time` is set) |
+| User-provided token | A `user_provided_token` callback | — |
 
-With SAS, the SDK tries the primary key, then the secondary key, then `user_provided_token`,
-skipping any not set. It moves on only when the service rejects a credential, and keeps using the
-one that worked.
+The SDK moves on only when the service rejects a credential, without a retry delay, and keeps
+using the one that worked. Configuring only X.509, or only SAS, uses that alone.
 
 `trusted_ca` sets server trust for every connection, whatever the kind.
 

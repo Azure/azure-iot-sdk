@@ -315,7 +315,6 @@ int main(void)
 
   /* No keys: every token comes from the application. */
   az_iot_auth tokens = { 0 };
-  tokens.kind = AZ_IOT_AUTH_SAS_TOKEN;
   tokens.sas.user_provided_token = request_token;
   tokens.sas.user_ctx = &ctx;
 

@@ -179,27 +179,34 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 
 > **Proposed, not implemented.** Today every connection authenticates with X.509.
 
-Each role -- DPS (`dps_auth`) and hub (`hub_auth`) -- picks one kind, independently:
+Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
+order, skipping any not set:
 
-| Kind | Configure | Notes |
+| Source | Configure | Notes |
 | --- | --- | --- |
-| `AZ_IOT_AUTH_X509` (default) | `certificate_provider` | As today. A zeroed `az_iot_auth` is X.509. |
-| `AZ_IOT_AUTH_SAS_TOKEN` | Any of `sas.primary_key_base64` (+ `secondary_key_base64`, `is_enrollment_group_key`) and `sas.user_provided_token` | With keys, the SDK signs tokens with the backend in `crypto`, and needs a Unix time: `time()`, or `unix_time.get_time`. The callback supplies tokens; the SDK never sees its key. |
+| X.509 certificates | `certificate_provider` | As today. The provider may offer more than one per role (index 0, 1, ...). |
+| Primary, secondary key | `dps_auth` / `hub_auth`: `sas.primary_key_base64` (+ `secondary_key_base64`, `is_enrollment_group_key`) | The SDK signs tokens with the backend in `crypto`, and needs a Unix time: `time()`, or `unix_time.get_time`. |
+| User-provided token | `sas.user_provided_token` | The application supplies tokens; the SDK never sees its key. |
+
+Setting only X.509, or only SAS, uses that alone. A zeroed `az_iot_auth` means no SAS.
 
 ```c
-copts.dps_auth.kind = AZ_IOT_AUTH_SAS_TOKEN;
 copts.dps_auth.sas.primary_key_base64 = primary;
 copts.dps_auth.sas.secondary_key_base64 = secondary;  /* optional */
-copts.hub_auth = copts.dps_auth;          /* or X.509: leave hub_auth zeroed */
+copts.hub_auth = copts.dps_auth;          /* zeroed: X.509 only */
 copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
-copts.trusted_ca.path = "ca.pem";         /* server trust, any kind */
+copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 ```
 
-- **Fallback.** Primary key, then secondary key, then `user_provided_token`, skipping any not set.
-  The SDK moves on only when the service rejects a credential (`AZ_IOT_ERR_IDENTITY_REJECTED`);
-  other failures retry the same one. The one that connects is kept until rejected; `open()`
-  starts again at the primary. The hub re-provisions only after all its credentials are rejected.
-  State events report the credential in `sas_source`.
+- **Fallback.** When the service rejects a credential (`AZ_IOT_ERR_IDENTITY_REJECTED`), the next
+  source is tried at once, without a `reconnection_policy` delay. Other failures retry the same
+  source under the policy. One pass over all sources counts as one policy attempt; with the
+  policy disabled, `open()` still makes one full pass. The source that connects is kept until
+  rejected; `open()` starts again at the first. The hub re-provisions only after a pass in which
+  all its credentials are rejected. Rejections are reported as retriable. State events report
+  the credential in `auth_source` (and `x509_index`).
+- **Cost.** Only devices configured with more than one source pay for fallback: one extra
+  connect per rejected source, once per credential change (the working source is kept).
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
   re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
   re-initializing.
@@ -210,8 +217,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any kind */
   (`sas_token_lifetime_seconds`, default one hour) and callback tokens alike. MQTT 3.1.1 cannot
   re-authenticate a live session, so the SDK reconnects the hub; those state events carry
   `is_credential_renewal` and reason `AZ_IOT_OK`. DPS tokens are made per attempt.
-- **DPS-issued certificate.** With `dps.request_operational_certificate`, `hub_auth` must stay
-  X.509; DPS can still use SAS. See
+- **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
+  certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
 - **mqttv5 hubs** do not accept SAS yet; the design allows for it. The token request carries the
   hub generation, and renewal can use MQTT 5 in-session re-authentication instead of a reconnect.

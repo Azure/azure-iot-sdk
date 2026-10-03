@@ -10,8 +10,8 @@ The SDK asks the application for a SAS token before each connect that needs one,
 
 ## Sample features
 
-- `dps_auth` and `hub_auth` are both `AZ_IOT_AUTH_SAS_TOKEN` with only `user_provided_token` set.
-  Keys can be set too; the callback is then the last fallback.
+- `dps_auth` and `hub_auth` set only `user_provided_token`. Certificates and keys can be set too;
+  the callback is then the last fallback.
 - The callback receives the role, hub generation, resource URI and key name the token must carry.
   It must not block: it answers `READY` (token in the buffer), `PENDING`, or `UNAVAILABLE` with a
   `retry_after_seconds`.

@@ -218,12 +218,11 @@ int main(void)
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.endpoint;
-  opts.dps_auth.kind = AZ_IOT_AUTH_SAS_TOKEN;
   opts.dps_auth.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
   opts.dps_auth.sas.is_enrollment_group_key = is_set(config.group_key);
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the DPS tokens */
   opts.trusted_ca.path = config.ca;
-  /* hub_auth stays X.509: the hub uses the certificate DPS issues. */
+  /* hub_auth zeroed: the hub uses only the certificate DPS issues. */
   opts.certificate_provider = &operational.base;
   opts.dps.request_operational_certificate = true;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);

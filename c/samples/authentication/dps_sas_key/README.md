@@ -11,8 +11,8 @@ keys, then sends one telemetry message on whichever hub generation DPS assigned.
 
 ## Sample features
 
-- `dps_auth` and `hub_auth` are both `AZ_IOT_AUTH_SAS_TOKEN` with the same keys: the hub identity
-  DPS creates has them.
+- `dps_auth` and `hub_auth` carry the same keys: the hub identity DPS creates has them. No
+  `certificate_provider`, so SAS is the only source.
 - Primary key, and optionally a secondary key; the secondary is used when the service rejects the
   primary. The state callback prints which key connected.
 - Enrollment-group keys are accepted; the SDK derives the device keys from them.

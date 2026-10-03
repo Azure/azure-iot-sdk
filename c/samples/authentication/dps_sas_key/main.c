@@ -74,15 +74,17 @@ static void config_release(sas_config* c)
   memset(c, 0, sizeof(*c));
 }
 
-static const char* sas_source_name(az_iot_sas_source source)
+static const char* auth_source_name(az_iot_auth_source source)
 {
   switch (source)
   {
-    case AZ_IOT_SAS_SOURCE_PRIMARY_KEY:
+    case AZ_IOT_AUTH_SOURCE_X509:
+      return "X.509";
+    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
       return "primary key";
-    case AZ_IOT_SAS_SOURCE_SECONDARY_KEY:
+    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
       return "secondary key";
-    case AZ_IOT_SAS_SOURCE_USER_PROVIDED:
+    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
       return "user-provided token";
     default:
       return "-";
@@ -98,7 +100,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
       sample_connection_state_name(event->state),
       az_iot_result_to_string(event->reason),
-      sas_source_name(event->sas_source),
+      auth_source_name(event->auth_source),
       event->is_credential_renewal ? " (token renewal)" : "");
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -209,7 +211,6 @@ int main(void)
   /* Same keys for both roles: DPS creates the hub identity with the same
    * (derived) keys. No certificate_provider: nothing uses X.509. */
   az_iot_auth sas = { 0 };
-  sas.kind = AZ_IOT_AUTH_SAS_TOKEN;
   sas.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
   sas.sas.secondary_key_base64 = is_set(config.secondary_key) ? config.secondary_key : NULL;
   sas.sas.is_enrollment_group_key = is_set(config.group_key);

@@ -190,29 +190,22 @@ extern "C"
   /* ---- Authentication ------------------------------------------------------- */
 
   /**
-   * @brief How one connection role (DPS or hub) authenticates.
+   * @brief Credential a connection attempt used.
    *
-   * X.509 and SAS are peers: each role picks one, independently. Zero is
-   * X.509, so an options struct that sets no auth keeps today's behaviour.
+   * Per role (DPS, hub), the sources configured are tried in this order,
+   * skipping any not set: X.509 certificates from
+   * az_iot_connection_client_options::certificate_provider (index 0, 1, ...),
+   * then the primary key, the secondary key and user_provided_token of
+   * az_iot_auth::sas. Setting only one of X.509 or SAS selects it alone.
    */
-  typedef enum az_iot_auth_kind
+  typedef enum az_iot_auth_source
   {
-    /** @brief TLS client certificate from az_iot_connection_client_options::certificate_provider.
-     */
-    AZ_IOT_AUTH_X509 = 0,
-    /** @brief SAS tokens: signed by the SDK from symmetric keys, supplied by
-     * the application, or both (see az_iot_auth::sas). */
-    AZ_IOT_AUTH_SAS_TOKEN
-  } az_iot_auth_kind;
-
-  /** @brief Which SAS credential a connection attempt used. */
-  typedef enum az_iot_sas_source
-  {
-    AZ_IOT_SAS_SOURCE_NONE = 0, /**< X.509, or no SAS attempt. */
-    AZ_IOT_SAS_SOURCE_PRIMARY_KEY, /**< Token signed with the primary key. */
-    AZ_IOT_SAS_SOURCE_SECONDARY_KEY, /**< Token signed with the secondary key. */
-    AZ_IOT_SAS_SOURCE_USER_PROVIDED /**< Token from az_iot_auth::sas::user_provided_token. */
-  } az_iot_sas_source;
+    AZ_IOT_AUTH_SOURCE_NONE = 0, /**< No attempt yet. */
+    AZ_IOT_AUTH_SOURCE_X509, /**< Certificate from the provider; see x509_index. */
+    AZ_IOT_AUTH_SOURCE_PRIMARY_KEY, /**< SAS token signed with the primary key. */
+    AZ_IOT_AUTH_SOURCE_SECONDARY_KEY, /**< SAS token signed with the secondary key. */
+    AZ_IOT_AUTH_SOURCE_USER_PROVIDED /**< SAS token from az_iot_auth::sas::user_provided_token. */
+  } az_iot_auth_source;
 
   /**
    * @brief What a requested SAS token must be valid for. SDK-owned; valid
@@ -292,34 +285,30 @@ extern "C"
   typedef uint64_t (*az_iot_unix_time_callback)(void* user_ctx);
 
   /**
-   * @brief Credentials for one role. Zeroed: X.509.
+   * @brief SAS credentials for one role, tried after any X.509 certificate
+   * (see az_iot_auth_source). Zeroed: no SAS.
    *
-   * init() fails with AZ_IOT_ERR_INVALID_ARG for an unknown kind, and for
-   * AZ_IOT_AUTH_SAS_TOKEN with neither a primary key nor user_provided_token,
-   * a secondary key without a primary, an undecodable key, or keys without
+   * Fallback: when the service rejects a credential
+   * (AZ_IOT_ERR_IDENTITY_REJECTED), the next source is tried at once,
+   * without a reconnection_policy delay. Other failures retry the same
+   * source under the policy. One pass over all sources counts as one policy
+   * attempt; with the policy disabled, open() still makes one full pass. A
+   * source that connects is kept for later reconnects until rejected; open()
+   * starts again at the first. When every source is rejected, the pass fails
+   * with AZ_IOT_ERR_IDENTITY_REJECTED (retriable), and for the hub the next
+   * attempt re-provisions through DPS.
+   *
+   * Keys are copied and decoded by init(); later changes to the strings have
+   * no effect. To change keys, re-initialize the client (and its feature
+   * clients), or supply tokens through user_provided_token.
+   *
+   * init() fails with AZ_IOT_ERR_INVALID_ARG for a secondary key without a
+   * primary, an undecodable key, or keys without
    * az_iot_connection_client_options::crypto.
    */
   typedef struct az_iot_auth
   {
-    /** @brief Which of the fields below applies. */
-    az_iot_auth_kind kind;
-
-    /**
-     * @brief For AZ_IOT_AUTH_SAS_TOKEN. Any combination of keys and callback.
-     *
-     * Sources are tried in order -- primary key, secondary key,
-     * user_provided_token -- skipping any not set. The next source is tried
-     * at once when the service rejects the current one's credential
-     * (AZ_IOT_ERR_IDENTITY_REJECTED); other failures retry the same source.
-     * A source that connects is kept for later reconnects until rejected;
-     * open() starts again at the first. When every source is rejected, the
-     * attempt fails with AZ_IOT_ERR_IDENTITY_REJECTED, and for the hub the
-     * next attempt re-provisions through DPS.
-     *
-     * Keys are copied and decoded by init(); later changes to the strings
-     * have no effect. To change keys, re-initialize the client (and its
-     * feature clients), or supply tokens through user_provided_token.
-     */
+    /** @brief Keys and token callback; any combination. */
     struct
     {
       /** @brief Base64 primary key, or NULL. */
@@ -400,10 +389,13 @@ extern "C"
      * @brief Source of X.509 client identities, and of trust anchors unless
      * trusted_ca is set.
      *
-     * Required when a role the client uses has AZ_IOT_AUTH_X509 (the default)
-     * or dps.request_operational_certificate is set; open() otherwise fails
-     * with AZ_IOT_ERR_CREDENTIAL_INCOMPLETE. A connect attempt whose load()
-     * fails fails with the provider's error instead of connecting without TLS.
+     * Required when a role the client uses has no SAS source, or when
+     * dps.request_operational_certificate is set; open() otherwise fails with
+     * AZ_IOT_ERR_CREDENTIAL_INCOMPLETE. When set, its certificates are tried
+     * first for each role (az_iot_auth_source); a role for which it has no
+     * certificate moves on to SAS. A load() failure other than
+     * AZ_IOT_ERR_NOT_FOUND fails the attempt instead of connecting without
+     * TLS.
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -704,23 +696,22 @@ extern "C"
     const az_iot_crypto* crypto;
 
     /**
-     * @brief How the DPS session authenticates. Zeroed: X.509.
+     * @brief SAS credentials for the DPS session. Zeroed: X.509 only.
      */
     az_iot_auth dps_auth;
 
     /**
-     * @brief How the hub session authenticates, for DPS-assigned and direct
-     * hub connections. Zeroed: X.509.
+     * @brief SAS credentials for the hub session, for DPS-assigned and direct
+     * hub connections. Zeroed: X.509 only.
      *
-     * Must be X.509 when dps.request_operational_certificate is set (the hub
-     * then uses the issued certificate); init() otherwise fails with
-     * AZ_IOT_ERR_INVALID_ARG. A hub that does not accept SAS -- the mqttv5
-     * hub does not yet -- fails the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
+     * With dps.request_operational_certificate, the issued certificate is
+     * tried first. A hub that does not accept SAS -- the mqttv5 hub does not
+     * yet -- rejects it with AZ_IOT_ERR_IDENTITY_REJECTED.
      */
     az_iot_auth hub_auth;
 
     /**
-     * @brief Trust anchors for every TLS connection, whatever the auth kind.
+     * @brief Trust anchors for every TLS connection, whatever the credential.
      * Set at most one of pem and path; init() fails with
      * AZ_IOT_ERR_INVALID_ARG when both are set. Both NULL: the X.509
      * provider's trusted CA if there is one, otherwise the adapter's default
@@ -864,9 +855,11 @@ extern "C"
     const az_iot_connection_error_detail* error;
     /** @brief The transition is a planned SAS token renewal, not a failure. */
     bool is_credential_renewal;
-    /** @brief For a SAS role, the credential this event is about: the one that
-     * connected on CONNECTED, the one rejected on a rejection. */
-    az_iot_sas_source sas_source;
+    /** @brief The credential this event is about: the one that connected on
+     * CONNECTED, the one rejected on a rejection. */
+    az_iot_auth_source auth_source;
+    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index. */
+    uint8_t x509_index;
   } az_iot_connection_state_event;
 
   typedef void (*az_iot_connection_state_callback)(
@@ -1498,8 +1491,8 @@ extern "C"
    *   - Direct hub connect: host, client_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
    *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1).
-   *   - Per role, dps_auth / hub_auth: certificate_provider for X.509 (the
-   *     default), or SAS keys and/or a user-provided token callback. */
+   *   - Per role: certificate_provider for X.509, and/or SAS keys and a
+   *     user-provided token callback in dps_auth / hub_auth. */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
   AZ_NODISCARD az_iot_result az_iot_connection_client_init(
