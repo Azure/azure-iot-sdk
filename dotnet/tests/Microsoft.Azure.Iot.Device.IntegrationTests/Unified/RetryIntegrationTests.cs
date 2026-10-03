@@ -31,9 +31,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // unreachable hub for the production default number of attempts.
             ConnectionClientOptions options = new()
             {
-                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1)),
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3),
                 ConnectionAttemptTimeout = TimeSpan.FromSeconds(5),
-                MaxHubConnectAttemptsBeforeReprovision = 3,
             };
 
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
@@ -83,12 +82,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // inside this test's time budget. The retry policy is wrapped so the test can count how many times the client
             // consults it specifically for Device Provisioning Service, which proves re-provisioning was retried rather
             // than succeeding on its first attempt while the enrollment was still missing.
-            CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1)));
+            CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3));
             ConnectionClientOptions options = new()
             {
                 ConnectionRetryPolicy = retryPolicy,
                 ConnectionAttemptTimeout = TimeSpan.FromSeconds(5),
-                MaxHubConnectAttemptsBeforeReprovision = 3,
             };
 
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(

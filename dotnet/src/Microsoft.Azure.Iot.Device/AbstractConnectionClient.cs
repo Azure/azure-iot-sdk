@@ -99,10 +99,6 @@ namespace Microsoft.Azure.Iot.Device
         // at a time because each one takes over this client's single connection.
         private int _isReprovisioning;
 
-        // The configured number of consecutive IoT hub connection failures that triggers a re-provision. Armed on the
-        // connection layer for hub connections only. Mirrors the C client's max_hub_connect_attempts_before_reprovision.
-        private readonly uint _maxHubConnectAttemptsBeforeReprovision;
-
         // The retry policy that governs how many times, and how quickly, an automatic re-provisioning attempt is
         // repeated after it fails. Mirrors the C connection client, whose needs_reprovision intent keeps sending the
         // device back to DPS until a registration succeeds rather than giving up after a single failed attempt.
@@ -155,7 +151,6 @@ namespace Microsoft.Azure.Iot.Device
         {
             options ??= new ConnectionClientOptions();
 
-            _maxHubConnectAttemptsBeforeReprovision = options.MaxHubConnectAttemptsBeforeReprovision;
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
 
             // This is the basic MQTT client that has no reconnection/retry logic
@@ -255,12 +250,13 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
             CurrentEndpoint = ConnectionEndpoint.IotHub;
 
-            // Arm the hub-unreachable crossover on the connection layer, but only when this client could actually
-            // re-provision -- that is, when it holds the inputs of a previous provisioning run. A device connected with
-            // credentials the application supplied directly has no registration to renew, so retrying the hub is all it
-            // can do. Mirrors the C client, which only counts hub failures towards a re-provision when DPS is configured.
-            ManagedMqttConnection.ReprovisionAfterConsecutiveReconnectFailures =
-                CanReprovision ? _maxHubConnectAttemptsBeforeReprovision : 0u;
+            // Tell the connection layer whether this client could actually re-provision -- that is, whether it holds the
+            // inputs of a previous provisioning run. A device connected with credentials the application supplied
+            // directly has no registration to renew, so retrying the hub is all it can do, and the layer must not cross
+            // over to re-provisioning no matter what the retry policy advises. Mirrors the C client, which only treats
+            // hub failures as a re-provision trigger when DPS is configured. The number of hub attempts before
+            // re-provisioning is advised lives in the retry policy, not here.
+            ManagedMqttConnection.CanReprovision = CanReprovision;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
             // targets an IoT hub.
@@ -769,9 +765,10 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceInformation("ConnectionClient's current endpoint is now DPS");
             CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
 
-            // A connection to DPS never re-provisions on the unreachable-hub threshold; that crossover only applies to
-            // hub connections. Clear it so a DPS reconnection just retries DPS under the usual policy.
-            ManagedMqttConnection.ReprovisionAfterConsecutiveReconnectFailures = 0;
+            // A connection to DPS never crosses over to re-provisioning on the retry policy's hub-unreachable guidance;
+            // that only applies to hub connections. Clear the flag so a DPS reconnection just retries DPS under the usual
+            // policy.
+            ManagedMqttConnection.CanReprovision = false;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
             // targets Device Provisioning Service.

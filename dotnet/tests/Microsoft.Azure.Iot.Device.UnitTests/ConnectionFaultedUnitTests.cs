@@ -652,8 +652,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using TestConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
-                MaxHubConnectAttemptsBeforeReprovision = threshold,
-                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(maxHubConnectAttemptsBeforeReprovision: threshold),
             });
 
             await connectionClient.ProvisionAndConnectAsync(
@@ -693,8 +692,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using TestConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
-                // Zero disables the fallback, so the hub is retried indefinitely and this device never re-provisions.
-                MaxHubConnectAttemptsBeforeReprovision = 0,
+                // Zero (the ImmediateRetryPolicy default) disables the fallback, so the hub is retried indefinitely and
+                // this device never re-provisions.
                 ConnectionRetryPolicy = new ImmediateRetryPolicy(TimeSpan.FromMilliseconds(20)),
             });
 
@@ -748,8 +747,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using TestConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
-                MaxHubConnectAttemptsBeforeReprovision = threshold,
-                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(maxHubConnectAttemptsBeforeReprovision: threshold),
             });
 
             await connectionClient.ProvisionAndConnectAsync(
@@ -793,12 +791,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private sealed class ImmediateRetryPolicy : IRetryPolicy
         {
             private readonly TimeSpan _delay;
+            private readonly uint _maxHubConnectAttemptsBeforeReprovision;
 
-            public ImmediateRetryPolicy(TimeSpan? delay = null) => _delay = delay ?? TimeSpan.Zero;
+            public ImmediateRetryPolicy(TimeSpan? delay = null, uint maxHubConnectAttemptsBeforeReprovision = 0)
+            {
+                _delay = delay ?? TimeSpan.Zero;
+                _maxHubConnectAttemptsBeforeReprovision = maxHubConnectAttemptsBeforeReprovision;
+            }
+
+            public ImmediateRetryPolicy(uint maxHubConnectAttemptsBeforeReprovision)
+                : this(null, maxHubConnectAttemptsBeforeReprovision)
+            {
+            }
 
             public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
             {
                 retryDelay = _delay;
+
+                if (connectionEndpoint == ConnectionEndpoint.IotHub
+                    && _maxHubConnectAttemptsBeforeReprovision > 0
+                    && currentRetryCount > _maxHubConnectAttemptsBeforeReprovision)
+                {
+                    return RetryGuidance.Reprovision;
+                }
+
                 return RetryGuidance.Retry;
             }
         }

@@ -55,19 +55,18 @@ namespace Microsoft.Azure.Iot.Device
         private readonly TimeSpan _connectionAttemptTimeout;
 
         /// <summary>
-        /// When greater than zero, the number of consecutive failed connect attempts during a single reconnection
-        /// sequence after which this layer stops retrying and ends maintenance with a fault flagged
-        /// <see cref="MqttConnectionFaultedEventArgs.ReprovisionRequired"/>, so a DPS-provisioned device can
-        /// re-provision instead of retrying an unreachable endpoint forever. Zero disables the crossover.
+        /// Whether the device whose connection this layer maintains was provisioned through Device Provisioning
+        /// Service and therefore has a registration it can renew. This gates whether a
+        /// <see cref="RetryGuidance.Reprovision"/> from the retry policy actually crosses over to
+        /// re-provisioning: a device that holds no provisioning inputs has nothing to re-provision from, so the
+        /// guidance is treated as an ordinary retry and the hub keeps being retried.
         /// </summary>
         /// <remarks>
-        /// The owning connection client arms this for IoT hub connections and clears it for Device Provisioning
-        /// Service connections, since re-provisioning only makes sense when the endpoint that cannot be reached is a
-        /// hub. A successful reconnect starts a fresh sequence, so this counts consecutive failures, mirroring the C
-        /// connection client's <c>consecutive_hub_connect_failures</c> against
-        /// <c>max_hub_connect_attempts_before_reprovision</c>.
+        /// The owning connection client sets this when it connects to an IoT hub. The number of hub attempts after
+        /// which re-provisioning is advised lives in the retry policy (for example
+        /// <see cref="ExponentialBackoffRetryPolicy"/>), not here.
         /// </remarks>
-        public uint ReprovisionAfterConsecutiveReconnectFailures { get; set; }
+        public bool CanReprovision { get; set; }
 
         /// <summary>
         /// The endpoint the current connection targets, surfaced to the retry policy so it can tell whether it is being
@@ -75,8 +74,8 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         /// <remarks>
         /// The owning connection client sets this to <see cref="ConnectionEndpoint.IotHub"/> for hub connections and
-        /// <see cref="ConnectionEndpoint.DeviceProvisioningService"/> for provisioning connections, alongside arming
-        /// <see cref="ReprovisionAfterConsecutiveReconnectFailures"/>.
+        /// <see cref="ConnectionEndpoint.DeviceProvisioningService"/> for provisioning connections, alongside
+        /// <see cref="CanReprovision"/>.
         /// </remarks>
         public ConnectionEndpoint ConnectionEndpoint { get; set; } = ConnectionEndpoint.None;
 
@@ -353,29 +352,10 @@ namespace Microsoft.Azure.Iot.Device
                 }
 
                 // A hub that simply will not answer is otherwise retried under the policy forever, which for a device
-                // provisioned through DPS would never fall back to asking DPS for a fresh assignment. Mirror the C
-                // connection client: once a reconnection has failed this many times in a row, stop retrying this
-                // endpoint and end maintenance with a fault the owning client turns into a re-provisioning attempt.
-                // Counted per reconnection sequence -- a successful reconnect returns and starts the next sequence at
-                // attempt 1 -- and only while armed, which the owning client does for hub connections and not for DPS
-                // connections. This is a planned crossover to provisioning, not an error.
-                uint reprovisionThreshold = ReprovisionAfterConsecutiveReconnectFailures;
-                if (isReconnection && reprovisionThreshold > 0 && attemptCount > reprovisionThreshold)
-                {
-                    uint failedAttempts = attemptCount - 1;
-                    Trace.TraceWarning("Hub unreachable for {0} consecutive connect attempts; re-provisioning through DPS.", failedAttempts);
-
-                    var reprovisionFault = new DeviceException(
-                        $"The IoT hub was unreachable for {failedAttempts} consecutive connection attempts, so this device will re-provision through Device Provisioning Service.",
-                        lastException!)
-                    {
-                        Retryability = ErrorRetryability.Terminal,
-                        IsContained = false,
-                    };
-
-                    await EndConnectionMaintenanceAsync(reprovisionFault, lastDisconnect, reprovisionRequired: true);
-                    return null;
-                }
+                // provisioned through DPS would never fall back to asking DPS for a fresh assignment. The retry policy
+                // (see ExponentialBackoffRetryPolicy) decides when enough consecutive hub attempts have failed and
+                // returns RetryGuidance.Reprovision, which the consultation below turns into a
+                // re-provisioning crossover.
 
                 DeviceException? deviceException = Classify(lastException, cancellationToken.IsCancellationRequested);
 
@@ -408,12 +388,13 @@ namespace Microsoft.Azure.Iot.Device
                     RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
 
                     // The policy wants this device to stop retrying the hub and re-provision through DPS instead. This is
-                    // only meaningful for a hub connection; for a DPS connection it is treated the same as Retry, per the
-                    // RetryGuidance documentation. End maintenance with a fault the owning client turns into a
-                    // re-provisioning attempt (and which it degrades to an unrecoverable fault if the device holds no
-                    // provisioning inputs to re-provision from).
+                    // only meaningful for a hub connection on a device that holds provisioning inputs to re-provision
+                    // from; otherwise (a DPS connection, or a device connected with directly supplied credentials) it is
+                    // treated the same as Retry, per the RetryGuidance documentation. End maintenance with a fault the
+                    // owning client turns into a re-provisioning attempt.
                     if (guidance == RetryGuidance.Reprovision
-                        && ConnectionEndpoint == ConnectionEndpoint.IotHub)
+                        && ConnectionEndpoint == ConnectionEndpoint.IotHub
+                        && CanReprovision)
                     {
                         Trace.TraceWarning("Retry policy asked to abandon hub reconnection and re-provision through DPS. {0}", lastException);
 
@@ -453,9 +434,9 @@ namespace Microsoft.Azure.Iot.Device
                         throw exhaustedException;
                     }
 
-                    // Otherwise the policy allows another attempt (RetryGuidance.Retry, or
-                    // RetryGuidance.AbandonHubRetryAndReprovision on a DPS connection), so fall through and retry after
-                    // the delay the policy provided.
+                    // Otherwise the policy allows another attempt (RetryGuidance.Retry, or RetryGuidance.Reprovision on a
+                    // DPS connection or on a device that cannot re-provision), so fall through and retry after the delay
+                    // the policy provided.
                 }
 
                 // With all the above conditions checked, the client should attempt to connect again after a delay

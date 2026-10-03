@@ -29,12 +29,26 @@ namespace Microsoft.Azure.Iot.Device.Retry
         private readonly TimeSpan _maxDelay;
         private readonly bool _useJitter;
 
+        /// <summary>
+        /// The number of consecutive failed IoT hub connection attempts, during an automatic reconnection, after which
+        /// this policy tells a device provisioned through Device Provisioning Service to re-provision rather than
+        /// continuing to retry an unreachable hub forever. Zero disables the fallback.
+        /// </summary>
+        private readonly uint _maxHubConnectAttemptsBeforeReprovision;
+
+        /// <summary>
+        /// The default number of consecutive failed IoT hub connection attempts after which this policy advises
+        /// re-provisioning.
+        /// </summary>
+        public const uint DefaultMaxHubConnectAttemptsBeforeReprovision = 50u;
+
         public ExponentialBackoffRetryPolicy()
         {
             //TODO magic number defaults
             _maxRetries = uint.MaxValue;
             _maxDelay = TimeSpan.FromMinutes(30);
             _useJitter = true;
+            _maxHubConnectAttemptsBeforeReprovision = DefaultMaxHubConnectAttemptsBeforeReprovision;
         }
 
         /// <summary>
@@ -43,11 +57,20 @@ namespace Microsoft.Azure.Iot.Device.Retry
         /// <param name="maxRetries">The maximum number of retry attempts.</param>
         /// <param name="maxWait">The maximum amount of time to wait between retries.</param>
         /// <param name="useJitter">Whether to add a small, random adjustment to the retry delay to avoid synchronicity in clients retrying.</param>
-        public ExponentialBackoffRetryPolicy(uint maxRetries, TimeSpan maxWait, bool useJitter = true)
+        /// <param name="maxHubConnectAttemptsBeforeReprovision">
+        /// The number of consecutive failed IoT hub connection attempts, during an automatic reconnection, after which
+        /// a device provisioned through Device Provisioning Service re-provisions rather than continuing to retry an
+        /// unreachable hub forever. A hub that was vacated service-side may stop answering rather than rejecting the
+        /// device's identity, in which case nothing else would ever send the device back to DPS. This only applies to
+        /// a device that was provisioned through DPS, since there is otherwise no registration to renew. Set to 0 to
+        /// disable this fallback and retry the hub indefinitely. Defaults to 50.
+        /// </param>
+        public ExponentialBackoffRetryPolicy(uint maxRetries, TimeSpan maxWait, bool useJitter = true, uint maxHubConnectAttemptsBeforeReprovision = DefaultMaxHubConnectAttemptsBeforeReprovision)
         {
             _maxRetries = maxRetries;
             _maxDelay = maxWait;
             _useJitter = useJitter;
+            _maxHubConnectAttemptsBeforeReprovision = maxHubConnectAttemptsBeforeReprovision;
         }
 
         /// <summary>
@@ -57,8 +80,13 @@ namespace Microsoft.Azure.Iot.Device.Retry
         /// <param name="baseExponent">The base exponent to start the backoff calculation (CurrentExponent(currentRetryCount) = baseExponent + currentRetryCount).</param>
         /// <param name="maxWait">The maximum amount of time to wait between retries.</param>
         /// <param name="useJitter">Whether to add a small, random adjustment to the retry delay to avoid synchronicity in clients retrying.</param>
-        public ExponentialBackoffRetryPolicy(uint maxRetries, uint baseExponent, TimeSpan maxWait, bool useJitter = true) :
-        this(maxRetries, maxWait, useJitter)
+        /// <param name="maxHubConnectAttemptsBeforeReprovision">
+        /// The number of consecutive failed IoT hub connection attempts, during an automatic reconnection, after which
+        /// a device provisioned through Device Provisioning Service re-provisions rather than continuing to retry an
+        /// unreachable hub forever. Set to 0 to disable this fallback and retry the hub indefinitely. Defaults to 50.
+        /// </param>
+        public ExponentialBackoffRetryPolicy(uint maxRetries, uint baseExponent, TimeSpan maxWait, bool useJitter = true, uint maxHubConnectAttemptsBeforeReprovision = DefaultMaxHubConnectAttemptsBeforeReprovision) :
+        this(maxRetries, maxWait, useJitter, maxHubConnectAttemptsBeforeReprovision)
         {
             _baseExponent = baseExponent;
         }
@@ -66,9 +94,22 @@ namespace Microsoft.Azure.Iot.Device.Retry
         /// <inheritdoc/>
         public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
         {
+            retryDelay = TimeSpan.Zero;
+
+            // A hub that keeps failing to connect may have been vacated service-side rather than rejecting the device's
+            // identity. After this many consecutive hub connect attempts, advise a device provisioned through DPS to
+            // re-provision for a fresh assignment instead of retrying the unreachable hub forever. This only applies to
+            // hub endpoints; a Device Provisioning Service endpoint keeps retrying (and the client ignores this guidance
+            // for a device that holds no registration to renew).
+            if (connectionEndpoint == ConnectionEndpoint.IotHub
+                && _maxHubConnectAttemptsBeforeReprovision > 0
+                && currentRetryCount > _maxHubConnectAttemptsBeforeReprovision)
+            {
+                return RetryGuidance.Reprovision;
+            }
+
             if (_maxRetries == 0 || currentRetryCount > _maxRetries)
             {
-                retryDelay = TimeSpan.Zero;
                 return RetryGuidance.AbandonRetry;
             }
 
