@@ -43,16 +43,16 @@ if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
         ${PROJECT_SOURCE_DIR}/src/core
         ${PROJECT_SOURCE_DIR}/src/features/su/internal)
 
-    if(NOT TARGET az_iot_su_crypto_openssl)
+    if(NOT TARGET az_iot_crypto_openssl)
         message(FATAL_ERROR
-            "AZ_IOT_BUILD_E2E_SU needs the OpenSSL software updates crypto adapter "
-            "(AZ_IOT_WITH_SU_CRYPTO_OPENSSL=ON).")
+            "AZ_IOT_BUILD_E2E_SU needs the OpenSSL crypto backend "
+            "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
     az_iot_add_cmocka_test(az_iot_tests_e2e_su_offer
         tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c)
     target_link_libraries(az_iot_tests_e2e_su_offer PRIVATE
-        az_iot_core az_iot_adapter_paho az_iot_su_crypto_openssl CURL::libcurl)
+        az_iot_core az_iot_adapter_paho az_iot_crypto_openssl CURL::libcurl)
     # The spy wraps the internal channel to observe reports and verdicts.
     target_include_directories(az_iot_tests_e2e_su_offer PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core

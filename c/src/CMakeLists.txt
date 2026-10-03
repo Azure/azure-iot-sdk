@@ -17,6 +17,7 @@ add_library(az_iot_core
     core/json_string.c
     core/message.c
     core/certificate_provider_pem.c
+    core/crypto.c
     features/su/su_client.c
     features/su/su_device_properties.c
     features/su/su_root_keys_microsoft.c

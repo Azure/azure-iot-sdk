@@ -103,7 +103,7 @@ jobs:
       id-token: write   # azure/login OIDC
     name: setup (provision)
     if: ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -168,7 +168,7 @@ jobs:
           # would double the Azure resources this workflow consumes, so it runs
           # once, instrumented. gcov overhead is CPU-only and this suite is
           # network-bound, so it does not move the wall clock.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-gcc-e2e-coverage
             device-index: 0
           - os: windows-latest
@@ -325,7 +325,7 @@ jobs:
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
-          # The su_crypto_openssl unit test is not matched by the e2e name
+          # The crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
           # needs the device key moved into a PKCS#11 token first.
@@ -472,7 +472,7 @@ jobs:
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
     if: ${{ always() && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Software updates client (Phase 1) unit tests. Drives the state machine through the public
- * API + the in-memory mock_mqtt_iface, with recording platform/crypto hooks.
+ * API + the in-memory mock_mqtt_iface, with recording platform hooks and crypto backend.
  *
  * The manifest is taken from azure-sdk-for-c's own parser tests (the only known
  * parser-valid v5 manifest) and wrapped in the software updates updateMetadata object. */
@@ -56,7 +56,7 @@
 /* A single-step, single-file v5 deployment as the updateMetadata object the
  * channel delivers. Filled with workflow id, manifest version and a
  * structurally-valid JWS (see signed_patch()): core fully parses the JWS/SJWK
- * chain even though the mock crypto hook ignores the signature bytes. The
+ * chain even though the mock crypto backend ignores the signature bytes. The
  * unknown property must be skipped. */
 static const char k_patch_fmt[]
     = "{\"workflowId\":\"%s\",\"futureField\":{\"a\":[1,2]}," SU_TEST_MANIFEST_PROPERTY ","
@@ -112,7 +112,7 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
 /* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
  * (itself a JWS over a JWK signing key, signed by the root key `testkid`); the
  * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
- * are arbitrary because the mock verify hook does not validate them. */
+ * are arbitrary because the mock backend does not validate them. */
 static void build_jws(char* out, int32_t out_cap)
 {
   uint8_t fixed_hash[32];
@@ -211,7 +211,7 @@ typedef struct
   int32_t restore_result;
   int32_t is_installed_result;
   int32_t verify_result;
-  int sha256_calls; /* one-shot sha256_fn calls */
+  int sha256_calls; /* SHA-256 digests of something other than a file (the manifest) */
 
   bool install_in_progress_once; /* first install returns IN_PROGRESS */
   bool install_in_progress_consumed;
@@ -338,7 +338,17 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   return l->is_installed_result;
 }
 
-static int32_t mock_verify_rs256(
+/** @brief Mock crypto backend; reaches the hook log through the embedding struct. */
+typedef struct mock_crypto
+{
+  az_iot_crypto base; /**< Must be first. */
+  hook_log* log;
+} mock_crypto;
+
+static hook_log* mock_log(const az_iot_crypto* self) { return ((const mock_crypto*)self)->log; }
+
+static az_iot_result mock_verify_rs256(
+    const az_iot_crypto* self,
     const uint8_t* mod,
     size_t mod_len,
     const uint8_t* exp,
@@ -346,8 +356,7 @@ static int32_t mock_verify_rs256(
     const uint8_t* signed_data,
     size_t signed_len,
     const uint8_t* sig,
-    size_t sig_len,
-    void* ctx)
+    size_t sig_len)
 {
   (void)mod;
   (void)mod_len;
@@ -357,18 +366,9 @@ static int32_t mock_verify_rs256(
   (void)signed_len;
   (void)sig;
   (void)sig_len;
-  hook_log* l = (hook_log*)ctx;
+  hook_log* l = mock_log(self);
   log_op(l, OP_VERIFY, 0);
-  return l->verify_result;
-}
-
-static int32_t mock_sha256(const uint8_t* data, size_t len, uint8_t out[32], void* ctx)
-{
-  (void)data;
-  (void)len;
-  ((hook_log*)ctx)->sha256_calls++;
-  memset(out, SU_TEST_HASH_BYTE, 32);
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
 }
 
 /* Serve fx->log.file_len bytes of dummy content in chunks, then EOF. */
@@ -396,28 +396,64 @@ static int32_t mock_read_file(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t mock_sha_init(void** ctx_out, void* ctx)
+/* The mock tells a file from a manifest by the first byte hashed: mock_read_file
+ * serves 0x55, a manifest starts with '{'. opaque[0] holds that byte + 1, 0
+ * before any data. */
+static az_iot_result mock_sha_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
 {
-  (void)ctx;
-  *ctx_out = (void*)(uintptr_t)1; /* non-NULL opaque handle */
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  (void)self;
+  ctx->opaque[0] = 0;
+  return AZ_IOT_OK;
 }
 
-static int32_t mock_sha_update(void* c, const uint8_t* data, size_t len, void* ctx)
+static az_iot_result mock_sha_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
 {
-  (void)c;
-  (void)data;
-  (void)len;
-  (void)ctx;
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  (void)self;
+  if (ctx->opaque[0] == 0 && len > 0)
+  {
+    ctx->opaque[0] = (uint64_t)data[0] + 1u;
+  }
+  return AZ_IOT_OK;
 }
 
-static int32_t mock_sha_final(void* c, uint8_t out[32], void* ctx)
+/* A file hashes to log->file_hash; anything else to SU_TEST_HASH_BYTE repeated,
+ * the digest build_jws() signs for the manifest. */
+static az_iot_result mock_sha_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
 {
-  (void)c;
-  hook_log* l = (hook_log*)ctx;
-  memcpy(out, l->file_hash, 32);
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  if (out != NULL)
+  {
+    if (ctx->opaque[0] == 0x55u + 1u)
+    {
+      memcpy(out, mock_log(self)->file_hash, AZ_IOT_SHA256_SIZE);
+    }
+    else
+    {
+      mock_log(self)->sha256_calls++;
+      memset(out, SU_TEST_HASH_BYTE, AZ_IOT_SHA256_SIZE);
+    }
+  }
+  return AZ_IOT_OK;
+}
+
+/** @brief A complete mock backend over @p log. */
+static mock_crypto make_mock_crypto(hook_log* log)
+{
+  mock_crypto c;
+  memset(&c, 0, sizeof(c));
+  c.base.version = AZ_IOT_CRYPTO_VERSION;
+  c.base.sha256_init = mock_sha_init;
+  c.base.sha256_update = mock_sha_update;
+  c.base.sha256_final = mock_sha_final;
+  c.base.verify_rs256 = mock_verify_rs256;
+  c.log = log;
+  return c;
 }
 
 static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
@@ -733,6 +769,7 @@ typedef struct
   az_iot_mock_mqtt_client* mock;
 
   hook_log log;
+  mock_crypto crypto; /**< Outlives su: the client keeps a pointer. */
   uint8_t dp_buf[512];
 
   /* What the application would have been told. */
@@ -821,13 +858,10 @@ static void count_events(const az_iot_su_event* event, void* user_ctx)
   (*(int*)user_ctx)++;
 }
 
-static void wire_hooks(
-    hook_log* log,
-    az_iot_su_platform_hooks* hooks,
-    az_iot_su_crypto_hooks* crypto)
+static void wire_hooks(hook_log* log, az_iot_su_platform_hooks* hooks, mock_crypto* crypto)
 {
   memset(hooks, 0, sizeof(*hooks));
-  memset(crypto, 0, sizeof(*crypto));
+  *crypto = make_mock_crypto(log);
 
   /* default all results to SUCCESS */
   log->download_result = AZ_IOT_SU_RESULT_SUCCESS;
@@ -849,13 +883,6 @@ static void wire_hooks(
   hooks->load_state_fn = mock_load;
   hooks->user_ctx = log;
 
-  crypto->verify_rs256_fn = mock_verify_rs256;
-  crypto->sha256_fn = mock_sha256;
-  crypto->sha256_init_fn = mock_sha_init;
-  crypto->sha256_update_fn = mock_sha_update;
-  crypto->sha256_final_fn = mock_sha_final;
-  crypto->user_ctx = log;
-
   /* By default the streaming file-hash matches the manifest, so the happy
    * paths pass verification. Serve a multi-chunk file to exercise the loop. */
   log->file_len = 700;
@@ -867,7 +894,7 @@ static void wire_hooks(
   assert_int_equal(hw, 32);
 }
 
-static void init_hooks(fixture* fx, az_iot_su_platform_hooks* hooks, az_iot_su_crypto_hooks* crypto)
+static void init_hooks(fixture* fx, az_iot_su_platform_hooks* hooks, mock_crypto* crypto)
 {
   wire_hooks(&fx->log, hooks, crypto);
 }
@@ -880,10 +907,12 @@ static int setup(void** state)
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
+  fx->crypto = make_mock_crypto(&fx->log);
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
+  opts.crypto = &fx->crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -895,8 +924,7 @@ static int setup(void** state)
   fx->channel.ctx = &fx->chan;
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
-  init_hooks(fx, &hooks, &crypto);
+  init_hooks(fx, &hooks, &fx->crypto);
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -907,14 +935,14 @@ static int setup(void** state)
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = fx->dp_buf;
   su_opts.device_properties_buffer_size = sizeof(fx->dp_buf);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &su_opts), AZ_IOT_OK);
+      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &su_opts),
+      AZ_IOT_OK);
   assert_int_equal(fx->su._internal.persist_max_attempts, AZ_IOT_SU_PERSIST_MAX_ATTEMPTS);
   /* Pinned so the retry tests do not depend on an AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
    * override; limit-1 behaviour has its own test. */
@@ -1597,8 +1625,7 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   pump_to_checkpoint(fx);
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
-  init_hooks(fx, &hooks, &crypto);
+  init_hooks(fx, &hooks, &fx->crypto);
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -1610,7 +1637,6 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   uint8_t dp_buf[256];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
   su_opts.device_properties = &dp;
@@ -1628,7 +1654,8 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   az_iot_su_client* fresh = (az_iot_su_client*)calloc(1, sizeof(*fresh));
   assert_non_null(fresh);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(fresh, &channel2, &su_opts), AZ_IOT_OK);
+      az_iot_su_client__initialize_with_channel(fresh, &channel2, &fx->crypto.base, &su_opts),
+      AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(fresh), AZ_IOT_SU_STATE_IDLE);
 
   /* Observing from before the resume, which is the only way to see it. */
@@ -1892,21 +1919,22 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   fixture* fx = (fixture*)*state;
   (void)fx;
 
+  hook_log log = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
+
+  /* The client takes its crypto backend from the connection. */
   az_iot_connection_client conn;
   az_iot_connection_client_options copts = { 0 };
   copts.host = "broker.example";
   copts.port = 8883;
   copts.client_id = "ut-su-public";
+  copts.crypto = &crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
 
-  hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -1918,7 +1946,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   uint8_t buf[256];
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.crypto = &crypto;
   o.device_properties = &dp;
   o.device_properties_buffer = buf;
   o.device_properties_buffer_size = sizeof(buf);
@@ -2020,12 +2047,10 @@ static void device_properties_too_small_is_rejected(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "AReallyLongManufacturerNameThatWillNotFit";
@@ -2034,12 +2059,11 @@ static void device_properties_too_small_is_rejected(void** state)
   uint8_t tiny[8];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = tiny;
   su_opts.device_properties_buffer_size = sizeof(tiny);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts),
+      az_iot_su_client__initialize_with_channel(&su, &channel, &crypto.base, &su_opts),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_deinit(&conn);
@@ -2058,24 +2082,22 @@ static void a_channel_without_cancel_update_is_rejected(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
   az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
   uint8_t buf[256];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = buf;
   su_opts.device_properties_buffer_size = sizeof(buf);
 
   az_iot_su_client su;
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_su_client__initialize_with_channel(&su, &channel, &crypto.base, &su_opts),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
 }
 
@@ -2100,12 +2122,10 @@ static void device_properties_buffer_size_matches_need(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_custom_property customs[] = { { "location", "building42" } };
   az_iot_su_device_properties dp = { 0 };
@@ -2125,20 +2145,20 @@ static void device_properties_buffer_size_matches_need(void** state)
 
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.crypto = &crypto;
   o.device_properties = &dp;
   o.device_properties_buffer = buf;
 
   /* Exactly `need` bytes must succeed; one byte short must be rejected. */
   az_iot_su_client su_ok;
   o.device_properties_buffer_size = need;
-  assert_int_equal(az_iot_su_client__initialize_with_channel(&su_ok, &channel, &o), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su_ok, &channel, &crypto.base, &o), AZ_IOT_OK);
   az_iot_su_client_deinit(&su_ok);
 
   az_iot_su_client su_short;
   o.device_properties_buffer_size = need - 1;
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su_short, &channel, &o),
+      az_iot_su_client__initialize_with_channel(&su_short, &channel, &crypto.base, &o),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_deinit(&conn);
@@ -2321,7 +2341,6 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   az_iot_su_device_properties dp = { 0 };
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.hooks = &fx->su._internal.hooks;
-  opts.crypto = &fx->su._internal.crypto;
   opts.device_properties = &dp;
   uint8_t storage[513];
   opts.device_properties_buffer = storage + 1;
@@ -2330,7 +2349,8 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   fake_channel fc = { 0 };
   az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&client, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(fx->conn.dps_user_count, 0);
@@ -4450,7 +4470,7 @@ static void build_report_with_too_small_a_buffer_is_rejected(void** state)
   assert_true(written > 0);
 }
 
-/* Parse a patch with the fixture's crypto hooks and the given root keys. */
+/* Parse a patch with the mock crypto backend and the given root keys. */
 static az_iot_result parse_with_roots(
     hook_log* log,
     const char* patch,
@@ -4460,7 +4480,7 @@ static az_iot_result parse_with_roots(
     az_iot_su_client_update_manifest* out_manifest)
 {
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
+  mock_crypto crypto;
   wire_hooks(log, &hooks, &crypto);
 
   /* The parser unescapes the manifest in place, so it needs a writable copy. */
@@ -4471,7 +4491,7 @@ static az_iot_result parse_with_roots(
 
   return az_iot_su_parse_update_request(
       az_span_create((uint8_t*)scratch, (int32_t)len),
-      &crypto,
+      &crypto.base,
       roots,
       root_count,
       out_req,
@@ -4630,11 +4650,132 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
   assert_true(manifest.files_count > 0);
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
+  mock_crypto crypto;
   wire_hooks(&fx->log, &hooks, &crypto);
   assert_int_equal(
-      az_iot_su_verify_file_hash(&manifest.files[0], &crypto, standalone_read_chunk, &fx->log),
+      az_iot_su_verify_file_hash(&manifest.files[0], &crypto.base, standalone_read_chunk, &fx->log),
       AZ_IOT_ERR_AUTH);
+}
+
+/* The backend must have SHA-256 and this header's version; software updates
+ * also need verify_rs256. The public entry point takes it from the connection. */
+static void init_requires_a_crypto_backend_that_verifies(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  uint8_t buf[256];
+  az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
+  o.hooks = &fx->su._internal.hooks;
+  o.device_properties = &dp;
+  o.device_properties_buffer = buf;
+  o.device_properties_buffer_size = sizeof(buf);
+  fake_channel fc = { 0 };
+  az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
+  az_iot_su_client su;
+
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto no_update = make_mock_crypto(&fx->log);
+  no_update.base.sha256_update = NULL;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &no_update.base, &o),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto newer = make_mock_crypto(&fx->log);
+  newer.base.version = AZ_IOT_CRYPTO_VERSION + 1u;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &newer.base, &o),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto no_verify = make_mock_crypto(&fx->log);
+  no_verify.base.verify_rs256 = NULL;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &no_verify.base, &o),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_false(fc.opened);
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.host = "broker.example";
+  copts.port = 8883;
+  copts.client_id = "ut-no-crypto";
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_connection_client_deinit(&conn);
+}
+
+/** @brief Whether all @p len bytes at @p p are zero. */
+static bool all_zero(const void* p, size_t len)
+{
+  const uint8_t* b = (const uint8_t*)p;
+  for (size_t i = 0; i < len; ++i)
+  {
+    if (b[i] != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* The standalone entry points take the backend directly. Parsing verifies
+ * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
+static void standalone_entry_points_check_the_backend_they_need(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char request[] = "{}";
+  az_span json = az_span_create((uint8_t*)request, (int32_t)strlen(request));
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+
+  /* Outputs are zeroed on every error, including the argument checks. */
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, NULL, k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+
+  mock_crypto no_verify = make_mock_crypto(&fx->log);
+  no_verify.base.verify_rs256 = NULL;
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, &no_verify.base, k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+
+  /* With one output missing, the other is still cleared. */
+  memset(&req, 0xA5, sizeof(req));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, &fx->crypto.base, k_root_keys, 1, &req, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(&req, sizeof(req)));
+
+  az_iot_su_client_update_manifest_file file;
+  memset(&file, 0, sizeof(file));
+  assert_int_equal(
+      az_iot_su_verify_file_hash(&file, NULL, standalone_read_chunk, &fx->log),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* The mock digests a file not starting with 0x55 to SU_TEST_HASH_BYTE x 32. */
+  uint8_t digest[32];
+  memset(digest, SU_TEST_HASH_BYTE, sizeof(digest));
+  char digest_b64[64];
+  int32_t written = 0;
+  assert_true(az_result_succeeded(az_base64_encode(
+      az_span_create((uint8_t*)digest_b64, (int32_t)sizeof(digest_b64)),
+      az_span_create(digest, (int32_t)sizeof(digest)),
+      &written)));
+  file.hashes[0].hash_type = AZ_SPAN_FROM_STR("sha256");
+  file.hashes[0].hash_value = az_span_create((uint8_t*)digest_b64, written);
+  file.hashes_count = 1;
+  assert_int_equal(
+      az_iot_su_verify_file_hash(&file, &no_verify.base, standalone_read_chunk, &fx->log),
+      AZ_IOT_OK);
 }
 
 /* The vtable advertises an optional do_work hook for a channel with
@@ -6060,6 +6201,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        standalone_entry_points_check_the_backend_they_need, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(

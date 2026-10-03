@@ -100,8 +100,8 @@ set(_az_iot_pc_descriptions
     mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
     adapter_rust_mqtt             "Rust MQTT adapter"
-    su_crypto_openssl             "OpenSSL software updates crypto adapter"
-    su_crypto_mbedtls             "mbedTLS software updates crypto adapter"
+    crypto_openssl                "OpenSSL crypto backend"
+    crypto_mbedtls                "mbedTLS crypto backend"
     certificate_provider_managed  "OpenSSL managed certificate provider"
 )
 
@@ -129,7 +129,7 @@ foreach(_i RANGE 0 ${_last} 2)
     else()
         set(_openssl_req "")
         get_target_property(_defs ${_tgt} COMPILE_DEFINITIONS)
-        if(_tgt MATCHES "^az_iot_(su_crypto_openssl|certificate_provider_managed)$"
+        if(_tgt MATCHES "^az_iot_(crypto_openssl|certificate_provider_managed)$"
            OR "AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs)
             set(_openssl_req " >= 3.0")
         endif()

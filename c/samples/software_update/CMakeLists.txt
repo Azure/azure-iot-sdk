@@ -2,9 +2,9 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # PC Software Update samples, with simulated download/install. They need the
-# OpenSSL crypto adapter for manifest JWS verification and SHA-256, so they are
+# OpenSSL crypto backend for manifest JWS verification and SHA-256, so they are
 # built only when it exists. esp32/ is an ESP-IDF project, built with idf.py.
-if(NOT TARGET az_iot_su_crypto_openssl)
+if(NOT TARGET az_iot_crypto_openssl)
     return()
 endif()
 
@@ -20,7 +20,7 @@ foreach(name simulated_onboarding simulated_regular)
     target_include_directories(${target} PRIVATE
         ${AZ_IOT_SAMPLES_COMMON_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/pc/common)
     target_link_libraries(${target}
-        PRIVATE az_iot_core az_iot_adapter_paho az_iot_su_crypto_openssl)
+        PRIVATE az_iot_core az_iot_adapter_paho az_iot_crypto_openssl)
     # nanosleep()/struct timespec need the POSIX feature-test macros under -std=c99.
     if(NOT WIN32)
         target_compile_definitions(${target} PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
