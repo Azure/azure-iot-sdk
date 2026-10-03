@@ -66,6 +66,68 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         }
 
         [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        public async Task TestManualConnectAfterDeviceDeletedFallsBackToReprovisioning()
+        {
+            // In this test, the test device provisions to an IoT hub and connects, and the connection context that
+            // provisioning returned is cached. The test then deliberately disconnects the device and deletes the
+            // device's identity from the IoT hub's registry. When the application connects the device again (without
+            // provisioning), the device should try to reconnect to the now-unreachable hub but eventually fall back to
+            // re-provisioning, which re-registers the device in the hub.
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+            using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
+
+            // A fast reconnect cadence and a low re-provision threshold keep the hub-retry-then-reprovision cycle inside
+            // this test's time budget, so the device falls back to DPS well within the budget rather than retrying the
+            // unreachable hub for the production default number of attempts.
+            ConnectionClientOptions options = new()
+            {
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3),
+                ConnectionAttemptTimeout = TimeSpan.FromSeconds(5),
+            };
+
+            await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
+                testAgainstClassicHub: true,
+                options,
+                cancellationToken);
+
+            // Cache the connection context that provisioning returned so the device can be connected again later
+            // without provisioning. This test device provisioned from an individual enrollment whose registration id is
+            // also the id it is assigned in the hub, so the same value identifies it in both the registry and DPS.
+            ConnectionContext cachedConnectionContext = device.ConnectionContext;
+            string deviceId = cachedConnectionContext.DeviceId!;
+
+            // The device provisioned and connected, so it should be present in the hub's device registry.
+            Assert.True(
+                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
+                "The test device was never registered in the IoT hub after provisioning.");
+
+            // Disconnect the device deliberately, then delete its identity from the registry. The device now holds valid
+            // cached provisioning state but no longer exists in the hub it was assigned to.
+            await device.ConnectionClient.DisconnectAsync(cancellationToken);
+            await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
+
+            // Connect the device again without provisioning, holding only the cached connection context. The device
+            // tries the cached hub and -- whether the hub rejects this deleted device's identity outright or just stops
+            // answering until the re-provision threshold is crossed -- falls back to Device Provisioning Service for a
+            // fresh assignment (mirroring the C client's open()), which re-registers this device because its enrollment
+            // still exists. This single ConnectAsync keeps working until the device is connected, so it does not throw
+            // and does not need to be retried by the application.
+            await device.ConnectionClient.ConnectAsync(cachedConnectionContext, cancellationToken);
+
+            // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the
+            // device recovered by re-provisioning rather than by reconnecting to the hub it had been removed from.
+            Assert.True(
+                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(15), cancellationToken),
+                "The device did not reappear in the IoT hub registry, so it did not re-provision after the hub became unreachable.");
+
+            // Since the device should be provisioned to the hub again, it should be capable of doing basic operations like sending telemetry.
+            TelemetryClient telemetryClient = new(device.ConnectionClient);
+            await telemetryClient.SendTelemetryAsync(new Device.Models.Telemetry.DeviceToCloudTelemetry(), cancellationToken);
+            telemetryClient.Dispose(false);
+        }
+
+        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
         public async Task TestReprovisioningAfterDeviceDeletedAndEnrollmentTemporarilyDeleted()
         {
             // In this test, the test device should successfully provision to an IoT Hub and successfully connect to that IoT Hub.

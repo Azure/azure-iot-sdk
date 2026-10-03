@@ -243,13 +243,45 @@ namespace Microsoft.Azure.Iot.Device
                 };
             }
 
+            // An absent connection profile resolves to the documented default ("classic"); an unknown profile string
+            // never reaches here because the registration response deserializer rejects values outside this enum.
+            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile ?? ConnectionProfile.Classic;
+
+            // Even a registration that reports "assigned" must actually carry the information this device needs to
+            // connect: a hub hostname, a device id, and a connection profile this SDK can speak. Mirror the C
+            // connection client's reject_assignment (connection_client.c:2045-2049, 2187-2246): if the assignment is
+            // missing a hub hostname or device id, or names a connection profile this SDK does not understand, refuse
+            // to adopt it and re-provision for a usable one instead of connecting with missing or wrong parameters (or
+            // dereferencing a null assignment at connect time). The Enum.IsDefined check is defense-in-depth against a
+            // reconfigured, lenient deserializer letting an unrecognized profile through. Like the non-"assigned" case
+            // above, this is thrown as a retryable fault so ReprovisionWithRetryAsync keeps re-provisioning under the
+            // policy (the enrollment's hub assignment may be corrected service-side) and a caller that provisioned
+            // directly gets a meaningful error.
+            if (string.IsNullOrEmpty(provisioningResult.AssignedHub)
+                || string.IsNullOrEmpty(provisioningResult.DeviceId)
+                || connectionProfile != ConnectionProfile.Classic)
+            {
+                Trace.TraceError(
+                    "Device Provisioning Service reported an 'assigned' registration this device cannot use (assigned hub '{0}', device id '{1}', connection profile '{2}').",
+                    provisioningResult.AssignedHub,
+                    provisioningResult.DeviceId,
+                    provisioningResult.ConnectionProfile);
+
+                throw new DeviceException(
+                    "Device Provisioning Service assigned this device to an IoT hub, but the assignment is missing a hub hostname or device id, or names a connection profile this SDK does not support, so it cannot be used.")
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = false,
+                };
+            }
+
             CurrentConnectionContext = new ConnectionContext()
             {
                 DeviceId = provisioningResult.DeviceId!,
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                ConnectionProfile = provisioningResult.ConnectionProfile ?? Provisioning.Models.ConnectionProfile.Classic,
+                ConnectionProfile = connectionProfile,
             };
 
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
@@ -266,7 +298,7 @@ namespace Microsoft.Azure.Iot.Device
                 CurrentConnectionContext.AuthenticationProvider = authentication;
             }
 
-            await ConnectAsync(CurrentConnectionContext, cancellationToken);
+            await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
         }
@@ -275,21 +307,56 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            // Mirror the C connection client's open(): when a standing re-provision demand is
-            // pending -- an identity rejection at CONNACK or the hub-unreachable threshold decided the cached assignment
-            // is no good -- ask Device Provisioning Service for a fresh assignment rather than reconnecting to the hub
-            // that was rejected or unreachable. In C this demand (needs_reprovision) deliberately survives a manual
-            // close()/open() so the application cannot walk back into the stale hub by reconnecting by hand; routing
-            // here does the same. The demand is consumed before routing so the re-provisioning connect that follows does
-            // not re-enter this branch, matching C's "consumed once provisioning is under way".
-            if (_needsReprovision && CanReprovision)
+            // A single ConnectAsync keeps working until this device is connected: it tries the cached hub and, if the
+            // hub rejects this device's identity or becomes unreachable past the re-provision threshold, falls back to
+            // Device Provisioning Service for a fresh assignment rather than surfacing that crossover to the caller.
+            // Mirrors the C connection client's open(), which likewise does not return to its caller until the device is
+            // connected (or a terminal, non-recoverable error is hit).
+            while (true)
             {
-                Trace.TraceInformation("A re-provision is pending, so connecting through Device Provisioning Service rather than to the cached IoT hub.");
-                _needsReprovision = false;
-                await ProvisionAndConnectAsync(_lastProvisioningSettings!, _lastProvisioningAuthentication!, cancellationToken);
-                return;
-            }
+                // When a re-provision demand is standing -- an identity rejection at CONNACK or the hub-unreachable
+                // threshold decided the cached assignment is no good -- ask Device Provisioning Service for a fresh
+                // assignment rather than reconnecting to the hub that was rejected or unreachable, and keep
+                // re-provisioning under the retry policy until it connects. In C this demand (needs_reprovision)
+                // deliberately survives a manual close()/open() so the application cannot walk back into the stale hub by
+                // reconnecting by hand; routing here does the same. The demand is consumed before routing so the
+                // re-provisioning connect that follows does not re-enter this branch, matching C's "consumed once
+                // provisioning is under way".
+                if (_needsReprovision && CanReprovision)
+                {
+                    Trace.TraceInformation("A re-provision is pending, so connecting through Device Provisioning Service rather than to the cached IoT hub.");
+                    _needsReprovision = false;
+                    await ReprovisionUntilConnectedAsync(_lastProvisioningSettings!, _lastProvisioningAuthentication!, cancellationToken);
+                    return;
+                }
 
+                try
+                {
+                    await ConnectToHubAsync(connectionContext, cancellationToken);
+                    return;
+                }
+                catch (DeviceException) when (_needsReprovision && CanReprovision)
+                {
+                    // The connect tried the cached hub and either the hub rejected this device's identity or the
+                    // hub-unreachable threshold was crossed, which left a standing demand to re-provision. Rather than
+                    // surfacing that crossover to the caller, loop back to the standing-demand branch above, which
+                    // re-provisions and connects to the freshly assigned hub -- so a single ConnectAsync keeps working
+                    // until it is connected, mirroring the C client's open().
+                    Trace.TraceInformation("The cached IoT hub assignment is no good; re-provisioning through Device Provisioning Service to recover the connection.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Connect this device to the IoT hub named by the given connection context and run the device presence flow,
+        /// throwing if the attempt fails. Unlike <see cref="ConnectAsync(ConnectionContext, CancellationToken)"/>, this
+        /// does not fall back to re-provisioning on its own; it is the single hub-connect attempt that both the connect
+        /// loop above and the re-provisioning retry loop are built from.
+        /// </summary>
+        /// <param name="connectionContext">The hub and identity to connect as.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        private async Task ConnectToHubAsync(ConnectionContext connectionContext, CancellationToken cancellationToken)
+        {
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
             Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
@@ -629,6 +696,47 @@ namespace Microsoft.Azure.Iot.Device
             });
 
             return true;
+        }
+
+        /// <summary>
+        /// Drive <see cref="ReprovisionWithRetryAsync"/> inline (awaited by the caller) to re-provision this device and
+        /// connect it to the hub it is assigned, keeping at it under the retry policy until it connects.
+        /// </summary>
+        /// <remarks>
+        /// This takes ownership of re-provisioning for the duration of the loop -- the same ownership the background
+        /// re-provisioning path claims in <see cref="TryStartReprovisioning"/> -- so that a connect attempt that fails
+        /// on its way to the next retry is thrown back to that loop (which owns the decision to retry or give up) rather
+        /// than being surfaced to the application as an unrecoverable fault while recovery is still in progress.
+        /// </remarks>
+        /// <param name="provisioningSettings">The settings of the provisioning run to repeat.</param>
+        /// <param name="provisioningAuthentication">The authentication of the provisioning run to repeat.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        private async Task ReprovisionUntilConnectedAsync(
+            ProvisioningSettings provisioningSettings,
+            X509AuthenticationProvider provisioningAuthentication,
+            CancellationToken cancellationToken)
+        {
+            bool ownedReprovisioning = Interlocked.CompareExchange(ref _isReprovisioning, 1, 0) == 0;
+
+            try
+            {
+                // This client is recovering the connection on its own, so forget any fault an earlier attempt recorded.
+                ClearUnrecoverableFault();
+
+                await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, cancellationToken);
+            }
+            finally
+            {
+                if (ownedReprovisioning)
+                {
+                    Volatile.Write(ref _isReprovisioning, 0);
+                }
+            }
+
+            // ReprovisionWithRetryAsync returns normally both when it connected and when it gave up after the retry
+            // policy was exhausted (which it never is under the default indefinite policy). If it gave up, it marked this
+            // client unrecoverably faulted; surface that to the caller rather than returning as though connected.
+            ThrowIfUnrecoverablyFaulted();
         }
 
         /// <summary>

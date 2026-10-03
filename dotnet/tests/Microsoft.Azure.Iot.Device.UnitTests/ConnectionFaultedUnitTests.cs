@@ -131,6 +131,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ConnectAsyncReprovisionsInPlaceWhenTheCachedHubRejectsTheDevice()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            int firstHubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                // The first assigned hub accepts this device's initial connection, but once this device is removed from
+                // that hub it rejects the identity on every later connect. The second assigned hub accepts the device.
+                if (connect.HostName == FirstAssignedHub)
+                {
+                    return Interlocked.Increment(ref firstHubConnects) == 1
+                        ? Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success })
+                        : Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized });
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // The device provisions and connects to the first assigned hub.
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+
+            // The application disconnects the device deliberately and then connects it again by hand -- without
+            // provisioning -- holding the connection context that provisioning returned.
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            // The cached assignment (the first hub) now rejects this device's identity. A single ConnectAsync must not
+            // surface that rejection to the caller; it should fall back to Device Provisioning Service for a fresh
+            // assignment and connect to whichever hub it is assigned, all within this one call -- mirroring the C
+            // client's open(), which keeps working until the device is connected.
+            await connectionClient.ConnectAsync(connectionContext, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
+        [Fact]
         public async Task ReprovisioningRetriesAfterAFailedAttemptUntilItSucceeds()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -267,6 +314,104 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // rather than a NullReferenceException from dereferencing the absent assignment. Mirrors the C connection
             // client, which treats a registration that failed or produced no assignment as a transient failure to be
             // retried under the reconnection policy.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task ProvisioningThatAssignsWithoutAHubThrowsARetryableFault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                // DPS reports the registration as "assigned" but omits the hub hostname, so there is nothing for this
+                // device to connect to even though the status looks successful.
+                TerminalRegistrationResult = new DeviceRegistrationResult()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = DeviceId,
+                    AssignedHub = null,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                },
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // An "assigned" result with no hub is unusable, so provisioning must refuse to adopt it and surface a
+            // classified, retryable fault rather than connecting with a null hostname. Mirrors the C connection
+            // client's reject_assignment, which re-provisions instead of using an assignment that lacks a hub.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task ProvisioningThatAssignsWithoutADeviceIdThrowsARetryableFault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                // DPS reports the registration as "assigned" with a hub but no device id, so this device still cannot
+                // build a usable identity to connect with.
+                TerminalRegistrationResult = new DeviceRegistrationResult()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = null,
+                    AssignedHub = FirstAssignedHub,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                },
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // An "assigned" result with no device id is unusable, so provisioning must refuse to adopt it and surface a
+            // classified, retryable fault rather than connecting with a null device id. Mirrors the C connection
+            // client's reject_assignment.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task ProvisioningThatAssignsANonClassicConnectionProfileThrowsARetryableFault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                // DPS reports the registration as "assigned" with a hub and device id, but names a connection profile
+                // other than "classic", which this SDK does not support.
+                TerminalRegistrationResult = new DeviceRegistrationResult()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = DeviceId,
+                    AssignedHub = FirstAssignedHub,
+                    ConnectionProfile = ConnectionProfile.MqttV5,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                },
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // An "assigned" result that names an unsupported (non-"classic") connection profile is unusable, so
+            // provisioning must refuse to adopt it and surface a classified, retryable fault rather than connecting
+            // with a profile this SDK cannot speak. Mirrors the C connection client's reject_assignment, which
+            // re-provisions instead of using an assignment with an unsupported connection profile.
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
