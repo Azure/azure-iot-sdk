@@ -311,6 +311,9 @@ int main(void)
   opts.dps.registration_id = reg_id;
   opts.dps_auth = tokens;
   opts.hub_auth = tokens;
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_BUF)]; /* no keys */
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK

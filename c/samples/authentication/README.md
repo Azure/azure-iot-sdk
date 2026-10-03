@@ -31,7 +31,7 @@ Each role (DPS, hub) uses whichever of these sources are configured, tried in th
 | Source | The device holds | SDK needs |
 | --- | --- | --- |
 | X.509 | Certificates and keys, through `certificate_provider` (one or more per role) | — |
-| Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, and a Unix time (`time()` unless `unix_time` is set) |
+| Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, `sas_buffer`, and a Unix time (`time()` unless `unix_time` is set) |
 | User-provided token | A `user_provided_token` callback | — |
 
 The SDK moves on only when the service rejects a credential, without a retry delay, and keeps

@@ -270,7 +270,8 @@ extern "C"
    *
    * @param[in] request           What the token must be valid for.
    * @param[out] token_buffer     Destination for READY; no terminator needed.
-   * @param[in] token_buffer_size Bytes in @p token_buffer: AZ_IOT_SAS_TOKEN_BUF.
+   * @param[in] token_buffer_size Bytes in @p token_buffer: the token area of
+   *                              az_iot_connection_client_options::sas_buffer.
    * @param[out] response         Outcome; zeroed on entry.
    * @param[in] user_ctx          az_iot_auth::sas::user_ctx.
    */
@@ -764,6 +765,25 @@ extern "C"
       az_iot_unix_time_callback get_time; /**< NULL: time(). */
       void* user_ctx; /**< Passed to get_time. */
     } unix_time;
+
+    /**
+     * @brief Storage for SAS: signing scratch, the decoded keys and the token
+     * of the current attempt. Required when dps_auth or hub_auth sets a key
+     * (or, once implemented, user_provided_token); unused otherwise, so
+     * clients without SAS pay nothing. Size it with
+     * AZ_IOT_SAS_BUFFER_SIZE(); init() fails with
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is missing or smaller than
+     * AZ_IOT_SAS_BUFFER_SIZE(keys, AZ_IOT_SAS_KEY_MAX).
+     *
+     * Owned by the client from init() to deinit(), which wipes it; must not
+     * be shared. The token is wiped as soon as the MQTT adapter has the
+     * CONNECT.
+     */
+    struct
+    {
+      uint8_t* buffer; /**< NULL when no SAS key is set. */
+      size_t size; /**< Bytes in buffer. */
+    } sas_buffer;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -1029,10 +1049,9 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT
 #define AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT 80
 #endif
-/** @brief Bytes of the buffer a SAS token is built in, or handed to
- * az_iot_sas_token_callback; the client holds one per role. A key-signed
- * token needs 3 * (host + device ID, or ID scope + registration ID length)
- * + 223 bytes: 1024 allows 267 ID characters. Longer IDs fail the attempt
+/** @brief Recommended token area of sas_buffer. A key-signed token needs
+ * 3 * (host + device ID, or ID scope + registration ID length) + 223 bytes:
+ * 1024 allows 267 ID characters. A token that does not fit fails the attempt
  * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 #ifndef AZ_IOT_SAS_TOKEN_BUF
 #define AZ_IOT_SAS_TOKEN_BUF 1024
@@ -1041,9 +1060,18 @@ extern "C"
 #ifndef AZ_IOT_SAS_KEY_MAX
 #define AZ_IOT_SAS_KEY_MAX 64
 #endif
-#if AZ_IOT_SAS_TOKEN_BUF < AZ_IOT_SAS_KEY_MAX
-#error "AZ_IOT_SAS_TOKEN_BUF must be at least AZ_IOT_SAS_KEY_MAX (it decodes group keys)"
-#endif
+/**
+ * @brief Bytes of az_iot_connection_client_options::sas_buffer for
+ * @p key_count keys and a @p token_size token area: 80 bytes of signing
+ * scratch, AZ_IOT_SAS_KEY_MAX per key, then the token area (at least
+ * AZ_IOT_SAS_KEY_MAX). Count each distinct key once: a key set identically
+ * (same string and group flag) for DPS and the hub shares one slot.
+ *
+ * E.g. one key for both roles, IDs up to 267 characters:
+ * AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_BUF), 1168 bytes.
+ */
+#define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
+  (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
 /** @brief Most certificates the client loads from the provider per role
  * (indexes 0 to this - 1), even if the provider never returns
  * AZ_IOT_ERR_NOT_FOUND. At most 256. */
@@ -1494,22 +1522,20 @@ extern "C"
       uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
 
-    /* Per scope: SAS keys, decoded (and derived from a group key) by init()
-     * and wiped by deinit(); the token of the current attempt; and the
-     * credential it used, reported in state events. */
+    /* Per scope: where init() put the decoded SAS keys in opts.sas_buffer
+     * (NULL when unset), and the credential the last attempt used. */
     struct
     {
-      uint8_t primary_key[AZ_IOT_SAS_KEY_MAX];
+      const uint8_t* primary_key;
       size_t primary_key_len;
-      uint8_t secondary_key[AZ_IOT_SAS_KEY_MAX];
+      const uint8_t* secondary_key;
       size_t secondary_key_len;
-      char token[AZ_IOT_SAS_TOKEN_BUF];
       az_iot_auth_source source;
       uint8_t x509_index;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
-    /* SAS signing scratch, wiped after each use: the HMAC and its base64. */
-    uint8_t sas_mac[AZ_IOT_SHA256_SIZE];
-    char sas_signature[48]; /* base64 of AZ_IOT_SHA256_SIZE bytes: 44 */
+    /* Token area of opts.sas_buffer: after the scratch and key slots. */
+    char* sas_token;
+    size_t sas_token_size;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

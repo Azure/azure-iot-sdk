@@ -201,6 +201,9 @@ copts.dps_auth.sas.primary_key_base64 = primary;
 copts.dps_auth.sas.secondary_key_base64 = secondary;  /* optional */
 copts.hub_auth = copts.dps_auth;          /* zeroed: X.509 only */
 copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
+static uint8_t sas_buf[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_BUF)];
+copts.sas_buffer.buffer = sas_buf;        /* keys + token, app memory */
+copts.sas_buffer.size = sizeof(sas_buf);
 copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 ```
 
@@ -213,6 +216,11 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   the credential in `auth_source` (and `x509_index`).
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
+- **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
+  `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
+  `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
+  counts once. The token is wiped once the adapter has the CONNECT; the whole buffer at
+  `deinit()`.
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
   re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
   re-initializing.

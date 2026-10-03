@@ -151,6 +151,22 @@ static int teardown(void** state)
 }
 
 /** @brief Direct mqttv3 hub options authenticating with KEY_B64 only. */
+/* Room for two distinct keys and the default token area. */
+static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_BUF)];
+
+static bool all_zero(const void* p, size_t n)
+{
+  const uint8_t* b = (const uint8_t*)p;
+  for (size_t i = 0; i < n; ++i)
+  {
+    if (b[i] != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 static az_iot_connection_client_options hub_sas_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
@@ -159,6 +175,8 @@ static az_iot_connection_client_options hub_sas_options(void)
   opts.crypto = TEST_CRYPTO();
   opts.hub_auth.sas.primary_key_base64 = KEY_B64;
   opts.unix_time.get_time = fixed_time;
+  opts.sas_buffer.buffer = g_sas_buffer;
+  opts.sas_buffer.size = sizeof(g_sas_buffer);
   return opts;
 }
 
@@ -173,6 +191,8 @@ static az_iot_connection_client_options dps_sas_options(const char* key)
   opts.dps_auth.sas.primary_key_base64 = key;
   opts.hub_auth.sas.primary_key_base64 = key;
   opts.unix_time.get_time = fixed_time;
+  opts.sas_buffer.buffer = g_sas_buffer;
+  opts.sas_buffer.size = sizeof(g_sas_buffer);
   return opts;
 }
 
@@ -341,11 +361,66 @@ static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  const char* token = fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].token;
-  for (size_t i = 0; i < sizeof(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].token); ++i)
-  {
-    assert_int_equal(token[i], 0);
-  }
+  assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
+}
+
+static void the_token_is_wiped_once_the_adapter_has_the_connect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
+}
+
+static void sas_keys_need_a_large_enough_buffer(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.sas_buffer.buffer = NULL;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  opts = hub_sas_options();
+  opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_KEY_MAX) - 1u;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* Two distinct keys need two slots. */
+  opts = hub_sas_options();
+  opts.hub_auth.sas.secondary_key_base64 = GROUP_KEY_B64;
+  opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_KEY_MAX) - 1u;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_KEY_MAX);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(fx->client.sas_token_size, AZ_IOT_SAS_KEY_MAX);
+  az_iot_connection_client_deinit(&fx->client);
+}
+
+static void no_buffer_is_needed_without_sas(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_test_provider provider;
+  az_iot_test_provider_init(&provider, NULL);
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.primary_key_base64 = NULL;
+  opts.certificate_provider = &provider.base;
+  opts.sas_buffer.buffer = NULL;
+  opts.sas_buffer.size = 0;
+  init_and_open(fx, &opts);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_X509);
+}
+
+static void identical_dps_and_hub_keys_share_one_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static uint8_t one_key[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_BUF)];
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.sas_buffer.buffer = one_key;
+  opts.sas_buffer.size = sizeof(one_key);
+  init_and_open(fx, &opts);
+  assert_ptr_equal(
+      fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].primary_key,
+      fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].primary_key);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
 }
 
 static void no_unix_time_fails_the_attempt_with_busy(void** state)
@@ -406,11 +481,8 @@ static void deinit_wipes_keys_and_tokens(void** state)
   az_iot_connection_client_deinit(&fx->client);
   fx->initialized = false;
   fx->factory = NULL; /* adopted and freed by deinit() */
-  const uint8_t* p = (const uint8_t*)fx->client.auth;
-  for (size_t i = 0; i < sizeof(fx->client.auth); ++i)
-  {
-    assert_int_equal(p[i], 0);
-  }
+  assert_true(all_zero(g_sas_buffer, sizeof(g_sas_buffer)));
+  assert_true(all_zero(fx->client.auth, sizeof(fx->client.auth)));
 }
 
 int main(void)
@@ -427,6 +499,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(hub_group_key_derives_from_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(the_device_id_is_url_encoded_in_the_token, setup, teardown),
     cmocka_unit_test_setup_teardown(a_token_that_does_not_fit_fails_and_is_wiped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_token_is_wiped_once_the_adapter_has_the_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(sas_keys_need_a_large_enough_buffer, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_buffer_is_needed_without_sas, setup, teardown),
+    cmocka_unit_test_setup_teardown(identical_dps_and_hub_keys_share_one_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connects_with_a_sas_token, setup, teardown),
     cmocka_unit_test_setup_teardown(

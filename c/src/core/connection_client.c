@@ -941,6 +941,19 @@ static uint64_t unix_now(const az_iot_connection_client* c)
   return t > 0 ? (uint64_t)t : 0u;
 }
 
+/** @brief Bytes of sas_buffer before the key slots: HMAC, then its base64. */
+#define SAS_SCRATCH_MAC_SIZE AZ_IOT_SHA256_SIZE
+#define SAS_SCRATCH_SIG_SIZE 48u /* base64 of AZ_IOT_SHA256_SIZE bytes: 44 */
+
+/** @brief Wipes the token once the adapter has the CONNECT. */
+static void sas_wipe_token(az_iot_connection_client* c)
+{
+  if (c->sas_token != NULL)
+  {
+    az_iot_crypto__wipe(c->sas_token, c->sas_token_size);
+  }
+}
+
 /** @brief Initializes c->hub_client for opts.host / opts.client_id once. */
 static bool ensure_hub_client(az_iot_connection_client* c)
 {
@@ -961,7 +974,7 @@ static bool ensure_hub_client(az_iot_connection_client* c)
 }
 
 /**
- * @brief Whether the largest token for @p scope fits AZ_IOT_SAS_TOKEN_BUF,
+ * @brief Whether the largest token for @p scope fits the token area,
  * every ID byte URL-encoded to 3. azure-sdk-for-c's SAS helpers check sizes
  * with preconditions, whose default handler never returns, so oversize input
  * must be refused before they run.
@@ -972,23 +985,23 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
   const char* first = is_dps ? c->opts.dps.id_scope : c->opts.host;
   const char* second = is_dps ? c->opts.dps.registration_id : c->opts.client_id;
   size_t ids = strlen(first) + strlen(second);
-  if (ids > AZ_IOT_SAS_TOKEN_BUF)
+  if (ids > c->sas_token_size)
   {
     return false;
   }
   /* "SharedAccessSignature sr=" 25, infix 19, "&sig=" 5, signature 44 * 3,
    * "&se=" 4, expiry 20, "&skn=registration" 17, terminator 1. */
-  return 3u * ids + 223u <= (size_t)AZ_IOT_SAS_TOKEN_BUF;
+  return 3u * ids + 223u <= c->sas_token_size;
 }
 
 /**
  * @brief Signs a SAS token with @p scope's primary key and sets it as the
  * CONNECT password, over server-authenticated TLS. The token format comes
- * from azure-sdk-for-c (c->dps_prov / c->hub_client); all buffers are in the
- * client.
+ * from azure-sdk-for-c (c->dps_prov / c->hub_client); every buffer is in
+ * opts.sas_buffer.
  *
  * @return AZ_IOT_OK; AZ_IOT_ERR_BUSY while no Unix time is known;
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token exceeds AZ_IOT_SAS_TOKEN_BUF;
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token exceeds the token area;
  * AZ_IOT_ERR_INVALID_ARG when the hub host or client ID is missing; the
  * crypto backend's error otherwise.
  */
@@ -1011,15 +1024,17 @@ static az_iot_result apply_sas_key(
   }
   if (!sas_token_fits(c, scope))
   {
-    AZ_IOT_LOG_ERROR("connection: IDs too long for a SAS token in AZ_IOT_SAS_TOKEN_BUF");
+    AZ_IOT_LOG_ERROR("connection: IDs too long for the SAS token area of opts.sas_buffer");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   uint32_t lifetime = auth->sas.token_lifetime_seconds != 0
       ? auth->sas.token_lifetime_seconds
       : (uint32_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS;
   uint64_t expiry = now + lifetime;
-  char* token = c->auth[scope].token;
-  az_span token_span = AZ_SPAN_FROM_BUFFER(c->auth[scope].token);
+  char* token = c->sas_token;
+  az_span token_span = az_span_create((uint8_t*)token, (int32_t)c->sas_token_size);
+  uint8_t* mac = c->opts.sas_buffer.buffer;
+  uint8_t* signature = mac + SAS_SCRATCH_MAC_SIZE;
 
   /* `<resource URI>\n<expiry>` is built in the token buffer, then replaced by
    * the token. */
@@ -1036,41 +1051,36 @@ static az_iot_result apply_sas_key(
         c->auth[scope].primary_key_len,
         az_span_ptr(to_sign),
         (size_t)az_span_size(to_sign),
-        c->sas_mac);
+        mac);
   }
   int32_t sig_len = 0;
   if (r == AZ_IOT_OK
       && az_result_failed(az_base64_encode(
-          AZ_SPAN_FROM_BUFFER(c->sas_signature), AZ_SPAN_FROM_BUFFER(c->sas_mac), &sig_len)))
+          az_span_create(signature, (int32_t)SAS_SCRATCH_SIG_SIZE),
+          az_span_create(mac, (int32_t)SAS_SCRATCH_MAC_SIZE),
+          &sig_len)))
   {
     r = AZ_IOT_ERR_INTERNAL;
   }
   if (r == AZ_IOT_OK)
   {
-    az_span sig = az_span_create((uint8_t*)c->sas_signature, sig_len);
+    az_span sig = az_span_create(signature, sig_len);
     ar = is_dps ? az_iot_provisioning_client_sas_get_password(
                       &c->dps_prov,
                       sig,
                       expiry,
                       AZ_SPAN_FROM_STR("registration"),
                       token,
-                      sizeof(c->auth[scope].token),
+                      c->sas_token_size,
                       NULL)
                 : az_iot_hub_client_sas_get_password(
-                      &c->hub_client,
-                      expiry,
-                      sig,
-                      AZ_SPAN_EMPTY,
-                      token,
-                      sizeof(c->auth[scope].token),
-                      NULL);
+                      &c->hub_client, expiry, sig, AZ_SPAN_EMPTY, token, c->sas_token_size, NULL);
     r = az_result_succeeded(ar) ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  az_iot_crypto__wipe(c->sas_mac, sizeof(c->sas_mac));
-  az_iot_crypto__wipe(c->sas_signature, sizeof(c->sas_signature));
+  az_iot_crypto__wipe(mac, SAS_SCRATCH_MAC_SIZE + SAS_SCRATCH_SIG_SIZE);
   if (r != AZ_IOT_OK)
   {
-    az_iot_crypto__wipe(c->auth[scope].token, sizeof(c->auth[scope].token));
+    sas_wipe_token(c);
     AZ_IOT_LOG_ERRORF("connection: SAS token signing failed (%d)", (int)r);
     return r;
   }
@@ -2210,10 +2220,12 @@ static az_iot_result dps_start(az_iot_connection_client* c)
      * need to be told which happened. close() has just reset the retry
      * bookkeeping; recreating it here would undo the caller's own close. */
     c->dps_start_cancelled = true;
+    sas_wipe_token(c);
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
+  sas_wipe_token(c);
   if (r != AZ_IOT_OK)
   {
     dps_teardown_mqtt(c);
@@ -3360,6 +3372,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
   az_iot_result r = mc->iface->connect(mc, &copts);
+  sas_wipe_token(c);
   if (r != AZ_IOT_OK)
   {
     mc->iface->destroy(mc);
@@ -3561,28 +3574,39 @@ static az_iot_result sas_validate(
   return AZ_IOT_OK;
 }
 
+/** @brief One configured SAS key, before it is placed in sas_buffer. */
+typedef struct
+{
+  az_iot_connection_scope scope;
+  bool secondary;
+  const char* base64;
+  bool is_group;
+  const char* id; /* group-key derivation ID */
+} sas_key_ref;
+
 /**
  * @brief Decodes @p key_base64 into @p out; for a group key, replaces it with
- * the device key HMAC-SHA256(group key, @p id). @p scratch holds the group key
- * meanwhile; both are wiped on failure, @p scratch always.
+ * the device key HMAC-SHA256(group key, @p id). @p scratch (at least
+ * AZ_IOT_SAS_KEY_MAX bytes) holds the group key meanwhile and is always wiped;
+ * @p out is wiped on failure.
  */
 static az_iot_result sas_load_key(
     const az_iot_crypto* crypto,
     const char* key_base64,
     bool is_group_key,
     const char* id,
-    uint8_t out[AZ_IOT_SAS_KEY_MAX],
+    uint8_t* out,
     size_t* out_len,
-    az_span scratch)
+    uint8_t* scratch)
 {
   *out_len = 0;
-  az_span dest = is_group_key ? scratch : az_span_create(out, AZ_IOT_SAS_KEY_MAX);
+  uint8_t* dest = is_group_key ? scratch : out;
   int32_t written = 0;
   size_t n = strlen(key_base64);
   az_iot_result r = AZ_IOT_ERR_INVALID_ARG;
   if (n <= (size_t)az_base64_get_max_encoded_size(AZ_IOT_SAS_KEY_MAX)
       && az_result_succeeded(az_base64_decode(
-          az_span_slice(dest, 0, AZ_IOT_SAS_KEY_MAX),
+          az_span_create(dest, AZ_IOT_SAS_KEY_MAX),
           az_span_create((uint8_t*)(uintptr_t)key_base64, (int32_t)n),
           &written))
       && written > 0)
@@ -3593,11 +3617,11 @@ static az_iot_result sas_load_key(
   {
     r = is_nonempty_cstr(id)
         ? az_iot_crypto__hmac_sha256(
-              crypto, az_span_ptr(scratch), (size_t)written, (const uint8_t*)id, strlen(id), out)
+              crypto, scratch, (size_t)written, (const uint8_t*)id, strlen(id), out)
         : AZ_IOT_ERR_INVALID_ARG;
     written = AZ_IOT_SHA256_SIZE;
   }
-  az_iot_crypto__wipe(az_span_ptr(scratch), (size_t)az_span_size(scratch));
+  az_iot_crypto__wipe(scratch, AZ_IOT_SAS_KEY_MAX);
   if (r != AZ_IOT_OK)
   {
     az_iot_crypto__wipe(out, AZ_IOT_SAS_KEY_MAX);
@@ -3607,43 +3631,132 @@ static az_iot_result sas_load_key(
   return AZ_IOT_OK;
 }
 
-/** @brief Decodes the keys of @p scope into client storage. */
-static az_iot_result sas_load_keys(az_iot_connection_client* c, az_iot_connection_scope scope)
+/** @brief Lists the configured keys; returns how many (at most 4). */
+static size_t sas_key_refs(const az_iot_connection_client* c, sas_key_ref refs[4])
 {
-  const az_iot_auth* auth = scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
-  if (!is_nonempty_cstr(auth->sas.primary_key_base64))
+  size_t n = 0;
+  for (int i = 0; i < (int)AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    az_iot_connection_scope scope = (az_iot_connection_scope)i;
+    const az_iot_auth* auth
+        = scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
+    /* A group key derives per device: the registration ID, which DPS also
+     * makes the device ID, or client_id for a direct hub connection. */
+    const char* id = (scope == AZ_IOT_CONN_SCOPE_DPS || dps_configured(c))
+        ? c->opts.dps.registration_id
+        : c->opts.client_id;
+    const char* keys[2] = { auth->sas.primary_key_base64, auth->sas.secondary_key_base64 };
+    for (int k = 0; k < 2 && is_nonempty_cstr(keys[k]); ++k)
+    {
+      refs[n++] = (sas_key_ref){ .scope = scope,
+                                 .secondary = k == 1,
+                                 .base64 = keys[k],
+                                 .is_group = auth->sas.is_enrollment_group_key,
+                                 .id = id };
+    }
+  }
+  return n;
+}
+
+/** @brief Whether two key settings decode to the same key. */
+static bool sas_same_key(const sas_key_ref* a, const sas_key_ref* b)
+{
+  return strcmp(a->base64, b->base64) == 0 && a->is_group == b->is_group
+      && (!a->is_group
+          || (is_nonempty_cstr(a->id) && is_nonempty_cstr(b->id) && strcmp(a->id, b->id) == 0));
+}
+
+/**
+ * @brief Lays out opts.sas_buffer -- scratch, one slot per distinct key, then
+ * the token area -- and decodes the keys into it.
+ *
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when a key is set and the
+ * buffer is missing or too small; AZ_IOT_ERR_INVALID_ARG for a bad key or a
+ * group key without an ID.
+ */
+static az_iot_result sas_load_keys(az_iot_connection_client* c)
+{
+  sas_key_ref refs[4];
+  size_t count = sas_key_refs(c, refs);
+  if (count == 0)
   {
     return AZ_IOT_OK;
   }
-  /* A group key derives per device: the registration ID, which DPS also makes
-   * the device ID, or client_id for a direct hub connection. */
-  const char* id = (scope == AZ_IOT_CONN_SCOPE_DPS || dps_configured(c))
-      ? c->opts.dps.registration_id
-      : c->opts.client_id;
-  az_iot_result r = sas_load_key(
-      c->opts.crypto,
-      auth->sas.primary_key_base64,
-      auth->sas.is_enrollment_group_key,
-      id,
-      c->auth[scope].primary_key,
-      &c->auth[scope].primary_key_len,
-      AZ_SPAN_FROM_BUFFER(c->auth[scope].token));
-  if (r == AZ_IOT_OK && is_nonempty_cstr(auth->sas.secondary_key_base64))
+  const uint8_t* slot_of[4] = { NULL, NULL, NULL, NULL };
+  size_t len_of[4] = { 0, 0, 0, 0 };
+  size_t distinct = 0;
+  for (size_t i = 0; i < count; ++i)
   {
-    r = sas_load_key(
-        c->opts.crypto,
-        auth->sas.secondary_key_base64,
-        auth->sas.is_enrollment_group_key,
-        id,
-        c->auth[scope].secondary_key,
-        &c->auth[scope].secondary_key_len,
-        AZ_SPAN_FROM_BUFFER(c->auth[scope].token));
+    bool shared = false;
+    for (size_t j = 0; j < i && !shared; ++j)
+    {
+      shared = sas_same_key(&refs[i], &refs[j]);
+    }
+    distinct += shared ? 0u : 1u;
   }
-  return r;
+  uint8_t* buf = c->opts.sas_buffer.buffer;
+  size_t size = c->opts.sas_buffer.size;
+  if (buf == NULL || size < AZ_IOT_SAS_BUFFER_SIZE(distinct, AZ_IOT_SAS_KEY_MAX))
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: SAS keys need opts.sas_buffer of at least "
+                     "AZ_IOT_SAS_BUFFER_SIZE(keys, AZ_IOT_SAS_KEY_MAX) bytes");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  az_iot_crypto__wipe(buf, size);
+  uint8_t* next = buf + SAS_SCRATCH_MAC_SIZE + SAS_SCRATCH_SIG_SIZE;
+  uint8_t* token_area = buf + AZ_IOT_SAS_BUFFER_SIZE(distinct, 0);
+  for (size_t i = 0; i < count; ++i)
+  {
+    for (size_t j = 0; j < i && slot_of[i] == NULL; ++j)
+    {
+      if (sas_same_key(&refs[i], &refs[j]))
+      {
+        slot_of[i] = slot_of[j];
+        len_of[i] = len_of[j];
+      }
+    }
+    if (slot_of[i] == NULL)
+    {
+      az_iot_result r = sas_load_key(
+          c->opts.crypto,
+          refs[i].base64,
+          refs[i].is_group,
+          refs[i].id,
+          next,
+          &len_of[i],
+          token_area);
+      if (r != AZ_IOT_OK)
+      {
+        return r;
+      }
+      slot_of[i] = next;
+      next += AZ_IOT_SAS_KEY_MAX;
+    }
+    if (refs[i].secondary)
+    {
+      c->auth[refs[i].scope].secondary_key = slot_of[i];
+      c->auth[refs[i].scope].secondary_key_len = len_of[i];
+    }
+    else
+    {
+      c->auth[refs[i].scope].primary_key = slot_of[i];
+      c->auth[refs[i].scope].primary_key_len = len_of[i];
+    }
+  }
+  c->sas_token = (char*)token_area;
+  c->sas_token_size = size - AZ_IOT_SAS_BUFFER_SIZE(distinct, 0);
+  return AZ_IOT_OK;
 }
 
-/** @brief Wipes every SAS key and token the client holds. */
-static void sas_wipe(az_iot_connection_client* c) { az_iot_crypto__wipe(c->auth, sizeof(c->auth)); }
+/** @brief Wipes every SAS key, token and scratch byte the client holds. */
+static void sas_wipe(az_iot_connection_client* c)
+{
+  if (c->opts.sas_buffer.buffer != NULL)
+  {
+    az_iot_crypto__wipe(c->opts.sas_buffer.buffer, c->opts.sas_buffer.size);
+  }
+  az_iot_crypto__wipe(c->auth, sizeof(c->auth));
+}
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
@@ -3684,15 +3797,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
-  sv = sas_load_keys(client, AZ_IOT_CONN_SCOPE_DPS);
-  if (sv == AZ_IOT_OK)
-  {
-    sv = sas_load_keys(client, AZ_IOT_CONN_SCOPE_HUB);
-  }
+  sv = sas_load_keys(client);
   if (sv != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("connection_client_init: a SAS key is not valid base64, too long, or its "
-                     "group-key ID is missing");
+    if (sv == AZ_IOT_ERR_INVALID_ARG)
+    {
+      AZ_IOT_LOG_ERROR("connection_client_init: a SAS key is not valid base64, too long, or its "
+                       "group-key ID is missing");
+    }
     sas_wipe(client);
     return sv;
   }

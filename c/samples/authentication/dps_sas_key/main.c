@@ -225,6 +225,11 @@ int main(void)
   opts.dps_auth = sas;
   opts.hub_auth = sas;
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the tokens */
+  /* SAS state lives in app memory: up to two distinct keys (DPS and the hub
+   * share them) and a token area for IDs up to 267 characters. */
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_BUF)];
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = config.ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
