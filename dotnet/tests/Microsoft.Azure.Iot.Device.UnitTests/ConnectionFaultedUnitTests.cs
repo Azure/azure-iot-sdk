@@ -699,6 +699,84 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ReprovisioningBackoffHonorsTheServiceRetryAfterAsAFloor()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                // The first registration succeeds so that this device gets connected to a hub. Every re-provisioning
+                // attempt after it (registration 2 and on) completes with a terminal "failed" status, so recovery never
+                // succeeds and the delay between consecutive attempts stays observable.
+                TerminalRegistrationResultSelector = registrationCount => registrationCount == 1
+                    ? null
+                    : new DeviceRegistrationResult()
+                    {
+                        RegistrationId = RegistrationId,
+                        Status = ProvisioningRegistrationStatus.Failed,
+                    },
+
+                // The service asks to be left alone for a second on each terminal response, which must floor the
+                // re-provisioning backoff.
+                TerminalRetryAfterSeconds = 1,
+            };
+
+            // Record when each re-provisioning registration (registration 2 and on) arrives so that the delay between
+            // two consecutive attempts can be measured.
+            List<DateTime> reprovisioningRegistrationTimes = new();
+            TaskCompletionSource twoReprovisioningAttemptsSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockDps.RegistrationRequested += registrationCount =>
+            {
+                if (registrationCount >= 2)
+                {
+                    lock (reprovisioningRegistrationTimes)
+                    {
+                        reprovisioningRegistrationTimes.Add(DateTime.UtcNow);
+                        if (reprovisioningRegistrationTimes.Count == 2)
+                        {
+                            twoReprovisioningAttemptsSeen.TrySetResult();
+                        }
+                    }
+                }
+
+                return Task.CompletedTask;
+            };
+
+            // A policy that retries with no backoff of its own, so any delay between attempts can only come from the
+            // service's Retry-After acting as a floor.
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, mockDps.RegistrationCount);
+
+            // The hub rejects this device's identity, so this client starts re-provisioning. Every attempt fails, so the
+            // loop keeps retrying; the service asked for a one-second Retry-After, which must floor the policy's zero
+            // backoff -- mirroring the C client, where the service's retry-after wins when it is longer than the policy's.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            await twoReprovisioningAttemptsSeen.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            TimeSpan gapBetweenAttempts;
+            lock (reprovisioningRegistrationTimes)
+            {
+                gapBetweenAttempts = reprovisioningRegistrationTimes[1] - reprovisioningRegistrationTimes[0];
+            }
+
+            // Without the floor these attempts would fire back-to-back under the zero-backoff policy; the service's
+            // one-second Retry-After forces them at least that far apart (allowing for scheduling slack).
+            Assert.True(
+                gapBetweenAttempts >= TimeSpan.FromMilliseconds(800),
+                $"Expected consecutive re-provisioning attempts to be at least ~1s apart because of the service's Retry-After, but they were {gapBetweenAttempts.TotalMilliseconds:F0}ms apart.");
+        }
+
+        [Fact]
         public async Task HubUnreachableForTheConfiguredAttemptsReprovisionsAndConnectsToNewlyAssignedHub()
         {
             const uint threshold = 3;
@@ -930,6 +1008,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             public DeviceRegistrationResult? TerminalRegistrationResult { get; set; }
 
             /// <summary>
+            /// When set, chooses the terminal registration result for each registration (given the running registration
+            /// count), overriding <see cref="TerminalRegistrationResult"/>. Returning null falls back to the default
+            /// "assigned" result, so a test can let the first registration succeed and later ones fail.
+            /// </summary>
+            public Func<int, DeviceRegistrationResult?>? TerminalRegistrationResultSelector { get; set; }
+
+            /// <summary>
+            /// When set, the terminal status poll's response topic carries this many seconds as its Retry-After, letting
+            /// a test drive the service's retry-after guidance.
+            /// </summary>
+            public int? TerminalRetryAfterSeconds { get; set; }
+
+            /// <summary>
             /// Raised with the running registration count each time a registration request arrives, before it is
             /// answered, so that a test can hold the flow open.
             /// </summary>
@@ -954,30 +1045,39 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 }
                 else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix))
                 {
-                    DeviceRegistrationResult registrationState = TerminalRegistrationResult ?? new DeviceRegistrationResult()
-                    {
-                        RegistrationId = RegistrationId,
-                        DeviceId = DeviceId,
-                        AssignedHub = _assignedHubSelector(RegistrationCount),
-                        Status = ProvisioningRegistrationStatus.Assigned,
-                    };
+                    DeviceRegistrationResult registrationState =
+                        TerminalRegistrationResultSelector?.Invoke(RegistrationCount)
+                        ?? TerminalRegistrationResult
+                        ?? new DeviceRegistrationResult()
+                        {
+                            RegistrationId = RegistrationId,
+                            DeviceId = DeviceId,
+                            AssignedHub = _assignedHubSelector(RegistrationCount),
+                            Status = ProvisioningRegistrationStatus.Assigned,
+                        };
 
-                    await RespondAsync(new RegistrationOperationStatus()
-                    {
-                        OperationId = OperationId,
-                        Status = registrationState.Status,
-                        RegistrationState = registrationState,
-                    });
+                    await RespondAsync(
+                        new RegistrationOperationStatus()
+                        {
+                            OperationId = OperationId,
+                            Status = registrationState.Status,
+                            RegistrationState = registrationState,
+                        },
+                        TerminalRetryAfterSeconds);
                 }
 
                 return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
             }
 
-            private Task RespondAsync(RegistrationOperationStatus status)
+            private Task RespondAsync(RegistrationOperationStatus status, int? retryAfterSeconds = null)
             {
+                string topic = retryAfterSeconds is { } seconds
+                    ? $"$dps/registrations/res/200/?$rid=1&retry-after={seconds}"
+                    : "$dps/registrations/res/200/?$rid=1";
+
                 return _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
                 {
-                    Topic = "$dps/registrations/res/200/?$rid=1",
+                    Topic = topic,
                     Payload = JsonSerializer.SerializeToUtf8Bytes(status, JsonSerializationSettings.Options),
                 });
             }

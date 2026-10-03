@@ -111,6 +111,14 @@ namespace Microsoft.Azure.Iot.Device
         // starts, so a trigger that cannot be acted on leaves the intent standing.
         private bool _needsReprovision;
 
+        // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
+        // when it asked for none). It is captured from each provisioning response and read as a floor on the
+        // re-provisioning backoff, so a registration that fails after the service asked to be left alone waits at least
+        // that long before registering again. Mirrors the C client's dps_pending_retry_after_secs, whose retry-after
+        // floors the reconnection policy's backoff (connection_client.c:2149-2166). Stored as a long so it can be
+        // written from the DPS response handler and read from the re-provisioning loop without tearing.
+        private long _lastProvisioningServiceRetryAfterTicks;
+
         /// <summary>
         /// Cancels the re-provisioning attempt that an identity fault started, if one is in flight. Because that attempt
         /// runs on its own, it is only abandoned when this client is deliberately disconnected or disposed.
@@ -652,6 +660,10 @@ namespace Microsoft.Azure.Iot.Device
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // Start this attempt with no standing service guidance so that only a Retry-After the service sends
+                // during this attempt can floor the backoff after it fails.
+                ResetProvisioningServiceRetryAfter();
+
                 try
                 {
                     await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, cancellationToken);
@@ -681,6 +693,18 @@ namespace Microsoft.Azure.Iot.Device
                         Trace.TraceError("Giving up on re-provisioning this device after {0} attempt(s) because the retry policy asked to abandon retrying. {1}", attempt, e);
                         await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
                         return;
+                    }
+
+                    // The service's Retry-After floors the policy's backoff: when Device Provisioning Service asked to
+                    // be left alone for longer than the policy would wait on its own, honor the service. Mirrors the C
+                    // client (connection_client.c:2149-2166), where the policy's maximum delay deliberately does NOT cap
+                    // this -- it bounds how long the SDK waits of its own accord, not how long the service asked to be
+                    // left alone -- so the two combine as a floor rather than either one alone deciding.
+                    TimeSpan serviceRetryAfter = GetProvisioningServiceRetryAfter();
+                    if (serviceRetryAfter > retryDelay)
+                    {
+                        Trace.TraceWarning("Device Provisioning Service asked for a Retry-After of {0}; honoring it over the reconnection policy's backoff of {1}.", serviceRetryAfter, retryDelay);
+                        retryDelay = serviceRetryAfter;
                     }
 
                     Trace.TraceWarning("Re-provisioning attempt {0} failed; retrying in {1}. {2}", attempt, retryDelay, e);
@@ -1052,8 +1076,10 @@ namespace Microsoft.Azure.Iot.Device
                 // The service is expected to return a value signalling how long to wait before polling again, but
                 // the SDK has a default value for when the service does not send that value. Included in this default value
                 // is some jitter to help stagger the requests if multiple provisioning device clients are checking their provisioning
-                // state at the same time.
-                TimeSpan pollingDelay = currentStatus.RetryAfter ?? RetryJitter.GenerateDelayWithJitterForRetry(s_defaultOperationPollingInterval);
+                // state at the same time. The service's value is never used to poll faster than that default cadence.
+                TimeSpan pollingDelay = currentStatus.RetryAfter is { } serviceRetryAfter
+                    ? (serviceRetryAfter < s_defaultOperationPollingInterval ? s_defaultOperationPollingInterval : serviceRetryAfter)
+                    : RetryJitter.GenerateDelayWithJitterForRetry(s_defaultOperationPollingInterval);
 
                 await Task.Delay(pollingDelay, cancellationToken);
             }
@@ -1128,6 +1154,10 @@ namespace Microsoft.Azure.Iot.Device
                     // reported as-is by the caller of this flow rather than hidden behind a deserialization failure.
                 }
 
+                // The service may ask to be left alone for a while on this response -- including on an error response
+                // that refuses to start the registration -- so remember it as a floor on the re-provisioning backoff.
+                CaptureProvisioningServiceRetryAfter(GetRetryAfterFromTopic(topic));
+
                 startProvisioningRequestStatusSource.TrySetResult(new ProvisioningServiceResponse(topic, jsonString, operation));
             }
             else
@@ -1143,7 +1173,11 @@ namespace Microsoft.Azure.Iot.Device
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
                 RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
-                operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
+                operation.RetryAfter = GetRetryAfterFromTopic(topic);
+
+                // Remember what the service asked for on this response so that, if this is the response that ends the
+                // registration without an assignment, the re-provisioning backoff waits at least this long.
+                CaptureProvisioningServiceRetryAfter(operation.RetryAfter);
 
                 checkRegistrationOperationStatusSource.TrySetResult(operation);
             }
@@ -1151,7 +1185,39 @@ namespace Microsoft.Azure.Iot.Device
             return Task.CompletedTask;
         }
 
-        private static TimeSpan? GetRetryAfterFromTopic(string topic, TimeSpan defaultPoolingInterval)
+        /// <summary>
+        /// Remember the Retry-After the service asked for on a provisioning response, so that a re-provisioning attempt
+        /// that then fails waits at least this long before registering again. Mirrors the C client, where the service's
+        /// retry-after floors the reconnection policy's backoff (connection_client.c:2149-2166). A response that carries
+        /// no Retry-After clears the stored value, so the response that ends the registration is the one that counts.
+        /// </summary>
+        private void CaptureProvisioningServiceRetryAfter(TimeSpan? retryAfter)
+        {
+            Volatile.Write(
+                ref _lastProvisioningServiceRetryAfterTicks,
+                retryAfter is { } value && value > TimeSpan.Zero ? value.Ticks : 0);
+        }
+
+        /// <summary>
+        /// Forget any Retry-After the service asked for, so that a fresh re-provisioning attempt starts with no standing
+        /// service guidance until the service sends some during that attempt.
+        /// </summary>
+        private void ResetProvisioningServiceRetryAfter()
+        {
+            Volatile.Write(ref _lastProvisioningServiceRetryAfterTicks, 0);
+        }
+
+        /// <summary>
+        /// The Retry-After the service most recently asked for during a registration, or <see cref="TimeSpan.Zero"/>
+        /// when it asked for none.
+        /// </summary>
+        private TimeSpan GetProvisioningServiceRetryAfter()
+        {
+            long ticks = Volatile.Read(ref _lastProvisioningServiceRetryAfterTicks);
+            return ticks > 0 ? TimeSpan.FromTicks(ticks) : TimeSpan.Zero;
+        }
+
+        private static TimeSpan? GetRetryAfterFromTopic(string topic)
         {
             string[] topicAndQueryString = topic.Split('?');
             if (topicAndQueryString.Length > 1)
@@ -1164,11 +1230,7 @@ namespace Microsoft.Azure.Iot.Device
                     {
                         if (int.TryParse(queryKeyAndValue[1], out int secondsToWait))
                         {
-                            var serviceRecommendedDelay = TimeSpan.FromSeconds(secondsToWait);
-
-                            return serviceRecommendedDelay.TotalSeconds < defaultPoolingInterval.TotalSeconds
-                                ? defaultPoolingInterval
-                                : serviceRecommendedDelay;
+                            return TimeSpan.FromSeconds(secondsToWait);
                         }
                     }
                 }
