@@ -150,9 +150,10 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
-Every connection uses TLS with X.509 client authentication. `certificate_provider` supplies the
-trusted CA and the device credential; `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`
-without one.
+Every connection uses TLS. `certificate_provider` supplies the trusted CA and the X.509 device
+credential. `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` without one, unless every role
+the client uses has a SAS key (see [Authentication](#authentication)); a SAS role then uses
+server-authenticated TLS. `dps.request_operational_certificate` always needs a provider.
 
 Operational certificates:
 

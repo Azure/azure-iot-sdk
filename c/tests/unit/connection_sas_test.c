@@ -45,6 +45,39 @@
   "SharedAccessSignature sr=0ne00000001%2fregistrations%2fut-device&sig=9nM2SzDCAOl%" \
   "2FzsYjmXT%2Fu5JwUmodICuLzA2jNfMfHAg%3D&se=1700000600&skn=registration"
 
+#define GROUP_HUB_TOKEN                                                                    \
+  "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=BRrnGeCm9r2C4ThgRfkk" \
+  "iZDw7C0H8EGZaA%2BwJ03WJx8%3D&se=1700003600"
+
+/* A provider with trust anchors but no certificate for any role, as the managed
+ * provider is without a bootstrap identity before issuance. */
+static az_iot_result ca_only_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  (void)self;
+  (void)role;
+  memset(out, 0, sizeof(*out));
+  out->trusted_ca_path = "provider-ca.pem";
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+static void ca_only_release(az_iot_certificate_provider* self, az_iot_certificate_material* m)
+{
+  (void)self;
+  (void)m;
+}
+
+static void ca_only_deinit(az_iot_certificate_provider* self) { (void)self; }
+
+static const az_iot_certificate_provider_vtable k_ca_only_vtable = {
+  .version = 1u,
+  .load = ca_only_load,
+  .release = ca_only_release,
+  .deinit = ca_only_deinit,
+};
+
 typedef struct
 {
   az_iot_connection_client client;
@@ -236,13 +269,43 @@ static void token_too_large_is_rejected_and_wiped(void** state)
   }
 }
 
+static void token_whose_input_does_not_fit_is_wiped(void** state)
+{
+  (void)state;
+  uint8_t key[AZ_IOT_SAS_KEY_MAX];
+  size_t key_len = 0;
+  assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, sizeof(key), &key_len), AZ_IOT_OK);
+  char token[20];
+  memset(token, 'x', sizeof(token));
+  assert_int_equal(
+      az_iot_sas__build_token(
+          TEST_CRYPTO(),
+          key,
+          key_len,
+          "broker.example%2Fdevices%2Fut-device",
+          "",
+          NOW,
+          token,
+          sizeof(token)),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  for (size_t i = 0; i < sizeof(token); ++i)
+  {
+    assert_int_equal(token[i], 0);
+  }
+}
+
 static void decode_key_rejects_bad_input(void** state)
 {
   (void)state;
   uint8_t key[AZ_IOT_SAS_KEY_MAX];
   size_t key_len = 7;
+  memset(key, 0xAB, sizeof(key));
   assert_int_equal(az_iot_sas__decode_key("", key, sizeof(key), &key_len), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(key_len, 0);
+  for (size_t i = 0; i < sizeof(key); ++i)
+  {
+    assert_int_equal(key[i], 0);
+  }
   assert_int_equal(
       az_iot_sas__decode_key("not base64!", key, sizeof(key), &key_len), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(az_iot_sas__decode_key(KEY_B64, key, 16, &key_len), AZ_IOT_ERR_INVALID_ARG);
@@ -340,6 +403,30 @@ static void trusted_ca_overrides_the_provider_ca(void** state)
   assert_string_equal(last_connect(fx)->connect.trusted_ca_path, "ca.pem");
 }
 
+static void a_provider_ca_is_kept_when_the_role_falls_back_to_sas(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider = { .vtable = &k_ca_only_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  init_and_open(fx, &opts);
+
+  const az_iot_mock_call* call = last_connect(fx);
+  assert_string_equal(call->password, HUB_TOKEN);
+  assert_string_equal(call->connect.trusted_ca_path, "provider-ca.pem");
+  assert_string_equal(call->connect.client_cert_path, "");
+}
+
+static void hub_group_key_derives_from_client_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.primary_key_base64 = GROUP_KEY_B64;
+  opts.hub_auth.sas.is_enrollment_group_key = true;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, GROUP_HUB_TOKEN);
+}
+
 static void no_unix_time_fails_the_attempt_with_busy(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -412,6 +499,7 @@ int main(void)
     cmocka_unit_test(dps_token_matches_reference),
     cmocka_unit_test(resource_uri_url_encodes_ids),
     cmocka_unit_test(token_too_large_is_rejected_and_wiped),
+    cmocka_unit_test(token_whose_input_does_not_fit_is_wiped),
     cmocka_unit_test(decode_key_rejects_bad_input),
     cmocka_unit_test_setup_teardown(init_rejects_invalid_sas_options, setup, teardown),
     cmocka_unit_test_setup_teardown(init_does_not_support_user_provided_token_yet, setup, teardown),
@@ -419,6 +507,9 @@ int main(void)
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(x509_from_the_provider_is_tried_before_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(trusted_ca_overrides_the_provider_ca, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_provider_ca_is_kept_when_the_role_falls_back_to_sas, setup, teardown),
+    cmocka_unit_test_setup_teardown(hub_group_key_derives_from_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connects_with_a_sas_token, setup, teardown),
     cmocka_unit_test_setup_teardown(

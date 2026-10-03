@@ -15,12 +15,13 @@ keys, then sends one telemetry message on whichever hub generation DPS assigned.
 
 - `dps_auth` and `hub_auth` carry the same keys: the hub identity DPS creates has them. No
   `certificate_provider`, so SAS is the only source.
-- Primary key, and optionally a secondary key; the secondary is used when the service rejects the
-  primary. The state callback prints which key connected.
+- Primary key, and optionally a secondary key (accepted, not used yet). The state callback prints
+  which credential connected.
 - Enrollment-group keys are accepted; the SDK derives the device keys from them.
 - `crypto = az_iot_crypto_openssl()` provides HMAC-SHA256. No `certificate_provider`.
-- The hub token (default lifetime one hour) is renewed at `sas.renewal_percent` of it (default
-  80%) by a reconnect, reported with `is_credential_renewal` set.
+- Tokens last `sas.token_lifetime_seconds` (default one hour). At expiry the service ends the
+  session and the client reconnects with a new token; `sas.renewal_percent` is accepted, not
+  used yet.
 - A hub that does not accept SAS (the mqttv5 hub, until it does) fails the connect with
   `AZ_IOT_ERR_IDENTITY_REJECTED`.
 

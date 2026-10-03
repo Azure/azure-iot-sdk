@@ -291,15 +291,20 @@ extern "C"
    * @brief SAS credentials for one role, tried after any X.509 certificate
    * (see az_iot_auth_source). Zeroed: no SAS.
    *
-   * Fallback: when the service rejects a credential
-   * (AZ_IOT_ERR_IDENTITY_REJECTED), the next source is tried at once,
-   * without a reconnection_policy delay. Other failures retry the same
-   * source under the policy. One pass over all sources counts as one policy
-   * attempt; with the policy disabled, open() still makes one full pass. A
-   * source that connects is kept for later reconnects until rejected; open()
-   * starts again at the first. When every source is rejected, the pass fails
-   * with AZ_IOT_ERR_IDENTITY_REJECTED (retriable), and for the hub the next
-   * attempt re-provisions through DPS.
+   * Implemented: the primary key is used when the provider has no
+   * certificate for the role, or there is no provider.
+   *
+   * Not implemented yet: fallback on rejection. When it is, a rejected
+   * credential (hub: AZ_IOT_ERR_IDENTITY_REJECTED; DPS: AZ_IOT_ERR_DPS with
+   * error code 401000, as DPS accepts the CONNECT and rejects the
+   * registration) moves to the next source at
+   * once, without a reconnection_policy delay; other failures retry the same
+   * source under the policy; one pass over all sources counts as one policy
+   * attempt; with the policy disabled, open() still makes one full pass; the
+   * source that connects is kept until rejected; when every source is
+   * rejected, the pass fails with AZ_IOT_ERR_IDENTITY_REJECTED (retriable)
+   * and the hub re-provisions through DPS. Today the secondary key is
+   * decoded and kept but not used.
    *
    * Keys are copied and decoded by init(); later changes to the strings have
    * no effect. To change keys, re-initialize the client (and its feature
@@ -316,7 +321,8 @@ extern "C"
     {
       /** @brief Base64 primary key, or NULL. */
       const char* primary_key_base64;
-      /** @brief Base64 secondary key, or NULL. Requires primary_key_base64. */
+      /** @brief Base64 secondary key, or NULL. Requires primary_key_base64.
+       * Not used yet (fallback is not implemented). */
       const char* secondary_key_base64;
       /** @brief The keys are enrollment-group keys. The device key is then
        * HMAC-SHA256(group key, id), with id the DPS registration ID, or
@@ -336,7 +342,9 @@ extern "C"
        * selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects values
        * above 99.
        *
-       * MQTT 3.1.1 cannot re-authenticate a live session, so renewal
+       * Not implemented yet: validated only. Until it is, the service ends
+       * the session when the token expires and the reconnect signs a new
+       * one. When implemented: MQTT 3.1.1 cannot re-authenticate a live session, so renewal
        * reconnects: RECONNECTING, then CONNECTED, both with
        * az_iot_connection_state_event::is_credential_renewal set and reason
        * AZ_IOT_OK; a hub session resumes per session_continuity. With a
@@ -748,8 +756,8 @@ extern "C"
     /**
      * @brief Unix time source for signing SAS tokens from keys, shared by
      * both roles. NULL uses the C library's time(); set it on a platform
-     * without one. A time of 0 fails the connect attempt with AZ_IOT_ERR_BUSY, which
-     * is retried.
+     * without one. A time of 0 fails the attempt with AZ_IOT_ERR_BUSY: open()
+     * returns it; a reconnect attempt is retried under reconnection_policy.
      */
     struct
     {
@@ -856,7 +864,8 @@ extern "C"
     /* Diagnostic detail, or NULL when none is available. Valid only until the
      * callback returns. */
     const az_iot_connection_error_detail* error;
-    /** @brief The transition is a planned SAS token renewal, not a failure. */
+    /** @brief The transition is a planned SAS token renewal, not a failure.
+     * Always false until renewal is implemented. */
     bool is_credential_renewal;
     /** @brief The credential this event is about: the one that connected on
      * CONNECTED, the one rejected on a rejection. */
@@ -1431,20 +1440,6 @@ extern "C"
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
 
-    /* Per scope: SAS keys, decoded (and derived from a group key) by init()
-     * and wiped by deinit(); the token of the current attempt; and the
-     * credential it used, reported in state events. */
-    struct
-    {
-      uint8_t primary_key[AZ_IOT_SAS_KEY_MAX];
-      size_t primary_key_len;
-      uint8_t secondary_key[AZ_IOT_SAS_KEY_MAX];
-      size_t secondary_key_len;
-      char token[AZ_IOT_SAS_TOKEN_BUF];
-      az_iot_auth_source source;
-      uint8_t x509_index;
-    } auth[AZ_IOT_CONN_SCOPE_COUNT];
-
     /* Runtime Hub-side CSR renewal: one in-flight operation, matched by rid. */
     struct
     {
@@ -1493,6 +1488,20 @@ extern "C"
       uint64_t desired_version; /* authoritative twin versions carried by the */
       uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
+
+    /* Per scope: SAS keys, decoded (and derived from a group key) by init()
+     * and wiped by deinit(); the token of the current attempt; and the
+     * credential it used, reported in state events. */
+    struct
+    {
+      uint8_t primary_key[AZ_IOT_SAS_KEY_MAX];
+      size_t primary_key_len;
+      uint8_t secondary_key[AZ_IOT_SAS_KEY_MAX];
+      size_t secondary_key_len;
+      char token[AZ_IOT_SAS_TOKEN_BUF];
+      az_iot_auth_source source;
+      uint8_t x509_index;
+    } auth[AZ_IOT_CONN_SCOPE_COUNT];
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

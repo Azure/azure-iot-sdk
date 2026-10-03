@@ -8,8 +8,8 @@
 
 #include "internal/span_writer.h"
 
-/* Longest uint32_t in decimal is 4294967295: ten digits. */
-#define AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX 10
+/* Longest uint64_t in decimal is 18446744073709551615: twenty digits. */
+#define AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX 20
 
 /* Longest uint32_t in hexadecimal is eight digits. */
 #define AZ_IOT_SPAN_WRITER_HEX_DIGITS_MAX 8
@@ -282,7 +282,7 @@ size_t az_iot_span_writer_length(const az_iot_span_writer* writer)
 /* Emits @p magnitude in decimal, preceded by '-' when @p negative. Digits fall
  * out least-significant first, so they are staged and then reversed into the
  * destination. Nothing is written unless the whole number fits. */
-static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude, bool negative)
+static void writer_append_decimal(az_iot_span_writer* writer, uint64_t magnitude, bool negative)
 {
   uint8_t digits[AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX];
   int32_t count = 0;
@@ -310,6 +310,11 @@ static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude
 }
 
 void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value)
+{
+  writer_append_decimal(writer, value, false);
+}
+
+void az_iot_span_writer_append_u64(az_iot_span_writer* writer, uint64_t value)
 {
   writer_append_decimal(writer, value, false);
 }

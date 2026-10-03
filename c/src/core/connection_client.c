@@ -903,6 +903,23 @@ static az_iot_result apply_certificate_material(
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief For a role falling back to SAS: keeps the trust anchors a provider
+ * reported alongside AZ_IOT_ERR_NOT_FOUND (it has a CA but no certificate for
+ * the role). opts.trusted_ca, applied later, still overrides them.
+ */
+static void keep_provider_trust(
+    az_iot_mqtt_connect_options* copts,
+    az_iot_result load_result,
+    const az_iot_certificate_material* mat)
+{
+  if (load_result == AZ_IOT_ERR_NOT_FOUND)
+  {
+    copts->tls.trusted_ca_pem = mat->trusted_ca_pem;
+    copts->tls.trusted_ca_path = mat->trusted_ca_path;
+  }
+}
+
 /** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
 static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_connect_options* copts)
 {
@@ -2048,6 +2065,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && dps_has_sas)
     {
       AZ_IOT_LOG_DEBUG("dps: no bootstrap certificate; using SAS");
+      keep_provider_trust(&copts, lr, &mat);
     }
     else if (lr == AZ_IOT_OK)
     {
@@ -3243,6 +3261,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && hub_has_sas)
     {
       AZ_IOT_LOG_DEBUG("connection: no certificate; using SAS");
+      keep_provider_trust(&copts, lr, &mat);
     }
     else if (lr != AZ_IOT_OK)
     {
