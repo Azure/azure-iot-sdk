@@ -248,6 +248,7 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | Profile query | Query before connected is rejected | The DPS profile is unresolved until assignment. | unit | Done | [get_hub_profile_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1216) |
 | | Null arguments are rejected | — | unit | Done | [get_hub_profile_rejects_null_arguments](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1261) |
 | Direct profile declaration | Unknown caller profile is rejected at init | `UNKNOWN` is service-produced only. | unit | Done | [init_rejects_a_connection_profile_the_sdk_cannot_speak](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1277) |
+| Crypto backend | Incomplete crypto backend is rejected at init | Missing SHA-256 function or another `version`; `verify_rs256` is optional. | unit | Done | [init_rejects_an_incomplete_crypto_backend](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
 |  | DPS start rejects a missing id scope | The registration id is checked; the id scope is not, and an empty one trips an az_core precondition whose default handler spins forever. | unit | Pending | *connection_dps_test.c* |
 |  | CSR enrollment without a CSR-capable provider is refused | `request_operational_certificate` set but the provider offers no `get_csr`. | unit | Pending | *connection_dps_test.c* |
 |  | CSR enrollment without a payload buffer is refused | — | unit | Pending | *connection_dps_test.c* |
@@ -716,7 +717,8 @@ below stand in for what would otherwise be a second flavor section.
 
 Covers `az_iot_su_client`: the deployment workflow driven by software updates `updateMetadata` offers, the
 status reported through the software updates channel, and the manifest crypto (SHA-256 file hashes,
-RS256 signature verification) in `c/adapters/su/crypto_openssl`.
+RS256 signature verification) through the crypto backends in `c/adapters/crypto_openssl` and
+`c/adapters/crypto_mbedtls`.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
@@ -773,16 +775,22 @@ RS256 signature verification) in `c/adapters/su/crypto_openssl`.
 | | Build report with too small a buffer is rejected | `az_iot_su_build_report()` bound. | unit | Done | [build_report_with_too_small_a_buffer_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1373) |
 | Manifest & crypto | Microsoft root keys are embedded | The shipped roots match the published values. | unit | Done | [microsoft_root_keys_are_embedded](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1187) |
 | | Public parser accepts updateMetadata | `az_iot_su_parse_update_request()`; other shapes are NOT_FOUND. | unit | Done | [public_parser_accepts_update_metadata](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
-| | Sha256 oneshot matches known answers | FIPS 180-4 vectors (empty to 1M bytes). Every crypto adapter (OpenSSL; mbedTLS 3.6/4.1/4.2). | unit | Done | [sha256_oneshot_matches_known_answers](../../tests/support/su_crypto_contract.c) |
-| | Sha256 incremental matches known answers for any chunking | Chunks of 1/63/64/65/4096 bytes plus empty updates. | unit | Done | [sha256_incremental_matches_known_answers_for_any_chunking](../../tests/support/su_crypto_contract.c) |
-| | Sha256 contexts are independent | Two interleaved streams. | unit | Done | [sha256_contexts_are_independent](../../tests/support/su_crypto_contract.c) |
-| | Sha256 rejects bad arguments without leaking | A rejected update leaves the stream intact; a failing final still frees the context. | unit | Done | [sha256_rejects_bad_arguments_without_leaking](../../tests/support/su_crypto_contract.c) |
-| | Rs256 accepts known good vectors | 2048/3072/4096-bit, e=3, leading-zero modulus/exponent. | unit | Done | [rs256_accepts_known_good_vectors](../../tests/support/su_crypto_contract.c) |
-| | Rs256 rejects known bad vectors | Bit flips, wrong key/exponent, e=0/1/even, bad signature length or value, PSS, SHA-1/384/512, malformed PKCS#1 v1.5 encodings. | unit | Done | [rs256_rejects_known_bad_vectors](../../tests/support/su_crypto_contract.c) |
-| | Rs256 rejects missing inputs | NULL or zero-length key or signature; NULL message. | unit | Done | [rs256_rejects_missing_inputs](../../tests/support/su_crypto_contract.c) |
-| | Chain verifies and hooks see only primitive inputs | Real root → SJWK → manifest chain through `az_iot_su_parse_update_request()`; hooks receive raw n/e, the signing input and decoded signatures. | unit | Done | [chain_verifies_and_hooks_see_only_primitive_inputs](../../tests/support/su_crypto_contract.c) |
-| | Chain is rejected when tampered or root disabled | Changed body/payload/signatures, rogue root, swapped signing key. | unit | Done | [chain_is_rejected_when_tampered_or_root_disabled](../../tests/support/su_crypto_contract.c) |
-| | File hash matches signed manifest | `az_iot_su_verify_file_hash()` over a known payload, intact and with one byte flipped. | unit | Done | [file_hash_matches_signed_manifest](../../tests/support/su_crypto_contract.c) |
+| | Sha256 oneshot matches known answers | FIPS 180-4 vectors (empty to 1M bytes), through the SDK's one-shot SHA-256. Every crypto backend (OpenSSL; mbedTLS 3.6/4.1/4.2). | unit | Done | [sha256_oneshot_matches_known_answers](../../tests/support/crypto_contract.c) |
+| | Sha256 incremental matches known answers for any chunking | Chunks of 1/63/64/65/4096 bytes plus empty updates. | unit | Done | [sha256_incremental_matches_known_answers_for_any_chunking](../../tests/support/crypto_contract.c) |
+| | Sha256 contexts are independent | Two interleaved streams. | unit | Done | [sha256_contexts_are_independent](../../tests/support/crypto_contract.c) |
+| | Sha256 init ignores prior context contents | A context filled with garbage before `sha256_init()` hashes correctly and releases cleanly. | unit | Done | [sha256_init_ignores_prior_context_contents](../../tests/support/crypto_contract.c) |
+| | Sha256 rejects bad arguments without leaking | A rejected update leaves the stream intact; final without output still releases the context. | unit | Done | [sha256_rejects_bad_arguments_without_leaking](../../tests/support/crypto_contract.c) |
+| | HMAC-SHA256 matches known answers | RFC 4231 cases 1-4, 6, 7; a one-block key; empty key and data. Composed by the SDK over each backend's SHA-256. | unit | Done | [hmac_sha256_matches_known_answers](../../tests/support/crypto_contract.c) |
+| | HMAC-SHA256 rejects bad arguments | NULL key, data, output or backend with a non-zero length. | unit | Done | [hmac_sha256_rejects_bad_arguments](../../tests/support/crypto_contract.c) |
+| | Rs256 accepts known good vectors | 2048/3072/4096-bit, e=3, leading-zero modulus/exponent. | unit | Done | [rs256_accepts_known_good_vectors](../../tests/support/crypto_contract.c) |
+| | Rs256 rejects known bad vectors | Bit flips, wrong key/exponent, e=0/1/even, bad signature length or value, PSS, SHA-1/384/512, malformed PKCS#1 v1.5 encodings. | unit | Done | [rs256_rejects_known_bad_vectors](../../tests/support/crypto_contract.c) |
+| | Rs256 rejects missing inputs | NULL or zero-length key or signature; NULL message. | unit | Done | [rs256_rejects_missing_inputs](../../tests/support/crypto_contract.c) |
+| | Rs256 rejects oversized keys safely | Moduli and exponents that fill or exceed a fixed DER buffer, up to 70000 bytes; rejected with no out-of-bounds write. | unit | Done | [rs256_rejects_oversized_keys_safely](../../tests/support/crypto_contract.c) |
+| | Chain verifies and backend sees only primitive inputs | Real root → SJWK → manifest chain through `az_iot_su_parse_update_request()`; the backend receives raw n/e, the signing input and decoded signatures. | unit | Done | [chain_verifies_and_backend_sees_only_primitive_inputs](../../tests/support/crypto_contract.c) |
+| | Chain is rejected when tampered or root disabled | Changed body/payload/signatures, rogue root, swapped signing key. | unit | Done | [chain_is_rejected_when_tampered_or_root_disabled](../../tests/support/crypto_contract.c) |
+| | File hash matches signed manifest | `az_iot_su_verify_file_hash()` over a known payload, intact and with one byte flipped. | unit | Done | [file_hash_matches_signed_manifest](../../tests/support/crypto_contract.c) |
+| | Init requires a crypto backend that verifies | None, incomplete or other-version backend is INVALID_ARG; no `verify_rs256` is NOT_SUPPORTED; the public init takes the connection's backend. | unit | Done | [init_requires_a_crypto_backend_that_verifies](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
+| | Standalone entry points check the backend they need | `az_iot_su_parse_update_request()`: no backend is INVALID_ARG, no `verify_rs256` is NOT_SUPPORTED, and non-NULL outputs are zeroed on both. `az_iot_su_verify_file_hash()`: no backend is INVALID_ARG; a SHA-256-only backend verifies. | unit | Done | [standalone_entry_points_check_the_backend_they_need](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
 | | Manifest signed by an unknown root key is rejected | End-to-end through `az_iot_su_parse_update_request()`. | unit | Done | [manifest_signed_by_an_unknown_root_key_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1428) |
 | | Malformed jws is rejected | Wrong segment count, bad base64url, missing header. | unit | Done | [malformed_jws_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1449) |
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1481) |

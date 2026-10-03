@@ -28,7 +28,7 @@ defaults:
 jobs:
   changes:
     name: detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
     # Without pull-requests:read it fails with "Resource not accessible by
     # integration".
@@ -67,11 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-gcc-debug
             build_type: Debug
             with_paho: ON
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-clang-debug
             build_type: Debug
             with_paho: ON
@@ -87,7 +87,7 @@ jobs:
     # not registered there and nothing needs a broker.
     services:
       mosquitto:
-        image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only once the broker is
@@ -148,7 +148,7 @@ jobs:
     name: coding conventions (c/src)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -179,7 +179,7 @@ jobs:
     name: ${{ matrix.std }}-strict (gcc -pedantic)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -283,7 +283,7 @@ jobs:
     name: linux-gcc / valgrind
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -359,7 +359,7 @@ jobs:
     name: linux-gcc / helgrind + drd
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -459,7 +459,7 @@ jobs:
     name: linux-clang / ASan + UBSan
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     services:
@@ -511,11 +511,11 @@ jobs:
   # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
   # pinned release. The known-answer suite also runs under valgrind.
   # ---------------------------------------------------------------------------
-  su-crypto-mbedtls:
-    name: su crypto / mbedTLS ${{ matrix.mbedtls }}
+  crypto-mbedtls:
+    name: crypto / mbedTLS ${{ matrix.mbedtls }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -535,14 +535,14 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_BUILD_SAMPLES=OFF
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
       - name: Build
-        run: cmake --build build/su-mbedtls --target az_iot_tests_su_crypto_mbedtls az_iot_tests_su_crypto_openssl
+        run: cmake --build build/su-mbedtls --target az_iot_tests_crypto_mbedtls az_iot_tests_crypto_openssl
       - name: Test
-        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_su_crypto_' --no-tests=error
+        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_crypto_' --no-tests=error
       - name: Test under valgrind
         run: >
           valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
           --track-origins=yes --errors-for-leak-kinds=definite,possible
-          build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
+          build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
@@ -557,7 +557,7 @@ jobs:
       matrix:
         compiler: [ gcc, clang ]
         shared: [ 'OFF', 'ON' ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -629,7 +629,7 @@ jobs:
   # c/tests/install then builds and runs against the install prefix alone: the
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
-  # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # the package fails the job. mbedTLS is Linux-only, as in crypto-mbedtls.
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
@@ -642,26 +642,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
-          - os: ubuntu-latest
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+          - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -809,7 +809,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc
           - os: windows-latest
             name: windows-msvc
@@ -858,7 +858,7 @@ jobs:
     name: coverage (linux-gcc)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Exact number of CTest suites the coverage preset must register. An
       # inequality only caught the build collapsing to nothing; it could not
@@ -1062,7 +1062,7 @@ jobs:
     name: coverage-gate
     needs: [changes, coverage-c]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # This job does not check out the repo, so the workflow-level
     # working-directory of c/ would not exist.
     defaults:

@@ -2334,6 +2334,63 @@ static void init_rejects_a_connection_profile_the_sdk_cannot_speak(void** state)
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
 }
 
+static az_iot_result noop_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
+{
+  (void)self;
+  (void)ctx;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result noop_sha256_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
+{
+  (void)self;
+  (void)ctx;
+  (void)data;
+  (void)len;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result noop_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  (void)out;
+  return AZ_IOT_OK;
+}
+
+/* A backend is checked once, at init, rather than failing at first use deep
+ * inside a feature. verify_rs256 is optional: only software updates need it. */
+static void init_rejects_an_incomplete_crypto_backend(void** state)
+{
+  (void)state;
+  az_iot_crypto crypto = {
+    .version = AZ_IOT_CRYPTO_VERSION,
+    .sha256_init = noop_sha256_init,
+    .sha256_update = noop_sha256_update,
+    .sha256_final = noop_sha256_final,
+  };
+  az_iot_connection_client_options opts = dps_options();
+  opts.crypto = &crypto;
+  az_iot_connection_client c;
+
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_connection_client_deinit(&c);
+
+  crypto.sha256_final = NULL;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
+
+  crypto.sha256_final = noop_sha256_final;
+  crypto.version = AZ_IOT_CRYPTO_VERSION + 1u;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
+}
+
 /* A reassignment can move a device to a different generation. Filters registered
  * for the old one must not be re-issued at the new hub -- MQTTv5 does not grant
  * $iothub/..., and once CONNECTED is gated on those SUBACKs (P1c) a session
@@ -3980,6 +4037,7 @@ int main(void)
     cmocka_unit_test(get_hub_profile_before_connected_is_rejected),
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
+    cmocka_unit_test(init_rejects_an_incomplete_crypto_backend),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),
     cmocka_unit_test(removal_on_mqttv5_unsubscribes_only_the_owners_filter),
     /* close() during provisioning */

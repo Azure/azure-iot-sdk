@@ -175,6 +175,25 @@ Operational certificates:
 Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 [`samples/authentication`](../samples/authentication/README.md).
 
+## Crypto backend
+
+`crypto` supplies SHA-256 and RS256 verification to every feature that needs them; today that
+is software updates. Set it once:
+
+```c
+copts.crypto = az_iot_crypto_openssl(); /* or az_iot_crypto_mbedtls() */
+```
+
+| Backend | Header | Needs |
+| --- | --- | --- |
+| `az_iot_crypto_openssl()` | `az_iot_crypto_openssl.h` | OpenSSL 3.0+ |
+| `az_iot_crypto_mbedtls()` | `az_iot_crypto_mbedtls.h` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto), e.g. ESP-IDF |
+
+To bring your own, fill an `az_iot_crypto` with your functions
+([az_iot_crypto.h](../inc/azure/iot/az_iot_crypto.h)). `init()` rejects a backend without
+SHA-256 or with another `version`; software updates also need `verify_rs256`. A client that uses
+no crypto can leave `crypto` NULL.
+
 ## Common results
 
 | Result | Meaning |
