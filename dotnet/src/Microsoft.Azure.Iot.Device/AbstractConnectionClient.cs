@@ -600,12 +600,18 @@ namespace Microsoft.Azure.Iot.Device
             // caller that requested it, while a fault after CONNACK is surfaced through this completion.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
 
-            if (args.LastDisconnect == null && Volatile.Read(ref _isReprovisioning) != 0)
+            if (args.LastDisconnect == null && (Volatile.Read(ref _isReprovisioning) != 0 || (_needsReprovision && CanReprovision)))
             {
-                // A re-provisioning attempt is in flight and this fault ended one of its own connect attempts, which is
-                // thrown straight back to that attempt. That loop owns the decision to retry or give up, so this client
-                // is not declared unrecoverably faulted here; doing so would raise a spurious fault to the application
-                // while re-provisioning is still working through its retries.
+                // This fault ended a connect attempt that a caller is awaiting (LastDisconnect is null), so that caller
+                // is already being told about it -- through the exception thrown back to it -- and owns what happens
+                // next. Declaring this client unrecoverably faulted on top of that would raise a spurious application
+                // fault for a connection that is still being actively driven. That is the case either when a
+                // re-provisioning attempt is already in flight and this fault ended one of its own connect attempts
+                // (that loop owns the decision to retry or give up), or when the fault left a standing re-provision
+                // demand this client can act on: a single ConnectAsync catches that crossover and self-heals by
+                // re-provisioning, so the application must not be told the connection is gone for good. Mirrors the C
+                // connection client's open(), which recovers across this crossover without surfacing an
+                // application-visible fault.
                 return;
             }
 
