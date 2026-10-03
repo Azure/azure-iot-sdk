@@ -14,8 +14,6 @@
  * bootstrap certificate: DPS uses SAS (dps_auth), the hub X.509 (hub_auth,
  * the default). Renewal: az_iot_connection_client_send_csr() on an mqttv3
  * hub, or re-provisioning with the key.
- *
- * Proposed API: not built yet.
  */
 #include <stdbool.h>
 #include <stdio.h>

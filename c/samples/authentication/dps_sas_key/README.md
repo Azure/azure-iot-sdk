@@ -3,7 +3,9 @@
 
 # SAS keys to DPS and to the hub
 
-> **Proposed API, not implemented.** This sample is not built.
+> The secondary key and `renewal_percent` are accepted but not used yet: fallback and planned
+> renewal are not implemented. Until then the hub ends the session at token expiry and the client
+> reconnects with a new token.
 
 Registers with DPS and connects to the assigned hub with SAS tokens the SDK signs from symmetric
 keys, then sends one telemetry message on whichever hub generation DPS assigned. See

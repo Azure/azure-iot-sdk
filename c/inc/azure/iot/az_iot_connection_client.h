@@ -322,7 +322,8 @@ extern "C"
        * HMAC-SHA256(group key, id), with id the DPS registration ID, or
        * client_id for a direct hub connection. */
       bool is_enrollment_group_key;
-      /** @brief Application-supplied tokens, or NULL. Tried after the keys. */
+      /** @brief Application-supplied tokens, or NULL. Tried after the keys.
+       * Not implemented yet: init() returns AZ_IOT_ERR_NOT_SUPPORTED. */
       az_iot_sas_token_callback user_provided_token;
       void* user_ctx; /**< Passed to user_provided_token. */
       /** @brief Lifetime of each token the SDK signs from a key, in seconds.
@@ -747,7 +748,8 @@ extern "C"
     /**
      * @brief Unix time source for signing SAS tokens from keys, shared by
      * both roles. NULL uses the C library's time(); set it on a platform
-     * without one. A time of 0 fails the connect attempt, which is retried.
+     * without one. A time of 0 fails the connect attempt with AZ_IOT_ERR_BUSY, which
+     * is retried.
      */
     struct
     {
@@ -1023,6 +1025,10 @@ extern "C"
  * that is fully URL-encoded. The client holds one per role. */
 #ifndef AZ_IOT_SAS_TOKEN_BUF
 #define AZ_IOT_SAS_TOKEN_BUF 1024
+#endif
+/** @brief Largest decoded symmetric key init() accepts, in bytes. */
+#ifndef AZ_IOT_SAS_KEY_MAX
+#define AZ_IOT_SAS_KEY_MAX 64
 #endif
 /** @brief Most certificates the client loads from the provider per role
  * (indexes 0 to this - 1), even if the provider never returns
@@ -1424,6 +1430,20 @@ extern "C"
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
+
+    /* Per scope: SAS keys, decoded (and derived from a group key) by init()
+     * and wiped by deinit(); the token of the current attempt; and the
+     * credential it used, reported in state events. */
+    struct
+    {
+      uint8_t primary_key[AZ_IOT_SAS_KEY_MAX];
+      size_t primary_key_len;
+      uint8_t secondary_key[AZ_IOT_SAS_KEY_MAX];
+      size_t secondary_key_len;
+      char token[AZ_IOT_SAS_TOKEN_BUF];
+      az_iot_auth_source source;
+      uint8_t x509_index;
+    } auth[AZ_IOT_CONN_SCOPE_COUNT];
 
     /* Runtime Hub-side CSR renewal: one in-flight operation, matched by rid. */
     struct

@@ -175,9 +175,14 @@ Operational certificates:
 Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 [`samples/authentication`](../samples/authentication/README.md).
 
-## Authentication (proposed)
+## Authentication
 
-> **Proposed, not implemented.** Today every connection authenticates with X.509.
+> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then a SAS token signed
+> with the primary key; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; `auth_source` in
+> state events. Proposed, not implemented yet: fallback to further certificates and to the
+> secondary key on rejection, `user_provided_token` (`init()` returns
+> `AZ_IOT_ERR_NOT_SUPPORTED`), and planned renewal (`renewal_percent`). Until renewal lands, the
+> hub ends the session when the token expires and the client reconnects with a new one.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:

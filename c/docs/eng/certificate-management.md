@@ -268,7 +268,7 @@ model (D9).
    auth through the provider so a future TPM/SAS provider can supply a token instead of a
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
 
-   **SAS (proposed).** SAS is not routed through the provider. Per role, the client tries the
+   **SAS.** SAS is not routed through the provider. Per role, the client tries the
    provider's certificates first, then the SAS sources in `dps_auth` / `hub_auth` (primary
    key, secondary key, user-provided token), moving on when the service rejects a credential.
    The provider keeps serving X.509 roles, CSRs and issued chains; with SAS onboarding the

@@ -14,8 +14,6 @@
  * from which the device keys are derived. Sends one telemetry message on
  * whichever hub generation DPS assigned; a hub that does not accept SAS fails
  * the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
- *
- * Proposed API: not built yet.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -86,6 +84,7 @@ static const char* auth_source_name(az_iot_auth_source source)
       return "secondary key";
     case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
       return "user-provided token";
+    case AZ_IOT_AUTH_SOURCE_NONE:
     default:
       return "-";
   }

@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -45,6 +46,7 @@
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
 #include "internal/retry_policy.h"
+#include "internal/sas.h"
 #include "internal/span_writer.h"
 
 #include <azure/az_core.h>
@@ -474,6 +476,9 @@ static void set_state_to(
     .profile = NULL,
     .is_retriable = (reason != AZ_IOT_OK) && reason_is_retriable(reason),
     .error = NULL,
+    .is_credential_renewal = false,
+    .auth_source = c->auth[scope].source,
+    .x509_index = c->auth[scope].x509_index,
   };
   /* Detail rides only an event that is actually reporting a failure, and only
    * on the scope it was recorded for. */
@@ -895,6 +900,85 @@ static az_iot_result apply_certificate_material(
   copts->tls.sign = has_sign ? provider_sign_adapter : NULL;
   copts->tls.sign_ctx = has_sign ? (void*)prov : NULL;
   copts->tls.use_tls = true; /* this SDK always connects over TLS */
+  return AZ_IOT_OK;
+}
+
+/** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
+static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_connect_options* copts)
+{
+  if (c->opts.trusted_ca.pem != NULL || c->opts.trusted_ca.path != NULL)
+  {
+    copts->tls.trusted_ca_pem = c->opts.trusted_ca.pem;
+    copts->tls.trusted_ca_path = c->opts.trusted_ca.path;
+  }
+  copts->tls.use_tls = true;
+}
+
+/** @brief Current Unix time from opts.unix_time, else time(); 0 when unknown. */
+static uint64_t unix_now(const az_iot_connection_client* c)
+{
+  if (c->opts.unix_time.get_time != NULL)
+  {
+    return c->opts.unix_time.get_time(c->opts.unix_time.user_ctx);
+  }
+  time_t t = time(NULL);
+  return t > 0 ? (uint64_t)t : 0u;
+}
+
+/**
+ * @brief Signs a SAS token with @p scope's primary key and sets it as the
+ * CONNECT password, over server-authenticated TLS.
+ *
+ * @return AZ_IOT_OK; AZ_IOT_ERR_BUSY while no Unix time is known;
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token exceeds AZ_IOT_SAS_TOKEN_BUF;
+ * AZ_IOT_ERR_INVALID_ARG when an ID the token needs is missing; the crypto
+ * backend's error otherwise.
+ */
+static az_iot_result apply_sas_key(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_mqtt_connect_options* copts)
+{
+  bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
+  const az_iot_auth* auth = is_dps ? &c->opts.dps_auth : &c->opts.hub_auth;
+  uint64_t now = unix_now(c);
+  if (now == 0)
+  {
+    AZ_IOT_LOG_WARN("connection: no Unix time yet; cannot sign a SAS token");
+    return AZ_IOT_ERR_BUSY;
+  }
+  char uri[AZ_IOT_SAS_TOKEN_BUF];
+  az_iot_result r = az_iot_sas__resource_uri(
+      is_dps,
+      is_dps ? c->opts.dps.id_scope : c->opts.host,
+      is_dps ? c->opts.dps.registration_id : c->opts.client_id,
+      uri,
+      sizeof(uri));
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF("connection: SAS resource URI failed (%d)", (int)r);
+    return r;
+  }
+  uint32_t lifetime = auth->sas.token_lifetime_seconds != 0
+      ? auth->sas.token_lifetime_seconds
+      : (uint32_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS;
+  r = az_iot_sas__build_token(
+      c->opts.crypto,
+      c->auth[scope].primary_key,
+      c->auth[scope].primary_key_len,
+      uri,
+      is_dps ? "registration" : "",
+      now + lifetime,
+      c->auth[scope].token,
+      sizeof(c->auth[scope].token));
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF("connection: SAS token signing failed (%d)", (int)r);
+    return r;
+  }
+  copts->password = c->auth[scope].token;
+  c->auth[scope].source = AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+  apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
 }
 
@@ -1944,20 +2028,28 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF("dps: connecting with username %s", dps_username);
 
-  /* TLS from certificate_provider. DPS uses the bootstrap identity; the
-   * operational cert (if any) is issued during this exchange. No provider, or
-   * a failed load(), fails the attempt rather than connecting in plaintext. */
-  if (!c->opts.certificate_provider)
+  /* Credential: the provider's bootstrap X.509 identity first (the
+   * operational cert, if any, is issued during this exchange), else a SAS
+   * token from dps_auth. Neither fails the attempt; it never goes plaintext. */
+  bool dps_has_sas = c->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len > 0;
+  if (!c->opts.certificate_provider && !dps_has_sas)
   {
-    AZ_IOT_LOG_ERROR("dps: no certificate provider; refusing to connect without TLS");
+    AZ_IOT_LOG_ERROR("dps: no certificate provider and no SAS key; refusing to connect");
     mc->iface->destroy(mc);
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
+  c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_NONE;
+  c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = 0;
+  if (c->opts.certificate_provider)
   {
     az_iot_certificate_material mat = { 0 };
     az_iot_result lr = c->opts.certificate_provider->vtable->load(
         c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
-    if (lr == AZ_IOT_OK)
+    if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && dps_has_sas)
+    {
+      AZ_IOT_LOG_DEBUG("dps: no bootstrap certificate; using SAS");
+    }
+    else if (lr == AZ_IOT_OK)
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, c->opts.certificate_provider);
       AZ_IOT_LOG_DEBUGF(
@@ -1973,6 +2065,8 @@ static az_iot_result dps_start(az_iot_connection_client* c)
         mc->iface->destroy(mc);
         return cr;
       }
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_X509;
+      apply_trusted_ca(c, &copts);
     }
     else
     {
@@ -1980,6 +2074,15 @@ static az_iot_result dps_start(az_iot_connection_client* c)
           "dps: certificate provider load() failed for the bootstrap identity (%d)", (int)lr);
       mc->iface->destroy(mc);
       return lr;
+    }
+  }
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    az_iot_result sr = apply_sas_key(c, AZ_IOT_CONN_SCOPE_DPS, &copts);
+    if (sr != AZ_IOT_OK)
+    {
+      mc->iface->destroy(mc);
+      return sr;
     }
   }
 
@@ -3115,17 +3218,20 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     copts.username = c->hub_username;
   }
 
-  /* TLS from certificate_provider. Prefer the issued OPERATIONAL identity (from
-   * this DPS session, or persisted by the provider on a prior run, or supplied
-   * for a direct hub connection); fall back to the BOOTSTRAP identity when the
-   * provider has no operational cert yet. No provider, or a failed load(),
-   * fails the attempt rather than connecting in plaintext. */
-  if (!c->opts.certificate_provider)
+  /* Credential: the provider's X.509 identity first -- the issued OPERATIONAL
+   * one (from this DPS session, persisted by the provider on a prior run, or
+   * supplied for a direct hub connection), else BOOTSTRAP -- then a SAS token
+   * from hub_auth. Neither fails the attempt; it never goes plaintext. */
+  bool hub_has_sas = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len > 0;
+  if (!c->opts.certificate_provider && !hub_has_sas)
   {
-    AZ_IOT_LOG_ERROR("connection: no certificate provider; refusing to connect without TLS");
+    AZ_IOT_LOG_ERROR("connection: no certificate provider and no SAS key; refusing to connect");
     mc->iface->destroy(mc);
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
+  c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
+  c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
+  if (c->opts.certificate_provider)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
@@ -3134,18 +3240,36 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
     }
-    if (lr != AZ_IOT_OK)
+    if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && hub_has_sas)
+    {
+      AZ_IOT_LOG_DEBUG("connection: no certificate; using SAS");
+    }
+    else if (lr != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF("connection: certificate provider load() failed (%d)", (int)lr);
       mc->iface->destroy(mc);
       return lr;
     }
-    az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-    prov->vtable->release(prov, &mat);
-    if (cr != AZ_IOT_OK)
+    else
+    {
+      az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
+      prov->vtable->release(prov, &mat);
+      if (cr != AZ_IOT_OK)
+      {
+        mc->iface->destroy(mc);
+        return cr;
+      }
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_X509;
+      apply_trusted_ca(c, &copts);
+    }
+  }
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    az_iot_result sr = apply_sas_key(c, AZ_IOT_CONN_SCOPE_HUB, &copts);
+    if (sr != AZ_IOT_OK)
     {
       mc->iface->destroy(mc);
-      return cr;
+      return sr;
     }
   }
 
@@ -3323,6 +3447,105 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
   return opts;
 }
 
+/** @brief Checks one role's SAS options; decoding happens in sas_load_keys(). */
+static az_iot_result sas_validate(
+    const az_iot_connection_client_options* opts,
+    const az_iot_auth* auth)
+{
+  bool has_primary = is_nonempty_cstr(auth->sas.primary_key_base64);
+  if (is_nonempty_cstr(auth->sas.secondary_key_base64) && !has_primary)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: SAS secondary key without a primary key");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (has_primary && opts->crypto == NULL)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: SAS keys need opts.crypto");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (auth->sas.renewal_percent > 99u)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: SAS renewal_percent above 99");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (auth->sas.user_provided_token != NULL)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: user_provided_token is not supported yet");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Decodes @p key_base64 into @p out; for a group key, replaces it with
+ * the device key derived for @p id.
+ */
+static az_iot_result sas_load_key(
+    const az_iot_crypto* crypto,
+    const char* key_base64,
+    bool is_group_key,
+    const char* id,
+    uint8_t out[AZ_IOT_SAS_KEY_MAX],
+    size_t* out_len)
+{
+  az_iot_result r = az_iot_sas__decode_key(key_base64, out, AZ_IOT_SAS_KEY_MAX, out_len);
+  if (r != AZ_IOT_OK || !is_group_key)
+  {
+    return r;
+  }
+  if (!is_nonempty_cstr(id))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  uint8_t device_key[AZ_IOT_SHA256_SIZE];
+  r = az_iot_sas__derive_device_key(crypto, out, *out_len, id, device_key);
+  az_iot_sas__wipe(out, AZ_IOT_SAS_KEY_MAX);
+  *out_len = 0;
+  if (r == AZ_IOT_OK)
+  {
+    memcpy(out, device_key, sizeof(device_key));
+    *out_len = sizeof(device_key);
+  }
+  az_iot_sas__wipe(device_key, sizeof(device_key));
+  return r;
+}
+
+/** @brief Decodes the keys of @p scope into client storage. */
+static az_iot_result sas_load_keys(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  const az_iot_auth* auth = scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
+  if (!is_nonempty_cstr(auth->sas.primary_key_base64))
+  {
+    return AZ_IOT_OK;
+  }
+  /* A group key derives per device: the registration ID, which DPS also makes
+   * the device ID, or client_id for a direct hub connection. */
+  const char* id = (scope == AZ_IOT_CONN_SCOPE_DPS || dps_configured(c))
+      ? c->opts.dps.registration_id
+      : c->opts.client_id;
+  az_iot_result r = sas_load_key(
+      c->opts.crypto,
+      auth->sas.primary_key_base64,
+      auth->sas.is_enrollment_group_key,
+      id,
+      c->auth[scope].primary_key,
+      &c->auth[scope].primary_key_len);
+  if (r == AZ_IOT_OK && is_nonempty_cstr(auth->sas.secondary_key_base64))
+  {
+    r = sas_load_key(
+        c->opts.crypto,
+        auth->sas.secondary_key_base64,
+        auth->sas.is_enrollment_group_key,
+        id,
+        c->auth[scope].secondary_key,
+        &c->auth[scope].secondary_key_len);
+  }
+  return r;
+}
+
+/** @brief Wipes every SAS key and token the client holds. */
+static void sas_wipe(az_iot_connection_client* c) { az_iot_sas__wipe(c->auth, sizeof(c->auth)); }
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -3345,8 +3568,35 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     AZ_IOT_LOG_ERROR("connection_client_init: crypto backend has another version or lacks SHA-256");
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (opts->trusted_ca.pem != NULL && opts->trusted_ca.path != NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        "connection_client_init: set at most one of trusted_ca.pem and trusted_ca.path");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_result sv = sas_validate(opts, &opts->dps_auth);
+  if (sv == AZ_IOT_OK)
+  {
+    sv = sas_validate(opts, &opts->hub_auth);
+  }
+  if (sv != AZ_IOT_OK)
+  {
+    return sv;
+  }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
+  sv = sas_load_keys(client, AZ_IOT_CONN_SCOPE_DPS);
+  if (sv == AZ_IOT_OK)
+  {
+    sv = sas_load_keys(client, AZ_IOT_CONN_SCOPE_HUB);
+  }
+  if (sv != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERROR("connection_client_init: a SAS key is not valid base64, too long, or its "
+                     "group-key ID is missing");
+    sas_wipe(client);
+    return sv;
+  }
   client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
@@ -3430,6 +3680,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   }
   teardown_active(client);
   dps_teardown_mqtt(client);
+  sas_wipe(client);
   /* dispatch is embedded; nothing to free. */
   for (size_t i = 0; i < client->factory_count; ++i)
   {
@@ -3708,13 +3959,18 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
   }
 
-  /* Every DPS and hub connection uses TLS, from the certificate provider.
-   * Checked first, so a missing provider is reported as such rather than as a
-   * missing capability below. */
-  if (!client->opts.certificate_provider)
+  /* A role the client uses needs X.509 from the provider unless it has a SAS
+   * key; CSR enrollment always needs the provider. Checked first, so a missing
+   * provider is reported as such rather than as a missing capability below. */
+  bool dps_used = dps_configured(client);
+  bool hub_used = !client->opts.dps.provision_only;
+  if (!client->opts.certificate_provider
+      && (client->opts.dps.request_operational_certificate
+          || (dps_used && client->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len == 0)
+          || (hub_used && client->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len == 0)))
   {
-    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required; every DPS and "
-                     "hub connection uses TLS");
+    AZ_IOT_LOG_ERROR("connection_client_open: opts.certificate_provider is required for a role "
+                     "without a SAS key, and for request_operational_certificate");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
 
@@ -3775,6 +4031,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * adapter: the operational identity when it holds one, the bootstrap identity
    * otherwise. A provider that can supply neither yet is not rejected -- it may
    * become able to by the time the connect attempt runs. */
+  if (client->opts.certificate_provider)
   {
     az_iot_certificate_provider* p = client->opts.certificate_provider;
     if (p->vtable == NULL || p->vtable->load == NULL)
@@ -5646,4 +5903,19 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s)
     default:
       return "UNKNOWN";
   }
+}
+
+AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
+    az_iot_connection_client* client,
+    uint32_t request_id,
+    const char* token,
+    const az_iot_sas_token_response* response)
+{
+  (void)client;
+  (void)request_id;
+  (void)token;
+  (void)response;
+  /* user_provided_token is rejected by init() until it is implemented, so no
+   * request can be pending. */
+  return AZ_IOT_ERR_NOT_FOUND;
 }
