@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Models;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -63,7 +64,7 @@ namespace Microsoft.Azure.Iot.Device.Retry
         }
 
         /// <inheritdoc/>
-        public bool ShouldRetry(uint currentRetryCount, Exception? lastException, out TimeSpan retryDelay)
+        public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
         {
             if (_maxRetries == 0 || currentRetryCount > _maxRetries)
             {

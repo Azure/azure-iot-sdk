@@ -262,6 +262,10 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.ReprovisionAfterConsecutiveReconnectFailures =
                 CanReprovision ? _maxHubConnectAttemptsBeforeReprovision : 0u;
 
+            // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
+            // targets an IoT hub.
+            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.IotHub;
+
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
@@ -631,7 +635,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     attempt++;
 
-                    if (!_connectionRetryPolicy.ShouldRetry(attempt, e, out TimeSpan retryDelay))
+                    if (!_connectionRetryPolicy.ShouldRetry(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay))
                     {
                         // The retry policy will not allow another attempt, so this recovery has run out of options. This
                         // was the only thing left that could have re-established the connection, so anything waiting for
@@ -763,6 +767,10 @@ namespace Microsoft.Azure.Iot.Device
             // A connection to DPS never re-provisions on the unreachable-hub threshold; that crossover only applies to
             // hub connections. Clear it so a DPS reconnection just retries DPS under the usual policy.
             ManagedMqttConnection.ReprovisionAfterConsecutiveReconnectFailures = 0;
+
+            // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
+            // targets Device Provisioning Service.
+            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.DeviceProvisioningService;
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();

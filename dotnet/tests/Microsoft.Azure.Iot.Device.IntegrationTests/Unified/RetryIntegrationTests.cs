@@ -80,10 +80,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient();
 
             // As above, a fast reconnect cadence and a low re-provision threshold keep the hub-retry-then-reprovision cycle
-            // inside this test's time budget.
+            // inside this test's time budget. The retry policy is wrapped so the test can count how many times the client
+            // consults it specifically for Device Provisioning Service, which proves re-provisioning was retried rather
+            // than succeeding on its first attempt while the enrollment was still missing.
+            CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1)));
             ConnectionClientOptions options = new()
             {
-                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1)),
+                ConnectionRetryPolicy = retryPolicy,
                 ConnectionAttemptTimeout = TimeSpan.FromSeconds(5),
                 MaxHubConnectAttemptsBeforeReprovision = 3,
             };
@@ -108,9 +111,22 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await provisioningServiceClient.DeleteIndividualEnrollmentAsync(deviceId, cancellationToken);
             await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
 
-            // While the enrollment is gone, re-provisioning keeps failing, so the device must not reappear in the registry.
+            // Wait for the client to fall back to DPS and have re-provisioning fail more than once while the enrollment
+            // is missing. Waiting for multiple DPS retry consultations before restoring the enrollment (rather than
+            // restoring it right away) proves the device did not simply re-provision on its first attempt; it kept
+            // retrying provisioning, which is what lets restoring the enrollment recover it.
+            const int requiredDpsConsultations = 2;
+            Assert.True(
+                await WaitUntilAsync(
+                    () => Task.FromResult(retryPolicy.DeviceProvisioningServiceConsultations >= requiredDpsConsultations),
+                    TimeSpan.FromSeconds(45),
+                    cancellationToken),
+                $"The DPS retry policy was consulted only {retryPolicy.DeviceProvisioningServiceConsultations} time(s) while the enrollment was missing; expected at least {requiredDpsConsultations}.");
+
+            // Re-provisioning cannot succeed while the enrollment is gone, so the device must not have reappeared in the
+            // registry during that wait.
             Assert.False(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(15), cancellationToken),
+                await DeviceExistsAsync(registryManager, deviceId, cancellationToken),
                 "The device reappeared in the registry even though its DPS enrollment had been deleted.");
 
             // Restore the enrollment this device originally provisioned from so that its ongoing re-provisioning
@@ -160,6 +176,32 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             {
                 // Treat any failure to read the device (including a not-found response) as the device not being present.
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Wraps another retry policy and, using the endpoint the client passes to each retry check, counts how many of
+        /// those checks were for Device Provisioning Service. This lets a test tell re-provisioning retries apart from
+        /// hub reconnection retries and assert on how many times the device fell back to DPS.
+        /// </summary>
+        private sealed class CountingRetryPolicy : IRetryPolicy
+        {
+            private readonly IRetryPolicy _inner;
+            private int _deviceProvisioningServiceConsultations;
+
+            public CountingRetryPolicy(IRetryPolicy inner) => _inner = inner;
+
+            /// <summary>How many times this policy has been consulted for a Device Provisioning Service retry.</summary>
+            public int DeviceProvisioningServiceConsultations => Volatile.Read(ref _deviceProvisioningServiceConsultations);
+
+            public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+            {
+                if (connectionEndpoint == ConnectionEndpoint.DeviceProvisioningService)
+                {
+                    Interlocked.Increment(ref _deviceProvisioningServiceConsultations);
+                }
+
+                return _inner.ShouldRetry(currentRetryCount, lastException, connectionEndpoint, out retryDelay);
             }
         }
     }

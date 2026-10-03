@@ -796,7 +796,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             public ImmediateRetryPolicy(TimeSpan? delay = null) => _delay = delay ?? TimeSpan.Zero;
 
-            public bool ShouldRetry(uint currentRetryCount, Exception? lastException, out TimeSpan retryDelay)
+            public bool ShouldRetry(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
             {
                 retryDelay = _delay;
                 return true;
