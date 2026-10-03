@@ -165,22 +165,23 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
   /* Static: the sink writes through this state for the life of the process. */
   static az_iot_log_file_sink s_file_sink;
   az_iot_log_sink sink;
-  char* path = sample_env_dup("AZ_IOT_SAMPLE_LOG_FILE", NULL);
-  if (path == NULL)
+  char* enabled = sample_env_dup("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
+  if (enabled == NULL)
   {
     return az_iot_log_stderr_sink(min_level);
   }
-  az_iot_result r = az_iot_log_file_sink_open(&s_file_sink, path, NULL, min_level, &sink);
+  free(enabled);
+  az_iot_result r = az_iot_log_file_sink_open(
+      &s_file_sink, AZ_IOT_LOG_FILE_DEFAULT_NAME, NULL, min_level, &sink);
   if (r != AZ_IOT_OK)
   {
     fprintf(
         stderr,
-        "AZ_IOT_SAMPLE_LOG_FILE: cannot open '%s' (%s); logging to stderr\n",
-        path,
+        "AZ_IOT_SAMPLE_LOG_TO_FILE: cannot open '%s' (%s); logging to stderr\n",
+        AZ_IOT_LOG_FILE_DEFAULT_NAME,
         az_iot_result_to_string(r));
     sink = az_iot_log_stderr_sink(min_level);
   }
-  free(path);
   return sink;
 }
 

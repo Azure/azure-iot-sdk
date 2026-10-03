@@ -95,6 +95,7 @@ extern "C"
     struct
     {
       void* stream;
+      bool open;
       uint32_t bytes;
       az_iot_log_file_sink_options options;
       long lock;

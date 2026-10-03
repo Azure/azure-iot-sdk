@@ -3792,7 +3792,7 @@ static void log_open_summary(const az_iot_connection_client* c)
       az_iot_version_string(),
       text_or_none(c->opts.host),
       text_or_none(c->opts.client_id),
-      profile_name(c->opts.connection_profile),
+      profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
 }

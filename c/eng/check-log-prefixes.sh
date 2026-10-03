@@ -21,11 +21,13 @@ allowed = {
     "mqttv3_telemetry", "mqttv3_twin", "mqttv3_direct_method", "mqttv3_file_upload",
     "mqttv5_telemetry", "mqttv5_twin", "mqttv5_direct_method",
 }
-# First string literal of every AZ_IOT_LOG_* call, which may sit on a later
-# line or follow a comment.
-call = re.compile(
-    r'AZ_IOT_LOG_(?:TRACE|DEBUG|INFO|WARN|ERROR)F?\s*\(\s*(?:/\*.*?\*/\s*)*"((?:[^"\\]|\\.)*)"',
-    re.S)
+COMMENT = r'(?:/\*.*?\*/\s*)*'
+# Message or format argument: the first argument of an AZ_IOT_LOG_* macro, the
+# fourth of az_iot_log_emit()/az_iot_log_emitf(). It may sit on a later line or
+# follow a comment.
+macro = re.compile(r'AZ_IOT_LOG_(?:TRACE|DEBUG|INFO|WARN|ERROR)F?\s*\(\s*' + COMMENT + r'(.)', re.S)
+direct = re.compile(r'\baz_iot_log_emitf?\s*\(((?:[^,()]|\([^()]*\))*,){3}\s*' + COMMENT + r'(.)', re.S)
+literal = re.compile(r'"((?:[^"\\]|\\.)*)"')
 prefix = re.compile(r'([a-z0-9_]+): ')
 
 files = []
@@ -34,12 +36,21 @@ for sub in ("src", "adapters"):
 
 bad = []
 for path in sorted(files):
+    rel = os.path.relpath(path, root)
+    # The facade itself forwards caller-supplied messages.
+    if rel == os.path.join("src", "core", "log.c"):
+        continue
     text = open(path, encoding="utf-8").read()
-    for m in call.finditer(text):
-        p = prefix.match(m.group(1))
+    for m in sorted(list(macro.finditer(text)) + list(direct.finditer(text)), key=lambda x: x.start()):
+        line = text.count("\n", 0, m.start()) + 1
+        start = m.start(m.lastindex)
+        lit = literal.match(text, start)
+        if lit is None:
+            bad.append(f"  {rel}:{line}: message is not a string literal, so its prefix cannot be checked")
+            continue
+        p = prefix.match(lit.group(1))
         if p is None or p.group(1) not in allowed:
-            line = text.count("\n", 0, m.start()) + 1
-            bad.append(f"  {os.path.relpath(path, root)}:{line}: \"{m.group(1)[:60]}\"")
+            bad.append(f"  {rel}:{line}: \"{lit.group(1)[:60]}\"")
 
 if bad:
     print("Log messages without a known '<component>: ' prefix:\n")

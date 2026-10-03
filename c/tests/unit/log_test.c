@@ -23,8 +23,10 @@
 #include <cmocka.h>
 
 #if defined(_WIN32)
+#include <direct.h>
 #include <process.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -215,7 +217,7 @@ static void remove_log_files(const char* base)
 {
   char p[300];
   remove(base);
-  for (unsigned i = 1; i <= 4; ++i)
+  for (unsigned i = 0; i <= 4; ++i)
   {
     rotated_path(p, sizeof(p), base, i);
     remove(p);
@@ -370,6 +372,131 @@ static void file_sink_marks_a_truncated_line(void** state)
   remove_log_files(path);
 }
 
+/* The message part of a line, after "<file>:<line>: ". */
+static const char* line_message(const char* text)
+{
+  const char* p = strstr(text, "log_test.c:");
+  assert_non_null(p);
+  p = strstr(p, ": ");
+  assert_non_null(p);
+  return p + 2;
+}
+
+/* emit() is not bounded by emitf()'s buffer, so the sink enforces
+ * AZ_IOT_LOG_MESSAGE_MAX itself, at the exact boundary. */
+static void file_sink_bounds_a_plain_message_at_the_maximum(void** state)
+{
+  (void)state;
+  char path[256];
+  char text[FILE_BUF];
+  char msg[AZ_IOT_LOG_MESSAGE_MAX + 1];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  temp_log_path(path, sizeof(path), "bound");
+
+  for (size_t len = AZ_IOT_LOG_MESSAGE_MAX - 1; len <= AZ_IOT_LOG_MESSAGE_MAX; ++len)
+  {
+    remove_log_files(path);
+    memset(msg, 'm', len);
+    msg[len] = '\0';
+    assert_int_equal(
+        AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+    az_iot_log_set_global_sink(&sink);
+    AZ_IOT_LOG_ERROR(msg);
+    az_iot_log_set_global_sink(NULL);
+    az_iot_log_file_sink_close(&fs);
+
+    assert_true(read_file(path, text, sizeof(text)) > 0);
+    const char* body = line_message(text);
+    size_t body_len = strlen(body) - 1; /* newline */
+    assert_int_equal(body_len, AZ_IOT_LOG_MESSAGE_MAX - 1);
+    if (len == AZ_IOT_LOG_MESSAGE_MAX - 1)
+    {
+      assert_memory_equal(body, msg, len);
+    }
+    else
+    {
+      assert_memory_equal(body + body_len - 3, "...", 3);
+    }
+  }
+  remove_log_files(path);
+}
+
+static void make_dir(const char* path)
+{
+#if defined(_WIN32)
+  assert_int_equal(0, _mkdir(path));
+#else
+  assert_int_equal(0, mkdir(path, 0700));
+#endif
+}
+
+static void remove_dir(const char* path)
+{
+#if defined(_WIN32)
+  assert_int_equal(0, _rmdir(path));
+#else
+  assert_int_equal(0, rmdir(path));
+#endif
+}
+
+/* A rotation that cannot move the active file keeps logging to it, leaves the
+ * older files alone, and is retried on later lines. */
+static void file_sink_recovers_from_a_failed_rotation(void** state)
+{
+  (void)state;
+  char path[256];
+  char blocker[300];
+  char inner[320];
+  char p[300];
+  char text[FILE_BUF];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  az_iot_log_file_sink_options o = az_iot_log_file_sink_options_default();
+  o.max_file_bytes = 300;
+  o.max_files = 2;
+  temp_log_path(path, sizeof(path), "rotfail");
+  remove_log_files(path);
+  /* "<path>.0" is where rotation stages the active file; a non-empty directory
+   * there makes both remove() and rename() fail. */
+  rotated_path(blocker, sizeof(blocker), path, 0);
+  make_dir(blocker);
+  assert_true(snprintf(inner, sizeof(inner), "%s/keep", blocker) > 0);
+  FILE* k = fopen(inner, "wb");
+  assert_non_null(k);
+  assert_int_equal(0, fclose(k));
+
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  for (int i = 0; i < 6; ++i)
+  {
+    AZ_IOT_LOG_INFOF("app: blocked %02d %s", i, "padding-padding-padding-padding");
+  }
+
+  /* Nothing dropped, nothing rotated. */
+  assert_true(read_file(path, text, sizeof(text)) > 300);
+  assert_int_equal(6, count_lines(text));
+  rotated_path(p, sizeof(p), path, 1);
+  assert_int_equal(-1, read_file(p, text, sizeof(text)));
+
+  /* Unblock: the next line rotates. */
+  assert_int_equal(0, remove(inner));
+  remove_dir(blocker);
+  AZ_IOT_LOG_INFO("app: after");
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+
+  assert_true(read_file(p, text, sizeof(text)) > 300);
+  assert_int_equal(6, count_lines(text));
+  assert_true(read_file(path, text, sizeof(text)) > 0);
+  assert_int_equal(1, count_lines(text));
+  assert_non_null(strstr(text, "app: after\n"));
+
+  remove_log_files(path);
+  remove(blocker);
+}
+
 static void file_sink_rejects_bad_arguments(void** state)
 {
   (void)state;
@@ -451,6 +578,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(file_sink_appends_across_opens, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rotates_and_keeps_max_files, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_marks_a_truncated_line, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_sink_bounds_a_plain_message_at_the_maximum, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_recovers_from_a_failed_rotation, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rejects_bad_arguments, setup, teardown),
   };
   return cmocka_run_group_tests_name("log", tests, NULL, NULL);

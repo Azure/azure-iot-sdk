@@ -37,7 +37,9 @@ az_iot_log_file_sink_close(&file_sink);
   (newest) to `<path>.3`. Change this with `az_iot_log_file_sink_options`.
 - Each line is flushed as it is written. On POSIX a new file is created owner-only (0600).
 - Set the sink before creating any client. Do not change it while a client runs.
-- Samples write to a file when `AZ_IOT_SAMPLE_LOG_FILE` is set.
+- Samples write `azure-iot-sdk-c.log` in the working directory when `AZ_IOT_SAMPLE_LOG_TO_FILE` is
+  set, except `authentication/hsm_sign_callback`, `authentication/custom_provider_template` and
+  the ESP32 sample.
 - For your own sink, pass a callback, a context and a minimum level in an `az_iot_log_sink`.
   It may be called from MQTT adapter threads.
 

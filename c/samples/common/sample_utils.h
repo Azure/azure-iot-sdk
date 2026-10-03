@@ -26,9 +26,10 @@ typedef struct sample_config
 } sample_config;
 
 /**
- * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_FILE set, a rotating file
- * sink at that path (see az_iot_log_file_sink_open()); otherwise stderr. Falls
- * back to stderr, with a message, if the file cannot be opened.
+ * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_TO_FILE set (any
+ * non-empty value), a rotating file sink writing AZ_IOT_LOG_FILE_DEFAULT_NAME in
+ * the working directory (see az_iot_log_file_sink_open()); otherwise stderr.
+ * Falls back to stderr, with a message, if the file cannot be opened.
  *
  * @param[in] min_level Lowest level written.
  * @return Sink to pass to az_iot_log_set_global_sink().
