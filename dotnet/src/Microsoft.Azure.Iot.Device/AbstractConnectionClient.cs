@@ -73,9 +73,23 @@ namespace Microsoft.Azure.Iot.Device
 
         internal MqttConnectionManager ManagedMqttConnection;
 
-        internal ConnectionContext? CurrentConnectionContext { get; set; }
+        // Backing field for CurrentConnectionContext. Volatile because the connection layer's callback threads read it
+        // (through GetCurrentConnectionContext and the connect/fault flows) while a caller thread publishes it, so the
+        // reference must be seen fully constructed across threads.
+        private volatile ConnectionContext? _currentConnectionContext;
+
+        internal ConnectionContext? CurrentConnectionContext
+        {
+            get => _currentConnectionContext;
+            set => _currentConnectionContext = value;
+        }
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
+
+        // Backing field for CurrentEndpoint. Volatile because it is written on a caller thread (as a connection is
+        // established) and read on the connection layer's callback threads (which dispatch the provisioning vs. device
+        // presence flow on it), so every thread must observe the latest value.
+        private volatile ConnectionEndpoint _currentEndpoint = ConnectionEndpoint.None;
 
         /// <summary>
         /// The endpoint that this client is currently connecting to, or connected to.
@@ -85,7 +99,11 @@ namespace Microsoft.Azure.Iot.Device
         /// starts the provisioning flow, while connecting to an IoT hub starts the device presence flow. The connection
         /// layer owns reconnection for both endpoints, so this also decides which flow a reconnection restarts.
         /// </remarks>
-        internal ConnectionEndpoint CurrentEndpoint { get; private set; } = ConnectionEndpoint.None;
+        internal ConnectionEndpoint CurrentEndpoint
+        {
+            get => _currentEndpoint;
+            private set => _currentEndpoint = value;
+        }
 
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
@@ -108,8 +126,10 @@ namespace Microsoft.Azure.Iot.Device
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
         // the same hub. Mirrors the C client's needs_reprovision: it is the single input to the Hub-vs-DPS recovery
         // decision in HandleConnectionFaultedAsync, and it is consumed only once a re-provisioning attempt actually
-        // starts, so a trigger that cannot be acted on leaves the intent standing.
-        private bool _needsReprovision;
+        // starts, so a trigger that cannot be acted on leaves the intent standing. Volatile because the connection
+        // layer's callback threads set it while caller threads read it (and vice versa), so the decision must be made
+        // on the latest value rather than a stale cache.
+        private volatile bool _needsReprovision;
 
         // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
         // when it asked for none). It is captured from each provisioning response and read as a floor on the
