@@ -83,5 +83,5 @@ add_executable(az_iot_sample_auth_hsm_sign_callback
 target_link_libraries(az_iot_sample_auth_hsm_sign_callback PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)
 
-# dps_sas_key, dps_sas_key_issued_cert and sas_token_callback use the proposed
+# dps_sas_key, dps_sas_key_issued_cert and user_provided_sas_token use the proposed
 # SAS options; they are added here with the implementation.

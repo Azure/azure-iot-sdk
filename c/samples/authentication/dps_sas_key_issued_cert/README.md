@@ -10,7 +10,7 @@ generation, with the X.509 certificate DPS issued. See [`main.c`](main.c).
 
 ## Sample features
 
-- `dps_auth` is `AZ_IOT_AUTH_SAS_KEY`; `hub_auth` stays X.509 (zeroed).
+- `dps_auth` is `AZ_IOT_AUTH_SAS_TOKEN` with a key; `hub_auth` stays X.509 (zeroed).
 - The managed provider owns the operational key, builds the CSR and stores the issued chain. It
   has no bootstrap certificate.
 - Renewal: `az_iot_connection_client_send_csr()` on an mqttv3 hub, or re-provisioning with the

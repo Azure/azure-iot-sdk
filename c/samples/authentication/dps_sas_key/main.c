@@ -7,16 +7,18 @@
  * @file main.c
  * @brief SAS from a symmetric key, to DPS and to the assigned hub.
  *
- * The SDK signs a SAS token with the key for each DPS attempt and for the hub,
- * and reconnects the hub with a new token before the current one expires.
- * Takes an individual enrollment key, or an enrollment-group key from which the
- * device key is derived. Sends one telemetry message on whichever hub
- * generation DPS assigned; an mqttv5 hub that refuses SAS fails the connect
- * with AZ_IOT_ERR_IDENTITY_REJECTED.
+ * The SDK signs a SAS token with the primary key for each DPS attempt and for
+ * the hub, falls back to the secondary key when the service rejects the
+ * primary, and reconnects the hub with a new token at AZ_IOT_SAS_RENEWAL_PERCENT
+ * of its lifetime. Takes individual enrollment keys, or enrollment-group keys
+ * from which the device keys are derived. Sends one telemetry message on
+ * whichever hub generation DPS assigned; a hub that does not accept SAS fails
+ * the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
  *
  * Proposed API: not built yet.
  */
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +43,8 @@ typedef struct
   char* reg_id; /**< AZ_IOT_DPS_REGISTRATION_ID; also the device ID. */
   char* key; /**< AZ_IOT_DPS_SYMMETRIC_KEY, or NULL. */
   char* group_key; /**< AZ_IOT_DPS_ENROLLMENT_GROUP_KEY, or NULL. */
+  char* secondary_key; /**< AZ_IOT_DPS_SECONDARY_KEY (same kind as the primary), or NULL. */
+  char* renewal_percent; /**< AZ_IOT_SAS_RENEWAL_PERCENT, or NULL for the default. */
   char* ca; /**< AZ_IOT_TRUSTED_CA, or NULL for the default trust store. */
   char* endpoint; /**< AZ_IOT_DPS_GLOBAL_ENDPOINT, or NULL. */
 } sas_config;
@@ -63,9 +67,26 @@ static void config_release(sas_config* c)
   free(c->reg_id);
   free(c->key);
   free(c->group_key);
+  free(c->secondary_key);
+  free(c->renewal_percent);
   free(c->ca);
   free(c->endpoint);
   memset(c, 0, sizeof(*c));
+}
+
+static const char* sas_source_name(az_iot_sas_source source)
+{
+  switch (source)
+  {
+    case AZ_IOT_SAS_SOURCE_PRIMARY_KEY:
+      return "primary key";
+    case AZ_IOT_SAS_SOURCE_SECONDARY_KEY:
+      return "secondary key";
+    case AZ_IOT_SAS_SOURCE_USER_PROVIDED:
+      return "user-provided token";
+    default:
+      return "-";
+  }
 }
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -73,10 +94,12 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   sample_context* ctx = (sample_context*)user_ctx;
   fprintf(
       stderr,
-      "[dps_sas_key] %s: %s (%s)\n",
+      "[dps_sas_key] %s: %s (%s), credential: %s%s\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
       sample_connection_state_name(event->state),
-      az_iot_result_to_string(event->reason));
+      az_iot_result_to_string(event->reason),
+      sas_source_name(event->sas_source),
+      event->is_credential_renewal ? " (token renewal)" : "");
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
     ctx->hub_state = event->state;
@@ -163,6 +186,8 @@ int main(void)
     .reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL),
     .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
     .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
+    .secondary_key = sample_env_dup("AZ_IOT_DPS_SECONDARY_KEY", NULL),
+    .renewal_percent = sample_env_dup("AZ_IOT_SAS_RENEWAL_PERCENT", NULL),
     .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
     .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
   };
@@ -181,12 +206,13 @@ int main(void)
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
 
-  /* One key for both roles: DPS creates the hub identity with the same
-   * (derived) key. No certificate_provider: nothing uses X.509. */
+  /* Same keys for both roles: DPS creates the hub identity with the same
+   * (derived) keys. No certificate_provider: nothing uses X.509. */
   az_iot_auth sas = { 0 };
-  sas.kind = AZ_IOT_AUTH_SAS_KEY;
-  sas.sas_key.key_base64 = is_set(config.key) ? config.key : config.group_key;
-  sas.sas_key.is_enrollment_group_key = is_set(config.group_key);
+  sas.kind = AZ_IOT_AUTH_SAS_TOKEN;
+  sas.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
+  sas.sas.secondary_key_base64 = is_set(config.secondary_key) ? config.secondary_key : NULL;
+  sas.sas.is_enrollment_group_key = is_set(config.group_key);
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.client_id = config.reg_id;
@@ -196,6 +222,9 @@ int main(void)
   opts.dps_auth = sas;
   opts.hub_auth = sas;
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the tokens */
+  /* 0 (unset) selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects > 99. */
+  opts.sas_renewal_percent
+      = is_set(config.renewal_percent) ? (uint8_t)strtoul(config.renewal_percent, NULL, 10) : 0;
   opts.trusted_ca.path = config.ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK

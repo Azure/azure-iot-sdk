@@ -269,8 +269,8 @@ model (D9).
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
 
    **SAS (proposed).** SAS is not routed through the provider. `dps_auth` / `hub_auth`
-   select X.509 (this provider), a symmetric key the SDK signs with through `crypto`, or a
-   token callback for keys held elsewhere. The provider keeps serving X.509 roles, CSRs and
+   select X.509 (this provider) or SAS: primary/secondary symmetric keys the SDK signs with
+   through `crypto`, and/or a user-provided token callback for keys held elsewhere. The provider keeps serving X.509 roles, CSRs and
    issued chains; with SAS onboarding the managed provider runs without a bootstrap identity.
    TPM *attestation* is out of scope: DPS does not support it over MQTT.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
