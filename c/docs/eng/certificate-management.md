@@ -278,7 +278,10 @@ model (D9).
    **Multiple certificates per role (proposed).** `load()` gains an index:
    `load(self, role, index, out_material)`. Index 0 is today's certificate; a provider returns
    `AZ_IOT_ERR_NOT_FOUND` past its last one (or for a role it has no certificate for). The
-   client remembers the index that connected, so the provider stays stateless. Covers a
+   client remembers the index that connected, so the provider stays stateless. No count()
+   hook: the sentinel cannot go stale when a renewal adds a certificate. The client stops at
+   `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4) even without the sentinel, guarding against a
+   provider that never returns it. Covers a
    `selfSigned` identity's primary and secondary thumbprints, and keeping the previous issued
    certificate as a rollback after renewal. The library is unreleased, so this changes the
    existing signature; the vtable version is not bumped.

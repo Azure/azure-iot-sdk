@@ -213,10 +213,12 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Token callback.** It must not block. It answers `READY`, `PENDING` (deliver later with
   `az_iot_connection_client_complete_sas_token()`, within `connect_timeout_seconds`), or
   `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
-- **Renewal.** At `sas_renewal_percent` of a hub token's validity (default 80; 1-99), for keys
-  (`sas_token_lifetime_seconds`, default one hour) and callback tokens alike. MQTT 3.1.1 cannot
-  re-authenticate a live session, so the SDK reconnects the hub; those state events carry
-  `is_credential_renewal` and reason `AZ_IOT_OK`. DPS tokens are made per attempt.
+- **Renewal.** Per role, in `sas`: at `renewal_percent` (default 80; 1-99) of
+  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`.
+  Applies to any session held open. MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
+  reconnects; those state events carry `is_credential_renewal` and reason `AZ_IOT_OK`.
+- **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
+  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
   certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).

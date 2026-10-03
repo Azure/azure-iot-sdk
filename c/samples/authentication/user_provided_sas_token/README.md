@@ -6,7 +6,7 @@
 > **Proposed API, not implemented.** This sample is not built.
 
 The SDK asks the application for a SAS token before each connect that needs one, and again at
-`sas_renewal_percent` of its validity. The SDK never sees a key. See [`main.c`](main.c).
+`sas.renewal_percent` of its validity. The SDK never sees a key. See [`main.c`](main.c).
 
 ## Sample features
 

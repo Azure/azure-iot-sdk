@@ -214,6 +214,9 @@ int main(void)
   sas.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
   sas.sas.secondary_key_base64 = is_set(config.secondary_key) ? config.secondary_key : NULL;
   sas.sas.is_enrollment_group_key = is_set(config.group_key);
+  /* 0 (unset) selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects > 99. */
+  sas.sas.renewal_percent
+      = is_set(config.renewal_percent) ? (uint8_t)strtoul(config.renewal_percent, NULL, 10) : 0;
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.client_id = config.reg_id;
@@ -223,9 +226,6 @@ int main(void)
   opts.dps_auth = sas;
   opts.hub_auth = sas;
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the tokens */
-  /* 0 (unset) selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects > 99. */
-  opts.sas_renewal_percent
-      = is_set(config.renewal_percent) ? (uint8_t)strtoul(config.renewal_percent, NULL, 10) : 0;
   opts.trusted_ca.path = config.ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK

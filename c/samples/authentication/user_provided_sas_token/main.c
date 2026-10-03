@@ -8,7 +8,7 @@
  * @brief SAS tokens supplied by the application, to DPS and to the hub.
  *
  * The SDK asks for a token before each connect that needs one and again at
- * sas_renewal_percent of its validity; it never sees the key. The callback
+ * az_iot_auth::sas::renewal_percent of its validity; it never sees the key. The callback
  * must not block, so it records the request and answers PENDING; the token is
  * produced outside it and handed over with
  * az_iot_connection_client_complete_sas_token(). With no clock yet it answers
@@ -59,10 +59,8 @@ typedef struct
   bool in_use; /**< A request awaits completion. */
   uint32_t request_id; /**< az_iot_sas_token_request::request_id. */
   az_iot_connection_scope scope; /**< Role the token is for. */
-  uint8_t resource_uri[AZ_IOT_SAS_TOKEN_BUF]; /**< Copy of the `sr` value. */
-  int32_t resource_uri_len; /**< Bytes used in resource_uri. */
-  uint8_t key_name[32]; /**< Copy of the `skn` value. */
-  int32_t key_name_len; /**< Bytes used in key_name. */
+  char resource_uri[AZ_IOT_SAS_TOKEN_BUF]; /**< Copy of the `sr` value. */
+  char key_name[32]; /**< Copy of the `skn` value. */
 } pending_request;
 
 /** @brief State shared with the callbacks. */
@@ -111,8 +109,8 @@ static bool put_url_encoded(char* dst, size_t cap, size_t* pos, const char* src,
  */
 static az_iot_result sign_token(
     const key_store* store,
-    az_span resource_uri,
-    az_span key_name,
+    const char* resource_uri,
+    const char* key_name,
     uint64_t expiry,
     char* out,
     size_t cap,
@@ -126,12 +124,7 @@ static az_iot_result sign_token(
   }
   char to_sign[AZ_IOT_SAS_TOKEN_BUF];
   size_t to_sign_len = 0;
-  if (!put(
-          to_sign,
-          sizeof(to_sign),
-          &to_sign_len,
-          (const char*)az_span_ptr(resource_uri),
-          (size_t)az_span_size(resource_uri))
+  if (!put(to_sign, sizeof(to_sign), &to_sign_len, resource_uri, strlen(resource_uri))
       || !put(to_sign, sizeof(to_sign), &to_sign_len, "\n", 1)
       || !put(to_sign, sizeof(to_sign), &to_sign_len, expiry_text, (size_t)expiry_len))
   {
@@ -166,18 +159,12 @@ static az_iot_result sign_token(
   static const char k_prefix[] = "SharedAccessSignature sr=";
   size_t pos = 0;
   bool ok = put(out, cap, &pos, k_prefix, sizeof(k_prefix) - 1)
-      && put(out,
-             cap,
-             &pos,
-             (const char*)az_span_ptr(resource_uri),
-             (size_t)az_span_size(resource_uri))
-      && put(out, cap, &pos, "&sig=", 5)
+      && put(out, cap, &pos, resource_uri, strlen(resource_uri)) && put(out, cap, &pos, "&sig=", 5)
       && put_url_encoded(out, cap, &pos, sig_b64, (size_t)sig_len) && put(out, cap, &pos, "&se=", 4)
       && put(out, cap, &pos, expiry_text, (size_t)expiry_len);
-  if (ok && az_span_size(key_name) > 0)
+  if (ok && key_name[0] != '\0')
   {
-    ok = put(out, cap, &pos, "&skn=", 5)
-        && put(out, cap, &pos, (const char*)az_span_ptr(key_name), (size_t)az_span_size(key_name));
+    ok = put(out, cap, &pos, "&skn=", 5) && put(out, cap, &pos, key_name, strlen(key_name));
   }
   *out_len = pos;
   return ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -189,11 +176,13 @@ static az_iot_result sign_token(
  */
 static void request_token(
     const az_iot_sas_token_request* request,
-    az_span token_buffer,
+    char* token_buffer,
+    size_t token_buffer_size,
     az_iot_sas_token_response* response,
     void* user_ctx)
 {
   (void)token_buffer;
+  (void)token_buffer_size;
   sample_context* ctx = (sample_context*)user_ctx;
   pending_request* p = &ctx->pending;
   if (time(NULL) == (time_t)-1)
@@ -202,18 +191,16 @@ static void request_token(
     response->retry_after_seconds = SAMPLE_NO_CLOCK_RETRY_S;
     return;
   }
-  if (az_span_size(request->resource_uri) > (int32_t)sizeof(p->resource_uri)
-      || az_span_size(request->key_name) > (int32_t)sizeof(p->key_name))
+  if (strlen(request->resource_uri) >= sizeof(p->resource_uri)
+      || strlen(request->key_name) >= sizeof(p->key_name))
   {
     response->status = AZ_IOT_SAS_TOKEN_UNAVAILABLE; /* 0: reconnection policy */
     return;
   }
   p->request_id = request->request_id;
   p->scope = request->scope;
-  p->resource_uri_len = az_span_size(request->resource_uri);
-  memcpy(p->resource_uri, az_span_ptr(request->resource_uri), (size_t)p->resource_uri_len);
-  p->key_name_len = az_span_size(request->key_name);
-  memcpy(p->key_name, az_span_ptr(request->key_name), (size_t)p->key_name_len);
+  memcpy(p->resource_uri, request->resource_uri, strlen(request->resource_uri) + 1);
+  memcpy(p->key_name, request->key_name, strlen(request->key_name) + 1);
   p->in_use = true;
   response->status = AZ_IOT_SAS_TOKEN_PENDING;
 }
@@ -237,8 +224,8 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   az_iot_sas_token_response response = { 0 };
   az_iot_result r = sign_token(
       &ctx->store,
-      az_span_create(p->resource_uri, p->resource_uri_len),
-      az_span_create(p->key_name, p->key_name_len),
+      p->resource_uri,
+      p->key_name,
       (uint64_t)time(NULL) + SAMPLE_TOKEN_LIFETIME_S,
       token,
       sizeof(token),
@@ -246,7 +233,7 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   if (r == AZ_IOT_OK)
   {
     response.status = AZ_IOT_SAS_TOKEN_READY;
-    response.token_len = (int32_t)len;
+    response.token_len = len;
     response.valid_seconds = SAMPLE_TOKEN_LIFETIME_S;
   }
   else
@@ -255,7 +242,7 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
     len = 0;
   }
   r = az_iot_connection_client_complete_sas_token(
-      client, p->request_id, az_span_create((uint8_t*)token, (int32_t)len), &response);
+      client, p->request_id, response.status == AZ_IOT_SAS_TOKEN_READY ? token : NULL, &response);
   fprintf(
       stderr,
       "[user_provided_sas_token] %s token: %s\n",
