@@ -816,6 +816,32 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>
+        /// A feature client operation issued before this client has ever connected -- so nothing is maintaining or
+        /// recovering a connection -- must fail fast with the underlying not-connected error rather than block forever
+        /// waiting for a reconnection that is never coming.
+        /// </summary>
+        [Fact]
+        public async Task FeatureOperationBeforeConnectingFailsFastInsteadOfHanging()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+
+            // Nothing has connected this client, so the underlying client is not connected and a publish fails this way.
+            mockMqttClient.OnPublish = _ => throw new MqttClientNotConnectedException("mock client not connected exception");
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // Run the publish on its own thread: if the fail-fast were missing, the call would block that thread waiting
+            // for a reconnection, and the WaitAsync below would time out (failing this test) rather than hang the runner.
+            var publish = new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" };
+            Task<MqttPublishAck> publishTask = Task.Run(
+                () => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<MqttClientNotConnectedException>(
+                async () => await publishTask.WaitAsync(s_negativeTestTimeout, TestContext.Current.CancellationToken));
+        }
+
+        /// <summary>
         /// Provision and connect a device, start an operation that finds the connection gone and waits for it to come
         /// back, then fault that connection on this device's identity and refuse the first re-provisioning attempt for a
         /// terminal reason. Re-provisioning is persistent (matching the C client's needs_reprovision loop), so it must

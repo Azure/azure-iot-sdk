@@ -1472,6 +1472,17 @@ namespace Microsoft.Azure.Iot.Device
                         // before this operation started or while this operation was waiting.
                         ThrowIfUnrecoverablyFaulted();
 
+                        // If this client is deliberately idle -- it has never connected, or it was deliberately
+                        // disconnected -- then no reconnection and no re-provisioning will ever arrive to release this
+                        // operation, so fail fast with the not-connected error instead of waiting forever. While a
+                        // connection is being (re-)established, a terminal fault is still being delivered, or a
+                        // re-provision is in flight (which has its own gaps where no socket is up), a release is coming,
+                        // so keep waiting in those cases.
+                        if (!ManagedMqttConnection.IsConnectionLifecycleActive && Volatile.Read(ref _isReprovisioning) == 0)
+                        {
+                            throw;
+                        }
+
                         try
                         {
                             latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic

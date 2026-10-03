@@ -79,6 +79,22 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public ConnectionEndpoint ConnectionEndpoint { get; set; } = ConnectionEndpoint.None;
 
+        /// <summary>
+        /// Whether this layer is in a connection lifecycle that could still release an operation waiting for the
+        /// connection to come back: it is maintaining or (re-)establishing a connection, or it is delivering a terminal
+        /// fault that unblocks such waiters. This is <c>false</c> only when the layer is deliberately idle -- it has
+        /// never connected, or it was deliberately disconnected (via <see cref="DisconnectAsync"/>) or disposed -- so no
+        /// reconnection and no fault notification is coming.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client uses this to decide whether a feature operation that finds the connection gone
+        /// should keep waiting for a reconnection or fail fast. Unlike <see cref="_isDesiredConnected"/> alone, this
+        /// stays true across the brief window in which a terminal fault has stopped the connection but has not yet been
+        /// delivered to the owning client, so such a waiter is released by the real terminal fault rather than being
+        /// failed with a bare not-connected error.
+        /// </remarks>
+        public bool IsConnectionLifecycleActive => _isDesiredConnected || (!_isClosing && _mostRecentConnect != null);
+
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
 
