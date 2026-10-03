@@ -86,6 +86,51 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ConnectAsyncRoutesToDpsWhenAReprovisionIsStanding()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            mockMqttClient.OnConnect = connect =>
+            {
+                // The first assigned hub rejects this device's identity at CONNACK. Because that rejection ends the
+                // connect the caller is awaiting, this client cannot recover on its own; the re-provision demand is left
+                // standing for the next connect. The second assigned hub accepts the device.
+                if (connect.HostName == FirstAssignedHub)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized });
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // The initial provisioning assigns the first hub, which rejects this device's identity during the connect
+            // the caller is awaiting. That fault is reported to the caller -- so this throws -- and leaves a standing
+            // re-provision demand rather than recovering on its own.
+            await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ProvisionAndConnectAsync(
+                    CreateProvisioningSettings(),
+                    CreateAuthenticationProvider(),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, mockDps.RegistrationCount);
+
+            // Reconnecting by hand must not walk back into the hub that just rejected this device, even though that is
+            // the cached assignment this connection context points at. With a re-provision demand standing, ConnectAsync
+            // routes to Device Provisioning Service for a fresh assignment -- mirroring the C client's open() -- which
+            // registers again and connects to the newly assigned hub.
+            await connectionClient.ConnectAsync(
+                connectionClient.GetCurrentConnectionContext()!,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
+        [Fact]
         public async Task ReprovisioningRetriesAfterAFailedAttemptUntilItSucceeds()
         {
             using MockConnectionMqttClient mockMqttClient = new();

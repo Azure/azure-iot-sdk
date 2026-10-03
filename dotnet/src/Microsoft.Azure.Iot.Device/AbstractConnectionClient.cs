@@ -263,11 +263,24 @@ namespace Microsoft.Azure.Iot.Device
             return CurrentConnectionContext;
         }
 
-        //TODO this should fall back to reprovisioning if necessary
-        //TODO 
         public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // Mirror the C connection client's open(): when a standing re-provision demand is
+            // pending -- an identity rejection at CONNACK or the hub-unreachable threshold decided the cached assignment
+            // is no good -- ask Device Provisioning Service for a fresh assignment rather than reconnecting to the hub
+            // that was rejected or unreachable. In C this demand (needs_reprovision) deliberately survives a manual
+            // close()/open() so the application cannot walk back into the stale hub by reconnecting by hand; routing
+            // here does the same. The demand is consumed before routing so the re-provisioning connect that follows does
+            // not re-enter this branch, matching C's "consumed once provisioning is under way".
+            if (_needsReprovision && CanReprovision)
+            {
+                Trace.TraceInformation("A re-provision is pending, so connecting through Device Provisioning Service rather than to the cached IoT hub.");
+                _needsReprovision = false;
+                await ProvisionAndConnectAsync(_lastProvisioningSettings!, _lastProvisioningAuthentication!, cancellationToken);
+                return;
+            }
 
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.

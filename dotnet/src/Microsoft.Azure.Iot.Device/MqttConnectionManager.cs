@@ -407,7 +407,17 @@ namespace Microsoft.Azure.Iot.Device
                         };
 
                         await EndConnectionMaintenanceAsync(policyReprovisionFault, lastDisconnect, reprovisionRequired: true);
-                        return null;
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        // Called directly from the initial ConnectAsync, which cannot use a null ack and would otherwise
+                        // await a presence flow that never arrives. The reprovisionRequired fault raised above has
+                        // already asked the owning client to re-provision; surface the crossover to the caller too, the
+                        // same way the terminal branches below do on an initial connect.
+                        throw policyReprovisionFault;
                     }
 
                     // The policy wants this device to stop retrying altogether, which puts it in a terminal state.
