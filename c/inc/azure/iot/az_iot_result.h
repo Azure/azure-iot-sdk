@@ -35,9 +35,9 @@ extern "C"
     AZ_IOT_ERR_NOT_FOUND,
     /* The broker refused the identity itself (rejected client id, credentials or
      * authorization) rather than failing to carry the connection. Distinct from
-     * AZ_IOT_ERR_MQTT because retrying the same identity cannot help: the SDK
-     * re-provisions through DPS on this result, and only on this result, so a
-     * hub outage never turns into a DPS stampede. New values must keep being
+     * AZ_IOT_ERR_MQTT because the refusal is not a transport failure: from the
+     * hub, the SDK retries it on opts.identity_recovery rather than on the
+     * reconnection policy. New values must keep being
      * appended here so existing numeric values do not shift. */
     AZ_IOT_ERR_IDENTITY_REJECTED,
     /* The service reported a connectionProfile this SDK does not recognise, so

@@ -84,7 +84,8 @@ See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
 The assignment is cached. Reconnects go back to the same hub, and the client re-provisions only
 when:
 
-- the hub rejects the device identity,
+- the application calls `az_iot_connection_client_request_reprovision()`,
+- the hub rejects the device identity and `identity_recovery.auto_reprovision` is set,
 - `dps.max_hub_connect_attempts_before_reprovision` consecutive hub connects fail (default 50),
 - a registration fails or returns no assignment, or
 - the client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
@@ -108,6 +109,34 @@ build the common shapes.
   attempts.
 - A `Retry-After` from DPS is honoured even when it exceeds `max_delay_ms`.
 - `close()` never triggers a reconnect.
+
+### Identity recovery
+
+When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an mqttv5
+`Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
+disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
+happens next:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `policy` | 5 min initial, 1 h cap, ±25%, no limit | Retry schedule for the cached hub. A zeroed policy faults on the first refusal. |
+| `max_duration_seconds` | 0 | Stop after this long since the first refusal. `0` = no limit. Not kept across restarts. |
+| `auto_reprovision` | false | Register through DPS instead of retrying the hub, on the same schedule. |
+
+- By default the SDK retries the cached hub. It does not contact DPS or request a certificate.
+- The schedule is separate from `reconnection_policy`, and DPS registrations do not reset it.
+  Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
+  still back off and stop at `policy.max_attempts`.
+- When a limit is reached the client goes to `FAULTED` with the refusal as `reason`.
+- With `reconnection_policy` disabled, the first refusal faults.
+- `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
+  If a retry is pending, it runs on the next `do_work()`.
+- With `auto_reprovision` and `dps.request_operational_certificate`, every re-provision requests
+  a new certificate.
+
+`RECONNECTING` and `FAULTED` events carry `recovery`: the classification
+(`AZ_IOT_CONN_FAILURE_TRANSIENT`, `_IDENTITY`, `_TERMINAL`), the endpoint, the attempt count, the
+delay to the next attempt and whether it goes to DPS. `error` carries the raw reason code.
 - A failure inside `open()` itself is returned from `open()` and is not retried.
 
 What survives a reconnect:
@@ -198,7 +227,8 @@ no crypto can leave `crypto` NULL.
 
 | Result | Meaning |
 | --- | --- |
-| `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused the device identity. The next attempt re-provisions. |
+| `AZ_IOT_ERR_IDENTITY_REJECTED` | The hub refused the device identity. Retried on `identity_recovery`. |
+| `AZ_IOT_ERR_AUTH` | The hub ended an mqttv5 session as `Not authorized`. Retried on `identity_recovery`. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support. The next `open()` re-provisions. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
