@@ -151,8 +151,8 @@ static int teardown(void** state)
 }
 
 /** @brief Direct mqttv3 hub options authenticating with KEY_B64 only. */
-/* Room for two distinct keys and the default token area. */
-static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_BUF)];
+/* Room for two distinct keys and a token for IDs up to 256 characters. */
+static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
 
 static bool all_zero(const void* p, size_t n)
 {
@@ -351,7 +351,7 @@ static void the_device_id_is_url_encoded_in_the_token(void** state)
 static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
 {
   fixture* fx = (fixture*)*state;
-  static char long_id[AZ_IOT_SAS_TOKEN_BUF];
+  static char long_id[300]; /* host + ID beyond 256 characters */
   memset(long_id, 'a', sizeof(long_id) - 1u);
   long_id[sizeof(long_id) - 1u] = '\0';
   az_iot_connection_client_options opts = hub_sas_options();
@@ -412,7 +412,7 @@ static void no_buffer_is_needed_without_sas(void** state)
 static void identical_dps_and_hub_keys_share_one_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
-  static uint8_t one_key[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_BUF)];
+  static uint8_t one_key[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.sas_buffer.buffer = one_key;
   opts.sas_buffer.size = sizeof(one_key);

@@ -1049,13 +1049,18 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT
 #define AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT 80
 #endif
-/** @brief Recommended token area of sas_buffer. A key-signed token needs
- * 3 * (host + device ID, or ID scope + registration ID length) + 223 bytes:
- * 1024 allows 267 ID characters. A token that does not fit fails the attempt
- * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
-#ifndef AZ_IOT_SAS_TOKEN_BUF
-#define AZ_IOT_SAS_TOKEN_BUF 1024
-#endif
+/**
+ * @brief Bytes a key-signed SAS token can take, terminator included, when
+ * the IDs it names total @p id_chars characters: hub host name + device ID,
+ * or DPS ID scope + registration ID (the larger of the two roles). Assumes
+ * every ID character is URL-encoded. A token that does not fit the token
+ * area of sas_buffer fails the attempt with AZ_IOT_ERR_NOT_ENOUGH_SPACE.
+ *
+ * E.g. AZ_IOT_SAS_TOKEN_SIZE(256): 991 bytes.
+ */
+/* "SharedAccessSignature sr=" 25, infix 19, "&sig=" 5, signature 44 * 3,
+ * "&se=" 4, expiry 20, "&skn=registration" 17, terminator 1. */
+#define AZ_IOT_SAS_TOKEN_SIZE(id_chars) (3u * (size_t)(id_chars) + 223u)
 /** @brief Largest decoded symmetric key init() accepts, in bytes. */
 #ifndef AZ_IOT_SAS_KEY_MAX
 #define AZ_IOT_SAS_KEY_MAX 64
@@ -1064,11 +1069,12 @@ extern "C"
  * @brief Bytes of az_iot_connection_client_options::sas_buffer for
  * @p key_count keys and a @p token_size token area: 80 bytes of signing
  * scratch, AZ_IOT_SAS_KEY_MAX per key, then the token area (at least
- * AZ_IOT_SAS_KEY_MAX). Count each distinct key once: a key set identically
- * (same string and group flag) for DPS and the hub shares one slot.
+ * AZ_IOT_SAS_KEY_MAX; see AZ_IOT_SAS_TOKEN_SIZE()). Count each distinct key
+ * once: a key set identically (same string and group flag) for DPS and the
+ * hub shares one slot.
  *
- * E.g. one key for both roles, IDs up to 267 characters:
- * AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_BUF), 1168 bytes.
+ * E.g. one key for both roles, IDs up to 256 characters:
+ * AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256)), 1135 bytes.
  */
 #define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
   (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
@@ -1671,7 +1677,7 @@ extern "C"
    * @param[in] response   READY or UNAVAILABLE, as for the callback.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p request_id is not pending
    * (completed, timed out, or cancelled by close()); AZ_IOT_ERR_NOT_ENOUGH_SPACE
-   * when the token exceeds AZ_IOT_SAS_TOKEN_BUF; AZ_IOT_ERR_INVALID_ARG for a
+   * when the token exceeds the token area of sas_buffer; AZ_IOT_ERR_INVALID_ARG for a
    * PENDING response, a READY response without a token or validity.
    */
   AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(

@@ -989,9 +989,7 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
   {
     return false;
   }
-  /* "SharedAccessSignature sr=" 25, infix 19, "&sig=" 5, signature 44 * 3,
-   * "&se=" 4, expiry 20, "&skn=registration" 17, terminator 1. */
-  return 3u * ids + 223u <= c->sas_token_size;
+  return AZ_IOT_SAS_TOKEN_SIZE(ids) <= c->sas_token_size;
 }
 
 /**

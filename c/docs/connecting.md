@@ -201,7 +201,7 @@ copts.dps_auth.sas.primary_key_base64 = primary;
 copts.dps_auth.sas.secondary_key_base64 = secondary;  /* optional */
 copts.hub_auth = copts.dps_auth;          /* zeroed: X.509 only */
 copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
-static uint8_t sas_buf[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_BUF)];
+static uint8_t sas_buf[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))]; /* IDs <= 256 */
 copts.sas_buffer.buffer = sas_buf;        /* keys + token, app memory */
 copts.sas_buffer.size = sizeof(sas_buf);
 copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
