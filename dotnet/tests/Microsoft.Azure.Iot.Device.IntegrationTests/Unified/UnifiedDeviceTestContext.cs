@@ -36,6 +36,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     await registryManager.RemoveDeviceAsync(ConnectionContext.DeviceId);
                 }
             }
+
+            GC.SuppressFinalize(this);
         }
     }
 }

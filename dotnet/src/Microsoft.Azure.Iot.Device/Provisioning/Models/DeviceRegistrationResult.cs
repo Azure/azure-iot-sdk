@@ -15,7 +15,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
         /// This id is used to uniquely identify a device registration of an enrollment.
         /// </summary>
         [JsonPropertyName("registrationId")]
-        public string RegistrationId { get; set; }
+        public string RegistrationId { get; set; } = null!;
 
         /// <summary>
         /// Registration create date time (in UTC).

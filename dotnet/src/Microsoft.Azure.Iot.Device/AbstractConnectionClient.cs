@@ -419,7 +419,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
-                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning.", args.Exception);
+                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning. {0}", args.Exception);
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
@@ -527,7 +527,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private async Task MarkUnrecoverablyFaultedAsync(DeviceException fault)
         {
-            Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
+            Trace.TraceError("ConnectionClient encountered an unrecoverable exception. {0}", fault);
             _unrecoverableFault = fault;
 
             UnrecoverablyFaulted?.Invoke();
@@ -719,8 +719,14 @@ namespace Microsoft.Azure.Iot.Device
 
                 RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(provisioningFlowCancellation.Token);
 
+                string? operationId = registrationStatus.OperationId;
+                if (string.IsNullOrWhiteSpace(operationId))
+                {
+                    throw new InvalidOperationException("The registration response carried no operation id.");
+                }
+
                 DeviceRegistrationResult registrationResult = await PollUntilProvisioningFinishesAsync(
-                    registrationStatus.OperationId,
+                    operationId,
                     provisioningFlowCancellation.Token);
 
                 if (ProvisioningFlowCompletedAsync != null)
