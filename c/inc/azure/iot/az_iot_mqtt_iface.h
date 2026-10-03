@@ -191,8 +191,6 @@ extern "C"
      * TCP, 443/80 for WebSockets. */
     uint16_t port;
     const char* client_id;
-    /* Valid only during connect(): an adapter that needs them later copies
-     * them. The password may be a SAS token the client wipes on return. */
     const char* username; /* may be NULL */
     const char* password; /* may be NULL */
     uint16_t keep_alive_seconds;
