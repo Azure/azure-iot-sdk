@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Provisioning;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -102,6 +103,11 @@ namespace Microsoft.Azure.Iot.Device
         // connection layer for hub connections only. Mirrors the C client's max_hub_connect_attempts_before_reprovision.
         private readonly uint _maxHubConnectAttemptsBeforeReprovision;
 
+        // The retry policy that governs how many times, and how quickly, an automatic re-provisioning attempt is
+        // repeated after it fails. Mirrors the C connection client, whose needs_reprovision intent keeps sending the
+        // device back to DPS until a registration succeeds rather than giving up after a single failed attempt.
+        private readonly IRetryPolicy _connectionRetryPolicy;
+
         // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
         // the same hub. Mirrors the C client's needs_reprovision: it is the single input to the Hub-vs-DPS recovery
@@ -150,6 +156,7 @@ namespace Microsoft.Azure.Iot.Device
             options ??= new ConnectionClientOptions();
 
             _maxHubConnectAttemptsBeforeReprovision = options.MaxHubConnectAttemptsBeforeReprovision;
+            _connectionRetryPolicy = options.ConnectionRetryPolicy;
 
             // This is the basic MQTT client that has no reconnection/retry logic
             MqttNetClientOptions mqttNetClientOptions = new()
@@ -477,8 +484,20 @@ namespace Microsoft.Azure.Iot.Device
                 return;
             }
 
-            // Nothing is going to bring this connection back, so stop anything that is waiting for it.
+            // Stop anything that is waiting on this connection: a fault during a connect attempt is thrown back to the
+            // caller that requested it, while a fault after CONNACK is surfaced through this completion.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
+
+            if (args.LastDisconnect == null && Volatile.Read(ref _isReprovisioning) != 0)
+            {
+                // A re-provisioning attempt is in flight and this fault ended one of its own connect attempts, which is
+                // thrown straight back to that attempt. That loop owns the decision to retry or give up, so this client
+                // is not declared unrecoverably faulted here; doing so would raise a spurious fault to the application
+                // while re-provisioning is still working through its retries.
+                return;
+            }
+
+            // Nothing is going to bring this connection back, so let the application know it must connect again itself.
             await MarkUnrecoverablyFaultedAsync(args.Exception);
         }
 
@@ -542,10 +561,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
 
-                    //This needs to retry and doesn't?
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
-
-                    Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
+                    await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -553,11 +569,9 @@ namespace Microsoft.Azure.Iot.Device
                 }
                 catch (Exception e)
                 {
-                    // This task is unmonitored, so nothing may escape it.
-                    Trace.TraceError("Failed to re-provision this device after the connection demanded it. {0}", e);
-
-                    // This recovery was the only thing left that could have re-established the connection, so anything
-                    // waiting for it is waiting for something that will never happen.
+                    // This task is unmonitored, so nothing may escape it. The retry loop already reports an exhausted
+                    // retry policy as an unrecoverable fault, so reaching here means something unexpected ended it.
+                    Trace.TraceError("An unexpected error ended the re-provisioning of this device. {0}", e);
                     await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
                 }
                 finally
@@ -570,6 +584,71 @@ namespace Microsoft.Azure.Iot.Device
             });
 
             return true;
+        }
+
+        /// <summary>
+        /// Provision this device again and connect it to the hub it is assigned, repeating the attempt for as long as
+        /// the configured retry policy allows after each failure.
+        /// </summary>
+        /// <remarks>
+        /// Mirrors the C connection client, whose needs_reprovision intent keeps sending the device back to Device
+        /// Provisioning Service until a registration finally succeeds, rather than giving up after a failed attempt. A
+        /// hub that was only transiently unreachable, a DPS enrollment that is briefly absent (which fails the device's
+        /// TLS handshake or registration), or an assignment that is not yet ready to authorize the device are all
+        /// recovered from once they resolve. Because that standing demand persists, this loop retries every failure --
+        /// including ones the connection layer classifies as terminal, since re-provisioning is itself the recovery and
+        /// a terminal result at one point in time (a missing enrollment, say) can become valid once it is restored. The
+        /// loop only stops when provisioning succeeds, when this client is disconnected or disposed (which cancels it),
+        /// or when the retry policy is exhausted (which it never is under the default indefinite policy).
+        /// </remarks>
+        /// <param name="provisioningSettings">The settings of the provisioning run to repeat.</param>
+        /// <param name="provisioningAuthentication">The authentication of the provisioning run to repeat.</param>
+        /// <param name="cancellationToken">Cancels the whole retry loop when this client is disconnected or disposed.</param>
+        private async Task ReprovisionWithRetryAsync(
+            ProvisioningSettings provisioningSettings,
+            X509AuthenticationProvider provisioningAuthentication,
+            CancellationToken cancellationToken)
+        {
+            uint attempt = 0;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, cancellationToken);
+
+                    Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // This client was disconnected or disposed, so this recovery is abandoned rather than retried.
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    attempt++;
+
+                    if (!_connectionRetryPolicy.ShouldRetry(attempt, e, out TimeSpan retryDelay))
+                    {
+                        // The retry policy will not allow another attempt, so this recovery has run out of options. This
+                        // was the only thing left that could have re-established the connection, so anything waiting for
+                        // it is waiting for something that will never happen.
+                        Trace.TraceError("Giving up on re-provisioning this device after {0} attempt(s) because the retry policy is exhausted. {1}", attempt, e);
+                        await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
+                        return;
+                    }
+
+                    Trace.TraceWarning("Re-provisioning attempt {0} failed; retrying in {1}. {2}", attempt, retryDelay, e);
+
+                    if (retryDelay > TimeSpan.Zero)
+                    {
+                        await Task.Delay(retryDelay, cancellationToken);
+                    }
+                }
+            }
         }
 
         /// <summary>
