@@ -20,6 +20,7 @@ namespace SetupSampleDevice
             {
                 File.Delete(outputPath + "deviceId.txt");
                 File.Delete(outputPath + "idscope.txt");
+                File.Delete(outputPath + "iothubhostname.txt");
                 File.Delete(outputPath + "certificate.cer");
                 File.Delete(outputPath + "certificate.pfx");
             }
@@ -37,6 +38,11 @@ namespace SetupSampleDevice
         public static void SaveIdScope(string idScope)
         {
             File.WriteAllText(outputPath + "idscope.txt", idScope);
+        }
+
+        public static void SaveIotHubHostName(string iotHubHostName)
+        {
+            File.WriteAllText(outputPath + "iothubhostname.txt", iotHubHostName);
         }
 
         public static void SaveX509(byte[] pfx, byte[] certificate)
@@ -75,6 +81,22 @@ namespace SetupSampleDevice
             }
 
             return File.ReadAllText(outputPath + "idscope.txt");
+        }
+
+        public static string LoadIotHubHostName()
+        {
+            string? iotHubHostName = System.Environment.GetEnvironmentVariable("IOT_HUB_HOST_NAME");
+            if (iotHubHostName != null)
+            {
+                return iotHubHostName;
+            }
+
+            if (!File.Exists(outputPath + "iothubhostname.txt"))
+            {
+                throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
+            }
+
+            return File.ReadAllText(outputPath + "iothubhostname.txt");
         }
 
         public static byte[] LoadPfx()

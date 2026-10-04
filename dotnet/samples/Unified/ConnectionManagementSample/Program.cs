@@ -2,18 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
-using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
-using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using SetupSampleDevice;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 internal class Program
 {
-    private const string MethodName = "testMethod";
-
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
@@ -28,6 +23,7 @@ internal class Program
 
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
+        string iotHubHostName = SampleConstants.LoadIotHubHostName();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
@@ -37,7 +33,7 @@ internal class Program
             AuthenticationProvider = authentication,
             ConnectionProfile = ConnectionProfile.Classic,
             DeviceId = deviceId,
-            IotHubHostName = "someHostName",
+            IotHubHostName = iotHubHostName,
             IssuedClientCertificates = null,
         };
 
