@@ -82,3 +82,27 @@ add_executable(az_iot_sample_auth_hsm_sign_callback
     hsm_sign_callback/main.c)
 target_link_libraries(az_iot_sample_auth_hsm_sign_callback PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)
+
+# SAS from symmetric keys: the Paho adapter, and the OpenSSL crypto backend for
+# HMAC-SHA256. The issued-certificate variant also needs the managed provider.
+if(AZ_IOT_WITH_PAHO AND TARGET az_iot_crypto_openssl)
+    add_executable(az_iot_sample_auth_dps_sas_key
+        dps_sas_key/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_dps_sas_key PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_dps_sas_key
+        PRIVATE az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho az_iot_crypto_openssl)
+    az_iot_apply_warnings(az_iot_sample_auth_dps_sas_key)
+
+    if(TARGET az_iot_certificate_provider_managed)
+        add_executable(az_iot_sample_auth_dps_sas_key_issued_cert
+            dps_sas_key_issued_cert/main.c ${_auth_common}/sample_utils.c)
+        target_include_directories(az_iot_sample_auth_dps_sas_key_issued_cert
+            PRIVATE ${_auth_common})
+        target_link_libraries(az_iot_sample_auth_dps_sas_key_issued_cert
+            PRIVATE az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho az_iot_crypto_openssl
+                    az_iot_certificate_provider_managed)
+        az_iot_apply_warnings(az_iot_sample_auth_dps_sas_key_issued_cert)
+    endif()
+endif()
+
+# user_provided_sas_token uses the token callback, which is not implemented yet.

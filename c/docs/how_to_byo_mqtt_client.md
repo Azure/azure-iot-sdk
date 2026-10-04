@@ -71,6 +71,9 @@ If any property is absent in the packet, set the pointer to NULL and the length/
 
 The SDK decides these per session role and hands them to `connect`. An adapter that drops any of them still connects, publishes and subscribes normally, so nothing except the wire shows the difference — which is why the conformance suite decodes the CONNECT and the DISCONNECT and asserts on them directly.
 
+- `username`, `password` — valid only while `connect()` runs. Copy or serialize them before
+  returning: the SDK wipes the password (a SAS token) as soon as `connect()` returns and reuses
+  its buffer. Conformance: `connect_does_not_read_credentials_after_returning`.
 - `clean_start` — the v5 Clean Start flag. On v3.1.1 map it onto Clean Session; do **not** hardcode either value.
 - `session_expiry_seconds` — the v5 Session Expiry Interval property. **v5 only.** A v3.1.1 CONNECT has no property field, so a v3.1.1 adapter must send nothing for it.
 - `lwt` — set the Will topic, payload, QoS and retain flag on the CONNECT when `lwt.topic` is non-NULL. `lwt.will_delay_seconds` is the v5 Will Delay Interval property and is **v5 only**; a v3.1.1 adapter ignores it.

@@ -31,6 +31,15 @@ extern "C"
   AZ_NODISCARD az_iot_result az_iot_crypto__validate(const az_iot_crypto* crypto);
 
   /**
+   * @brief Zeroes secret material. Unlike memset(), the stores cannot be
+   * removed by the optimizer as dead before free or return.
+   *
+   * @param[out] p   Memory to clear; may be NULL when @p len is 0.
+   * @param[in]  len Bytes to clear.
+   */
+  void az_iot_crypto__wipe(void* p, size_t len);
+
+  /**
    * @brief One-shot SHA-256.
    *
    * @param[in] crypto   Validated backend.

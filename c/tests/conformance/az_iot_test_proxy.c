@@ -1161,7 +1161,8 @@ static int proxy_packet_id(const uint8_t* pkt, size_t len, uint8_t out[2])
 /* --- session-setup inspection: decode the FIELDS of the client's CONNECT and
  * DISCONNECT. Nothing is retained but the scalars in
  * az_iot_test_proxy_connect_fields; no PUBLISH is examined and no payload is
- * copied (a Will is reported by topic and length only). --- */
+ * copied (a Will is reported by topic and length only; credentials by length
+ * and digest only). --- */
 
 /* Read an MQTT variable byte integer at *at. Returns 0 on a truncated or
  * over-long encoding, which ends decoding of the packet. */
@@ -1324,6 +1325,45 @@ static void proxy_mqtt_scan_properties(
 
 /* Decode the client's CONNECT into `out`. Silently leaves `out->seen` at 0 for
  * anything that does not decode: this is observation, not validation. */
+uint64_t az_iot_test_proxy_digest(const void* bytes, size_t len)
+{
+  const uint8_t* b = (const uint8_t*)bytes;
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (size_t i = 0; i < len; ++i)
+  {
+    h ^= b[i];
+    h *= 0x100000001b3ull;
+  }
+  return h;
+}
+
+/* Reads a length-prefixed CONNECT string field at `*at` into presence, length
+ * and digest. Returns 0 when it runs past the packet. */
+static int proxy_connect_string_digest(
+    const uint8_t* pkt,
+    size_t len,
+    size_t* at,
+    int* has,
+    size_t* out_len,
+    uint64_t* out_digest)
+{
+  if (*at + 2 > len)
+  {
+    return 0;
+  }
+  size_t n = ((size_t)pkt[*at] << 8) | (size_t)pkt[*at + 1];
+  *at += 2;
+  if (*at + n > len)
+  {
+    return 0;
+  }
+  *has = 1;
+  *out_len = n;
+  *out_digest = az_iot_test_proxy_digest(pkt + *at, n);
+  *at += n;
+  return 1;
+}
+
 static void proxy_decode_connect(
     const uint8_t* pkt,
     size_t len,
@@ -1402,6 +1442,20 @@ static void proxy_decode_connect(
       return;
     }
     f.will_payload_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+    at += 2 + f.will_payload_len;
+  }
+
+  if ((flags & 0x80u)
+      && !proxy_connect_string_digest(
+          pkt, len, &at, &f.has_username, &f.username_len, &f.username_digest))
+  {
+    return;
+  }
+  if ((flags & 0x40u)
+      && !proxy_connect_string_digest(
+          pkt, len, &at, &f.has_password, &f.password_len, &f.password_digest))
+  {
+    return;
   }
 
   f.seen = 1;
