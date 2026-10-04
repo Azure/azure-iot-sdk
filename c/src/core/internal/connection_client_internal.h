@@ -286,9 +286,8 @@ extern "C"
    * invoked synchronously from inside do_work() when the matching PUBLISH_ACK
    * arrives; without one, a failed PUBLISH_ACK is only logged. For QoS 0, ack_cb (if any) is
    * invoked synchronously here with AZ_IOT_OK because QoS 0 has no on-the-wire ack. Returns
-   * AZ_IOT_ERR_BUSY, without publishing, when a QoS 1 ack_cb is given and all
-   * AZ_IOT_MAX_PENDING_PUBACKS slots are in use. */
-
+   * AZ_IOT_ERR_BUSY, without publishing, when a QoS 1 ack_cb is given and the shared
+   * pending-PUBACK slots (those no feature client reserved) are all in use. */
   az_iot_result az_iot_connection_client__publish(
       az_iot_connection_client* client,
       const az_iot_mqtt_message* msg,
@@ -296,14 +295,56 @@ extern "C"
       void* ack_user_ctx);
 
   /**
-   * @brief Whether a QoS 1 publish with an ack callback would get a pending-PUBACK slot now.
+   * @brief As az_iot_connection_client__publish(), but a tracked publish takes a slot from
+   *        @p owner's reservation instead of the shared pool.
+   *
+   * @param owner Reservation holder. One without a reservation uses the shared pool.
+   *
+   * @return AZ_IOT_ERR_BUSY, without publishing, if @p ack_cb is set and every slot of the pool
+   *         it draws from is in use. Otherwise as az_iot_connection_client__publish().
+   */
+  az_iot_result az_iot_connection_client__publish_reserved(
+      az_iot_connection_client* client,
+      const void* owner,
+      const az_iot_mqtt_message* msg,
+      az_iot_publish_ack_callback ack_cb,
+      void* ack_user_ctx);
+
+  /**
+   * @brief Set aside @p count pending-PUBACK slots for @p owner's tracked publishes.
+   *
+   * Replaces @p owner's previous reservation; 0 withdraws it. The slots are taken from the shared
+   * pool. A reduction does not cancel publishes already in flight.
+   *
+   * @retval AZ_IOT_OK Reserved.
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p owner is NULL.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All reservations would exceed AZ_IOT_MAX_PENDING_PUBACKS,
+   *         or AZ_IOT_MAX_FEATURE_CLIENT_BINDS owners already hold one. Nothing changes.
+   */
+  az_iot_result az_iot_connection_client__reserve_pubacks(
+      az_iot_connection_client* client,
+      const void* owner,
+      uint16_t count);
+
+  /**
+   * @brief Withdraw @p owner's reservation. Its publishes still in flight move to the shared pool.
+   */
+  void az_iot_connection_client__release_pubacks(
+      az_iot_connection_client* client,
+      const void* owner);
+
+  /**
+   * @brief Whether a tracked QoS 1 publish by @p owner would get a pending-PUBACK slot now.
    *
    * Lets a caller that can live without the ack choose to publish untracked, without
-   * mistaking an adapter's AZ_IOT_ERR_BUSY for a full table.
+   * mistaking an adapter's AZ_IOT_ERR_BUSY for a full pool.
    *
-   * @return true if a slot is free; false if all are in use or @p client is NULL.
+   * @param owner As for az_iot_connection_client__publish_reserved(); NULL checks the shared pool.
+   * @return true if a slot is free; false if not, or if @p client is NULL.
    */
-  bool az_iot_connection_client__has_free_puback_slot(const az_iot_connection_client* client);
+  bool az_iot_connection_client__can_track_publish(
+      const az_iot_connection_client* client,
+      const void* owner);
 
   /* Subscribe through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. Out-arg packet_id is populated on success. */

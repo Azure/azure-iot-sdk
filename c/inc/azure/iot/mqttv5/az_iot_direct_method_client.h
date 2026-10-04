@@ -242,6 +242,10 @@ extern "C"
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
    * the connection resolves, which fails it before it reports CONNECTED. The
    * same error is returned when an mqttv3 client is already attached.
+   *
+   * Reserves 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT of the connection's
+   * AZ_IOT_MAX_PENDING_PUBACKS slots until deinit; returns
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,
