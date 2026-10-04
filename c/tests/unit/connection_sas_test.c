@@ -17,6 +17,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "internal/connection_client_internal.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -511,6 +512,19 @@ static void sas_keys_need_a_large_enough_buffer(void** state)
   az_iot_connection_client_deinit(&fx->client);
 }
 
+/* az_span sizes are int32_t: a token area past INT32_MAX must be capped, or
+ * az_span_create() would get a negative size and hit a precondition. */
+static void the_token_area_is_capped_at_int32_max(void** state)
+{
+  (void)state;
+  size_t fixed = AZ_IOT_SAS_BUFFER_SIZE(1, 0);
+  assert_int_equal(
+      az_iot_connection_client__sas_token_area(fixed + AZ_IOT_SAS_KEY_MAX, 1), AZ_IOT_SAS_KEY_MAX);
+  assert_int_equal(
+      az_iot_connection_client__sas_token_area(fixed + (size_t)INT32_MAX, 1), (size_t)INT32_MAX);
+  assert_int_equal(az_iot_connection_client__sas_token_area(SIZE_MAX, 1), (size_t)INT32_MAX);
+}
+
 static void no_buffer_is_needed_without_sas(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -621,6 +635,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_token_is_wiped_once_the_adapter_has_the_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(sas_keys_need_a_large_enough_buffer, setup, teardown),
+    cmocka_unit_test(the_token_area_is_capped_at_int32_max),
     cmocka_unit_test_setup_teardown(no_buffer_is_needed_without_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(identical_dps_and_hub_keys_share_one_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),

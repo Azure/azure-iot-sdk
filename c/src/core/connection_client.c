@@ -28,6 +28,7 @@
  * FAULTED.
  */
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -3750,8 +3751,15 @@ static az_iot_result sas_load_keys(az_iot_connection_client* c)
     }
   }
   c->sas_token = (char*)token_area;
-  c->sas_token_size = size - AZ_IOT_SAS_BUFFER_SIZE(distinct, 0);
+  c->sas_token_size = az_iot_connection_client__sas_token_area(size, distinct);
   return AZ_IOT_OK;
+}
+
+size_t az_iot_connection_client__sas_token_area(size_t buffer_size, size_t key_count)
+{
+  size_t area = buffer_size - AZ_IOT_SAS_BUFFER_SIZE(key_count, 0);
+  /* Bytes past INT32_MAX are never used; deinit() still wipes them. */
+  return area > (size_t)INT32_MAX ? (size_t)INT32_MAX : area;
 }
 
 /** @brief Wipes every SAS key, token and scratch byte the client holds. */

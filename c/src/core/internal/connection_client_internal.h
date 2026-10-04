@@ -45,6 +45,18 @@ extern "C"
    * monotonic clock during create(). */
   void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed);
 
+  /**
+   * @brief Usable SAS token area of a @p buffer_size sas_buffer holding
+   * @p key_count keys: the bytes after scratch and key slots, capped at
+   * INT32_MAX (az_span sizes are int32_t).
+   *
+   * @param[in] buffer_size Bytes in sas_buffer; at least
+   *                        AZ_IOT_SAS_BUFFER_SIZE(key_count, 0).
+   * @param[in] key_count   Distinct keys.
+   * @return Token area bytes.
+   */
+  size_t az_iot_connection_client__sas_token_area(size_t buffer_size, size_t key_count);
+
   /* Test seam: force any in-flight MQTTv5 presence (birth) handshake to time
    * out on the next do_work(). No-op when no handshake is active. Lets unit tests
    * exercise the birth-ack timeout path without waiting the real

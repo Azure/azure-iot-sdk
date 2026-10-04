@@ -777,7 +777,8 @@ extern "C"
      * clients without SAS pay nothing. Size it with
      * AZ_IOT_SAS_BUFFER_SIZE(); init() fails with
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is missing or smaller than
-     * AZ_IOT_SAS_BUFFER_SIZE(keys, AZ_IOT_SAS_KEY_MAX).
+     * AZ_IOT_SAS_BUFFER_SIZE(keys, AZ_IOT_SAS_KEY_MAX). Token area bytes past
+     * INT32_MAX are not used.
      *
      * Owned by the client from init() to deinit(), which wipes it; must not
      * be shared. The token is wiped as soon as the MQTT adapter has the
