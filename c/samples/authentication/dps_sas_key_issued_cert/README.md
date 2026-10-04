@@ -3,8 +3,6 @@
 
 # SAS key to DPS, DPS-issued certificate to the hub
 
-> **Proposed API, not implemented.** This sample is not built.
-
 Registers with DPS with a SAS token and a CSR, then connects to the assigned hub, on either
 generation, with the X.509 certificate DPS issued. See [`main.c`](main.c).
 

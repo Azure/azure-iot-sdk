@@ -59,7 +59,7 @@ typedef struct
   bool in_use; /**< A request awaits completion. */
   uint32_t request_id; /**< az_iot_sas_token_request::request_id. */
   az_iot_connection_scope scope; /**< Role the token is for. */
-  char resource_uri[AZ_IOT_SAS_TOKEN_BUF]; /**< Copy of the `sr` value. */
+  char resource_uri[AZ_IOT_SAS_TOKEN_SIZE(256)]; /**< Copy of the `sr` value. */
   char key_name[32]; /**< Copy of the `skn` value. */
 } pending_request;
 
@@ -122,7 +122,7 @@ static az_iot_result sign_token(
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  char to_sign[AZ_IOT_SAS_TOKEN_BUF];
+  char to_sign[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t to_sign_len = 0;
   if (!put(to_sign, sizeof(to_sign), &to_sign_len, resource_uri, strlen(resource_uri))
       || !put(to_sign, sizeof(to_sign), &to_sign_len, "\n", 1)
@@ -219,7 +219,7 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   }
   p->in_use = false;
 
-  char token[AZ_IOT_SAS_TOKEN_BUF];
+  char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t len = 0;
   az_iot_sas_token_response response = { 0 };
   az_iot_result r = sign_token(
@@ -311,6 +311,9 @@ int main(void)
   opts.dps.registration_id = reg_id;
   opts.dps_auth = tokens;
   opts.hub_auth = tokens;
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))]; /* no keys */
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK

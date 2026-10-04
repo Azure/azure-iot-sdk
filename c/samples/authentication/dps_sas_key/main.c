@@ -14,8 +14,6 @@
  * from which the device keys are derived. Sends one telemetry message on
  * whichever hub generation DPS assigned; a hub that does not accept SAS fails
  * the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
- *
- * Proposed API: not built yet.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -86,6 +84,7 @@ static const char* auth_source_name(az_iot_auth_source source)
       return "secondary key";
     case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
       return "user-provided token";
+    case AZ_IOT_AUTH_SOURCE_NONE:
     default:
       return "-";
   }
@@ -226,6 +225,11 @@ int main(void)
   opts.dps_auth = sas;
   opts.hub_auth = sas;
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the tokens */
+  /* SAS state lives in app memory: up to two distinct keys (DPS and the hub
+   * share them) and a token for IDs (hub host + device ID) up to 256 characters. */
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = config.ca;
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK

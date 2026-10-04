@@ -42,8 +42,8 @@ extern "C"
   typedef struct az_iot_certificate_provider_managed_options
   {
     /* Bootstrap X.509 identity that authenticates to DPS. Both set for X.509
-     * onboarding. Proposed: both NULL for SAS onboarding (dps_auth); the
-     * provider then serves only AZ_IOT_CRED_OPERATIONAL. One set and one NULL
+     * onboarding; both NULL for SAS onboarding (dps_auth), where load() of
+     * AZ_IOT_CRED_BOOTSTRAP returns AZ_IOT_ERR_NOT_FOUND. One set and one NULL
      * fails init with AZ_IOT_ERR_INVALID_ARG. */
     const char* bootstrap_cert_pem_path; /* set with key, or NULL with key */
     const char* bootstrap_key_pem_path; /* set with cert, or NULL with cert */

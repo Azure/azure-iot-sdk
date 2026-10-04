@@ -150,9 +150,10 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
-Every connection uses TLS with X.509 client authentication. `certificate_provider` supplies the
-trusted CA and the device credential; `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`
-without one.
+Every connection uses TLS. `certificate_provider` supplies the trusted CA and the X.509 device
+credential. `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` without one, unless every role
+the client uses has a SAS key (see [Authentication](#authentication)); a SAS role then uses
+server-authenticated TLS. `dps.request_operational_certificate` always needs a provider.
 
 Operational certificates:
 
@@ -175,9 +176,14 @@ Operational certificates:
 Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 [`samples/authentication`](../samples/authentication/README.md).
 
-## Authentication (proposed)
+## Authentication
 
-> **Proposed, not implemented.** Today every connection authenticates with X.509.
+> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then a SAS token signed
+> with the primary key; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; `auth_source` in
+> state events. Proposed, not implemented yet: fallback to further certificates and to the
+> secondary key on rejection, `user_provided_token` (`init()` returns
+> `AZ_IOT_ERR_NOT_SUPPORTED`), and planned renewal (`renewal_percent`). Until renewal lands, the
+> hub ends the session when the token expires and the client reconnects with a new one.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -195,6 +201,9 @@ copts.dps_auth.sas.primary_key_base64 = primary;
 copts.dps_auth.sas.secondary_key_base64 = secondary;  /* optional */
 copts.hub_auth = copts.dps_auth;          /* zeroed: X.509 only */
 copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
+static uint8_t sas_buf[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))]; /* IDs <= 256 */
+copts.sas_buffer.buffer = sas_buf;        /* keys + token, app memory */
+copts.sas_buffer.size = sizeof(sas_buf);
 copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 ```
 
@@ -207,6 +216,11 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   the credential in `auth_source` (and `x509_index`).
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
+- **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
+  `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
+  `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
+  counts once. The token is wiped once the adapter has the CONNECT; the whole buffer at
+  `deinit()`.
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
   re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
   re-initializing.

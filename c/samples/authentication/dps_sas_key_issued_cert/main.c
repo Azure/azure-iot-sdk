@@ -14,8 +14,6 @@
  * bootstrap certificate: DPS uses SAS (dps_auth), the hub X.509 (hub_auth,
  * the default). Renewal: az_iot_connection_client_send_csr() on an mqttv3
  * hub, or re-provisioning with the key.
- *
- * Proposed API: not built yet.
  */
 #include <stdbool.h>
 #include <stdio.h>
@@ -221,6 +219,10 @@ int main(void)
   opts.dps_auth.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
   opts.dps_auth.sas.is_enrollment_group_key = is_set(config.group_key);
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the DPS tokens */
+  /* One DPS key; a token for ID scope + registration ID up to 256 characters. */
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = config.ca;
   /* hub_auth zeroed: the hub uses only the certificate DPS issues. */
   opts.certificate_provider = &operational.base;
