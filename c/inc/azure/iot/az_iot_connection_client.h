@@ -1067,9 +1067,13 @@ extern "C"
 /* "SharedAccessSignature sr=" 25, infix 19, "&sig=" 5, signature 44 * 3,
  * "&se=" 4, expiry 20, "&skn=registration" 17, terminator 1. */
 #define AZ_IOT_SAS_TOKEN_SIZE(id_chars) (3u * (size_t)(id_chars) + 223u)
-/** @brief Largest decoded symmetric key init() accepts, in bytes. */
+/** @brief Largest decoded symmetric key init() accepts, in bytes. At least
+ * AZ_IOT_SHA256_SIZE: a key slot also holds a key derived from a group key. */
 #ifndef AZ_IOT_SAS_KEY_MAX
 #define AZ_IOT_SAS_KEY_MAX 64
+#endif
+#if AZ_IOT_SAS_KEY_MAX < AZ_IOT_SHA256_SIZE
+#error "AZ_IOT_SAS_KEY_MAX must be at least AZ_IOT_SHA256_SIZE (32)"
 #endif
 /**
  * @brief Bytes of az_iot_connection_client_options::sas_buffer for

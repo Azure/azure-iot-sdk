@@ -941,6 +941,12 @@ static uint64_t unix_now(const az_iot_connection_client* c)
     return c->opts.unix_time.get_time(c->opts.unix_time.user_ctx);
   }
   time_t t = time(NULL);
+  /* (time_t)-1 is failure. Compared explicitly: time_t may be unsigned, where
+   * it would pass a `> 0` test as a far-future time. */
+  if (t == (time_t)-1)
+  {
+    return 0u;
+  }
   return t > 0 ? (uint64_t)t : 0u;
 }
 
