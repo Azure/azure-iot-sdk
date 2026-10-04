@@ -982,6 +982,27 @@ static az_iot_result apply_certificate_material(
 static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_result reason);
 static uint64_t identity_recovery_deadline_ms(const az_iot_connection_client* c);
 
+/** @brief Give up the single pending retry: FAULTED on @p scope, and on the
+ * other scope if it is still RECONNECTING, since nothing will retry it. Both
+ * events carry the staged recovery report. */
+static void fault_retry_scopes(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_result reason)
+{
+  az_iot_connection_scope other
+      = (scope == AZ_IOT_CONN_SCOPE_HUB) ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  bool staged = c->recovery_report.staged;
+  c->reconnect_due_ms = 0;
+  set_state_to(c, scope, AZ_IOT_CONN_STATE_FAULTED, reason);
+  /* A callback may have closed the client, which settles both scopes. */
+  if (c->state[other] == AZ_IOT_CONN_STATE_RECONNECTING)
+  {
+    c->recovery_report.staged = staged;
+    set_state_to(c, other, AZ_IOT_CONN_STATE_FAULTED, reason);
+  }
+}
+
 static void schedule_reconnect(
     az_iot_connection_client* c,
     az_iot_connection_scope failure_scope,
@@ -1056,7 +1077,7 @@ static void schedule_reconnect(
   c->recovery_report.staged = true;
   if (!retry)
   {
-    set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_FAULTED, reason);
+    fault_retry_scopes(c, failure_scope, reason);
     return;
   }
   c->reconnect_due_ms = now + delay;
@@ -1092,8 +1113,8 @@ static bool identity_recovery_expired(const az_iot_connection_client* c)
   return deadline != 0 && az_iot_time_mono_ms() >= deadline;
 }
 
-/** @brief End identity recovery on @p scope: FAULTED, with the refusal that
- * started the episode as the reason. */
+/** @brief End identity recovery: FAULTED on @p scope, and on the other scope
+ * if it is waiting, with the refusal that started the episode as the reason. */
 static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
@@ -1103,7 +1124,7 @@ static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connectio
   c->recovery_report.delay_ms = 0;
   c->recovery_report.reprovisions = false;
   c->recovery_report.staged = true;
-  set_state_to(c, scope, AZ_IOT_CONN_STATE_FAULTED, c->identity_recovery_reason);
+  fault_retry_scopes(c, scope, c->identity_recovery_reason);
 }
 
 /* Retry after the hub refused the identity.
@@ -1156,7 +1177,7 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
         "connection: hub refused the identity (%s); identity recovery stopped after %u attempt(s)",
         az_iot_result_to_string(reason),
         (unsigned)c->identity_retry_attempt);
-    set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+    fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_HUB, reason);
     return;
   }
   AZ_IOT_LOG_WARNF(

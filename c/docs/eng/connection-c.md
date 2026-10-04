@@ -475,7 +475,10 @@ ladder, so nothing in the episode starts at or past it: no retry is scheduled to
 fault comes when the retry would have been scheduled); a due retry that `do_work()` reaches past it is
 not started; a DPS retry-after that lands past it stops recovery; the DPS pump abandons a registration
 still running (held, registering or polling); and an assignment adopted after it does not start a
-hub connect. `az_iot_connection_client_request_reprovision()` sets
+hub connect. Every give-up of the single pending retry goes through `fault_retry_scopes()`, which
+faults the failing scope and the other one if it is still `RECONNECTING`: a hub waiting on a
+re-registration is not left there with no retry.
+`az_iot_connection_client_request_reprovision()` sets
 `needs_reprovision` on demand and brings a pending hub retry forward. On the retry path the flag is
 cleared before the attempt **only when a cached assignment exists**, so a failing registration falls
 back to an ordinary hub retry rather than looping through provisioning; with no cached assignment

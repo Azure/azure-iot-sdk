@@ -134,7 +134,8 @@ happens next:
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
   Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
   still back off and stop at the policy's `max_attempts`.
-- When a limit is reached the client goes to `FAULTED` with the refusal as `reason`.
+- When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
+  and, if a re-registration was pending, on the DPS scope as well.
 - With `reconnection_policy` disabled, the first refusal faults.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
