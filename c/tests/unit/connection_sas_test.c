@@ -553,6 +553,24 @@ static void identical_dps_and_hub_keys_share_one_slot(void** state)
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
 }
 
+static uint64_t overflowing_time(void* user_ctx)
+{
+  (void)user_ctx;
+  return UINT64_MAX - (uint64_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS + 1u;
+}
+
+static void a_time_that_would_overflow_the_expiry_fails_with_busy(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = overflowing_time;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_BUSY);
+}
+
 static void no_unix_time_fails_the_attempt_with_busy(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -639,6 +657,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(no_buffer_is_needed_without_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(identical_dps_and_hub_keys_share_one_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_time_that_would_overflow_the_expiry_fails_with_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connects_with_a_sas_token, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_group_key_signs_with_the_derived_device_key, setup, teardown),

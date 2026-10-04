@@ -761,8 +761,9 @@ extern "C"
     /**
      * @brief Unix time source for signing SAS tokens from keys, shared by
      * both roles. NULL uses the C library's time(); set it on a platform
-     * without one. A time of 0 fails the attempt with AZ_IOT_ERR_BUSY: open()
-     * returns it; a reconnect attempt is retried under reconnection_policy.
+     * without one. A time of 0, or one so large the token expiry would
+     * overflow, fails the attempt with AZ_IOT_ERR_BUSY: open() returns it; a
+     * reconnect attempt is retried under reconnection_policy.
      */
     struct
     {

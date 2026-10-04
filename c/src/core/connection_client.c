@@ -957,11 +957,22 @@ static void sas_wipe_token(az_iot_connection_client* c)
   }
 }
 
+/**
+ * @brief Whether @p s can become an az_span: non-empty and at most INT32_MAX
+ * bytes. az_core checks the length with a precondition, whose default handler
+ * never returns, so strings are checked here first.
+ */
+static bool is_span_safe_cstr(const char* s)
+{
+  return is_nonempty_cstr(s) && strlen(s) <= (size_t)INT32_MAX;
+}
+
 /** @brief Initializes c->hub_client for opts.host / opts.client_id once. */
 static bool ensure_hub_client(az_iot_connection_client* c)
 {
-  if (!c->hub_client_initialized && is_nonempty_cstr(c->opts.host)
-      && is_nonempty_cstr(c->opts.client_id))
+  if (!c->hub_client_initialized && is_span_safe_cstr(c->opts.host)
+      && is_span_safe_cstr(c->opts.client_id)
+      && (c->opts.model_id == NULL || strlen(c->opts.model_id) <= (size_t)INT32_MAX))
   {
     az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.host);
     az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.client_id);
@@ -1035,6 +1046,12 @@ static az_iot_result apply_sas_key(
   uint32_t lifetime = auth->sas.token_lifetime_seconds != 0
       ? auth->sas.token_lifetime_seconds
       : (uint32_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS;
+  if (now > UINT64_MAX - lifetime)
+  {
+    /* The expiry would wrap to a time long past: treat as no valid time. */
+    AZ_IOT_LOG_WARN("connection: Unix time too large to sign a SAS token");
+    return AZ_IOT_ERR_BUSY;
+  }
   uint64_t expiry = now + lifetime;
   char* token = c->sas_token;
   az_span token_span = az_span_create((uint8_t*)token, (int32_t)c->sas_token_size);
@@ -2094,6 +2111,12 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   if (!is_nonempty_cstr(endpoint))
   {
     endpoint = "global.azure-devices-provisioning.net";
+  }
+  if (!is_span_safe_cstr(endpoint) || !is_span_safe_cstr(c->opts.dps.id_scope)
+      || !is_span_safe_cstr(c->opts.dps.registration_id))
+  {
+    AZ_IOT_LOG_ERROR("dps_start: a DPS endpoint or ID is longer than INT32_MAX bytes");
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   az_span ep_span = az_span_create_from_str((char*)(uintptr_t)endpoint);
