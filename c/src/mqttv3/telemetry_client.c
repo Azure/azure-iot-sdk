@@ -22,7 +22,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_init(
 {
   if (client == NULL || conn == NULL)
   {
-    AZ_IOT_LOG_ERROR("mqttv3_telemetry_client_init: invalid arguments");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV3_TELEMETRY, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 

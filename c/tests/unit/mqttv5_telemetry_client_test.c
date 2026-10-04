@@ -35,10 +35,12 @@ typedef struct log_capture
 static void capture_log(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   log_capture* c = (log_capture*)user_ctx;
   (void)file;
   (void)line;

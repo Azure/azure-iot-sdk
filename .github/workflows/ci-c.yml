@@ -162,6 +162,8 @@ jobs:
         run: bash eng/check-layering.sh
       - name: Check version consistency
         run: bash eng/check-version.sh
+      - name: Check log components
+        run: bash eng/check-log-components.sh
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -866,7 +868,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '48'
+      EXPECTED_TESTS: '49'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

@@ -406,10 +406,12 @@ typedef struct log_capture
 static void capture_error(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   log_capture* c = (log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -429,6 +431,60 @@ static void install_error_capture(log_capture* c)
   sink.user_ctx = c;
   sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
   az_iot_log_set_global_sink(&sink);
+}
+
+/* Every line at INFO and above as "<component>: <msg>", newline-separated. */
+typedef struct line_capture
+{
+  char text[4096];
+  size_t len;
+} line_capture;
+
+static void capture_lines(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  line_capture* c = (line_capture*)user_ctx;
+  (void)level;
+  (void)file;
+  (void)line;
+  int n = snprintf(c->text + c->len, sizeof(c->text) - c->len, "%s: %s\n", component, msg);
+  if (n > 0 && (size_t)n < sizeof(c->text) - c->len)
+  {
+    c->len += (size_t)n;
+  }
+}
+
+/* What support reads first: the configuration on open(), every state change,
+ * and each scheduled retry. */
+static void lifecycle_is_logged_at_info(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  line_capture cap;
+  az_iot_log_sink sink;
+  memset(&cap, 0, sizeof(cap));
+  sink.sink = capture_lines;
+  sink.user_ctx = &cap;
+  sink.min_level = AZ_IOT_LOG_LEVEL_INFO;
+  az_iot_log_set_global_sink(&sink);
+
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_error(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_non_null(strstr(cap.text, "connection: open: sdk="));
+  assert_non_null(strstr(cap.text, " route=hub "));
+  assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTING\n"));
+  assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTED\n"));
+  assert_non_null(strstr(
+      cap.text, "connection: hub state=AZ_IOT_CONN_STATE_RECONNECTING reason=AZ_IOT_ERR_MQTT"));
+  assert_non_null(strstr(cap.text, "connection: hub retry 1 in "));
 }
 
 static void persistent_subscription_registry_full_is_rejected(void** state)
@@ -1359,6 +1415,7 @@ int main(void)
     /* what schedules a retry */
     cmocka_unit_test_setup_teardown(
         adapter_error_event_schedules_a_retry, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(lifecycle_is_logged_at_info, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         adapter_error_event_faults_without_a_policy, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

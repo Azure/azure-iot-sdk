@@ -17,6 +17,7 @@ idf_component_register(
         # when you add or remove a source there, change it here too. Nothing in
         # CI builds this component, so a mismatch surfaces only on-device.
         "${AZ_IOT_ROOT}/src/core/log.c"
+        "${AZ_IOT_ROOT}/src/core/log_file.c"
         "${AZ_IOT_ROOT}/src/core/result.c"
         "${AZ_IOT_ROOT}/src/core/version.c"
         "${AZ_IOT_ROOT}/src/core/mqtt_iface.c"

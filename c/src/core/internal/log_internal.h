@@ -11,5 +11,6 @@
  * application's sink instead of writing to stderr. This header stays as the
  * include SDK sources already use. */
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 
 #endif /* AZ_IOT_LOG_INTERNAL_H */

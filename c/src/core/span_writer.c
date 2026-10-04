@@ -279,10 +279,15 @@ size_t az_iot_span_writer_length(const az_iot_span_writer* writer)
   return (writer != NULL && writer->_internal.length > 0) ? (size_t)writer->_internal.length : 0;
 }
 
-/* Emits @p magnitude in decimal, preceded by '-' when @p negative. Digits fall
- * out least-significant first, so they are staged and then reversed into the
- * destination. Nothing is written unless the whole number fits. */
-static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude, bool negative)
+/* Emits @p magnitude in decimal, zero-padded to @p min_digits (at most ten),
+ * preceded by '-' when @p negative. Digits fall out least-significant first, so
+ * they are staged and then reversed into the destination. Nothing is written
+ * unless the whole number fits. */
+static void writer_append_decimal_padded(
+    az_iot_span_writer* writer,
+    uint32_t magnitude,
+    bool negative,
+    int32_t min_digits)
 {
   uint8_t digits[AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX];
   int32_t count = 0;
@@ -292,6 +297,10 @@ static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude
     digits[count++] = (uint8_t)('0' + (magnitude % 10u));
     magnitude /= 10u;
   } while (magnitude != 0u);
+  while (count < min_digits && count < AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX)
+  {
+    digits[count++] = (uint8_t)'0';
+  }
 
   uint8_t* cursor = writer_reserve(writer, count + (negative ? 1 : 0));
   if (cursor == NULL)
@@ -309,9 +318,22 @@ static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude
   }
 }
 
+static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude, bool negative)
+{
+  writer_append_decimal_padded(writer, magnitude, negative, 1);
+}
+
 void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value)
 {
   writer_append_decimal(writer, value, false);
+}
+
+void az_iot_span_writer_append_u32_padded(
+    az_iot_span_writer* writer,
+    uint32_t value,
+    uint8_t min_digits)
+{
+  writer_append_decimal_padded(writer, value, false, (int32_t)min_digits);
 }
 
 void az_iot_span_writer_append_i32(az_iot_span_writer* writer, int32_t value)
