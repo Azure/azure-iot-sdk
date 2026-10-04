@@ -3832,12 +3832,18 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
-/** @brief The configuration support needs first, once per open(). Identifiers only, no secrets. */
-static void log_open_summary(const az_iot_connection_client* c)
+/**
+ * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
+ *
+ * @param[in] c Client.
+ * @param[in] mock_bypass The mqttv5 mock bypass has replaced host, device id and profile.
+ */
+static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass)
 {
   const char* transport
       = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
-  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  if (!mock_bypass && dps_configured(c)
+      && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -3855,11 +3861,12 @@ static void log_open_summary(const az_iot_connection_client* c)
   }
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
+      "open: sdk=%s route=%s host=%s device_id=%s profile=%s model_id=%s transport=%s",
       az_iot_version_string(),
+      mock_bypass ? "mock" : "hub",
       text_or_none(c->opts.host),
       text_or_none(c->opts.client_id),
-      profile_name(c->connection_profile),
+      mock_bypass ? "mqttv5" : profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
 }
@@ -4027,8 +4034,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
   }
 
-  log_open_summary(client);
-
   client->user_close = false;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -4047,7 +4052,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * Never for provision_only: the bypass makes a hostless client a hub
    * connection, and an environment variable must not override a declared
    * device shape. */
-  if (mock_mqtt_v5_configured() && !client->opts.dps.provision_only)
+  bool mock_bypass = mock_mqtt_v5_configured() && !client->opts.dps.provision_only;
+  if (mock_bypass)
   {
     az_iot_result r = apply_mqtt_v5_mock_bypass(client);
     if (r != AZ_IOT_OK)
@@ -4055,6 +4061,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
       return r;
     }
+    /* After the bypass, so the summary shows the endpoint actually used. */
+    log_open_summary(client, true);
     /* host + client_id are set, session_role = HUB_MQTT_V5 → fall through
      * to start_connect_attempt which will resolve the v5 factory. */
     r = start_connect_attempt(client);
@@ -4064,6 +4072,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
     return r;
   }
+  log_open_summary(client, false);
 
   /* No hub: bring the provisioning session up and stop there. No registration
    * ref is taken. The standing ref alone gives both behaviours the pump needs
