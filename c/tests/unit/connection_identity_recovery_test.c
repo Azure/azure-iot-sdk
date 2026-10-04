@@ -674,6 +674,75 @@ static void a_dps_refusal_is_not_on_the_identity_ladder(void** state)
   assert_int_equal(fx->client->identity_retry_attempt, 0);
 }
 
+/* Hub refuses in REPROVISION mode with a 1 s bound; the retry registers and
+ * returns the DPS adapter with the register PUBLISH issued. */
+static az_iot_mock_mqtt_client* reprovision_after_a_bounded_refusal(az_iot_test_conn* fx)
+{
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
+  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity(fx);
+  fire_retry(fx);
+  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  return dps;
+}
+
+static void assert_identity_recovery_stopped(az_iot_test_conn* fx)
+{
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(fx->log.recovery_present[i]);
+  assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+}
+
+/* A DPS retry-after that lands past max_duration_seconds stops recovery. */
+static void a_retry_after_past_the_identity_deadline_stops_recovery(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = reprovision_after_a_bounded_refusal(fx);
+
+  static const char k_throttled[] = "{\"errorCode\":429001,\"message\":\"Too many requests.\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      dps,
+      "$dps/registrations/res/429/?$rid=1&retry-after=30",
+      (const uint8_t*)k_throttled,
+      strlen(k_throttled),
+      AZ_IOT_MQTT_QOS_1));
+  pump(fx, 3);
+  assert_identity_recovery_stopped(fx);
+}
+
+/* A registration still polling past max_duration_seconds is abandoned instead
+ * of publishing its status query. */
+static void a_registration_polling_past_the_identity_deadline_is_abandoned(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = reprovision_after_a_bounded_refusal(fx);
+
+  static const char k_assigning[] = "{\"operationId\":\"op-1\",\"status\":\"assigning\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      dps,
+      "$dps/registrations/res/202/?$rid=1&retry-after=1",
+      (const uint8_t*)k_assigning,
+      strlen(k_assigning),
+      AZ_IOT_MQTT_QOS_1));
+  pump(fx, 1);
+
+  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  pump(fx, 3);
+  assert_null(fx->client->dps_mqtt);
+  assert_identity_recovery_stopped(fx);
+}
+
 static void request_reprovision_needs_a_dps_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -745,6 +814,10 @@ int main(void)
         request_reprovision_runs_the_pending_retry_through_dps_now, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         close_and_open_after_a_fault_returns_to_the_cached_hub, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retry_after_past_the_identity_deadline_stops_recovery, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_registration_polling_past_the_identity_deadline_is_abandoned, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(request_reprovision_needs_a_dps_client, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
         request_reprovision_keeps_a_pending_registration_schedule, setup_dps, teardown),

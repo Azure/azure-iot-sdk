@@ -1091,6 +1091,27 @@ static uint64_t identity_recovery_deadline_ms(const az_iot_connection_client* c)
       : 0u;
 }
 
+/** @brief Whether the active episode's max_duration_seconds has passed. */
+static bool identity_recovery_expired(const az_iot_connection_client* c)
+{
+  uint64_t deadline = identity_recovery_deadline_ms(c);
+  return deadline != 0 && az_iot_time_mono_ms() >= deadline;
+}
+
+/** @brief End identity recovery on @p scope: FAULTED, with the refusal that
+ * started the episode as the reason. */
+static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
+  c->reconnect_due_ms = 0;
+  c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
+  c->recovery_report.attempt = c->identity_retry_attempt;
+  c->recovery_report.delay_ms = 0;
+  c->recovery_report.reprovisions = false;
+  c->recovery_report.staged = true;
+  set_state_to(c, scope, AZ_IOT_CONN_STATE_FAULTED, c->identity_recovery_reason);
+}
+
 /* Retry after the hub refused the identity.
  *
  * A refusal does not say whether the device is disabled, its credential
@@ -2356,6 +2377,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       if (retry_after_secs > 0 && c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
       {
         uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
+        uint64_t identity_deadline = identity_recovery_deadline_ms(c);
+        if (identity_deadline != 0 && floor_ms > identity_deadline)
+        {
+          /* Honoring the retry-after would start past max_duration_seconds. */
+          stop_identity_recovery(c, AZ_IOT_CONN_SCOPE_DPS);
+          return;
+        }
         if (c->reconnect_due_ms < floor_ms)
         {
           AZ_IOT_LOG_WARNF(
@@ -2475,6 +2503,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  /* The assignment is kept, but no hub attempt starts past the bound. */
+  if (identity_recovery_expired(c))
+  {
+    stop_identity_recovery(c, AZ_IOT_CONN_SCOPE_HUB);
+    return;
+  }
 
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
@@ -4341,6 +4376,16 @@ az_iot_result az_iot_connection_client_do_work(
 
   if (client->dps_mqtt != NULL)
   {
+    /* A registration still running when identity recovery's duration is spent
+     * is abandoned before HOLD or POLLING can publish again. The failure
+     * path faults it through schedule_reconnect(). */
+    if (client->dps_registration_ref && !client->dps_pending_finalize
+        && identity_recovery_expired(client))
+    {
+      dps_finalize(client, AZ_IOT_ERR_TIMEOUT, false);
+      client->dps_phase = DPS_PHASE_DONE;
+    }
+
     /* Leave the pre-registration hold once every holder has released, or once
      * the deadline expires. Expiry is not a failure: the hold is advisory, and
      * a feature client must never be able to stop a device provisioning. */

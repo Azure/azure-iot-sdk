@@ -123,7 +123,7 @@ happens next:
 | --- | --- | --- | --- |
 | `mode` | `RETRY_HUB` | `REPROVISION` | What the next attempt does; see below. |
 | `policy` | 5 min initial, 1 h cap, ±25%, no limit | uses `reconnection_policy` | Retry schedule after a refusal. |
-| `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. Covers every retry until `HUB:CONNECTED`. Not kept across restarts. |
+| `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. No attempt in the episode (hub connect, DPS registration or poll) starts after it, until `HUB:CONNECTED`; a DPS retry-after past it stops recovery. Not kept across restarts. |
 
 | `mode` | Next attempt after a refusal |
 | --- | --- |

@@ -469,9 +469,12 @@ does not say whether the device is disabled, its credential revoked or its assig
 
 The refusal resets `consecutive_hub_connect_failures`, because the hub answered. The identity
 ladder is not reset by a registration, so DPS-accept / hub-reject cycles stay bounded. The hub
-faults with the refusal as the reason when the ladder is spent, when `max_duration_seconds` passes
-(checked in `schedule_reconnect()` too, so transient failures in the episode cannot outlive it), or
-when `reconnection_policy` is disabled. `az_iot_connection_client_request_reprovision()` sets
+faults with the refusal as the reason when the ladder is spent, when `max_duration_seconds` passes,
+or when `reconnection_policy` is disabled. The duration is also enforced outside the identity
+ladder, so nothing in the episode starts past it: `schedule_reconnect()` clamps or stops transient
+retries; a DPS retry-after that lands past it stops recovery; the DPS pump abandons a registration
+still running (held, registering or polling); and an assignment adopted after it does not start a
+hub connect. `az_iot_connection_client_request_reprovision()` sets
 `needs_reprovision` on demand and brings a pending hub retry forward. On the retry path the flag is
 cleared before the attempt **only when a cached assignment exists**, so a failing registration falls
 back to an ordinary hub retry rather than looping through provisioning; with no cached assignment
