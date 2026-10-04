@@ -14,6 +14,7 @@
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -50,6 +51,9 @@
 #define LOG_ELLIPSIS "..."
 #define LOG_ELLIPSIS_LEN (sizeof(LOG_ELLIPSIS) - 1u)
 #define LOG_FILE_MAX_FILES_LIMIT 99u
+
+/* C99 static assertion: truncation needs room for LOG_ELLIPSIS and some text. */
+typedef char log_message_max_is_at_least_16[(AZ_IOT_LOG_MESSAGE_MAX) >= 16 ? 1 : -1];
 
 static az_iot_log_sink s_global_sink;
 static int s_sink_active;
@@ -408,60 +412,118 @@ static bool rotated_name(char* out, const char* base, uint32_t index)
   return az_iot_span_writer_end_str(&w, NULL) == AZ_IOT_OK;
 }
 
+/** @brief Size of @p f, saturated to UINT32_MAX; UINT32_MAX when unknown, so it rotates. */
+static uint32_t file_size(FILE* f)
+{
+#if defined(_WIN32)
+  __int64 size = _fseeki64(f, 0, SEEK_END) == 0 ? _ftelli64(f) : -1;
+#else
+  off_t size = fseeko(f, 0, SEEK_END) == 0 ? ftello(f) : (off_t)-1;
+#endif
+  if (size < 0 || (uint64_t)size > UINT32_MAX)
+  {
+    return UINT32_MAX;
+  }
+  return (uint32_t)size;
+}
+
 /** @brief Open the active file and resync the byte count from its size. Lock held.
  *
  * @return true if open. */
 static bool file_reopen(az_iot_log_file_sink* fs)
 {
   FILE* f = open_append(fs->_internal.path);
-  fs->_internal.bytes = 0u;
-  if (f != NULL && fseek(f, 0L, SEEK_END) == 0)
-  {
-    long size = ftell(f);
-    fs->_internal.bytes = size > 0 ? (uint32_t)size : 0u;
-  }
+  fs->_internal.bytes = f != NULL ? file_size(f) : 0u;
   fs->_internal.stream = f;
   return f != NULL;
+}
+
+/** @brief Whether @p path names an existing regular file. */
+static bool file_exists(const char* path)
+{
+#if defined(_WIN32)
+  DWORD attrs = GetFileAttributesA(path);
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0u;
+#else
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+/** @brief rename(); true when it succeeded or @p from did not exist. */
+static bool rename_if_present(const char* from, const char* to)
+{
+  errno = 0;
+  return rename(from, to) == 0 || errno == ENOENT;
 }
 
 /**
  * @brief Rotate `<path>` to `<path>.1`, shifting older files up. Lock held.
  *
- * The active file is first moved to `<path>.0`, so a failure leaves the older
- * files untouched. Either way the active file is reopened with its real size,
- * so a failed rotation is retried on the next line and a failed reopen is
- * retried by file_sink_fn().
+ * The active file is first staged as `<path>.0`. If any later step fails, the
+ * moves already made are undone and the staged file is moved back, so no
+ * generation but the oldest (dropped by design) is lost, and rotation is
+ * retried on the next line. A `<path>.0` left by a failed move-back is
+ * placed as `<path>.1` instead of the active file, which then stays active.
+ * The active file is always reopened with its real size.
  */
 static void file_rotate(az_iot_log_file_sink* fs)
 {
   char from[AZ_IOT_LOG_FILE_PATH_MAX];
   char to[AZ_IOT_LOG_FILE_PATH_MAX];
   char staged[AZ_IOT_LOG_FILE_PATH_MAX];
+  bool moved[LOG_FILE_MAX_FILES_LIMIT + 1u] = { false };
   const char* path = fs->_internal.path;
+  /* max_files is 1..99: open() replaces 0 with the default and rejects more. */
   uint32_t n = fs->_internal.options.max_files;
+  bool ok = rotated_name(staged, path, 0u);
+  bool staged_active = false;
+  uint32_t i;
 
   (void)fclose((FILE*)fs->_internal.stream);
   fs->_internal.stream = NULL;
 
-  bool staged_ok = rotated_name(staged, path, 0u);
-  if (staged_ok)
+  if (ok && !file_exists(staged))
   {
-    (void)remove(staged);
-    staged_ok = rename(path, staged) == 0;
+    ok = rename(path, staged) == 0;
+    staged_active = ok;
   }
-  if (staged_ok)
+
+  if (ok)
   {
-    /* max_files is at least 1: open() replaces 0 with the default. */
     (void)rotated_name(to, path, n);
-    (void)remove(to);
-    for (uint32_t i = n; i > 1u; --i)
-    {
-      (void)rotated_name(from, path, i - 1u);
-      (void)rotated_name(to, path, i);
-      (void)rename(from, to);
-    }
+    errno = 0;
+    ok = remove(to) == 0 || errno == ENOENT;
+  }
+  for (i = n; ok && i > 1u; --i)
+  {
+    (void)rotated_name(from, path, i - 1u);
+    (void)rotated_name(to, path, i);
+    ok = rename_if_present(from, to);
+    moved[i] = ok;
+  }
+  if (ok)
+  {
     (void)rotated_name(to, path, 1u);
-    (void)rename(staged, to);
+    ok = rename(staged, to) == 0;
+  }
+
+  if (!ok)
+  {
+    /* Undo, lowest first, so each destination is free again. */
+    for (i = 2u; i <= n; ++i)
+    {
+      if (moved[i])
+      {
+        (void)rotated_name(from, path, i - 1u);
+        (void)rotated_name(to, path, i);
+        (void)rename_if_present(to, from);
+      }
+    }
+    if (staged_active)
+    {
+      (void)rename(staged, path);
+    }
   }
 
   (void)file_reopen(fs);
@@ -497,7 +559,9 @@ static void file_sink_fn(
       FILE* f = (FILE*)fs->_internal.stream;
       size_t w = fwrite(buf, 1u, n, f);
       (void)fflush(f);
-      fs->_internal.bytes += (uint32_t)w;
+      fs->_internal.bytes = (uint64_t)fs->_internal.bytes + w > UINT32_MAX
+          ? UINT32_MAX
+          : fs->_internal.bytes + (uint32_t)w;
     }
   }
   file_unlock(&fs->_internal.lock);

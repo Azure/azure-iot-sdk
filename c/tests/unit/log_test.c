@@ -497,6 +497,107 @@ static void file_sink_recovers_from_a_failed_rotation(void** state)
   remove(blocker);
 }
 
+static void write_text(const char* path, const char* text)
+{
+  FILE* f = fopen(path, "wb");
+  assert_non_null(f);
+  assert_int_equal(strlen(text), fwrite(text, 1, strlen(text), f));
+  assert_int_equal(0, fclose(f));
+}
+
+/* When the oldest generation cannot be dropped, the staged active file is moved
+ * back: no line is lost, nothing is shifted and no "<path>.0" is left behind. */
+static void file_sink_restores_the_active_file_when_shifting_fails(void** state)
+{
+  (void)state;
+  char path[256];
+  char oldest[300];
+  char inner[320];
+  char p[300];
+  char text[FILE_BUF];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  az_iot_log_file_sink_options o = az_iot_log_file_sink_options_default();
+  o.max_file_bytes = 300;
+  o.max_files = 2;
+  temp_log_path(path, sizeof(path), "shiftfail");
+  remove_log_files(path);
+  rotated_path(p, sizeof(p), path, 1);
+  write_text(p, "generation one\n");
+  /* A non-empty directory as the oldest generation cannot be removed. */
+  rotated_path(oldest, sizeof(oldest), path, 2);
+  make_dir(oldest);
+  assert_true(snprintf(inner, sizeof(inner), "%s/keep", oldest) > 0);
+  write_text(inner, "x");
+
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  for (int i = 0; i < 6; ++i)
+  {
+    AZ_IOT_LOG_INFOF("app: kept %02d %s", i, "padding-padding-padding-padding");
+  }
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+
+  assert_true(read_file(path, text, sizeof(text)) > 300);
+  assert_int_equal(6, count_lines(text));
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_string_equal(text, "generation one\n");
+  rotated_path(p, sizeof(p), path, 0);
+  assert_int_equal(-1, read_file(p, text, sizeof(text)));
+
+  assert_int_equal(0, remove(inner));
+  remove_dir(oldest);
+  remove_log_files(path);
+}
+
+/* A "<path>.0" left behind is placed as "<path>.1" first; the active file
+ * rotates on the next line, so both are kept in order. */
+static void file_sink_places_a_leftover_staged_file_first(void** state)
+{
+  (void)state;
+  char path[256];
+  char p[300];
+  char text[FILE_BUF];
+  char big[400];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  az_iot_log_file_sink_options o = az_iot_log_file_sink_options_default();
+  o.max_file_bytes = 300;
+  o.max_files = 3;
+  temp_log_path(path, sizeof(path), "leftover");
+  remove_log_files(path);
+  memset(big, 'a', sizeof(big) - 2);
+  big[sizeof(big) - 2] = '\n';
+  big[sizeof(big) - 1] = '\0';
+  write_text(path, big);
+  rotated_path(p, sizeof(p), path, 0);
+  write_text(p, "leftover\n");
+
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  AZ_IOT_LOG_INFO("app: first");
+  AZ_IOT_LOG_INFO("app: second");
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+
+  assert_int_equal(-1, read_file(p, text, sizeof(text)));
+  rotated_path(p, sizeof(p), path, 2);
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_string_equal(text, "leftover\n");
+  rotated_path(p, sizeof(p), path, 1);
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_memory_equal(text, big, strlen(big));
+  assert_non_null(strstr(text, "app: first\n"));
+  assert_true(read_file(path, text, sizeof(text)) > 0);
+  assert_int_equal(1, count_lines(text));
+  assert_non_null(strstr(text, "app: second\n"));
+
+  remove_log_files(path);
+}
+
 static void file_sink_rejects_bad_arguments(void** state)
 {
   (void)state;
@@ -581,6 +682,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         file_sink_bounds_a_plain_message_at_the_maximum, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_recovers_from_a_failed_rotation, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_sink_restores_the_active_file_when_shifting_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_places_a_leftover_staged_file_first, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rejects_bad_arguments, setup, teardown),
   };
   return cmocka_run_group_tests_name("log", tests, NULL, NULL);

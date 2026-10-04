@@ -83,7 +83,8 @@ extern "C"
   /** @brief File sink options. Zero selects the default for each field. */
   typedef struct az_iot_log_file_sink_options
   {
-    /** @brief Rotate before a line would take the active file past this size. */
+    /** @brief Rotate before a line would take the active file past this size.
+     * A single line longer than this is still written, to an empty file. */
     uint32_t max_file_bytes;
     /** @brief Rotated files kept, at most 99. */
     uint32_t max_files;
@@ -147,7 +148,7 @@ extern "C"
 /* Maximum length, terminator included, of a message built by
  * az_iot_log_emitf(). Longer messages are truncated rather than dropped, and end
  * in "..." so the cut is visible. Override to trade stack footprint for
- * detail. */
+ * detail; at least 16. */
 #ifndef AZ_IOT_LOG_MESSAGE_MAX
 #define AZ_IOT_LOG_MESSAGE_MAX 384
 #endif
