@@ -65,6 +65,18 @@ static az_iot_result ca_only_load(
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/* A provider that cannot load right now, as opposed to having no certificate. */
+static az_iot_result not_ready_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  (void)self;
+  (void)role;
+  memset(out, 0, sizeof(*out));
+  return AZ_IOT_ERR_NOT_INITIALIZED;
+}
+
 static void ca_only_release(az_iot_certificate_provider* self, az_iot_certificate_material* m)
 {
   (void)self;
@@ -76,6 +88,13 @@ static void ca_only_deinit(az_iot_certificate_provider* self) { (void)self; }
 static const az_iot_certificate_provider_vtable k_ca_only_vtable = {
   .version = 1u,
   .load = ca_only_load,
+  .release = ca_only_release,
+  .deinit = ca_only_deinit,
+};
+
+static const az_iot_certificate_provider_vtable k_not_ready_vtable = {
+  .version = 1u,
+  .load = not_ready_load,
   .release = ca_only_release,
   .deinit = ca_only_deinit,
 };
@@ -313,6 +332,19 @@ static void trusted_ca_overrides_the_provider_ca(void** state)
   opts.trusted_ca.path = "ca.pem";
   init_and_open(fx, &opts);
   assert_string_equal(last_connect(fx)->connect.trusted_ca_path, "ca.pem");
+}
+
+static void a_provider_that_cannot_load_does_not_fall_back_to_sas(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider = { .vtable = &k_not_ready_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
 }
 
 static void a_provider_ca_is_kept_when_the_role_falls_back_to_sas(void** state)
@@ -580,6 +612,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(trusted_ca_overrides_the_provider_ca, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provider_ca_is_kept_when_the_role_falls_back_to_sas, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_provider_that_cannot_load_does_not_fall_back_to_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_group_key_derives_from_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(the_device_id_is_url_encoded_in_the_token, setup, teardown),
     cmocka_unit_test(the_token_size_macro_is_enough_for_the_worst_case),

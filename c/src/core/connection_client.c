@@ -986,6 +986,10 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
   const char* first = is_dps ? c->opts.dps.id_scope : c->opts.host;
   const char* second = is_dps ? c->opts.dps.registration_id : c->opts.client_id;
+  if (first == NULL || second == NULL)
+  {
+    return false;
+  }
   size_t ids = strlen(first) + strlen(second);
   if (ids > c->sas_token_size)
   {
@@ -2153,7 +2157,8 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     az_iot_certificate_material mat = { 0 };
     az_iot_result lr = c->opts.certificate_provider->vtable->load(
         c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
-    if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && dps_has_sas)
+    /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && dps_has_sas)
     {
       AZ_IOT_LOG_DEBUG("dps: no bootstrap certificate; using SAS");
       keep_provider_trust(&copts, lr, &mat);
@@ -3336,7 +3341,8 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
     }
-    if ((lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED) && hub_has_sas)
+    /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && hub_has_sas)
     {
       AZ_IOT_LOG_DEBUG("connection: no certificate; using SAS");
       keep_provider_trust(&copts, lr, &mat);
