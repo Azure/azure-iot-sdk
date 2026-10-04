@@ -24,6 +24,29 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
 
+        [Fact]
+        public async Task TryConnectAsyncWithoutCachedConnectionContextReturnsFalse()
+        {
+            using ConnectionClient connectionClient = new();
+
+            Assert.False(await connectionClient.TryConnectAsync(TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
+        public async Task TryConnectAsyncUsesCachedConnectionContext()
+        {
+            MockMqttClient mockMqttClient = new(false);
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+            });
+            ConnectionContext connectionContext = GetMockConnectionContext(false);
+            connectionClient.CurrentConnectionContext = connectionContext;
+
+            Assert.True(await connectionClient.TryConnectAsync(TestContext.Current.CancellationToken));
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
+        }
+
         [Theory]
         [InlineData(true)]
         [InlineData(false)]

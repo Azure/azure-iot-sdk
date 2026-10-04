@@ -326,6 +326,24 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
+        /// Try to connect this device directly to IoT hub using the connection context cached in memory.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// <c>true</c> when the device connects successfully; otherwise, <c>false</c>. Returns <c>false</c> immediately
+        /// when no connection context has been cached.
+        /// </returns>
+        public Task<bool> TryConnectAsync(CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            ConnectionContext? connectionContext = CurrentConnectionContext;
+            return connectionContext == null
+                ? Task.FromResult(false)
+                : TryConnectAsync(connectionContext, cancellationToken);
+        }
+
+        /// <summary>
         /// Try to connect this device directly to the IoT hub named by the given cached connection context.
         /// </summary>
         /// <remarks>
