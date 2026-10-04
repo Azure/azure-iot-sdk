@@ -44,7 +44,7 @@ internal class Program
         // User may attempt to connect directly to IoT Hub using credentials that were persisted during device reboot.
         // This call should return false if the connection to IoT Hub cannot be established without provisioning again. 
         // This call should not provision the device, though.
-        if (!connectionClient.TryConnectAsync(persistedConnectionContext, cts.Token))
+        if (!await connectionClient.TryConnectAsync(persistedConnectionContext, cts.Token))
         {
             // If the connection client cannot connect directly to IoT Hub (identity terminal error or retry policy expires),
             // then go through provisioning again

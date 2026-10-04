@@ -66,20 +66,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         }
 
         [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
-        public async Task TestManualConnectAfterDeviceDeletedFallsBackToReprovisioning()
+        public async Task TestTryConnectAfterDeviceDeletedReturnsFalseBeforeExplicitReprovisioning()
         {
             // In this test, the test device provisions to an IoT hub and connects, and the connection context that
             // provisioning returned is cached. The test then deliberately disconnects the device and deletes the
-            // device's identity from the IoT hub's registry. When the application connects the device again (without
-            // provisioning), the device should try to reconnect to the now-unreachable hub but eventually fall back to
-            // re-provisioning, which re-registers the device in the hub.
+            // device's identity from the IoT hub's registry. A direct connection with the cached context should fail
+            // without provisioning, after which the application explicitly provisions again.
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
 
-            // A fast reconnect cadence and a low re-provision threshold keep the hub-retry-then-reprovision cycle inside
-            // this test's time budget, so the device falls back to DPS well within the budget rather than retrying the
-            // unreachable hub for the production default number of attempts.
+            // A fast reconnect cadence and a low re-provision threshold keep the direct connection attempt inside this
+            // test's time budget, so TryConnectAsync returns false rather than retrying the unreachable hub for the
+            // production default number of attempts.
             ConnectionClientOptions options = new()
             {
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3),
@@ -107,13 +106,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await device.ConnectionClient.DisconnectAsync(cancellationToken);
             await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
 
-            // Connect the device again without provisioning, holding only the cached connection context. The device
-            // tries the cached hub and -- whether the hub rejects this deleted device's identity outright or just stops
-            // answering until the re-provision threshold is crossed -- falls back to Device Provisioning Service for a
-            // fresh assignment (mirroring the C client's open()), which re-registers this device because its enrollment
-            // still exists. This single ConnectAsync keeps working until the device is connected, so it does not throw
-            // and does not need to be retried by the application.
-            await device.ConnectionClient.ConnectAsync(cachedConnectionContext, cancellationToken);
+            // Try the cached IoT hub credentials without provisioning. The deleted identity cannot connect, so the
+            // application is told to proceed through provisioning explicitly.
+            Assert.False(await device.ConnectionClient.TryConnectAsync(cachedConnectionContext, cancellationToken));
+
+            await device.ConnectionClient.ProvisionAndConnectAsync(
+                new ProvisioningSettings(Setup.DpsIdScope),
+                device.AuthenticationProvider,
+                cancellationToken);
 
             // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the
             // device recovered by re-provisioning rather than by reconnecting to the hub it had been removed from.

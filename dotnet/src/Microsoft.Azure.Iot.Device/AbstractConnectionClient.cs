@@ -13,7 +13,6 @@ using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -326,55 +325,34 @@ namespace Microsoft.Azure.Iot.Device
             return CurrentConnectionContext;
         }
 
-        public async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Try to connect this device directly to the IoT hub named by the given cached connection context.
+        /// </summary>
+        /// <remarks>
+        /// This method does not provision the device. It returns <c>false</c> when the hub connection cannot be
+        /// established because of a terminal connection failure or because the retry policy is exhausted.
+        /// </remarks>
+        /// <param name="connectionContext">The cached hub and identity to connect as.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns><c>true</c> when the device connects successfully; otherwise, <c>false</c>.</returns>
+        public async Task<bool> TryConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            // A single ConnectAsync keeps working until this device is connected: it tries the cached hub and, if the
-            // hub rejects this device's identity or becomes unreachable past the re-provision threshold, falls back to
-            // Device Provisioning Service for a fresh assignment rather than surfacing that crossover to the caller.
-            // Mirrors the C connection client's open(), which likewise does not return to its caller until the device is
-            // connected (or a terminal, non-recoverable error is hit).
-            while (true)
+            try
             {
-                // When a re-provision demand is standing -- an identity rejection at CONNACK or the hub-unreachable
-                // threshold decided the cached assignment is no good -- ask Device Provisioning Service for a fresh
-                // assignment rather than reconnecting to the hub that was rejected or unreachable, and keep
-                // re-provisioning under the retry policy until it connects. In C this demand (needs_reprovision)
-                // deliberately survives a manual close()/open() so the application cannot walk back into the stale hub by
-                // reconnecting by hand; routing here does the same. The demand is consumed before routing so the
-                // re-provisioning connect that follows does not re-enter this branch, matching C's "consumed once
-                // provisioning is under way".
-                if (_needsReprovision && CanReprovision)
-                {
-                    Trace.TraceInformation("A re-provision is pending, so connecting through Device Provisioning Service rather than to the cached IoT hub.");
-                    _needsReprovision = false;
-                    await ReprovisionUntilConnectedAsync(_lastProvisioningSettings!, _lastProvisioningAuthentication!, cancellationToken);
-                    return;
-                }
-
-                try
-                {
-                    await ConnectToHubAsync(connectionContext, cancellationToken);
-                    return;
-                }
-                catch (DeviceException) when (_needsReprovision && CanReprovision)
-                {
-                    // The connect tried the cached hub and either the hub rejected this device's identity or the
-                    // hub-unreachable threshold was crossed, which left a standing demand to re-provision. Rather than
-                    // surfacing that crossover to the caller, loop back to the standing-demand branch above, which
-                    // re-provisions and connects to the freshly assigned hub -- so a single ConnectAsync keeps working
-                    // until it is connected, mirroring the C client's open().
-                    Trace.TraceInformation("The cached IoT hub assignment is no good; re-provisioning through Device Provisioning Service to recover the connection.");
-                }
+                await ConnectToHubAsync(connectionContext, cancellationToken);
+                return true;
+            }
+            catch (DeviceException)
+            {
+                return false;
             }
         }
 
         /// <summary>
         /// Connect this device to the IoT hub named by the given connection context and run the device presence flow,
-        /// throwing if the attempt fails. Unlike <see cref="ConnectAsync(ConnectionContext, CancellationToken)"/>, this
-        /// does not fall back to re-provisioning on its own; it is the single hub-connect attempt that both the connect
-        /// loop above and the re-provisioning retry loop are built from.
+        /// throwing if the attempt fails.
         /// </summary>
         /// <param name="connectionContext">The hub and identity to connect as.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
@@ -630,11 +608,8 @@ namespace Microsoft.Azure.Iot.Device
                 // next. Declaring this client unrecoverably faulted on top of that would raise a spurious application
                 // fault for a connection that is still being actively driven. That is the case either when a
                 // re-provisioning attempt is already in flight and this fault ended one of its own connect attempts
-                // (that loop owns the decision to retry or give up), or when the fault left a standing re-provision
-                // demand this client can act on: a single ConnectAsync catches that crossover and self-heals by
-                // re-provisioning, so the application must not be told the connection is gone for good. Mirrors the C
-                // connection client's open(), which recovers across this crossover without surfacing an
-                // application-visible fault.
+                // (that loop owns the decision to retry or give up), or when the failed direct connection left a
+                // standing re-provision demand that the caller can act on after TryConnectAsync returns false.
                 return;
             }
 
@@ -725,55 +700,6 @@ namespace Microsoft.Azure.Iot.Device
             });
 
             return true;
-        }
-
-        /// <summary>
-        /// Drive <see cref="ReprovisionWithRetryAsync"/> inline (awaited by the caller) to re-provision this device and
-        /// connect it to the hub it is assigned, keeping at it under the retry policy until it connects.
-        /// </summary>
-        /// <remarks>
-        /// This takes ownership of re-provisioning for the duration of the loop -- the same ownership the background
-        /// re-provisioning path claims in <see cref="TryStartReprovisioning"/> -- so that a connect attempt that fails
-        /// on its way to the next retry is thrown back to that loop (which owns the decision to retry or give up) rather
-        /// than being surfaced to the application as an unrecoverable fault while recovery is still in progress.
-        /// </remarks>
-        /// <param name="provisioningSettings">The settings of the provisioning run to repeat.</param>
-        /// <param name="provisioningAuthentication">The authentication of the provisioning run to repeat.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        private async Task ReprovisionUntilConnectedAsync(
-            ProvisioningSettings provisioningSettings,
-            X509AuthenticationProvider provisioningAuthentication,
-            CancellationToken cancellationToken)
-        {
-            bool ownedReprovisioning = Interlocked.CompareExchange(ref _isReprovisioning, 1, 0) == 0;
-
-            try
-            {
-                // This client is recovering the connection on its own, so forget any fault an earlier attempt recorded.
-                ClearUnrecoverableFault();
-
-                await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, cancellationToken);
-            }
-            finally
-            {
-                if (ownedReprovisioning)
-                {
-                    Volatile.Write(ref _isReprovisioning, 0);
-                }
-            }
-
-            // ReprovisionWithRetryAsync returns normally both when it connected and when it gave up after the retry
-            // policy was exhausted (which it never is under the default indefinite policy). If it gave up, it recorded
-            // the fault that ended the recovery. Surface that real, classified (terminal) fault to the caller that asked
-            // this client to connect, rather than the OperationCanceledException that ThrowIfUnrecoverablyFaulted raises
-            // for feature operations parked waiting on the connection: a caller awaiting ConnectAsync should learn
-            // exactly why the connection could not be (re-)established, not an opaque "operation canceled". The original
-            // stack trace is preserved so the real point of failure is not lost.
-            DeviceException? reprovisioningFault = _unrecoverableFault;
-            if (reprovisioningFault != null)
-            {
-                ExceptionDispatchInfo.Capture(reprovisioningFault).Throw();
-            }
         }
 
         /// <summary>
