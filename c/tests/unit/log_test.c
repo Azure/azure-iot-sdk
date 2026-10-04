@@ -31,6 +31,7 @@
 #endif
 
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_file.h"
 
 typedef struct capture
 {
@@ -598,6 +599,63 @@ static void file_sink_places_a_leftover_staged_file_first(void** state)
   remove_log_files(path);
 }
 
+/* Logs one message through a fresh file sink and returns the message part. */
+static const char* log_one_to_file(const char* tag, const char* msg, char* text, size_t cap)
+{
+  char path[256];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  temp_log_path(path, sizeof(path), tag);
+  remove_log_files(path);
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  AZ_IOT_LOG_ERROR(msg);
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+  assert_true(read_file(path, text, cap) > 0);
+  remove_log_files(path);
+  assert_int_equal(1, count_lines(text));
+  return line_message(text);
+}
+
+/* A message is always one line: line breaks and other control characters are
+ * escaped, so text from the network cannot forge extra records. */
+static void file_sink_escapes_control_characters(void** state)
+{
+  (void)state;
+  char text[FILE_BUF];
+  const char* body = log_one_to_file(
+      "escape",
+      "app: a\nb\rc\td\x01"
+      "e\x7f"
+      "f\\g",
+      text,
+      sizeof(text));
+  assert_string_equal(body, "app: a\\nb\\rc\td\\x01e\\x7ff\\g\n");
+}
+
+/* Escaping counts toward the bound, and an escape is never split by the cut. */
+static void file_sink_never_splits_an_escape(void** state)
+{
+  (void)state;
+  char text[FILE_BUF];
+  char msg[AZ_IOT_LOG_MESSAGE_MAX + 8];
+  memset(msg, '\n', sizeof(msg) - 1);
+  msg[sizeof(msg) - 1] = '\0';
+
+  const char* body = log_one_to_file("escbound", msg, text, sizeof(text));
+  size_t body_len = strlen(body) - 1; /* newline */
+  assert_true(body_len <= AZ_IOT_LOG_MESSAGE_MAX - 1);
+  assert_memory_equal(body + body_len - 3, "...", 3);
+  /* Everything before the marker is whole "\n" escapes. */
+  assert_int_equal(0, (body_len - 3) % 2);
+  for (size_t i = 0; i < body_len - 3; i += 2)
+  {
+    assert_memory_equal(body + i, "\\n", 2);
+  }
+}
+
 static void file_sink_rejects_bad_arguments(void** state)
 {
   (void)state;
@@ -685,6 +743,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         file_sink_restores_the_active_file_when_shifting_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_places_a_leftover_staged_file_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_escapes_control_characters, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_never_splits_an_escape, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rejects_bad_arguments, setup, teardown),
   };
   return cmocka_run_group_tests_name("log", tests, NULL, NULL);

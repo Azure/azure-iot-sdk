@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_file.h"
 
 typedef struct sample_config
 {

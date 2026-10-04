@@ -15,7 +15,7 @@ az_iot_log_sink sink = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
 az_iot_log_set_global_sink(&sink);
 ```
 
-To a rotating file (Windows, Linux, macOS):
+To a rotating file (Windows, Linux, macOS), with `azure/iot/az_iot_log_file.h`:
 
 ```c
 static az_iot_log_file_sink file_sink; /* must outlive its use */
@@ -59,6 +59,9 @@ The built-in sinks write:
 | `connection_client.c:3756` | Source file and line. |
 | `connection: ...` | Message, starting with its component. |
 
+Control characters in a message are escaped (`\n`, `\r`, `\xNN`; tab is kept), so each message
+is one line. A custom sink receives the message unescaped.
+
 A message longer than `AZ_IOT_LOG_MESSAGE_MAX` (384) is cut and ends in `...`.
 
 ## Levels
@@ -75,7 +78,8 @@ For TLS or MQTT connection issues, set `AZ_IOT_PAHO_TRACE=protocol` and the sink
 
 ## Components
 
-Every SDK message starts with `<component>: `. Filter by it.
+Every SDK message starts with `<component>: `. The component is part of the message text, not a
+separate sink argument, so it reaches every sink, custom ones included. Filter by it.
 
 | Prefix | Area |
 | --- | --- |

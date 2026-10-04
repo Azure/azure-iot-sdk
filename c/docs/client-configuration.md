@@ -197,7 +197,8 @@ az_iot_log_set_global_sink(&sink);
 
 Levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF`. A custom sink is an
 `az_iot_log_sink` with your callback, a context pointer and a minimum level. A rotating
-file sink is built in (`az_iot_log_file_sink_open()`). See [Logging](logging.md) for the
+file sink is built in (`az_iot_log_file_sink_open()`,
+[az_iot_log_file.h](../inc/azure/iot/az_iot_log_file.h)). See [Logging](logging.md) for the
 line format, component prefixes and what to collect for support, and
 [az_iot_log.h](../inc/azure/iot/az_iot_log.h).
 
