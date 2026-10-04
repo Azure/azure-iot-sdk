@@ -114,6 +114,28 @@ extern "C"
   az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void);
 
   /**
+   * @brief Default identity recovery policy: 5 min initial delay, 1 h cap, no
+   * attempt limit, +/-25% jitter. Installed in opts.identity_recovery.policy by
+   * az_iot_connection_client_options_default().
+   */
+  az_iot_retry_policy az_iot_connection_client_get_default_identity_recovery_policy(void);
+
+  /** @brief What follows a hub refusal of the device identity. */
+  typedef enum az_iot_identity_recovery_mode
+  {
+    /** @brief A CONNACK refusal makes the next attempt a DPS registration
+     * (when dps.id_scope is set); an MQTT 5 Not authorized DISCONNECT retries
+     * the hub. With dps.request_operational_certificate, every registration
+     * requests a new certificate. Zero, the earlier behaviour. */
+    AZ_IOT_IDENTITY_RECOVERY_REPROVISION = 0,
+    /** @brief Retry the cached hub. DPS is contacted only through
+     * az_iot_connection_client_request_reprovision(). */
+    AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB,
+    /** @brief No automatic retry: the refusal faults. */
+    AZ_IOT_IDENTITY_RECOVERY_NONE
+  } az_iot_identity_recovery_mode;
+
+  /**
    * @brief Reconnection policy that retries at a constant interval, without jitter.
    *
    * @param interval_ms Delay between attempts. 0 is clamped to 1 ms, since 0
@@ -253,15 +275,11 @@ extern "C"
      *     carries the reason and waits until the application calls
      *     az_iot_connection_client_close() and opens again.
      *
-     * That does NOT discard what the failure established. An identity
-     * rejection still records that the device must re-provision, so the next
-     * az_iot_connection_client_open() goes to DPS rather than back to the hub
-     * that refused it. What disabling retries removes is the SDK acting on
-     * its own; the verdict survives for the application's next open().
+     * Disabling it also disables identity_recovery, and
+     * dps.max_hub_connect_attempts_before_reprovision, which counts consecutive
+     * automatic attempts.
      *
-     * One trigger does depend on retrying being enabled:
-     * dps.max_hub_connect_attempts_before_reprovision counts consecutive
-     * automatic attempts, and with retries off there is no such run to count.
+     * A hub that refuses the identity is retried on identity_recovery.
      *
      * az_iot_connection_client_options_default() fills this with
      * az_iot_connection_client_get_default_retry_policy(). Use
@@ -304,11 +322,14 @@ extern "C"
        * AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION; 0 disables
        * it.
        *
-       * Re-provisioning is otherwise only triggered by a CONNACK that rejects
-       * the identity. A hub that has been vacated service-side may simply stop
-       * answering instead, and the cached assignment would then be retried until
-       * the reconnection policy gives up -- never asking DPS where the device
-       * actually lives now. This bounds that.
+       * Otherwise the SDK re-provisions only after a CONNACK identity refusal
+       * in AZ_IOT_IDENTITY_RECOVERY_REPROVISION mode, or when the application
+       * calls az_iot_connection_client_request_reprovision(). A hub that has been
+       * vacated service-side may simply stop answering, and the cached
+       * assignment would then be retried until the reconnection policy gives
+       * up -- never asking DPS where the device actually lives now. This bounds
+       * that. A hub that refuses the identity answered, so it is not counted
+       * here and resets the count.
        *
        * Under the default policy (1s initial, 60s cap, +/-20% jitter) the delays
        * run 1, 2, 4, 8, 16, 32 then 60s, so attempt N >= 7 falls at roughly
@@ -534,6 +555,43 @@ extern "C"
      * without SHA-256 or of another version with AZ_IOT_ERR_INVALID_ARG.
      */
     const az_iot_crypto* crypto;
+
+    /**
+     * @brief Recovery after the hub refuses the device identity.
+     *
+     * Covers a hub CONNACK that rejects the identity
+     * (AZ_IOT_ERR_IDENTITY_REJECTED) and an MQTT 5 hub DISCONNECT with Not
+     * authorized (AZ_IOT_ERR_AUTH). Such a refusal does not say why: the device
+     * may be disabled, its credential revoked, or its assignment changed.
+     *
+     * Retries climb a ladder separate from the reconnection ladders. It
+     * survives DPS registrations and is reset only by HUB:CONNECTED, open()
+     * and close(). Recovery stops at AZ_IOT_CONN_STATE_FAULTED, with the
+     * refusal as the reason, when the ladder's max_attempts or
+     * max_duration_seconds is reached first. A disabled reconnection_policy
+     * faults on the first refusal.
+     *
+     * Zeroed, it keeps the earlier behaviour: re-provision after a CONNACK
+     * refusal, paced by reconnection_policy.
+     * az_iot_connection_client_options_default() selects
+     * AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB with
+     * az_iot_connection_client_get_default_identity_recovery_policy().
+     *
+     * Appended, like the options above it, so positional initializers keep
+     * their meaning.
+     */
+    struct
+    {
+      /** @brief Retry schedule after a refusal. Zeroed (initial_delay_ms 0),
+       * reconnection_policy is used. */
+      az_iot_retry_policy policy;
+      /** @brief No attempt starts this many seconds or more after the first
+       * refusal, until HUB:CONNECTED; recovery stops once the next one could
+       * not. 0 = no limit. Monotonic clock, so not kept across a restart. */
+      uint32_t max_duration_seconds;
+      /** @brief What the next attempt does after a refusal. */
+      az_iot_identity_recovery_mode mode;
+    } identity_recovery;
   } az_iot_connection_client_options;
 
   /* Which of the client's two lifecycles something refers to.
@@ -635,6 +693,37 @@ extern "C"
     az_span message;
   } az_iot_connection_error_detail;
 
+  /** @brief How the SDK classified a failure, which selects its recovery. */
+  typedef enum az_iot_connection_failure_class
+  {
+    AZ_IOT_CONN_FAILURE_NONE = 0,
+    /** @brief The cause may clear on its own (is_retriable). Retries, when
+     * enabled, follow reconnection_policy. */
+    AZ_IOT_CONN_FAILURE_TRANSIENT,
+    /** @brief The hub refused the identity. Retries, when enabled, follow
+     * opts.identity_recovery. */
+    AZ_IOT_CONN_FAILURE_IDENTITY,
+    /** @brief Retrying unchanged inputs cannot fix the cause (not
+     * is_retriable). Any retry follows reconnection_policy. */
+    AZ_IOT_CONN_FAILURE_TERMINAL
+  } az_iot_connection_failure_class;
+
+  /** @brief Recovery progress, carried by RECONNECTING and FAULTED events. */
+  typedef struct az_iot_connection_recovery_info
+  {
+    az_iot_connection_failure_class classification;
+    /** @brief Host the failed attempt targeted; NULL when none was set.
+     * Callback lifetime. */
+    const char* endpoint;
+    /** @brief Consecutive failures on the ladder governing the retry; 0 when
+     * the failure was not counted on one. */
+    uint32_t attempt;
+    /** @brief Milliseconds until the next attempt; 0 when none is scheduled. */
+    uint32_t next_attempt_delay_ms;
+    /** @brief The next attempt is a DPS registration. */
+    bool next_attempt_reprovisions;
+  } az_iot_connection_recovery_info;
+
   typedef struct az_iot_connection_state_event
   {
     /* Which lifecycle this event is about. Placed beside `state` because the
@@ -653,6 +742,10 @@ extern "C"
     /* Diagnostic detail, or NULL when none is available. Valid only until the
      * callback returns. */
     const az_iot_connection_error_detail* error;
+    /* Non-NULL on a RECONNECTING or FAULTED event that reports a failure.
+     * FAULTED with AZ_IOT_CONN_FAILURE_IDENTITY means no further automatic
+     * attempt follows the refusal. Valid only until the callback returns. */
+    const az_iot_connection_recovery_info* recovery;
   } az_iot_connection_state_event;
 
   typedef void (*az_iot_connection_state_callback)(
@@ -833,6 +926,16 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION
 #define AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
 #endif
+/* See az_iot_connection_client_get_default_identity_recovery_policy(). */
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS 300000u
+#endif
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_MAX_DELAY_MS
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_MAX_DELAY_MS 3600000u
+#endif
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT 25u
+#endif
 /* Feature clients that ask to build their topics at connect time. One per
  * attached feature client, so this tracks the persistent-subscription bound. */
 #ifndef AZ_IOT_MAX_FEATURE_CLIENT_BINDS
@@ -960,7 +1063,9 @@ extern "C"
 
     /* Set when the next reconnect attempt must re-provision through DPS rather
      * than reconnect to the cached assignment -- because the hub refused this
-     * identity, or because hub attempts crossed the configured threshold. Kept
+     * identity in AZ_IOT_IDENTITY_RECOVERY_REPROVISION mode, because hub
+     * attempts crossed the configured threshold, or because the application
+     * asked. Kept
      * beside user_close so it lands in the padding that already precedes
      * `deferred` rather than adding its own. */
     bool needs_reprovision;
@@ -1192,6 +1297,26 @@ extern "C"
      * counted: they are what this threshold escalates TO. */
     uint32_t consecutive_hub_connect_failures;
 
+    /* Identity recovery ladder (opts.identity_recovery). Reset only by
+     * HUB:CONNECTED, open() and close(), so DPS-accept / hub-reject cycles
+     * stay bounded. */
+    uint32_t identity_retry_attempt;
+    uint64_t identity_recovery_started_ms;
+    bool identity_recovery_active;
+    /* The refusal that started the episode; the reason of a duration fault. */
+    az_iot_result identity_recovery_reason;
+
+    /* Retry progress staged by schedule_reconnect() for the RECONNECTING or
+     * FAULTED event it emits; consumed by that event. */
+    struct
+    {
+      az_iot_connection_failure_class classification;
+      uint32_t attempt;
+      uint32_t delay_ms;
+      bool reprovisions;
+      bool staged;
+    } recovery_report;
+
     az_iot_hub_client hub_client;
     bool hub_client_initialized;
     char hub_username[AZ_IOT_MQTT_USERNAME_BUF];
@@ -1261,8 +1386,12 @@ extern "C"
    * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
    * the returned struct to make every failure terminal instead.
    *
+   * identity_recovery gets AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB and
+   * az_iot_connection_client_get_default_identity_recovery_policy().
+   *
    * Note that a zero-initialized options struct is NOT the same thing: it has
-   * reconnection disabled, since initial_delay_ms is then 0.
+   * reconnection disabled, since initial_delay_ms is then 0, and the earlier
+   * identity recovery (AZ_IOT_IDENTITY_RECOVERY_REPROVISION).
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
@@ -1380,6 +1509,22 @@ extern "C"
    *
    * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
   az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
+
+  /**
+   * @brief Make the next connect attempt a DPS registration, even though a hub
+   * assignment is cached.
+   *
+   * The explicit counterpart of AZ_IOT_IDENTITY_RECOVERY_REPROVISION. From
+   * RECONNECTING the pending retry runs on the next do_work(); from IDLE or
+   * FAULTED (after close()) the next open() registers; otherwise the next
+   * connect attempt does.
+   *
+   * @param[in] client The client.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client;
+   *   AZ_IOT_ERR_NOT_SUPPORTED without dps.id_scope or with dps.provision_only.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_connection_client_request_reprovision(az_iot_connection_client* client);
 
   /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
    * callbacks fire synchronously from inside this call. Not AZ_NODISCARD: this is a

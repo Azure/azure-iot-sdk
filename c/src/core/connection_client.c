@@ -25,7 +25,8 @@
  * inbound ERROR) transition to RECONNECTING; do_work() then re-opens after the
  * computed backoff (with jitter). User-initiated close() always goes to IDLE
  * regardless. If max_attempts > 0 is configured and reached, we transition to
- * FAULTED.
+ * FAULTED. A hub that refuses the identity is retried on the separate
+ * opts.identity_recovery ladder instead.
  */
 #include <stddef.h>
 #include <stdlib.h>
@@ -105,6 +106,7 @@
 #define DPS_API_VERSION "2026-11-02-preview"
 #define DPS_USERNAME_INFIX "/registrations/"
 #define DPS_USERNAME_SUFFIX "/api-version=" DPS_API_VERSION
+#define DPS_DEFAULT_GLOBAL_ENDPOINT "global.azure-devices-provisioning.net"
 
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE "registrationState"
@@ -515,6 +517,42 @@ static void log_state_transition(
       az_iot_result_to_string(reason));
 }
 
+/** @brief Whether @p reason is the service refusing the presented identity. */
+static bool reason_is_identity_refusal(az_iot_result reason)
+{
+  return reason == AZ_IOT_ERR_IDENTITY_REJECTED || reason == AZ_IOT_ERR_AUTH;
+}
+
+static az_iot_connection_failure_class classify_failure(
+    az_iot_connection_scope scope,
+    az_iot_result reason)
+{
+  if (reason == AZ_IOT_OK)
+  {
+    return AZ_IOT_CONN_FAILURE_NONE;
+  }
+  /* Only a hub refusal is recovered on the identity ladder. */
+  if (scope == AZ_IOT_CONN_SCOPE_HUB && reason_is_identity_refusal(reason))
+  {
+    return AZ_IOT_CONN_FAILURE_IDENTITY;
+  }
+  return reason_is_retriable(reason) ? AZ_IOT_CONN_FAILURE_TRANSIENT : AZ_IOT_CONN_FAILURE_TERMINAL;
+}
+
+static const char* dps_endpoint(const az_iot_connection_client* c)
+{
+  return is_nonempty_cstr(c->opts.dps.global_endpoint) ? c->opts.dps.global_endpoint
+                                                       : DPS_DEFAULT_GLOBAL_ENDPOINT;
+}
+
+/** @brief Restart the identity recovery ladder and its duration clock. */
+static void reset_identity_recovery(az_iot_connection_client* c)
+{
+  c->identity_retry_attempt = 0;
+  c->identity_recovery_started_ms = 0;
+  c->identity_recovery_active = false;
+}
+
 static void set_state_to(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -535,6 +573,29 @@ static void set_state_to(
     clear_staged_error(c);
   }
 
+  /* Retry progress staged for this event is consumed here even when the
+   * transition is suppressed, so it cannot attach to a later one. */
+  az_iot_connection_recovery_info recovery = {
+    .classification = AZ_IOT_CONN_FAILURE_NONE,
+    .endpoint = NULL,
+    .attempt = 0,
+    .next_attempt_delay_ms = 0,
+    .next_attempt_reprovisions = false,
+  };
+  bool reports_recovery = false;
+  if (next == AZ_IOT_CONN_STATE_RECONNECTING || next == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    reports_recovery = (reason != AZ_IOT_OK);
+    if (reports_recovery && c->recovery_report.staged)
+    {
+      recovery.classification = c->recovery_report.classification;
+      recovery.attempt = c->recovery_report.attempt;
+      recovery.next_attempt_delay_ms = c->recovery_report.delay_ms;
+      recovery.next_attempt_reprovisions = c->recovery_report.reprovisions;
+    }
+    c->recovery_report.staged = false;
+  }
+
   /* Per scope, deliberately. A single comparison here would swallow
    * HUB:CONNECTING straight after DPS:CONNECTING purely because the VALUE
    * matched -- which is exactly why a DPS+hub run used to be reported as one
@@ -550,6 +611,8 @@ static void set_state_to(
   if (scope == AZ_IOT_CONN_SCOPE_HUB && next == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->consecutive_hub_connect_failures = 0;
+    /* The identity was accepted end to end (birth-ack included on mqttv5). */
+    reset_identity_recovery(c);
   }
   if (!have_state_observers(c))
   {
@@ -572,7 +635,17 @@ static void set_state_to(
     .profile = NULL,
     .is_retriable = (reason != AZ_IOT_OK) && reason_is_retriable(reason),
     .error = NULL,
+    .recovery = NULL,
   };
+  if (reports_recovery)
+  {
+    if (recovery.classification == AZ_IOT_CONN_FAILURE_NONE)
+    {
+      recovery.classification = classify_failure(scope, reason);
+    }
+    recovery.endpoint = (scope == AZ_IOT_CONN_SCOPE_DPS) ? dps_endpoint(c) : c->opts.host;
+    event.recovery = &recovery;
+  }
   /* Detail rides only an event that is actually reporting a failure, and only
    * on the scope it was recorded for. */
   if (reason != AZ_IOT_OK && c->error_source != AZ_IOT_CONN_ERR_SRC_NONE && c->error_scope == scope)
@@ -1004,16 +1077,47 @@ static az_iot_result apply_certificate_material(
 /* Schedule a retry.
  *
  * @p failure_scope says WHERE the failure just happened, which is not always
- * the scope of the next attempt: a hub CONNACK that rejects the identity is a
- * HUB failure whose retry is a DPS registration. The two are used for
- * different things -- the failure scope feeds the hub-unreachable counter, the
- * next attempt's scope selects the backoff ladder and its attempt budget. */
+ * the scope of the next attempt: a hub failure can be retried as a DPS
+ * registration. The two are used for different things -- the failure scope
+ * feeds the hub-unreachable counter, the next attempt's scope selects the
+ * backoff ladder and its attempt budget. A hub identity refusal climbs the
+ * identity recovery ladder instead; see schedule_identity_recovery(). */
+static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_result reason);
+static uint64_t identity_recovery_deadline_ms(const az_iot_connection_client* c);
+
+/** @brief Give up the single pending retry: FAULTED on @p scope, and on the
+ * other scope if it is still RECONNECTING, since nothing will retry it. Both
+ * events carry the staged recovery report. */
+static void fault_retry_scopes(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_result reason)
+{
+  az_iot_connection_scope other
+      = (scope == AZ_IOT_CONN_SCOPE_HUB) ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  bool staged = c->recovery_report.staged;
+  c->reconnect_due_ms = 0;
+  set_state_to(c, scope, AZ_IOT_CONN_STATE_FAULTED, reason);
+  /* A callback may have closed the client, which settles both scopes. */
+  if (c->state[other] == AZ_IOT_CONN_STATE_RECONNECTING)
+  {
+    c->recovery_report.staged = staged;
+    set_state_to(c, other, AZ_IOT_CONN_STATE_FAULTED, reason);
+  }
+}
+
 static void schedule_reconnect(
     az_iot_connection_client* c,
     az_iot_connection_scope failure_scope,
     az_iot_result reason)
 {
   teardown_active(c);
+
+  if (failure_scope == AZ_IOT_CONN_SCOPE_HUB && reason_is_identity_refusal(reason))
+  {
+    schedule_identity_recovery(c, reason);
+    return;
+  }
 
   /* A hub vacated service-side may stop answering rather than rejecting the
    * identity, in which case nothing else would ever send us back to DPS. Only
@@ -1057,13 +1161,31 @@ static void schedule_reconnect(
   /* Per ladder, so a long hub outage cannot spend the budget a registration
    * that has not been tried yet would need. */
   uint32_t delay = 0;
-  if (!az_iot_retry_policy__next(
-          &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay))
+  bool retry = az_iot_retry_policy__next(
+      &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
+  c->recovery_report.classification = classify_failure(failure_scope, reason);
+  c->recovery_report.attempt = c->retry_attempt[scope];
+  /* An identity recovery episode bounds every retry until HUB:CONNECTED: one
+   * that would start at or past the deadline is not scheduled, and the fault
+   * reports the refusal that started the episode. */
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t deadline = identity_recovery_deadline_ms(c);
+  if (retry && deadline != 0 && now + delay >= deadline)
   {
-    set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_FAULTED, reason);
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "identity recovery duration spent; stopping");
+    retry = false;
+    reason = c->identity_recovery_reason;
+    c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
+  }
+  c->recovery_report.delay_ms = retry ? delay : 0u;
+  c->recovery_report.reprovisions = retry && c->needs_reprovision;
+  c->recovery_report.staged = true;
+  if (!retry)
+  {
+    fault_retry_scopes(c, failure_scope, reason);
     return;
   }
-  c->reconnect_due_ms = az_iot_time_mono_ms() + delay;
+  c->reconnect_due_ms = now + delay;
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
       "%s retry %u in %u ms",
@@ -1071,10 +1193,126 @@ static void schedule_reconnect(
       (unsigned)c->retry_attempt[scope],
       (unsigned)delay);
   /* Reported against the scope that FAILED, not the ladder the retry climbs:
-   * a hub CONNACK that rejects the identity is a HUB session going down, even
-   * though the recovery attempt is a DPS registration. The ladder scope is
-   * separate and lives in retry_attempt[] above. */
+   * a hub failure retried as a registration is still a HUB session going
+   * down. The ladder scope is separate and lives in retry_attempt[] above. */
   set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+}
+
+/** @brief Retry schedule for identity recovery: its own policy, or
+ * reconnection_policy when that is zeroed. */
+static const az_iot_retry_policy* identity_recovery_policy(const az_iot_connection_client* c)
+{
+  return az_iot_retry_policy_is_enabled(&c->opts.identity_recovery.policy)
+      ? &c->opts.identity_recovery.policy
+      : &c->opts.reconnection_policy;
+}
+
+/** @brief End of the active episode's max_duration_seconds; 0 when unbounded
+ * or no episode is active. */
+static uint64_t identity_recovery_deadline_ms(const az_iot_connection_client* c)
+{
+  uint32_t s = c->opts.identity_recovery.max_duration_seconds;
+  return (c->identity_recovery_active && s != 0)
+      ? c->identity_recovery_started_ms + (uint64_t)s * 1000u
+      : 0u;
+}
+
+/** @brief Whether the active episode's max_duration_seconds has passed. */
+static bool identity_recovery_expired(const az_iot_connection_client* c)
+{
+  uint64_t deadline = identity_recovery_deadline_ms(c);
+  return deadline != 0 && az_iot_time_mono_ms() >= deadline;
+}
+
+/** @brief End identity recovery: FAULTED on @p scope, and on the other scope
+ * if it is waiting, with the refusal that started the episode as the reason. */
+static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "identity recovery duration spent; stopping");
+  c->reconnect_due_ms = 0;
+  c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
+  c->recovery_report.attempt = c->identity_retry_attempt;
+  c->recovery_report.delay_ms = 0;
+  c->recovery_report.reprovisions = false;
+  c->recovery_report.staged = true;
+  fault_retry_scopes(c, scope, c->identity_recovery_reason);
+}
+
+/* Retry after the hub refused the identity.
+ *
+ * A refusal does not say whether the device is disabled, its credential
+ * revoked or its assignment moved. In RETRY_HUB mode the cached hub is retried:
+ * no DPS registration and no new certificate. In REPROVISION mode
+ * on_mqtt_event() has already raised needs_reprovision for a CONNACK refusal,
+ * and the same ladder paces the registrations. The ladder is not reset by a
+ * successful registration, so DPS-accept / hub-reject cycles stay bounded by
+ * max_attempts and max_duration_seconds. */
+static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_result reason)
+{
+  uint64_t now = az_iot_time_mono_ms();
+
+  /* The hub answered, so it is not unreachable. */
+  c->consecutive_hub_connect_failures = 0;
+  if (!c->identity_recovery_active)
+  {
+    c->identity_recovery_active = true;
+    c->identity_recovery_started_ms = now;
+    c->identity_recovery_reason = reason;
+  }
+
+  uint32_t delay = 0;
+  bool retry = !c->user_close && az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
+      && c->opts.identity_recovery.mode != AZ_IOT_IDENTITY_RECOVERY_NONE;
+  uint64_t deadline = identity_recovery_deadline_ms(c);
+  if (retry
+      && !az_iot_retry_policy__next(
+          identity_recovery_policy(c), &c->identity_retry_attempt, &c->rng_state, &delay))
+  {
+    retry = false;
+  }
+  /* No attempt is scheduled to start at or past the deadline. */
+  if (retry && deadline != 0 && now + delay >= deadline)
+  {
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "identity recovery duration spent; stopping");
+    retry = false;
+  }
+
+  c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
+  c->recovery_report.attempt = c->identity_retry_attempt;
+  c->recovery_report.delay_ms = retry ? delay : 0u;
+  c->recovery_report.reprovisions = retry && c->needs_reprovision;
+  c->recovery_report.staged = true;
+  if (!retry)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "hub refused the identity (%s); identity recovery stopped after %u attempt(s)",
+        az_iot_result_to_string(reason),
+        (unsigned)c->identity_retry_attempt);
+    fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+    return;
+  }
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "hub refused the identity (%s); %s in %u ms (attempt %u)",
+      az_iot_result_to_string(reason),
+      c->needs_reprovision ? "re-provisioning" : "retrying the hub",
+      (unsigned)delay,
+      (unsigned)c->identity_retry_attempt);
+  c->reconnect_due_ms = now + delay;
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+}
+
+/* In REPROVISION mode a CONNACK refusal makes the next attempt (or open())
+ * a DPS registration. An MQTT 5 DISCONNECT refusal does not, as before. */
+static void note_identity_refusal(az_iot_connection_client* c, az_iot_result status)
+{
+  if (status == AZ_IOT_ERR_IDENTITY_REJECTED
+      && c->opts.identity_recovery.mode == AZ_IOT_IDENTITY_RECOVERY_REPROVISION && dps_configured(c)
+      && !c->user_close)
+  {
+    c->needs_reprovision = true;
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1134,9 +1372,9 @@ static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_
   uint64_t due = c->dps_user_retry._internal.due_ms;
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "dps session retry %u in %lu ms",
+      "dps session retry %u in %llu ms",
       (unsigned)c->dps_user_retry._internal.attempt,
-      (unsigned long)(due > now ? due - now : 0u));
+      (unsigned long long)(due > now ? due - now : 0u));
 }
 
 static bool dps_refs_held(const az_iot_connection_client* c)
@@ -2036,11 +2274,7 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  const char* endpoint = c->opts.dps.global_endpoint;
-  if (!is_nonempty_cstr(endpoint))
-  {
-    endpoint = "global.azure-devices-provisioning.net";
-  }
+  const char* endpoint = dps_endpoint(c);
 
   az_span ep_span = az_span_create_from_str((char*)(uintptr_t)endpoint);
   az_span scope_span = az_span_create_from_str((char*)(uintptr_t)c->opts.dps.id_scope);
@@ -2313,6 +2547,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       if (retry_after_secs > 0 && c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
       {
         uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
+        uint64_t identity_deadline = identity_recovery_deadline_ms(c);
+        if (identity_deadline != 0 && floor_ms >= identity_deadline)
+        {
+          /* Honoring the retry-after would start past max_duration_seconds. */
+          stop_identity_recovery(c, AZ_IOT_CONN_SCOPE_DPS);
+          return;
+        }
         if (c->reconnect_due_ms < floor_ms)
         {
           AZ_IOT_LOG_WARNF(
@@ -2420,18 +2661,30 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       c->dps_assigned_device_id);
   drop_subscriptions_from_other_generations(c);
   c->dps_phase = DPS_PHASE_NONE;
+  /* This registration satisfies any re-provision asked for while it ran. */
+  c->needs_reprovision = false;
 
   /* Registration succeeded, so BOTH ladders start over: the DPS one because it
    * has done its job, and the hub one because this is a fresh assignment --
    * the attempts that failed against the previous hub say nothing about the
    * one just handed to us, and making the first connect to it wait at the
-   * old ladder's cap would be backoff for a failure that never happened. */
+   * old ladder's cap would be backoff for a failure that never happened.
+   *
+   * The identity recovery ladder is NOT reset: a hub that keeps refusing the
+   * device after every registration must still exhaust it. */
   c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
 
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  /* The assignment is kept, but no hub attempt starts past the bound. */
+  if (identity_recovery_expired(c))
+  {
+    stop_identity_recovery(c, AZ_IOT_CONN_SCOPE_HUB);
+    return;
+  }
 
   r = start_connect_attempt(c);
   if (r != AZ_IOT_OK)
@@ -3043,35 +3296,14 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       else
       {
-        /* An identity rejection is not a transient transport failure: the
-         * broker has refused this client id / credential, so retrying the same
-         * one cannot succeed. When the device provisions through DPS, ask DPS
-         * for a fresh assignment instead -- that is the whole reason the
-         * adapter contract maps these CONNACK codes to a distinct result. When
-         * a policy is configured the retry is scheduled through it, so backoff
-         * and max_attempts continue to bound it (a device whose enrollment has
-         * been deleted must not hammer DPS either).
+        /* An identity rejection is not a transient transport failure, and it
+         * does not say why the identity was refused. apply_deferred() routes
+         * it to schedule_identity_recovery() and the identity ladder. In
+         * REPROVISION mode the retry is a DPS registration.
          *
-         * NOT gated on az_iot_retry_policy_is_enabled(). It used to be, on the reasoning
-         * that only the RECONNECTING branch of do_work() consumed the flag, so
-         * with no policy nothing would act on it. That is no longer true:
-         * open() consumes it as well, and routes to DPS even when a hub is
-         * cached. So with retries disabled the rejection still faults -- the
-         * application is still the one that decides -- but the verdict is
-         * remembered, and the next open() asks DPS rather than walking back
-         * into the hub that just refused this identity.
-         *
-         * The max_hub_connect_attempts_before_reprovision trigger is NOT
-         * decoupled with it, deliberately: that one counts consecutive
-         * automatic retries, and with retries disabled there is no such run to
-         * count. Each open() is a fresh decision by the application. */
-        if (evt->status == AZ_IOT_ERR_IDENTITY_REJECTED && dps_configured(c) && !c->user_close)
-        {
-          AZ_IOT_LOG_WARN(
-              AZ_IOT_LOG_COMPONENT_CONNECTION,
-              "connack: identity rejected; re-provisioning through DPS");
-          c->needs_reprovision = true;
-        }
+         * That is recorded here rather than in the scheduler so that, with
+         * retries disabled, the next open() still honours it. */
+        note_identity_refusal(c, evt->status);
         c->deferred
             = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
             ? DEFER_RECONNECT
@@ -3081,9 +3313,17 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
 
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
-      if (c->user_close || !az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
+      /* An mqttv5 Not authorized DISCONNECT is an identity refusal too. */
+      note_identity_refusal(c, evt->status);
+      if (c->user_close)
       {
         c->deferred = DEFER_IDLE;
+        c->deferred_reason = evt->status;
+      }
+      else if (!az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
+      {
+        /* A refusal is a failure, not a clean end of session. */
+        c->deferred = reason_is_identity_refusal(evt->status) ? DEFER_FAULT : DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
       else
@@ -3364,6 +3604,7 @@ static void apply_deferred(az_iot_connection_client* c)
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
       c->reconnect_due_ms = 0;
+      reset_identity_recovery(c);
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
     default:
@@ -3498,6 +3739,8 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
   opts.reconnection_policy = az_iot_connection_client_get_default_retry_policy();
   opts.dps.max_hub_connect_attempts_before_reprovision
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
+  opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
+  opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
   return opts;
 }
 
@@ -4045,13 +4288,15 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  reset_identity_recovery(client);
   dps_user_retry_reset(client);
   /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
    * intent -- "the cached assignment is no good, ask DPS again" -- set by an
-   * identity rejection, by the unreachable-hub threshold, or by an assignment
-   * this client refused. Clearing it would make close() + open() reconnect to
-   * exactly the hub that was rejected or unreachable, because the cached host
-   * is still set. It is consumed by the DPS route below. */
+   * identity rejection in REPROVISION mode, by the unreachable-hub
+   * threshold, by an assignment this client refused, or by
+   * az_iot_connection_client_request_reprovision(). Clearing it would make
+   * close() + open() reconnect to the hub that was given up on, because the
+   * cached host is still set. It is consumed by the DPS route below. */
 
   /* --- MQTTv5 mock bypass: when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set,
    * skip DPS and connect directly to the mock MQTTv5 (MQTT v5). ---
@@ -4235,6 +4480,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
+    reset_identity_recovery(client);
     client->user_close = false;
     settle_all_scopes_to_idle(client);
     return AZ_IOT_OK;
@@ -4260,6 +4506,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
+    reset_identity_recovery(client);
     client->user_close = false;
     /* needs_reprovision survives on purpose: it says the cached assignment is
      * no good, which a close() does not change. Clearing it here would let the
@@ -4281,6 +4528,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
     client->reconnect_due_ms = 0;
+    reset_identity_recovery(client);
     /* needs_reprovision survives, as in the FAULTED branch above. */
     client->user_close = false;
     settle_all_scopes_to_idle(client);
@@ -4293,6 +4541,36 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
     return r;
+  }
+  return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result
+az_iot_connection_client_request_reprovision(az_iot_connection_client* client)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!dps_configured(client) || client->opts.dps.provision_only)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  /* A registration already in flight satisfies the request. */
+  if (client->dps_registration_ref)
+  {
+    return AZ_IOT_OK;
+  }
+  client->needs_reprovision = true;
+  /* A pending hub retry, possibly an hour away on the identity ladder, runs on
+   * the next do_work(). A pending registration retry (DPS:RECONNECTING) keeps
+   * its schedule: it carries the DPS backoff and any service retry-after. */
+  if (client->reconnect_due_ms != 0
+      && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+      && client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_RECONNECTING)
+  {
+    uint64_t now = az_iot_time_mono_ms();
+    client->reconnect_due_ms = now ? now : 1u;
   }
   return AZ_IOT_OK;
 }
@@ -4359,6 +4637,16 @@ az_iot_result az_iot_connection_client_do_work(
 
   if (client->dps_mqtt != NULL)
   {
+    /* A registration still running when identity recovery's duration is spent
+     * is abandoned before HOLD or POLLING can publish again. The failure
+     * path faults it through schedule_reconnect(). */
+    if (client->dps_registration_ref && !client->dps_pending_finalize
+        && identity_recovery_expired(client))
+    {
+      dps_finalize(client, AZ_IOT_ERR_TIMEOUT, false);
+      client->dps_phase = DPS_PHASE_DONE;
+    }
+
     /* Leave the pre-registration hold once every holder has released, or once
      * the deadline expires. Expiry is not a failure: the hold is advisory, and
      * a feature client must never be able to stop a device provisioning. */
@@ -4550,11 +4838,22 @@ az_iot_result az_iot_connection_client_do_work(
   {
     az_iot_result cr;
     az_iot_connection_scope attempted;
+    /* Checked again here: do_work() may run well after the due time. */
+    if (identity_recovery_expired(client))
+    {
+      stop_identity_recovery(
+          client,
+          client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+              ? AZ_IOT_CONN_SCOPE_HUB
+              : AZ_IOT_CONN_SCOPE_DPS);
+      return r;
+    }
     client->reconnect_due_ms = 0;
     if (client->needs_reprovision)
     {
-      /* The hub refused this identity, or this device has not registered yet;
-       * go to DPS rather than reconnecting to a credential that was rejected.
+      /* A re-provision was asked for (REPROVISION mode, the unreachable-hub
+       * threshold, the application), or this device has not registered yet;
+       * go to DPS rather than to the cached hub.
        *
        * The demand is cleared before the attempt ONLY when there is a cached
        * assignment to fall back to. That fallback exists so a failing

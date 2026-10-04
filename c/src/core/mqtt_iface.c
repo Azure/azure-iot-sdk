@@ -29,7 +29,7 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 /* MQTT 5 CONNACK reason codes (spec 3.2.2.2) that reject the identity. 0x86 is
  * included alongside the three the core needs because it is the v5 spelling of
  * v3.1.1's code 4, and treating the same refusal differently per protocol
- * version would make the re-provisioning trigger depend on the hub flavor. */
+ * version would make identity recovery depend on the hub flavor. */
 #define CONNACK_V5_CLIENT_ID_NOT_VALID 0x85
 #define CONNACK_V5_BAD_CREDENTIALS 0x86
 #define CONNACK_V5_NOT_AUTHORIZED 0x87
@@ -80,7 +80,7 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version versio
   /* A version this function does not know. The code cannot be interpreted --
    * the two schemes overlap numerically (2, 4 and 5 mean identity refusals in
    * v3.1.1 and something else entirely in v5) -- so guessing a scheme would be
-   * guessing whether to re-provision. Report a connection failure, which is the
+   * guessing whether the identity was refused. Report a connection failure, which is the
    * conservative half of the split: a device retries instead of abandoning
    * credentials that may be perfectly good.
    *
