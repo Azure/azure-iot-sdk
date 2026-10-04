@@ -3745,16 +3745,24 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
    * MQTTv5 does not use the MQTTv3 username format. */
   if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
   {
-    if (ensure_hub_client(c))
+    /* IoT Hub requires the username: fail locally rather than CONNECT without it. */
+    if (!ensure_hub_client(c))
     {
-      size_t ulen = 0;
-      az_result ar = az_iot_hub_client_get_user_name(
-          &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen);
-      if (az_result_succeeded(ar))
-      {
-        copts.username = c->hub_username;
-      }
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "invalid host, client ID or model ID");
+      mc->iface->destroy(mc);
+      return AZ_IOT_ERR_INVALID_ARG;
     }
+    size_t ulen = 0;
+    if (az_result_failed(az_iot_hub_client_get_user_name(
+            &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen)))
+    {
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "AZ_IOT_MQTT_USERNAME_BUF is too small for the MQTTv3 CONNECT username");
+      mc->iface->destroy(mc);
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    copts.username = c->hub_username;
   }
   else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
   {

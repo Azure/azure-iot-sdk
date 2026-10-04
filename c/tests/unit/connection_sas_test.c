@@ -502,17 +502,33 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
 static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
 {
   fixture* fx = (fixture*)*state;
-  static char long_id[300]; /* host + ID beyond 256 characters */
-  memset(long_id, 'a', sizeof(long_id) - 1u);
-  long_id[sizeof(long_id) - 1u] = '\0';
   az_iot_connection_client_options opts = hub_sas_options();
-  opts.client_id = long_id;
+  opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_KEY_MAX); /* smallest token area */
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
+}
+
+static void a_username_that_does_not_fit_fails_the_attempt(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char long_id[AZ_IOT_MQTT_USERNAME_BUF];
+  memset(long_id, 'a', sizeof(long_id) - 1u);
+  long_id[sizeof(long_id) - 1u] = '\0';
+  az_iot_test_provider provider;
+  az_iot_test_provider_init(&provider, "provider-ca.pem");
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.primary_key_base64 = NULL;
+  opts.certificate_provider = &provider.base;
+  opts.client_id = long_id;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void the_token_is_wiped_once_the_adapter_has_the_connect(void** state)
@@ -686,6 +702,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_device_id_is_url_encoded_in_the_token, setup, teardown),
     cmocka_unit_test(the_token_size_macro_is_enough_for_the_worst_case),
     cmocka_unit_test_setup_teardown(a_token_that_does_not_fit_fails_and_is_wiped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_username_that_does_not_fit_fails_the_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_token_is_wiped_once_the_adapter_has_the_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(sas_keys_need_a_large_enough_buffer, setup, teardown),
