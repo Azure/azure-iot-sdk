@@ -95,13 +95,28 @@ void az_iot_log_emit(
   {
     return;
   }
+  msg = log_text_or(msg, "");
+  /* Bound as emitf() does, so every sink sees the same limit. Copied only when
+   * it does not fit. */
+  char cut[AZ_IOT_LOG_MESSAGE_MAX];
+  size_t n = 0u;
+  while (n < sizeof(cut) && msg[n] != '\0')
+  {
+    ++n;
+  }
+  if (n == sizeof(cut))
+  {
+    memcpy(cut, msg, sizeof(cut) - 1u);
+    mark_truncated(cut, sizeof(cut));
+    msg = cut;
+  }
   s_global_sink.sink(
       s_global_sink.user_ctx,
       level,
       log_text_or(component, "?"),
       log_text_or(file, "?"),
       line,
-      log_text_or(msg, ""));
+      msg);
 }
 
 void az_iot_log_emitf(

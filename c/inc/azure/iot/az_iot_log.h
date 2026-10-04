@@ -95,10 +95,10 @@ extern "C"
    */
   az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level);
 
-/* Maximum length, terminator included, of a message built by
- * az_iot_log_emitf(). Longer messages are truncated rather than dropped, and end
- * in "..." so the cut is visible. Override to trade stack footprint for
- * detail; at least 16. */
+/* Maximum length, terminator included, of a message any sink receives, from
+ * az_iot_log_emit() or az_iot_log_emitf(). Longer messages are truncated rather
+ * than dropped, and end in "..." so the cut is visible. Override to trade stack
+ * footprint for detail; at least 16. */
 #ifndef AZ_IOT_LOG_MESSAGE_MAX
 #define AZ_IOT_LOG_MESSAGE_MAX 384
 #endif

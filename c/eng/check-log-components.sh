@@ -4,8 +4,9 @@
 #
 # Fails when an SDK log call in c/src or c/adapters does not pass an SDK
 # component (an AZ_IOT_LOG_COMPONENT_* macro other than _APP, defined in
-# inc/azure/iot/az_iot_log.h), or when its message still starts with
-# "<component>: ", which the component argument replaces. See c/docs/logging.md.
+# inc/azure/iot/az_iot_log.h), when its message is not a string literal, or when
+# the message still starts with "<component>: ", which the component argument
+# replaces. See c/docs/logging.md.
 
 set -euo pipefail
 
@@ -54,11 +55,14 @@ for path in sorted(files):
             bad.append(f"  {rel}:{line}: component '{comp[:40]}' is not an SDK AZ_IOT_LOG_COMPONENT_* macro")
             continue
         lit = literal.match(text, msg_start)
-        if lit and lit.group(1).startswith(sdk[comp] + ": "):
+        if lit is None:
+            bad.append(f"  {rel}:{line}: message is not a string literal, so it cannot be checked")
+            continue
+        if lit.group(1).startswith(sdk[comp] + ": "):
             bad.append(f"  {rel}:{line}: message repeats its component: \"{lit.group(1)[:50]}\"")
 
 if bad:
-    print("Log calls with a missing, unknown or repeated component:\n")
+    print("Log calls with a missing, unknown or repeated component, or a non-literal message:\n")
     print("\n".join(bad))
     print(f"\n{len(bad)} call(s). SDK components: {', '.join(sorted(sdk.values()))}.")
     print("See c/docs/logging.md.")

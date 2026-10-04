@@ -172,6 +172,27 @@ static void an_oversized_message_is_truncated_not_dropped(void** state)
   assert_memory_equal(g_capture.msg + AZ_IOT_LOG_MESSAGE_MAX - 4, "...", 3);
 }
 
+/* emit() bounds a plain message as emitf() does, so a custom sink sees the
+ * same limit either way. */
+static void an_oversized_plain_message_is_truncated_for_every_sink(void** state)
+{
+  (void)state;
+  char big[AZ_IOT_LOG_MESSAGE_MAX * 2];
+  memset(big, 'p', sizeof(big) - 1);
+  big[sizeof(big) - 1] = '\0';
+
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, big);
+
+  assert_int_equal(g_capture.count, 1);
+  assert_int_equal(strlen(g_capture.msg), AZ_IOT_LOG_MESSAGE_MAX - 1);
+  assert_memory_equal(g_capture.msg + AZ_IOT_LOG_MESSAGE_MAX - 4, "...", 3);
+
+  /* One byte under the limit is passed through untouched. */
+  big[AZ_IOT_LOG_MESSAGE_MAX - 1] = '\0';
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, big);
+  assert_string_equal(g_capture.msg, big);
+}
+
 static void a_message_that_fits_is_not_marked(void** state)
 {
   (void)state;
@@ -765,6 +786,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(every_level_is_routed, setup, teardown),
     cmocka_unit_test_setup_teardown(levels_below_the_minimum_are_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(an_oversized_message_is_truncated_not_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_plain_message_is_truncated_for_every_sink, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_that_fits_is_not_marked, setup, teardown),
     cmocka_unit_test_setup_teardown(a_precision_bounded_argument_is_not_over_read, setup, teardown),
     cmocka_unit_test_setup_teardown(
