@@ -365,9 +365,9 @@ extern "C"
    *
    * The distinction that matters to the core is identity-versus-transport: codes
    * that mean "this client id / credential / authorization is not acceptable"
-   * become AZ_IOT_ERR_IDENTITY_REJECTED, which is what makes the SDK
-   * re-provision through DPS instead of retrying an identity the broker has
-   * already refused. Everything else stays AZ_IOT_ERR_MQTT and is retried.
+   * become AZ_IOT_ERR_IDENTITY_REJECTED, which the SDK recovers from on
+   * opts.identity_recovery instead of on the ordinary reconnection policy.
+   * Everything else stays AZ_IOT_ERR_MQTT and is retried.
    *
    * `connack_code` is the value carried in the CONNACK packet: a v3.1.1 return
    * code (1..5) or a v5 reason code (>= 0x80). 0 means success. A negative value

@@ -131,6 +131,12 @@ az_iot_add_cmocka_test(az_iot_tests_connection_reconnect unit/connection_reconne
 target_link_libraries(az_iot_tests_connection_reconnect PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_connection_reconnect PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+# Recovery after the hub refuses the identity (opts.identity_recovery).
+az_iot_add_cmocka_test(az_iot_tests_connection_identity_recovery
+    unit/connection_identity_recovery_test.c)
+target_link_libraries(az_iot_tests_connection_identity_recovery PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_identity_recovery PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_env unit/env_test.c)
 target_include_directories(az_iot_tests_env PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 if(UNIX)
