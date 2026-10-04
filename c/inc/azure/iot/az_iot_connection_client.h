@@ -328,8 +328,9 @@ extern "C"
    * source under the policy; one pass over all sources counts as one policy
    * attempt; with the policy disabled, open() still makes one full pass; the
    * source that connects is kept until rejected; when every source is
-   * rejected, the pass fails with AZ_IOT_ERR_IDENTITY_REJECTED (retriable)
-   * and the hub re-provisions through DPS. Today the secondary key is
+   * rejected, the pass fails with AZ_IOT_ERR_IDENTITY_REJECTED and
+   * identity_recovery applies to the pass, not to each source. Today the
+   * secondary key is
    * decoded and kept but not used.
    *
    * Keys are copied and decoded by init(); later changes to the strings have
