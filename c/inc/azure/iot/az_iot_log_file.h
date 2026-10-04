@@ -55,6 +55,7 @@ extern "C"
     {
       void* stream;
       bool open;
+      bool recover_staged;
       uint32_t bytes;
       az_iot_log_file_sink_options options;
       long lock;

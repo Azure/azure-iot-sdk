@@ -49,12 +49,12 @@ az_iot_log_file_sink_close(&file_sink);
 The built-in sinks write:
 
 ```text
-18:16:17.408Z [INFO] [connection] [10294] [connection_client.c:3756] open: sdk=1.0.0-preview route=dps ...
+2026-10-03T18:16:17.408Z [INFO] [connection] [10294] [connection_client.c:3756] open: sdk=1.0.0-preview route=dps ...
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `18:16:17.408Z` | UTC time of day, milliseconds. No date: use the file's timestamps or log one from the application (`app` component) at start. |
+| `2026-10-03T18:16:17.408Z` | UTC wall-clock time (ISO 8601), milliseconds. A device without a set clock shows 1970. |
 | `[INFO]` | Level. |
 | `[connection]` | Component. See [Components](#components). |
 | `[10294]` | OS thread id (Windows, Linux); omitted elsewhere. MQTT adapter threads differ from the application's. |
@@ -72,7 +72,7 @@ terminator). A longer one is cut to that length and ends in `...`.
 | Level | Use | Contains |
 | --- | --- | --- |
 | `ERROR`, `WARN` | Always on | Failures, and state changes caused by a failure, with the reason and the service or transport error code. |
-| `INFO` | Default; enough for most support cases | Configuration at `open()`, every connection state change, each scheduled retry and its delay, the DPS assignment. |
+| `INFO` | Default; enough for most support cases | Configuration at `open()`, every connection state change, each scheduled retry and its delay (connection and provisioning-session), the DPS assignment. |
 | `DEBUG` | Reproducing an issue | Protocol steps, TLS material paths. |
 | `TRACE` | Only when asked | Message bodies, such as software update payloads, and Paho's trace (`AZ_IOT_PAHO_TRACE`). Review before sharing. |
 

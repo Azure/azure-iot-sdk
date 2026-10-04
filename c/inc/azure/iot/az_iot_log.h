@@ -63,8 +63,8 @@ extern "C"
    * @brief Built-in sink that writes one line per message to stderr.
    *
    * Line format, shared with the file sink (az_iot_log_file.h):
-   * `HH:MM:SS.mmmZ [<LEVEL>] [<component>] [<thread id>] [<file>:<line>] <message>`,
-   * UTC time of day. The thread id is omitted where the platform has none.
+   * `<UTC ISO 8601 time> [<LEVEL>] [<component>] [<thread id>] [<file>:<line>] <message>`.
+   * The thread id is omitted where the platform has none.
    *
    * @param[in] min_level Lowest level written.
    * @return Sink to pass to az_iot_log_set_global_sink().

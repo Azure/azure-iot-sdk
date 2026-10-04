@@ -282,24 +282,21 @@ static void file_sink_writes_the_documented_line_format(void** state)
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  /* 18:04:05.123Z [INFO] [app] [<tid>] [log_test.c:<line>] hello */
-  assert_true(strlen(text) > 14);
-  for (size_t i = 0; i < 12; ++i)
+  /* 2026-10-04T15:06:58.703Z [INFO] [app] [<tid>] [log_test.c:<line>] hello */
+  static const char shape[] = "dddd-dd-ddTdd:dd:dd.ddd";
+  assert_true(strlen(text) > sizeof(shape));
+  for (size_t i = 0; i < sizeof(shape) - 1; ++i)
   {
-    if (i == 2 || i == 5)
-    {
-      assert_int_equal(':', text[i]);
-    }
-    else if (i == 8)
-    {
-      assert_int_equal('.', text[i]);
-    }
-    else
+    if (shape[i] == 'd')
     {
       assert_true(text[i] >= '0' && text[i] <= '9');
     }
+    else
+    {
+      assert_int_equal(shape[i], text[i]);
+    }
   }
-  assert_memory_equal(text + 12, "Z [INFO] [app] ", 15);
+  assert_memory_equal(text + 23, "Z [INFO] [app] ", 15);
   /* File name without its directory, in brackets with the line. */
   const char* where = strstr(text, "[log_test.c:");
   assert_non_null(where);
@@ -647,6 +644,57 @@ static void file_sink_recovers_a_leftover_staged_file_at_open(void** state)
   remove_log_files(path);
 }
 
+/* A recovery that cannot run at open is retried on every write until it does,
+ * even while the active file is below the rotation limit. */
+static void file_sink_retries_a_blocked_recovery_on_write(void** state)
+{
+  (void)state;
+  char path[256];
+  char oldest[300];
+  char inner[320];
+  char p[300];
+  char text[FILE_BUF];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  az_iot_log_file_sink_options o = az_iot_log_file_sink_options_default();
+  o.max_file_bytes = 100000;
+  o.max_files = 1;
+  temp_log_path(path, sizeof(path), "recblock");
+  remove_log_files(path);
+  rotated_path(p, sizeof(p), path, 0);
+  write_text(p, "leftover\n");
+  /* A non-empty directory as the only kept generation blocks the recovery. */
+  rotated_path(oldest, sizeof(oldest), path, 1);
+  make_dir(oldest);
+  assert_true(snprintf(inner, sizeof(inner), "%s/keep", oldest) > 0);
+  write_text(inner, "x");
+
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "blocked");
+  rotated_path(p, sizeof(p), path, 0);
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_string_equal(text, "leftover\n");
+
+  assert_int_equal(0, remove(inner));
+  remove_dir(oldest);
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "unblocked");
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+
+  assert_int_equal(-1, read_file(p, text, sizeof(text)));
+  rotated_path(p, sizeof(p), path, 1);
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_string_equal(text, "leftover\n");
+  assert_true(read_file(path, text, sizeof(text)) > 0);
+  assert_int_equal(2, count_lines(text));
+  assert_non_null(strstr(text, "] blocked\n"));
+  assert_non_null(strstr(text, "] unblocked\n"));
+
+  remove_log_files(path);
+}
+
 /* Logs one message through a fresh file sink and returns the message part. */
 static const char* log_one_to_file(const char* tag, const char* msg, char* text, size_t cap)
 {
@@ -822,6 +870,7 @@ int main(void)
         file_sink_restores_the_active_file_when_shifting_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_sink_recovers_a_leftover_staged_file_at_open, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_retries_a_blocked_recovery_on_write, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_escapes_control_characters, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_writes_and_escapes_the_component, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_never_splits_an_escape, setup, teardown),

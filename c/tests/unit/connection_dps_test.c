@@ -1447,6 +1447,50 @@ static void a_user_session_reopens_once_the_backoff_expires(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* Keeps the last INFO "dps session retry" line. */
+static void capture_session_retry(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  char* out = (char*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_INFO && strcmp(component, AZ_IOT_LOG_COMPONENT_CONNECTION) == 0
+      && strncmp(msg, "dps session retry ", 18) == 0)
+  {
+    size_t n = strlen(msg);
+    n = n < 127u ? n : 127u;
+    memcpy(out, msg, n);
+    out[n] = '\0';
+  }
+}
+
+/* A provisioning-session retry for its holders is visible at INFO, with its
+ * attempt and delay. */
+static void a_user_session_retry_is_logged(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  char logged[128] = { 0 };
+  az_iot_log_sink sink
+      = { .sink = capture_session_retry, .user_ctx = logged, .min_level = AZ_IOT_LOG_LEVEL_INFO };
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_log_set_global_sink(&sink);
+  fail_a_user_held_session(fx);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 1u);
+  assert_non_null(strstr(logged, "dps session retry 1 in "));
+  assert_non_null(strstr(logged, " ms"));
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* The delay climbs. A flat retry is still a herd; the whole point of routing
  * this through the configured policy is that it inherits the ladder. */
 static void repeated_user_session_failures_climb_the_ladder(void** state)
@@ -4005,6 +4049,7 @@ int main(void)
         a_failed_user_session_is_not_reopened_immediately, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_session_reopens_once_the_backoff_expires, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(a_user_session_retry_is_logged, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         repeated_user_session_failures_climb_the_ladder, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

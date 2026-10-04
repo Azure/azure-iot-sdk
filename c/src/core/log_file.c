@@ -238,6 +238,25 @@ static void file_rotate(az_iot_log_file_sink* fs)
   (void)file_reopen(fs);
 }
 
+/**
+ * @brief While recover_staged is set, place a leftover `<path>.0` as `<path>.1`;
+ * clear the flag once no `<path>.0` remains. Lock held.
+ */
+static void file_recover_staged(az_iot_log_file_sink* fs)
+{
+  char staged[AZ_IOT_LOG_FILE_PATH_MAX];
+  if (!fs->_internal.recover_staged)
+  {
+    return;
+  }
+  if (rotated_name(staged, fs->_internal.path, 0u) && file_exists(staged))
+  {
+    file_rotate(fs);
+  }
+  fs->_internal.recover_staged
+      = !rotated_name(staged, fs->_internal.path, 0u) || file_exists(staged);
+}
+
 /** @brief az_iot_log_sink_callback for the file sink; @p user_ctx is the az_iot_log_file_sink. */
 static void file_sink_fn(
     void* user_ctx,
@@ -259,7 +278,8 @@ static void file_sink_fn(
   /* A failed reopen (rotation, or the file was removed) is retried here. */
   if (fs->_internal.open && (fs->_internal.stream != NULL || file_reopen(fs)))
   {
-    if (fs->_internal.bytes > 0u
+    file_recover_staged(fs);
+    if (fs->_internal.stream != NULL && fs->_internal.bytes > 0u
         && (uint64_t)fs->_internal.bytes + n > fs->_internal.options.max_file_bytes)
     {
       file_rotate(fs);
@@ -320,15 +340,12 @@ AZ_NODISCARD az_iot_result az_iot_log_file_sink_open(
     return AZ_IOT_ERR_NOT_FOUND;
   }
   /* A "<path>.0" left by an interrupted rotation is placed as "<path>.1" now,
-   * not when the active file next fills. */
-  char staged[AZ_IOT_LOG_FILE_PATH_MAX];
-  if (rotated_name(staged, file_sink->_internal.path, 0u) && file_exists(staged))
+   * not when the active file next fills; retried on each write until it is. */
+  file_sink->_internal.recover_staged = true;
+  file_recover_staged(file_sink);
+  if (file_sink->_internal.stream == NULL)
   {
-    file_rotate(file_sink);
-    if (file_sink->_internal.stream == NULL)
-    {
-      return AZ_IOT_ERR_NOT_FOUND;
-    }
+    return AZ_IOT_ERR_NOT_FOUND;
   }
   file_sink->_internal.open = true;
 

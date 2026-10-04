@@ -6,7 +6,7 @@
 
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
-  `HH:MM:SS.mmmZ [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
+  `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
 - Breaking: log calls and sinks take a component. `AZ_IOT_LOG_*(component, msg)`,
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a

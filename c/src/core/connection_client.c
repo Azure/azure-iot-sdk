@@ -1130,6 +1130,13 @@ static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_
     az_iot_retry_state__defer(
         &c->dps_user_retry, az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull);
   }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t due = c->dps_user_retry._internal.due_ms;
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "dps session retry %u in %lu ms",
+      (unsigned)c->dps_user_retry._internal.attempt,
+      (unsigned long)(due > now ? due - now : 0u));
 }
 
 static bool dps_refs_held(const az_iot_connection_client* c)
