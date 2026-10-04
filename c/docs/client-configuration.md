@@ -138,7 +138,10 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_MAX_INBOUND_HANDLERS` | 8 | Inbound topic handlers in one dispatch table. |
 | `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. |
-| `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated. |
+| `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated and end in `...`. |
+| `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. |
+| `AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES` | 1 MiB | Default size at which the file sink rotates. |
+| `AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES` | 3 | Default number of rotated log files kept. |
 
 #### In-flight QoS 1 publishes
 
@@ -196,7 +199,10 @@ az_iot_log_set_global_sink(&sink);
 ```
 
 Levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF`. A custom sink is an
-`az_iot_log_sink` with your callback, a context pointer and a minimum level. See
+`az_iot_log_sink` with your callback, a context pointer and a minimum level. A rotating
+file sink is built in (`az_iot_log_file_sink_open()`,
+[az_iot_log_file.h](../inc/azure/iot/az_iot_log_file.h)). See [Logging](logging.md) for the
+line format, component prefixes and what to collect for support, and
 [az_iot_log.h](../inc/azure/iot/az_iot_log.h).
 
 ### Environment variables

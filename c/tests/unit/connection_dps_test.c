@@ -22,6 +22,8 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "support/test_provider.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
@@ -1477,6 +1479,50 @@ static void a_user_session_reopens_once_the_backoff_expires(void** state)
   /* Consumed on firing, so it cannot authorize a second attempt. */
   assert_int_equal(fx->client->dps_user_retry._internal.due_ms, 0);
 
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* Keeps the last INFO "dps session retry" line. */
+static void capture_session_retry(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  char* out = (char*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_INFO && strcmp(component, AZ_IOT_LOG_COMPONENT_CONNECTION) == 0
+      && strncmp(msg, "dps session retry ", 18) == 0)
+  {
+    size_t n = strlen(msg);
+    n = n < 127u ? n : 127u;
+    memcpy(out, msg, n);
+    out[n] = '\0';
+  }
+}
+
+/* A provisioning-session retry for its holders is visible at INFO, with its
+ * attempt and delay. */
+static void a_user_session_retry_is_logged(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  char logged[128] = { 0 };
+  az_iot_log_sink sink
+      = { .sink = capture_session_retry, .user_ctx = logged, .min_level = AZ_IOT_LOG_LEVEL_INFO };
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+
+  az_iot_log_set_global_sink(&sink);
+  fail_a_user_held_session(fx);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(fx->client->dps_user_retry._internal.attempt, 1u);
+  assert_non_null(strstr(logged, "dps session retry 1 in "));
+  assert_non_null(strstr(logged, " ms"));
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
@@ -3538,6 +3584,61 @@ static void the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client(voi
   (void)az_iot_connection_client_close(fx->client);
 }
 
+/* Keeps the last INFO "open:" summary. */
+static void capture_open_summary(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  char* out = (char*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_INFO && strcmp(component, AZ_IOT_LOG_COMPONENT_CONNECTION) == 0
+      && strncmp(msg, "open: ", 6) == 0)
+  {
+    size_t n = strlen(msg);
+    n = n < 511u ? n : 511u;
+    memcpy(out, msg, n);
+    out[n] = '\0';
+  }
+}
+
+/* The open summary reports what the mock bypass connects to, not the DPS
+ * configuration it replaced. */
+static void the_open_summary_reports_the_mqtt_v5_mock_bypass(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  char summary[512] = { 0 };
+  az_iot_log_sink sink
+      = { .sink = capture_open_summary, .user_ctx = summary, .min_level = AZ_IOT_LOG_LEVEL_INFO };
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+#if defined(_MSC_VER)
+  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "mock.example:1883");
+#else
+  setenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "mock.example:1883", 1);
+#endif
+  az_iot_log_set_global_sink(&sink);
+  /* The fixture has no MQTT v5 factory, so the connect itself may fail. */
+  az_iot_result r = az_iot_connection_client_open(fx->client);
+  (void)r;
+  az_iot_log_set_global_sink(NULL);
+#if defined(_MSC_VER)
+  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "");
+#else
+  unsetenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
+#endif
+
+  assert_non_null(strstr(summary, " route=mock host=mock.example "));
+  assert_non_null(strstr(summary, " profile=mqttv5 "));
+  assert_null(strstr(summary, "route=dps"));
+  (void)az_iot_connection_client_close(fx->client);
+}
+
 /* close() from the DPS:CONNECTED observer. The announcement is deferred to the
  * pump so this frees an adapter whose process_loop has already returned;
  * announcing from the SUBACK handler frees it underneath itself. ASan proves
@@ -4000,6 +4101,7 @@ int main(void)
         a_failed_user_session_is_not_reopened_immediately, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_session_reopens_once_the_backoff_expires, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(a_user_session_retry_is_logged, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         repeated_user_session_failures_climb_the_ladder, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
@@ -4170,6 +4272,8 @@ int main(void)
         the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client,
         setup_with_reconnect,
         teardown),
+    cmocka_unit_test_setup_teardown(
+        the_open_summary_reports_the_mqtt_v5_mock_bypass, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         closing_from_the_dps_connected_callback_is_safe, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

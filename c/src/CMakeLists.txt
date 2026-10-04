@@ -3,6 +3,7 @@
 
 add_library(az_iot_core
     core/log.c
+    core/log_file.c
     core/result.c
     core/version.c
     core/mqtt_iface.c
