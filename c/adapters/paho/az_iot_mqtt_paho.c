@@ -24,6 +24,7 @@
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 

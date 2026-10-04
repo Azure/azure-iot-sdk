@@ -4,7 +4,7 @@
 #
 # Fails when an SDK log call in c/src or c/adapters does not pass an SDK
 # component (an AZ_IOT_LOG_COMPONENT_* macro other than _APP, defined in
-# inc/azure/iot/az_iot_log.h), when its message is not a string literal, or when
+# inc/azure/iot/az_iot_log_components.h), when its message is not a string literal, or when
 # the message still starts with "<component>: ", which the component argument
 # replaces. See c/docs/logging.md.
 
@@ -16,7 +16,7 @@ python3 - "${root_dir}" <<'PY'
 import glob, os, re, sys
 
 root = sys.argv[1]
-header = open(os.path.join(root, "inc", "azure", "iot", "az_iot_log.h"), encoding="utf-8").read()
+header = open(os.path.join(root, "inc", "azure", "iot", "az_iot_log_components.h"), encoding="utf-8").read()
 components = dict(re.findall(r'#define\s+(AZ_IOT_LOG_COMPONENT_\w+)\s+"([^"]+)"', header))
 sdk = {k: v for k, v in components.items() if k != "AZ_IOT_LOG_COMPONENT_APP"}
 

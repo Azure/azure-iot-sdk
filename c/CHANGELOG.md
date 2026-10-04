@@ -10,4 +10,4 @@
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
 - Breaking: log calls and sinks take a component. `AZ_IOT_LOG_*(component, msg)`,
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
-  `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros. See [docs/logging.md](docs/logging.md).
+  `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).

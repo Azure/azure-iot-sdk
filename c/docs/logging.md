@@ -64,7 +64,8 @@ The built-in sinks write:
 Control characters in the component and message are escaped (`\n`, `\r`, `\xNN`; tab is kept), so each message
 is one line. A custom sink receives them unescaped.
 
-A message longer than `AZ_IOT_LOG_MESSAGE_MAX` (384) is cut and ends in `...`.
+A message is at most `AZ_IOT_LOG_MESSAGE_MAX - 1` bytes (383 by default; the macro counts the
+terminator). A longer one is cut to that length and ends in `...`.
 
 ## Levels
 
@@ -82,7 +83,8 @@ For TLS or MQTT connection issues, set `AZ_IOT_PAHO_TRACE=protocol` and the sink
 
 Every log call passes a component, and every sink receives it as its own argument, so a sink can
 filter or route without parsing the message. The SDK's components are the `AZ_IOT_LOG_COMPONENT_*`
-macros in [az_iot_log.h](../inc/azure/iot/az_iot_log.h); compare with `strcmp()`.
+macros, all in [az_iot_log_components.h](../inc/azure/iot/az_iot_log_components.h); compare with
+`strcmp()`.
 
 | Component | Area |
 | --- | --- |

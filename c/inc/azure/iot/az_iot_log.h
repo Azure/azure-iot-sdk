@@ -23,37 +23,13 @@ extern "C"
     AZ_IOT_LOG_LEVEL_OFF
   } az_iot_log_level;
 
-/**
- * @name Log components
- * @brief Values of the @p component argument, one per SDK area. Compare them
- * with strcmp() to filter or route; AZ_IOT_LOG_COMPONENT_APP is for application
- * messages and is never used by the SDK.
- * @{
- */
-#define AZ_IOT_LOG_COMPONENT_APP "app"
-#define AZ_IOT_LOG_COMPONENT_CONNECTION "connection"
-#define AZ_IOT_LOG_COMPONENT_DPS "dps"
-#define AZ_IOT_LOG_COMPONENT_CERT "cert"
-#define AZ_IOT_LOG_COMPONENT_CERT_PEM "cert_pem"
-#define AZ_IOT_LOG_COMPONENT_SU "su"
-#define AZ_IOT_LOG_COMPONENT_PAHO "paho"
-#define AZ_IOT_LOG_COMPONENT_C2D "c2d"
-#define AZ_IOT_LOG_COMPONENT_MQTTV3_TELEMETRY "mqttv3_telemetry"
-#define AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN "mqttv3_twin"
-#define AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD "mqttv3_direct_method"
-#define AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD "mqttv3_file_upload"
-#define AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY "mqttv5_telemetry"
-#define AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN "mqttv5_twin"
-#define AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD "mqttv5_direct_method"
-  /** @} */
-
   /**
    * @brief Receives one log message.
    *
    * @param[in] user_ctx az_iot_log_sink::user_ctx.
    * @param[in] level Level.
-   * @param[in] component Area that logged it (an AZ_IOT_LOG_COMPONENT_* value
-   * for SDK messages). Never NULL.
+   * @param[in] component Area that logged it (for SDK messages, a value from
+   * az_iot_log_components.h). Never NULL.
    * @param[in] file Source file. Never NULL.
    * @param[in] line Source line.
    * @param[in] msg Message, unescaped. Never NULL.
@@ -140,8 +116,8 @@ extern "C"
  * The severity constants are spelled AZ_IOT_LOG_LEVEL_* precisely so that these
  * macro names stay free; nothing here shadows an enumerator.
  *
- * The first argument is the component, an AZ_IOT_LOG_COMPONENT_* value
- * (AZ_IOT_LOG_COMPONENT_APP in application code).
+ * The first argument is the component: an AZ_IOT_LOG_COMPONENT_* value from
+ * az_iot_log_components.h in SDK code, or any string in application code.
  *
  * WHY TWO FAMILIES. AZ_IOT_LOG_X takes a ready-made string; AZ_IOT_LOG_XF takes
  * a printf format and arguments. A single variadic family would be shorter to

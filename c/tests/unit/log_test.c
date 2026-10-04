@@ -31,6 +31,7 @@
 #endif
 
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_log_file.h"
 
 typedef struct capture
@@ -387,7 +388,7 @@ static void file_sink_marks_a_truncated_line(void** state)
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
-  /* emit() does not bound the message; the line formatter must. */
+  /* emit() cuts the message; the file line must keep the cut and its marker. */
   AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, big);
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
@@ -410,8 +411,8 @@ static const char* line_message(const char* text)
   return p + 2;
 }
 
-/* emit() is not bounded by emitf()'s buffer, so the sink enforces
- * AZ_IOT_LOG_MESSAGE_MAX itself, at the exact boundary. */
+/* emit() cuts a plain message at AZ_IOT_LOG_MESSAGE_MAX - 1 bytes; the file
+ * line keeps that exact boundary. */
 static void file_sink_bounds_a_plain_message_at_the_maximum(void** state)
 {
   (void)state;

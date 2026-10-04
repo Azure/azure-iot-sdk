@@ -24,6 +24,7 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log_components.h"
 
 #include "internal/mono_time.h"
 #include "../../src/features/su/internal/su_channel_internal.h"

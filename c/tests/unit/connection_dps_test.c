@@ -23,6 +23,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "support/test_provider.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"

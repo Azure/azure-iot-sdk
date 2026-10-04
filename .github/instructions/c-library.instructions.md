@@ -44,7 +44,7 @@ different output and will fight the gate.
 | Do not use | Use instead |
 |---|---|
 | `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`, `strncat`, `strtok` | `az_iot_span_writer` (`src/core/internal/span_writer.h`) |
-| `printf`, `fprintf`, `puts`, `fputs` | `AZ_IOT_LOG_*` / `AZ_IOT_LOG_*F` (`inc/azure/iot/az_iot_log.h`), first argument an `AZ_IOT_LOG_COMPONENT_*` macro |
+| `printf`, `fprintf`, `puts`, `fputs` | `AZ_IOT_LOG_*` / `AZ_IOT_LOG_*F` (`inc/azure/iot/az_iot_log.h`), first argument an `AZ_IOT_LOG_COMPONENT_*` macro (`inc/azure/iot/az_iot_log_components.h`) |
 | `malloc`, `calloc`, `realloc`, `free`, `strdup` | caller-provided `az_span`/array, or storage inside the caller-allocated client struct |
 
 `memcpy`, `strlen`, `strcmp`, `strncmp`, `strstr` are allowed - the span writer

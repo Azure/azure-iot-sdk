@@ -12,6 +12,7 @@
 
 #include "az_iot_paho_key_custody.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 
 #include <ctype.h>
 #include <stdlib.h>
