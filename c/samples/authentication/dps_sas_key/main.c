@@ -213,9 +213,20 @@ int main(void)
   sas.sas.primary_key_base64 = is_set(config.key) ? config.key : config.group_key;
   sas.sas.secondary_key_base64 = is_set(config.secondary_key) ? config.secondary_key : NULL;
   sas.sas.is_enrollment_group_key = is_set(config.group_key);
-  /* 0 (unset) selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects > 99. */
-  sas.sas.renewal_percent
-      = is_set(config.renewal_percent) ? (uint8_t)strtoul(config.renewal_percent, NULL, 10) : 0;
+  /* Unset: 0, which selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT. */
+  sas.sas.renewal_percent = 0;
+  if (is_set(config.renewal_percent))
+  {
+    char* end = NULL;
+    unsigned long pct = strtoul(config.renewal_percent, &end, 10);
+    if (*end != '\0' || pct < 1u || pct > 99u)
+    {
+      fprintf(stderr, "[dps_sas_key] AZ_IOT_SAS_RENEWAL_PERCENT must be 1-99\n");
+      config_release(&config);
+      return 1;
+    }
+    sas.sas.renewal_percent = (uint8_t)pct;
+  }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.client_id = config.reg_id;

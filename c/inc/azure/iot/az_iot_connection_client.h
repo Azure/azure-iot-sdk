@@ -193,10 +193,13 @@ extern "C"
    * @brief Credential a connection attempt used.
    *
    * Per role (DPS, hub), the sources configured are tried in this order,
-   * skipping any not set: X.509 certificates from
-   * az_iot_connection_client_options::certificate_provider (index 0, 1, ...),
-   * then the primary key, the secondary key and user_provided_token of
-   * az_iot_auth::sas. Setting only one of X.509 or SAS selects it alone.
+   * skipping any not set: the X.509 certificate from
+   * az_iot_connection_client_options::certificate_provider, then the primary
+   * key of az_iot_auth::sas. Setting only one of X.509 or SAS selects it alone.
+   *
+   * Not implemented yet: further provider certificates (a load() index, see
+   * docs/eng/certificate-management.md), the secondary key and
+   * user_provided_token as fallbacks.
    */
   typedef enum az_iot_auth_source
   {
@@ -744,9 +747,10 @@ extern "C"
     /**
      * @brief Trust anchors for every TLS connection, whatever the credential.
      * Set at most one of pem and path; init() fails with
-     * AZ_IOT_ERR_INVALID_ARG when both are set. Both NULL: the X.509
-     * provider's trusted CA if there is one, otherwise the adapter's default
-     * trust store.
+     * AZ_IOT_ERR_INVALID_ARG when both are set. Both NULL: the provider's
+     * trusted CA if there is one -- also for a SAS role, which takes it from
+     * a load() that returns AZ_IOT_ERR_NOT_FOUND with trusted_ca_* set --
+     * otherwise the adapter's default trust store.
      */
     struct
     {
@@ -890,8 +894,8 @@ extern "C"
     /** @brief The credential this event is about: the one that connected on
      * CONNECTED, the one rejected on a rejection. */
     az_iot_auth_source auth_source;
-    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index,
-     * below AZ_IOT_MAX_CERTS_PER_ROLE. */
+    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index.
+     * Always 0 until multiple certificates per role are implemented. */
     uint8_t x509_index;
   } az_iot_connection_state_event;
 
@@ -1078,9 +1082,9 @@ extern "C"
  */
 #define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
   (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
-/** @brief Most certificates the client loads from the provider per role
- * (indexes 0 to this - 1), even if the provider never returns
- * AZ_IOT_ERR_NOT_FOUND. At most 256. */
+/** @brief Reserved: most certificates the client will load from the provider
+ * per role once multiple certificates are implemented (indexes 0 to this - 1),
+ * even if the provider never returns AZ_IOT_ERR_NOT_FOUND. At most 256. */
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
