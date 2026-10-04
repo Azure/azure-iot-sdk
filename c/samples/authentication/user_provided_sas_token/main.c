@@ -26,6 +26,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
@@ -250,7 +251,7 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
       "[user_provided_sas_token] %s token: %s\n",
       p->scope == AZ_IOT_CONN_SCOPE_DPS ? "DPS" : "hub",
       az_iot_result_to_string(r)); /* AZ_IOT_ERR_NOT_FOUND: request timed out */
-  memset(token, 0, sizeof(token));
+  OPENSSL_cleanse(token, sizeof(token)); /* memset may be elided */
 }
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -354,7 +355,7 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
-  memset(&ctx.store, 0, sizeof(ctx.store));
+  OPENSSL_cleanse(&ctx.store, sizeof(ctx.store));
   free(id_scope);
   free(reg_id);
   free(key_b64);

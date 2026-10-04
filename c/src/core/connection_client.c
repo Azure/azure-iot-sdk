@@ -2107,17 +2107,18 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  const char* endpoint = c->opts.dps.global_endpoint;
-  if (!is_nonempty_cstr(endpoint))
-  {
-    endpoint = "global.azure-devices-provisioning.net";
-  }
-  if (!is_span_safe_cstr(endpoint) || !is_span_safe_cstr(c->opts.dps.id_scope)
+  /* The default endpoint is a short literal; only caller strings need the
+   * length check. */
+  bool custom_endpoint = is_nonempty_cstr(c->opts.dps.global_endpoint);
+  if ((custom_endpoint && !is_span_safe_cstr(c->opts.dps.global_endpoint))
+      || !is_span_safe_cstr(c->opts.dps.id_scope)
       || !is_span_safe_cstr(c->opts.dps.registration_id))
   {
     AZ_IOT_LOG_ERROR("dps_start: a DPS endpoint or ID is longer than INT32_MAX bytes");
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  const char* endpoint
+      = custom_endpoint ? c->opts.dps.global_endpoint : "global.azure-devices-provisioning.net";
 
   az_span ep_span = az_span_create_from_str((char*)(uintptr_t)endpoint);
   az_span scope_span = az_span_create_from_str((char*)(uintptr_t)c->opts.dps.id_scope);
