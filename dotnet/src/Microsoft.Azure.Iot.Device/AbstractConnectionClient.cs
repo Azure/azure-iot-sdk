@@ -282,7 +282,7 @@ namespace Microsoft.Azure.Iot.Device
             // directly gets a meaningful error.
             if (string.IsNullOrEmpty(provisioningResult.AssignedHub)
                 || string.IsNullOrEmpty(provisioningResult.DeviceId)
-                || DoesClientSupportHubType(connectionProfile))
+                || !DoesClientSupportHubType(connectionProfile))
             {
                 Trace.TraceError(
                     "Device Provisioning Service reported an 'assigned' registration this device cannot use (assigned hub '{0}', device id '{1}', connection profile '{2}').",
