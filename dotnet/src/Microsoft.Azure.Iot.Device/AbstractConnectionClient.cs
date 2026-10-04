@@ -74,6 +74,8 @@ namespace Microsoft.Azure.Iot.Device
 
         internal MqttConnectionManager ManagedMqttConnection;
 
+        internal abstract bool DoesClientSupportHubType(ConnectionProfile connectionProfile);
+
         // Backing field for CurrentConnectionContext. Volatile because the connection layer's callback threads read it
         // (through GetCurrentConnectionContext and the connect/fault flows) while a caller thread publishes it, so the
         // reference must be seen fully constructed across threads.
@@ -280,7 +282,7 @@ namespace Microsoft.Azure.Iot.Device
             // directly gets a meaningful error.
             if (string.IsNullOrEmpty(provisioningResult.AssignedHub)
                 || string.IsNullOrEmpty(provisioningResult.DeviceId)
-                || connectionProfile != ConnectionProfile.Classic)
+                || DoesClientSupportHubType(connectionProfile))
             {
                 Trace.TraceError(
                     "Device Provisioning Service reported an 'assigned' registration this device cannot use (assigned hub '{0}', device id '{1}', connection profile '{2}').",

@@ -14,6 +14,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -226,6 +227,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private static string GetPackageVersion()
         {
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

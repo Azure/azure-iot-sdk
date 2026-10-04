@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {
@@ -34,6 +35,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             // This client has no birth message or topics to subscribe to, so it is present as soon as it is connected.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.Classic;
         }
     }
 }
