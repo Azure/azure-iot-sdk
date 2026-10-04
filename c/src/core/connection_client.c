@@ -973,11 +973,15 @@ static bool is_span_safe_cstr(const char* s)
   return is_nonempty_cstr(s) && strlen(s) <= (size_t)INT32_MAX;
 }
 
-/** @brief Initializes c->hub_client for opts.host / opts.client_id once. */
+/**
+ * @brief (Re)initializes c->hub_client from the current opts.host /
+ * opts.client_id. Not cached: DPS (re)provisioning replaces both, and the
+ * client holds spans of their old lengths. Cheap: it only stores spans.
+ */
 static bool ensure_hub_client(az_iot_connection_client* c)
 {
-  if (!c->hub_client_initialized && is_span_safe_cstr(c->opts.host)
-      && is_span_safe_cstr(c->opts.client_id)
+  c->hub_client_initialized = false;
+  if (is_span_safe_cstr(c->opts.host) && is_span_safe_cstr(c->opts.client_id)
       && (c->opts.model_id == NULL || strlen(c->opts.model_id) <= (size_t)INT32_MAX))
   {
     az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.host);

@@ -308,6 +308,40 @@ static void hub_connects_with_a_sas_token_when_only_a_key_is_set(void** state)
   assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
 }
 
+/* DPS re-provisioning replaces the hub host and device ID. The next CONNECT
+ * must name the new ones, in both the username and the token, even when the
+ * new strings have different lengths than the old. */
+static void a_changed_hub_identity_is_used_on_the_next_connect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_and_open(fx, &opts);
+  assert_non_null(strstr(last_connect(fx)->password, "sr=broker.example%2Fdevices%2Fut-device&"));
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->client, 0), AZ_IOT_OK);
+  az_iot_connection_client_close(&fx->client);
+  for (int i = 0; i < 10 && fx->last_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
+    m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    if (m != NULL)
+    {
+      (void)az_iot_mock_mqtt_client_inject_disconnected(m);
+    }
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+  }
+  assert_int_equal(fx->last_state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client__set_host(&fx->client, "other-hub.example.net"), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__set_client_id(&fx->client, "dev-2"), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  const az_iot_mock_call* call = last_connect(fx);
+  assert_non_null(strstr(call->username, "other-hub.example.net/dev-2/?api-version="));
+  assert_non_null(strstr(call->password, "sr=other-hub.example.net%2Fdevices%2Fdev-2&"));
+}
+
 static void x509_from_the_provider_is_tried_before_sas(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -640,6 +674,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_does_not_support_user_provided_token_yet, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_changed_hub_identity_is_used_on_the_next_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(x509_from_the_provider_is_tried_before_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(trusted_ca_overrides_the_provider_ca, setup, teardown),
     cmocka_unit_test_setup_teardown(
