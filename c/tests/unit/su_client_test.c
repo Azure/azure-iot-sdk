@@ -3493,10 +3493,12 @@ typedef struct
 static void su_error_log_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -3506,7 +3508,7 @@ static void su_error_log_sink(
   }
 }
 
-/* Counts DEBUG and TRACE lines containing `needle` and a JSON body. */
+/* Counts DEBUG and TRACE "su" lines containing `needle` and a JSON body. */
 typedef struct
 {
   const char* needle;
@@ -3517,6 +3519,7 @@ typedef struct
 static void su_level_log_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
@@ -3525,7 +3528,8 @@ static void su_level_log_sink(
   (void)file;
   (void)line;
   /* A body is JSON, so a line carrying one has a '{'. */
-  if (msg == NULL || strstr(msg, cap->needle) == NULL || strchr(msg, '{') == NULL)
+  if (strcmp(component, AZ_IOT_LOG_COMPONENT_SU) != 0 || strstr(msg, cap->needle) == NULL
+      || strchr(msg, '{') == NULL)
   {
     return;
   }
@@ -3539,7 +3543,7 @@ static void update_payload_body_is_logged_only_at_trace(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  su_level_log_capture cap = { .needle = "su: update payload", .debug_count = 0, .trace_count = 0 };
+  su_level_log_capture cap = { .needle = "update payload", .debug_count = 0, .trace_count = 0 };
   az_iot_log_sink sink
       = { .sink = su_level_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_TRACE };
 

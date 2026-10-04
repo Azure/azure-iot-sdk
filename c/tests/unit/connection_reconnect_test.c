@@ -406,10 +406,12 @@ typedef struct log_capture
 static void capture_error(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   log_capture* c = (log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -431,7 +433,7 @@ static void install_error_capture(log_capture* c)
   az_iot_log_set_global_sink(&sink);
 }
 
-/* Every line at INFO and above, newline-separated. */
+/* Every line at INFO and above as "<component>: <msg>", newline-separated. */
 typedef struct line_capture
 {
   char text[4096];
@@ -441,6 +443,7 @@ typedef struct line_capture
 static void capture_lines(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
@@ -449,7 +452,7 @@ static void capture_lines(
   (void)level;
   (void)file;
   (void)line;
-  int n = snprintf(c->text + c->len, sizeof(c->text) - c->len, "%s\n", msg);
+  int n = snprintf(c->text + c->len, sizeof(c->text) - c->len, "%s: %s\n", component, msg);
   if (n > 0 && (size_t)n < sizeof(c->text) - c->len)
   {
     c->len += (size_t)n;

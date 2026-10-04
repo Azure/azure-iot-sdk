@@ -129,9 +129,11 @@ If you must call one of them, bounds-check with `az_span_size()` first.
 ## 3. Trace through the logging facade, never to a stream
 
 `printf`, `fprintf`, `puts` and `fputs` are banned in `c/src`. Use
-`AZ_IOT_LOG_{TRACE,DEBUG,INFO,WARN,ERROR}` for a ready-made message and the
-`...F` variants for a formatted one, from
-[`az_iot_log.h`](../../inc/azure/iot/az_iot_log.h).
+`AZ_IOT_LOG_{TRACE,DEBUG,INFO,WARN,ERROR}(component, msg)` for a ready-made message and the
+`...F(component, fmt, ...)` variants for a formatted one, from
+[`az_iot_log.h`](../../inc/azure/iot/az_iot_log.h). `component` is the
+`AZ_IOT_LOG_COMPONENT_*` macro for the area; CI (`eng/check-log-components.sh`)
+rejects any other value. Do not repeat the component in the message.
 
 The application chooses where diagnostics go. A library that writes to `stderr`
 overrides that choice, cannot be switched off, and - as this SDK did until

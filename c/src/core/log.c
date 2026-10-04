@@ -84,17 +84,33 @@ static void mark_truncated(char* buf, size_t cap)
   }
 }
 
-void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg)
+void az_iot_log_emit(
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
 {
   if (!az_iot_log_is_enabled(level))
   {
     return;
   }
   s_global_sink.sink(
-      s_global_sink.user_ctx, level, log_text_or(file, "?"), line, log_text_or(msg, ""));
+      s_global_sink.user_ctx,
+      level,
+      log_text_or(component, "?"),
+      log_text_or(file, "?"),
+      line,
+      log_text_or(msg, ""));
 }
 
-void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const char* fmt, ...)
+void az_iot_log_emitf(
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* fmt,
+    ...)
 {
   /* Test the sink before formatting so a disabled level costs one comparison
    * rather than a full vsnprintf. */
@@ -120,7 +136,13 @@ void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const 
     mark_truncated(msg, sizeof(msg));
   }
 
-  s_global_sink.sink(s_global_sink.user_ctx, level, log_text_or(file, "?"), line, msg);
+  s_global_sink.sink(
+      s_global_sink.user_ctx,
+      level,
+      log_text_or(component, "?"),
+      log_text_or(file, "?"),
+      line,
+      msg);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -292,6 +314,7 @@ static void append_bounded(az_iot_span_writer* w, const char* s, size_t max)
 size_t az_iot_log__format_line(
     char* buf,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
@@ -307,6 +330,8 @@ size_t az_iot_log__format_line(
   append_timestamp(&w, sec, ms);
   az_iot_span_writer_append_str(&w, " [");
   az_iot_span_writer_append_str(&w, level_name(level));
+  az_iot_span_writer_append_str(&w, "] [");
+  append_bounded(&w, component, AZ_IOT_LOG__COMPONENT_MAX);
   az_iot_span_writer_append_str(&w, "] ");
   if (tid != 0u)
   {
@@ -331,12 +356,13 @@ size_t az_iot_log__format_line(
 static void stderr_sink_fn(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
   char buf[AZ_IOT_LOG__LINE_MAX];
-  size_t n = az_iot_log__format_line(buf, level, file, line, msg);
+  size_t n = az_iot_log__format_line(buf, level, component, file, line, msg);
   (void)user_ctx;
   /* One write per line, so lines from different threads do not interleave. */
   (void)fwrite(buf, 1u, n, stderr);

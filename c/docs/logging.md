@@ -41,6 +41,7 @@ az_iot_log_file_sink_close(&file_sink);
   set, except `authentication/hsm_sign_callback`, `authentication/custom_provider_template` and
   the ESP32 sample.
 - For your own sink, pass a callback, a context and a minimum level in an `az_iot_log_sink`.
+  The callback receives the level, the component, the source file and line, and the message.
   It may be called from MQTT adapter threads.
 
 ## Line format
@@ -48,19 +49,20 @@ az_iot_log_file_sink_close(&file_sink);
 The built-in sinks write:
 
 ```text
-2026-10-03T18:16:17.408Z [INFO ] [t:10294] connection_client.c:3756: connection: open: sdk=1.0.0-preview route=dps ...
+2026-10-03T18:16:17.408Z [INFO ] [connection] [t:10294] connection_client.c:3756: open: sdk=1.0.0-preview route=dps ...
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `2026-10-03T18:16:17.408Z` | UTC wall-clock time, milliseconds. A device without a set clock shows 1970. |
 | `[INFO ]` | Level. |
+| `[connection]` | Component. See [Components](#components). |
 | `[t:10294]` | OS thread id (Windows, Linux). MQTT adapter threads differ from the application's. |
 | `connection_client.c:3756` | Source file and line. |
-| `connection: ...` | Message, starting with its component. |
+| `open: ...` | Message. |
 
-Control characters in a message are escaped (`\n`, `\r`, `\xNN`; tab is kept), so each message
-is one line. A custom sink receives the message unescaped.
+Control characters in the component and message are escaped (`\n`, `\r`, `\xNN`; tab is kept), so each message
+is one line. A custom sink receives them unescaped.
 
 A message longer than `AZ_IOT_LOG_MESSAGE_MAX` (384) is cut and ends in `...`.
 
@@ -78,10 +80,11 @@ For TLS or MQTT connection issues, set `AZ_IOT_PAHO_TRACE=protocol` and the sink
 
 ## Components
 
-Every SDK message starts with `<component>: `. The component is part of the message text, not a
-separate sink argument, so it reaches every sink, custom ones included. Filter by it.
+Every log call passes a component, and every sink receives it as its own argument, so a sink can
+filter or route without parsing the message. The SDK's components are the `AZ_IOT_LOG_COMPONENT_*`
+macros in [az_iot_log.h](../inc/azure/iot/az_iot_log.h); compare with `strcmp()`.
 
-| Prefix | Area |
+| Component | Area |
 | --- | --- |
 | `connection` | Connection client: open, state changes, retries, MQTT acks |
 | `dps` | Provisioning: registration, assignment |
@@ -91,9 +94,10 @@ separate sink argument, so it reaches every sink, custom ones included. Filter b
 | `mqttv3_telemetry`, `mqttv3_twin`, `mqttv3_direct_method`, `mqttv3_file_upload`, `c2d` | mqttv3 feature clients |
 | `mqttv5_telemetry`, `mqttv5_twin`, `mqttv5_direct_method` | mqttv5 feature clients |
 
-`app` is reserved for applications. Start your own messages with `app: ` (for example
-`AZ_IOT_LOG_INFO("app: firmware 2.1 started")`) so they can be told apart from the SDK's.
-`c/eng/check-log-prefixes.sh` enforces the list in CI.
+`app` (`AZ_IOT_LOG_COMPONENT_APP`) is for applications and never used by the SDK, for example
+`AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "firmware 2.1 started")`. Any other string works as an
+application component too. `c/eng/check-log-components.sh` checks in CI that every SDK call passes
+an SDK component.
 
 ## What logs contain
 

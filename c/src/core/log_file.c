@@ -32,6 +32,15 @@
 
 #define LOG_FILE_MAX_FILES_LIMIT 99u
 
+/* C99 static assertions: an overridden default must be usable as is. */
+typedef char log_file_default_max_files_in_range
+    [(AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES) >= 1u
+             && (AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES) <= LOG_FILE_MAX_FILES_LIMIT
+         ? 1
+         : -1];
+typedef char log_file_default_max_bytes_nonzero[(AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES) > 0u ? 1 : -1];
+typedef char log_file_path_max_fits_a_suffix[(AZ_IOT_LOG_FILE_PATH_MAX) >= 8 ? 1 : -1];
+
 AZ_NODISCARD az_iot_log_file_sink_options az_iot_log_file_sink_options_default(void)
 {
   az_iot_log_file_sink_options o;
@@ -232,13 +241,14 @@ static void file_rotate(az_iot_log_file_sink* fs)
 static void file_sink_fn(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
   az_iot_log_file_sink* fs = (az_iot_log_file_sink*)user_ctx;
   char buf[AZ_IOT_LOG__LINE_MAX];
-  size_t n = az_iot_log__format_line(buf, level, file, line, msg);
+  size_t n = az_iot_log__format_line(buf, level, component, file, line, msg);
   if (n == 0u)
   {
     return;

@@ -38,6 +38,7 @@ typedef struct capture
   int count;
   az_iot_log_level level;
   char msg[AZ_IOT_LOG_MESSAGE_MAX];
+  const char* component;
   const char* file;
   int line;
 } capture;
@@ -47,6 +48,7 @@ static capture g_capture;
 static void capture_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
@@ -54,6 +56,7 @@ static void capture_sink(
   capture* c = (capture*)user_ctx;
   c->count++;
   c->level = level;
+  c->component = component;
   c->file = file;
   c->line = line;
   if (msg != NULL)
@@ -94,39 +97,41 @@ static void nothing_is_emitted_without_a_sink(void** state)
   memset(&g_capture, 0, sizeof(g_capture));
 
   assert_false(az_iot_log_is_enabled(AZ_IOT_LOG_LEVEL_ERROR));
-  AZ_IOT_LOG_ERROR("dropped");
-  AZ_IOT_LOG_ERRORF("also %s", "dropped");
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, "dropped");
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "also %s", "dropped");
   assert_int_equal(g_capture.count, 0);
 }
 
 static void plain_and_formatted_messages_reach_the_sink(void** state)
 {
   (void)state;
-  AZ_IOT_LOG_WARN("plain message");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "plain message");
   assert_int_equal(g_capture.count, 1);
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_WARN);
   assert_string_equal(g_capture.msg, "plain message");
+  assert_string_equal(g_capture.component, AZ_IOT_LOG_COMPONENT_APP);
   assert_non_null(g_capture.file);
   assert_true(g_capture.line > 0);
 
-  AZ_IOT_LOG_DEBUGF("device %s port %u", "dev-1", 8883u);
+  AZ_IOT_LOG_DEBUGF(AZ_IOT_LOG_COMPONENT_DPS, "device %s port %u", "dev-1", 8883u);
   assert_int_equal(g_capture.count, 2);
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_DEBUG);
   assert_string_equal(g_capture.msg, "device dev-1 port 8883");
+  assert_string_equal(g_capture.component, AZ_IOT_LOG_COMPONENT_DPS);
 }
 
 static void every_level_is_routed(void** state)
 {
   (void)state;
-  AZ_IOT_LOG_TRACE("t");
+  AZ_IOT_LOG_TRACE(AZ_IOT_LOG_COMPONENT_APP, "t");
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_TRACE);
-  AZ_IOT_LOG_DEBUG("d");
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "d");
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_DEBUG);
-  AZ_IOT_LOG_INFO("i");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "i");
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_INFO);
-  AZ_IOT_LOG_WARN("w");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "w");
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_WARN);
-  AZ_IOT_LOG_ERROR("e");
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, "e");
   assert_int_equal(g_capture.level, AZ_IOT_LOG_LEVEL_ERROR);
   assert_int_equal(g_capture.count, 5);
 }
@@ -144,11 +149,11 @@ static void levels_below_the_minimum_are_dropped(void** state)
   assert_false(az_iot_log_is_enabled(AZ_IOT_LOG_LEVEL_INFO));
   assert_true(az_iot_log_is_enabled(AZ_IOT_LOG_LEVEL_WARN));
 
-  AZ_IOT_LOG_DEBUG("no");
-  AZ_IOT_LOG_INFOF("no %d", 1);
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "no");
+  AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_APP, "no %d", 1);
   assert_int_equal(g_capture.count, 0);
 
-  AZ_IOT_LOG_WARN("yes");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "yes");
   assert_int_equal(g_capture.count, 1);
 }
 
@@ -159,7 +164,7 @@ static void an_oversized_message_is_truncated_not_dropped(void** state)
   memset(big, 'x', sizeof(big) - 1);
   big[sizeof(big) - 1] = '\0';
 
-  AZ_IOT_LOG_ERRORF("%s", big);
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "%s", big);
 
   /* The diagnostic still arrives, shortened to the buffer and marked as cut. */
   assert_int_equal(g_capture.count, 1);
@@ -174,7 +179,7 @@ static void a_message_that_fits_is_not_marked(void** state)
   memset(exact, 'y', sizeof(exact) - 1);
   exact[sizeof(exact) - 1] = '\0';
 
-  AZ_IOT_LOG_ERRORF("%s", exact);
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "%s", exact);
   assert_string_equal(g_capture.msg, exact);
 }
 
@@ -248,14 +253,14 @@ static void file_sink_writes_the_documented_line_format(void** state)
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_INFO, &sink));
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_DEBUG("app: below the minimum");
-  AZ_IOT_LOG_INFO("app: hello");
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "below the minimum");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "hello");
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  /* 2026-10-03T18:04:05.123Z [INFO ] ... log_test.c:<line>: app: hello */
+  /* 2026-10-03T18:04:05.123Z [INFO ] [app] ... log_test.c:<line>: hello */
   assert_true(strlen(text) > 25);
   assert_int_equal('-', text[4]);
   assert_int_equal('-', text[7]);
@@ -264,14 +269,14 @@ static void file_sink_writes_the_documented_line_format(void** state)
   assert_int_equal(':', text[16]);
   assert_int_equal('.', text[19]);
   assert_int_equal('Z', text[23]);
-  assert_memory_equal(text + 24, " [INFO ] ", 9);
+  assert_memory_equal(text + 24, " [INFO ] [app] ", 15);
   /* File name without its directory. */
   const char* where = strstr(text, "log_test.c:");
   assert_non_null(where);
   assert_true(where[-1] == ' ');
-  const char* tail = strstr(text, ": app: hello\n");
+  const char* tail = strstr(text, ": hello\n");
   assert_non_null(tail);
-  assert_int_equal('\0', tail[strlen(": app: hello\n")]);
+  assert_int_equal('\0', tail[strlen(": hello\n")]);
 
   remove_log_files(path);
 }
@@ -291,15 +296,15 @@ static void file_sink_appends_across_opens(void** state)
     assert_int_equal(
         AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
     az_iot_log_set_global_sink(&sink);
-    AZ_IOT_LOG_WARNF("app: run %d", i);
+    AZ_IOT_LOG_WARNF(AZ_IOT_LOG_COMPONENT_APP, "run %d", i);
     az_iot_log_set_global_sink(NULL);
     az_iot_log_file_sink_close(&fs);
   }
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(2, count_lines(text));
-  assert_non_null(strstr(text, "app: run 0\n"));
-  assert_non_null(strstr(text, "app: run 1\n"));
+  assert_non_null(strstr(text, "run 0\n"));
+  assert_non_null(strstr(text, "run 1\n"));
 
   remove_log_files(path);
 }
@@ -323,7 +328,8 @@ static void file_sink_rotates_and_keeps_max_files(void** state)
   az_iot_log_set_global_sink(&sink);
   for (int i = 0; i < 20; ++i)
   {
-    AZ_IOT_LOG_INFOF("app: line %02d %s", i, "padding-padding-padding-padding");
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_APP, "line %02d %s", i, "padding-padding-padding-padding");
   }
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
@@ -331,7 +337,7 @@ static void file_sink_rotates_and_keeps_max_files(void** state)
   /* Newest last: the active file holds line 19, .1 the lines before it. */
   long active = read_file(path, text, sizeof(text));
   assert_true(active > 0 && active <= 300);
-  assert_non_null(strstr(text, "app: line 19 "));
+  assert_non_null(strstr(text, "line 19 "));
   for (unsigned i = 1; i <= 2; ++i)
   {
     rotated_path(p, sizeof(p), path, i);
@@ -361,7 +367,7 @@ static void file_sink_marks_a_truncated_line(void** state)
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
   /* emit() does not bound the message; the line formatter must. */
-  AZ_IOT_LOG_ERROR(big);
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, big);
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
@@ -403,7 +409,7 @@ static void file_sink_bounds_a_plain_message_at_the_maximum(void** state)
     assert_int_equal(
         AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
     az_iot_log_set_global_sink(&sink);
-    AZ_IOT_LOG_ERROR(msg);
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, msg);
     az_iot_log_set_global_sink(NULL);
     az_iot_log_file_sink_close(&fs);
 
@@ -472,7 +478,8 @@ static void file_sink_recovers_from_a_failed_rotation(void** state)
   az_iot_log_set_global_sink(&sink);
   for (int i = 0; i < 6; ++i)
   {
-    AZ_IOT_LOG_INFOF("app: blocked %02d %s", i, "padding-padding-padding-padding");
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_APP, "blocked %02d %s", i, "padding-padding-padding-padding");
   }
 
   /* Nothing dropped, nothing rotated. */
@@ -484,7 +491,7 @@ static void file_sink_recovers_from_a_failed_rotation(void** state)
   /* Unblock: the next line rotates. */
   assert_int_equal(0, remove(inner));
   remove_dir(blocker);
-  AZ_IOT_LOG_INFO("app: after");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "after");
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
@@ -492,7 +499,7 @@ static void file_sink_recovers_from_a_failed_rotation(void** state)
   assert_int_equal(6, count_lines(text));
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  assert_non_null(strstr(text, "app: after\n"));
+  assert_non_null(strstr(text, "after\n"));
 
   remove_log_files(path);
   remove(blocker);
@@ -536,7 +543,8 @@ static void file_sink_restores_the_active_file_when_shifting_fails(void** state)
   az_iot_log_set_global_sink(&sink);
   for (int i = 0; i < 6; ++i)
   {
-    AZ_IOT_LOG_INFOF("app: kept %02d %s", i, "padding-padding-padding-padding");
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_APP, "kept %02d %s", i, "padding-padding-padding-padding");
   }
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
@@ -579,8 +587,8 @@ static void file_sink_places_a_leftover_staged_file_first(void** state)
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_INFO("app: first");
-  AZ_IOT_LOG_INFO("app: second");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "first");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "second");
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
@@ -591,10 +599,10 @@ static void file_sink_places_a_leftover_staged_file_first(void** state)
   rotated_path(p, sizeof(p), path, 1);
   assert_true(read_file(p, text, sizeof(text)) > 0);
   assert_memory_equal(text, big, strlen(big));
-  assert_non_null(strstr(text, "app: first\n"));
+  assert_non_null(strstr(text, "first\n"));
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  assert_non_null(strstr(text, "app: second\n"));
+  assert_non_null(strstr(text, "second\n"));
 
   remove_log_files(path);
 }
@@ -610,7 +618,7 @@ static const char* log_one_to_file(const char* tag, const char* msg, char* text,
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_ERROR(msg);
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, msg);
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
   assert_true(read_file(path, text, cap) > 0);
@@ -633,6 +641,31 @@ static void file_sink_escapes_control_characters(void** state)
       text,
       sizeof(text));
   assert_string_equal(body, "app: a\\nb\\rc\td\\x01e\\x7ff\\g\n");
+}
+
+/* The component is written in brackets after the level, escaped like the message. */
+static void file_sink_writes_and_escapes_the_component(void** state)
+{
+  (void)state;
+  char path[256];
+  char text[FILE_BUF];
+  az_iot_log_file_sink fs;
+  az_iot_log_sink sink;
+  temp_log_path(path, sizeof(path), "component");
+  remove_log_files(path);
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_set_global_sink(&sink);
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_SU, "one");
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_WARN, "x\ny", __FILE__, __LINE__, "two");
+  az_iot_log_set_global_sink(NULL);
+  az_iot_log_file_sink_close(&fs);
+
+  assert_true(read_file(path, text, sizeof(text)) > 0);
+  assert_int_equal(2, count_lines(text));
+  assert_non_null(strstr(text, " [WARN ] [su] "));
+  assert_non_null(strstr(text, " [WARN ] [x\\ny] "));
+  remove_log_files(path);
 }
 
 /* Escaping counts toward the bound, and an escape is never split by the cut. */
@@ -695,30 +728,32 @@ static void a_precision_bounded_argument_is_not_over_read(void** state)
   /* The DPS failure path logs a response body that is not NUL-terminated,
    * using a precision to bound it. */
   const char payload[] = { 'a', 'b', 'c', 'd' };
-  AZ_IOT_LOG_ERRORF("body: %.*s", 2, payload);
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "body: %.*s", 2, payload);
   assert_string_equal(g_capture.msg, "body: ab");
 }
 
-static void null_message_and_file_reach_the_sink_as_text(void** state)
+static void null_component_message_and_file_reach_the_sink_as_text(void** state)
 {
   (void)state;
   /* emit is public, so a sink can be handed a NULL that the SDK never
    * produced itself. Sinks format both with "%s" -- the built-in stderr one
    * does -- so the substitution has to happen before the call, not in the
    * sink. */
-  az_iot_log_emit(AZ_IOT_LOG_LEVEL_ERROR, NULL, 7, NULL);
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_ERROR, NULL, NULL, 7, NULL);
   assert_int_equal(g_capture.count, 1);
   assert_string_equal(g_capture.msg, "");
+  assert_string_equal(g_capture.component, "?");
   assert_string_equal(g_capture.file, "?");
   assert_int_equal(g_capture.line, 7);
 
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, NULL, 9, "value %d", 3);
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, NULL, NULL, 9, "value %d", 3);
   assert_int_equal(g_capture.count, 2);
   assert_string_equal(g_capture.msg, "value 3");
+  assert_string_equal(g_capture.component, "?");
   assert_string_equal(g_capture.file, "?");
 
   /* A NULL format has no message to build, so nothing is emitted. */
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, __FILE__, __LINE__, NULL);
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, AZ_IOT_LOG_COMPONENT_APP, __FILE__, __LINE__, NULL);
   assert_int_equal(g_capture.count, 2);
 }
 
@@ -732,7 +767,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_oversized_message_is_truncated_not_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_that_fits_is_not_marked, setup, teardown),
     cmocka_unit_test_setup_teardown(a_precision_bounded_argument_is_not_over_read, setup, teardown),
-    cmocka_unit_test_setup_teardown(null_message_and_file_reach_the_sink_as_text, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        null_component_message_and_file_reach_the_sink_as_text, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_writes_the_documented_line_format, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_appends_across_opens, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rotates_and_keeps_max_files, setup, teardown),
@@ -744,6 +780,7 @@ int main(void)
         file_sink_restores_the_active_file_when_shifting_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_places_a_leftover_staged_file_first, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_escapes_control_characters, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_sink_writes_and_escapes_the_component, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_never_splits_an_escape, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_rejects_bad_arguments, setup, teardown),
   };

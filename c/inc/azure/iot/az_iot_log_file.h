@@ -22,17 +22,18 @@ extern "C"
 /** @brief Recommended log file name, so support can ask for it by name. */
 #define AZ_IOT_LOG_FILE_DEFAULT_NAME "azure-iot-sdk-c.log"
 
-/** @brief Default size at which the active log file is rotated. */
+/** @brief Default size at which the active log file is rotated. Overridable; non-zero. */
 #ifndef AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES
 #define AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES (1024u * 1024u)
 #endif
 
-/** @brief Default number of rotated files kept: `<path>.1` (newest) to `<path>.N`. */
+/** @brief Default number of rotated files kept: `<path>.1` (newest) to `<path>.N`.
+ * Overridable; 1 to 99. */
 #ifndef AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES
 #define AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES 3u
 #endif
 
-/** @brief Capacity, terminator included, of the stored log file path. */
+/** @brief Capacity, terminator included, of the stored log file path. Overridable; at least 8. */
 #ifndef AZ_IOT_LOG_FILE_PATH_MAX
 #define AZ_IOT_LOG_FILE_PATH_MAX 256
 #endif

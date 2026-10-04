@@ -266,10 +266,12 @@ typedef struct debug_capture
 static void capture_debug(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   debug_capture* c = (debug_capture*)user_ctx;
   (void)level;
   (void)file;

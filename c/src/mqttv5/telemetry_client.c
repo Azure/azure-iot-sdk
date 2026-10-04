@@ -21,7 +21,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_init(
 {
   if (client == NULL || conn == NULL)
   {
-    AZ_IOT_LOG_ERROR("mqttv5_telemetry: init: invalid arguments");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -125,7 +125,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     if (property_count >= AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES)
     {
       AZ_IOT_LOG_WARNF(
-          "mqttv5_telemetry: '%s' and any properties after it were not sent; the message needs "
+          AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY,
+          "'%s' and any properties after it were not sent; the message needs "
           "more "
           "than the %d user properties this client can carry, two of which are the type and "
           "content-type it adds. Send fewer, or raise AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES.",

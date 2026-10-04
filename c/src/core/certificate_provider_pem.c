@@ -166,12 +166,14 @@ AZ_NODISCARD az_iot_result az_iot_certificate_provider_pem_init(
 {
   if (!provider || !opts)
   {
-    AZ_IOT_LOG_ERROR("cert_pem: init: invalid arguments");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CERT_PEM, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (!is_nonempty_cstr(opts->client_cert_pem_path) || !is_nonempty_cstr(opts->client_key_pem_path))
   {
-    AZ_IOT_LOG_ERROR("cert_pem: init: client_cert_pem_path and client_key_pem_path are required");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CERT_PEM,
+        "init: client_cert_pem_path and client_key_pem_path are required");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -181,7 +183,7 @@ AZ_NODISCARD az_iot_result az_iot_certificate_provider_pem_init(
   az_iot_result r = read_file_content(opts->client_cert_pem_path, &provider->client_cert);
   if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("cert_pem: init: failed to read client cert file");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CERT_PEM, "init: failed to read client cert file");
     az_iot_certificate_provider_pem_deinit(provider);
     return r;
   }
@@ -189,7 +191,7 @@ AZ_NODISCARD az_iot_result az_iot_certificate_provider_pem_init(
   r = read_file_content(opts->client_key_pem_path, &provider->client_key);
   if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("cert_pem: init: failed to read client key file");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CERT_PEM, "init: failed to read client key file");
     az_iot_certificate_provider_pem_deinit(provider);
     return r;
   }

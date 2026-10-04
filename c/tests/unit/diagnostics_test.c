@@ -358,12 +358,12 @@ static void stderr_sink_is_installable_and_emits(void** state)
   assert_int_equal(sink.min_level, AZ_IOT_LOG_LEVEL_TRACE);
 
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_TRACE("diagnostics_test: trace");
-  AZ_IOT_LOG_DEBUG("diagnostics_test: debug");
-  AZ_IOT_LOG_INFO("diagnostics_test: info");
-  AZ_IOT_LOG_WARN("diagnostics_test: warn");
-  AZ_IOT_LOG_ERROR("diagnostics_test: error");
-  AZ_IOT_LOG_ERRORF("diagnostics_test: %s %d", "formatted", 42);
+  AZ_IOT_LOG_TRACE(AZ_IOT_LOG_COMPONENT_APP, "trace");
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "debug");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "info");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "warn");
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, "error");
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "%s %d", "formatted", 42);
   az_iot_log_set_global_sink(NULL);
 }
 
