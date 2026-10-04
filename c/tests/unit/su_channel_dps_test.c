@@ -2186,10 +2186,12 @@ typedef struct
 static void su_log_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   su_log_capture* cap = (su_log_capture*)user_ctx;
   (void)file;
   (void)line;

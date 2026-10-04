@@ -19,6 +19,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,6 +27,7 @@
 
 #include "azure/iot/az_iot_certificate_provider.h"
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -253,6 +255,58 @@ static void dps_connect_forwards_the_key_reference(void** state)
   /* Nothing extractable was invented along the way. */
   assert_false(c->connect.has_client_key_pem);
   assert_string_equal(c->connect.client_key_path, "");
+}
+
+typedef struct debug_capture
+{
+  char text[4096];
+  size_t len;
+} debug_capture;
+
+static void capture_debug(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  debug_capture* c = (debug_capture*)user_ctx;
+  (void)level;
+  (void)file;
+  (void)line;
+  int n = snprintf(c->text + c->len, sizeof(c->text) - c->len, "%s\n", msg);
+  if (n > 0 && (size_t)n < sizeof(c->text) - c->len)
+  {
+    c->len += (size_t)n;
+  }
+}
+
+/* A PKCS#11 URI may carry the token PIN in its query; it must not reach a log,
+ * which may be shared with support. The adapter still gets the whole URI. */
+static void the_key_uri_query_is_redacted_from_logs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  debug_capture cap;
+  az_iot_log_sink sink;
+  memset(&cap, 0, sizeof(cap));
+  sink.sink = capture_debug;
+  sink.user_ctx = &cap;
+  sink.min_level = AZ_IOT_LOG_LEVEL_TRACE;
+  fx->provider.material.client_key_uri = "pkcs11:token=ut;object=device-key?pin-value=4321";
+  init_client(fx, true);
+
+  az_iot_log_set_global_sink(&sink);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_non_null(strstr(cap.text, "key_uri=pkcs11:token=ut;object=device-key?<redacted> "));
+  assert_null(strstr(cap.text, "4321"));
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_string_equal(
+      c->connect.client_key_uri, "pkcs11:token=ut;object=device-key?pin-value=4321");
 }
 
 /* Site 2 -- the hub/operational connect, which is also the path every reconnect
@@ -634,6 +688,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(dps_connect_forwards_the_key_reference, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_key_uri_query_is_redacted_from_logs, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_forwards_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_falls_back_to_bootstrap_material, setup, teardown),
     cmocka_unit_test_setup_teardown(the_forwarded_sign_hook_calls_the_provider, setup, teardown),

@@ -419,11 +419,11 @@ static const az_iot_su_root_key* resolve_root_key(
 /* Log the reason a manifest fails verification, then bail. Verification has
  * many independent failure paths; naming each one makes a Failed deployment
  * diagnosable from the application's log instead of a single opaque "Failed". */
-#define SU_VERIFY_FAIL(why)                                           \
-  do                                                                  \
-  {                                                                   \
-    AZ_IOT_LOG_ERRORF("su: manifest verification failed: %s", (why)); \
-    return AZ_IOT_SU_RESULT_FAILURE;                                  \
+#define SU_VERIFY_FAIL(why)                                                                \
+  do                                                                                       \
+  {                                                                                        \
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "manifest verification failed: %s", (why)); \
+    return AZ_IOT_SU_RESULT_FAILURE;                                                       \
   } while (0)
 
 static int32_t verify_manifest_core(
@@ -837,7 +837,8 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
   (void)az_iot_retry_state__schedule(
       &SU_I(client).persist_retry, &k_persist_retry_policy, &SU_I(client).retry_rng);
   uint32_t n = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
-  AZ_IOT_LOG_ERRORF("su: persist_state_fn failed (%u consecutive)", (unsigned)n);
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU, "persist_state_fn failed (%u consecutive)", (unsigned)n);
   if (n == 1u || n == SU_I(client).persist_max_attempts)
   {
     raise_persist(client, true, n);
@@ -1235,7 +1236,8 @@ static void set_active_workflow(
   if (id_len <= 0 || (size_t)id_len > sizeof(SU_I(client).active_workflow_id))
   {
     AZ_IOT_LOG_ERRORF(
-        "su: workflowId of %d bytes does not fit AZ_IOT_SU_WORKFLOW_ID_SIZE (%u); not reported",
+        AZ_IOT_LOG_COMPONENT_SU,
+        "workflowId of %d bytes does not fit AZ_IOT_SU_WORKFLOW_ID_SIZE (%u); not reported",
         (int)id_len,
         (unsigned)sizeof(SU_I(client).active_workflow_id));
     SU_I(client).active_workflow_valid = false;
@@ -1305,18 +1307,19 @@ static void process_update_metadata(
   if (patch_len > sizeof(SU_I(client).request_buffer))
   {
     AZ_IOT_LOG_ERRORF(
-        "su: update payload of %u bytes exceeds AZ_IOT_SU_REQUEST_BUFFER_SIZE (%u); ignored",
+        AZ_IOT_LOG_COMPONENT_SU,
+        "update payload of %u bytes exceeds AZ_IOT_SU_REQUEST_BUFFER_SIZE (%u); ignored",
         (unsigned)patch_len,
         (unsigned)sizeof(SU_I(client).request_buffer));
     raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
     return;
   }
 
+  /* The body carries service-issued download URLs (fileUrls): TRACE only. */
   AZ_IOT_LOG_DEBUGF(
-      "su: update payload received (%u bytes): %.*s",
-      (unsigned)patch_len,
-      (int)patch_len,
-      (const char*)patch);
+      AZ_IOT_LOG_COMPONENT_SU, "update payload received (%u bytes)", (unsigned)patch_len);
+  AZ_IOT_LOG_TRACEF(
+      AZ_IOT_LOG_COMPONENT_SU, "update payload: %.*s", (int)patch_len, (const char*)patch);
 
   /* Probe the transient buffer for the workflow identity. These spans are only
    * valid for the duration of this call, which is enough to decide what to do. */
@@ -1325,7 +1328,8 @@ static void process_update_metadata(
   az_iot_result pr = parse_update_metadata(transient, &probe);
   if (pr != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERRORF("su: update payload not understood (%d); ignored", (int)pr);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU, "update payload not understood (%d); ignored", (int)pr);
     return;
   }
 
@@ -1339,13 +1343,15 @@ static void process_update_metadata(
       = az_iot_json_string_decode(probe.workflow.id, AZ_SPAN_FROM_BUFFER(id_scratch), &probe_id);
   if (dr == AZ_IOT_ERR_INVALID_ARG)
   {
-    AZ_IOT_LOG_ERROR("su: update payload has an undecodable workflowId; ignored");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable workflowId; ignored");
     return;
   }
   if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
     AZ_IOT_LOG_ERRORF(
-        "su: decoded workflowId exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE (%u; %d bytes encoded); "
+        AZ_IOT_LOG_COMPONENT_SU,
+        "decoded workflowId exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE (%u; %d bytes encoded); "
         "update refused",
         (unsigned)sizeof(id_scratch),
         (int)az_span_size(probe.workflow.id));
@@ -1359,7 +1365,7 @@ static void process_update_metadata(
 
   if (check_request_strings(client, &probe) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("su: update payload has an undecodable string; ignored");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable string; ignored");
     return;
   }
 
@@ -1370,7 +1376,8 @@ static void process_update_metadata(
   if (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
       && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
   {
-    AZ_IOT_LOG_ERROR("su: new workflow ignored while one is held at a reboot boundary");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "new workflow ignored while one is held at a reboot boundary");
     return;
   }
 
@@ -1430,7 +1437,8 @@ static void on_channel_update(
    * late one is ignored; its verdict abandons the check. */
   if (fetch_in_flight_overdue(client))
   {
-    AZ_IOT_LOG_ERROR("su: ignoring an update that arrived after its check's deadline");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "ignoring an update that arrived after its check's deadline");
     return;
   }
   process_update_metadata(client, update_payload, update_payload_len);
@@ -1717,7 +1725,8 @@ static void on_channel_result(
               > SU_I(client).pending_fetch_deadline_ms)
       {
         AZ_IOT_LOG_ERRORF(
-            "su: service asked for %u ms, which does not fit the request timeout; giving up",
+            AZ_IOT_LOG_COMPONENT_SU,
+            "service asked for %u ms, which does not fit the request timeout; giving up",
             (unsigned)service_error->retry_after_ms);
         SU_I(client).pending_fetch = SU_FETCH_NONE;
         SU_I(client).pending_fetch_deadline_ms = 0;
@@ -1823,7 +1832,8 @@ static bool expire_fetch_in_flight(az_iot_su_client* client)
   {
     return false;
   }
-  AZ_IOT_LOG_ERROR("su: giving up on an update check; no answer before its deadline");
+  AZ_IOT_LOG_ERROR(
+      AZ_IOT_LOG_COMPONENT_SU, "giving up on an update check; no answer before its deadline");
   SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   SU_I(client).pending_fetch_deadline_ms = 0;
   if (SU_I(client).channel.vtable != NULL && SU_I(client).channel.vtable->cancel_update != NULL)
@@ -1862,7 +1872,8 @@ static void drive_pending_fetch(az_iot_su_client* client)
   if (SU_I(client).pending_fetch_deadline_ms != 0
       && az_iot_time_mono_ms() >= SU_I(client).pending_fetch_deadline_ms)
   {
-    AZ_IOT_LOG_ERROR("su: giving up on a pending update check; its deadline expired");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "giving up on a pending update check; its deadline expired");
     SU_I(client).pending_fetch = SU_FETCH_NONE;
     SU_I(client).pending_fetch_deadline_ms = 0;
     /* A superseded fetch still awaiting its answer shares the deadline and
@@ -1939,12 +1950,13 @@ static az_iot_result su_client_init_core(
   }
   if (az_iot_crypto__validate(crypto) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("su: init needs a crypto backend (connection client options.crypto)");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "init needs a crypto backend (connection client options.crypto)");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (crypto->verify_rs256 == NULL)
   {
-    AZ_IOT_LOG_ERROR("su: crypto backend has no verify_rs256");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "crypto backend has no verify_rs256");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   /* open/close/request_update/report/cancel_update are required; do_work and
@@ -2822,7 +2834,8 @@ static void roll_back_installed(az_iot_su_client* client, uint32_t first, uint32
 {
   if (end > first && SU_I(client).hooks.restore_fn == NULL)
   {
-    AZ_IOT_LOG_ERROR("su: no restore_fn; the installed step is not rolled back");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "no restore_fn; the installed step is not rolled back");
     SU_I(client).install_result.extended_result_code
         = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_RESTORE, 0u);
   }
@@ -3241,7 +3254,7 @@ az_iot_result az_iot_su_client_add_observer(
    * walked. Removing is allowed; see the remove function. */
   if (SU_I(client).dispatching)
   {
-    AZ_IOT_LOG_ERROR("su: cannot add an observer from inside one");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "cannot add an observer from inside one");
     return AZ_IOT_ERR_BUSY;
   }
 
@@ -3261,7 +3274,7 @@ az_iot_result az_iot_su_client_add_observer(
   }
   if (free_slot == AZ_IOT_MAX_SU_OBSERVERS)
   {
-    AZ_IOT_LOG_ERROR("su: no free observer slot");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no free observer slot");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   SU_I(client).observers[free_slot].cb = cb;
