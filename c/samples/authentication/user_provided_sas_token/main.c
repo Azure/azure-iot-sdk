@@ -132,8 +132,12 @@ static az_iot_result sign_token(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  /* The HMAC and its base64 are the token's signature: wiped on every exit. */
   uint8_t mac[32];
+  char sig_b64[64];
   unsigned int mac_len = 0;
+  int32_t sig_len = 0;
+  az_iot_result r = AZ_IOT_ERR_INTERNAL;
   if (HMAC(
           EVP_sha256(),
           store->key,
@@ -142,33 +146,30 @@ static az_iot_result sign_token(
           to_sign_len,
           mac,
           &mac_len)
-          == NULL
-      || mac_len != sizeof(mac))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-  char sig_b64[64];
-  int32_t sig_len = 0;
-  if (az_result_failed(az_base64_encode(
+          != NULL
+      && mac_len == sizeof(mac)
+      && !az_result_failed(az_base64_encode(
           az_span_create((uint8_t*)sig_b64, (int32_t)sizeof(sig_b64)),
           az_span_create(mac, (int32_t)sizeof(mac)),
           &sig_len)))
   {
-    return AZ_IOT_ERR_INTERNAL;
+    static const char k_prefix[] = "SharedAccessSignature sr=";
+    size_t pos = 0;
+    bool ok = put(out, cap, &pos, k_prefix, sizeof(k_prefix) - 1)
+        && put(out, cap, &pos, resource_uri, strlen(resource_uri))
+        && put(out, cap, &pos, "&sig=", 5)
+        && put_url_encoded(out, cap, &pos, sig_b64, (size_t)sig_len)
+        && put(out, cap, &pos, "&se=", 4) && put(out, cap, &pos, expiry_text, (size_t)expiry_len);
+    if (ok && key_name[0] != '\0')
+    {
+      ok = put(out, cap, &pos, "&skn=", 5) && put(out, cap, &pos, key_name, strlen(key_name));
+    }
+    *out_len = pos;
+    r = ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-
-  static const char k_prefix[] = "SharedAccessSignature sr=";
-  size_t pos = 0;
-  bool ok = put(out, cap, &pos, k_prefix, sizeof(k_prefix) - 1)
-      && put(out, cap, &pos, resource_uri, strlen(resource_uri)) && put(out, cap, &pos, "&sig=", 5)
-      && put_url_encoded(out, cap, &pos, sig_b64, (size_t)sig_len) && put(out, cap, &pos, "&se=", 4)
-      && put(out, cap, &pos, expiry_text, (size_t)expiry_len);
-  if (ok && key_name[0] != '\0')
-  {
-    ok = put(out, cap, &pos, "&skn=", 5) && put(out, cap, &pos, key_name, strlen(key_name));
-  }
-  *out_len = pos;
-  return ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  OPENSSL_cleanse(mac, sizeof(mac));
+  OPENSSL_cleanse(sig_b64, sizeof(sig_b64));
+  return r;
 }
 
 /**

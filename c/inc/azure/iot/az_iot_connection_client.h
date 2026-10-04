@@ -295,8 +295,10 @@ extern "C"
    *
    * @param[in] request           What the token must be valid for.
    * @param[out] token_buffer     Destination for READY; no terminator needed.
-   * @param[in] token_buffer_size Bytes in @p token_buffer: the token area of
-   *                              az_iot_connection_client_options::sas_buffer.
+   * @param[in] token_buffer_size Bytes the token may use: the token area of
+   *                              az_iot_connection_client_options::sas_buffer
+   *                              less one, reserved for the terminator the
+   *                              SDK appends.
    * @param[out] response         Outcome; zeroed on entry.
    * @param[in] user_ctx          az_iot_auth::sas::user_ctx.
    */
@@ -1817,7 +1819,8 @@ extern "C"
    * @param[in] response   READY or UNAVAILABLE, as for the callback.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p request_id is not pending
    * (completed, timed out, or cancelled by close()); AZ_IOT_ERR_NOT_ENOUGH_SPACE
-   * when the token exceeds the token area of sas_buffer; AZ_IOT_ERR_INVALID_ARG for a
+   * when the token and its terminator exceed the token area of sas_buffer;
+   * AZ_IOT_ERR_INVALID_ARG for a
    * PENDING response, a READY response without a token or validity.
    */
   AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
