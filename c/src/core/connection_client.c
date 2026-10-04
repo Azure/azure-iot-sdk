@@ -106,6 +106,8 @@
 #define DPS_API_VERSION "2026-11-02-preview"
 #define DPS_USERNAME_INFIX "/registrations/"
 #define DPS_USERNAME_SUFFIX "/api-version=" DPS_API_VERSION
+/* SAS key name (`skn`) DPS requires in device registration tokens. */
+#define DPS_SAS_KEY_NAME "registration"
 
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE "registrationState"
@@ -1067,7 +1069,7 @@ static az_iot_result apply_sas_key(
                       &c->dps_prov,
                       sig,
                       expiry,
-                      AZ_SPAN_FROM_STR("registration"),
+                      AZ_SPAN_FROM_STR(DPS_SAS_KEY_NAME),
                       token,
                       c->sas_token_size,
                       NULL)

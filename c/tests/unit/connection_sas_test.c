@@ -348,6 +348,90 @@ static void the_device_id_is_url_encoded_in_the_token(void** state)
   assert_string_equal(last_connect(fx)->password, ENCODED_ID_HUB_TOKEN);
 }
 
+static uint64_t max_time(void* user_ctx)
+{
+  (void)user_ctx;
+  return UINT64_MAX - (uint64_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS; /* 20-digit expiry */
+}
+
+/* Worst case for AZ_IOT_SAS_TOKEN_SIZE(): every ID character URL-encoded, a
+ * 20-digit expiry, and the role with the longer infix and `skn`. A token area
+ * of that size must be enough for both roles, and one byte less is refused
+ * before signing. For DPS the bound must be exact except for the signature,
+ * which the bound assumes is fully URL-encoded. */
+static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
+{
+  (void)state;
+  /* 10 + 20 = 30 ID characters, all '/' (each encodes to 3 bytes). */
+  static const char k_first[] = "//////////";
+  static const char k_second[] = "////////////////////";
+  enum
+  {
+    ids = sizeof(k_first) - 1 + sizeof(k_second) - 1
+  };
+  for (int dps = 0; dps <= 1; ++dps)
+  {
+    for (int shrink = 0; shrink <= 1; ++shrink)
+    {
+      static uint8_t buf[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(ids))];
+      az_iot_connection_client client;
+      az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+      az_iot_connection_client_options opts = { 0 };
+      opts.crypto = TEST_CRYPTO();
+      opts.unix_time.get_time = max_time;
+      opts.sas_buffer.buffer = buf;
+      opts.sas_buffer.size = sizeof(buf) - (size_t)shrink;
+      if (dps)
+      {
+        opts.client_id = k_second;
+        opts.dps.id_scope = k_first;
+        opts.dps.registration_id = k_second;
+        opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+        opts.hub_auth.sas.primary_key_base64 = KEY_B64;
+      }
+      else
+      {
+        opts.host = k_first;
+        opts.client_id = k_second;
+        opts.hub_auth.sas.primary_key_base64 = KEY_B64;
+      }
+      assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+      assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+      az_iot_result r = az_iot_connection_client_open(&client);
+      if (shrink)
+      {
+        assert_int_equal(r, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      }
+      else
+      {
+        assert_int_equal(r, AZ_IOT_OK);
+        const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(
+            az_iot_mock_mqtt_factory_last_client(factory), AZ_IOT_MOCK_CALL_CONNECT);
+        assert_non_null(call);
+        size_t used = strlen(call->password) + 1u;
+        assert_true(used <= AZ_IOT_SAS_TOKEN_SIZE(ids));
+        if (dps)
+        {
+          /* DPS is the longer role: the only slack left is the signature's
+           * unencoded characters, 2 bytes each. The bound assumes all 44
+           * encode; a random HMAC rarely does, so only this is asserted. */
+          const char* sig = strstr(call->password, "&sig=") + 5;
+          size_t sig_len = (size_t)(strstr(sig, "&se=") - sig);
+          size_t escapes = 0;
+          for (size_t i = 0; i < sig_len; ++i)
+          {
+            escapes += sig[i] == '%' ? 1u : 0u;
+          }
+          size_t plain = sig_len - 3u * escapes;
+          assert_int_equal(escapes + plain, 44);
+          assert_int_equal(used + 2u * plain, AZ_IOT_SAS_TOKEN_SIZE(ids));
+        }
+      }
+      az_iot_connection_client_deinit(&client);
+    }
+  }
+}
+
 static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -498,6 +582,7 @@ int main(void)
         a_provider_ca_is_kept_when_the_role_falls_back_to_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_group_key_derives_from_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(the_device_id_is_url_encoded_in_the_token, setup, teardown),
+    cmocka_unit_test(the_token_size_macro_is_enough_for_the_worst_case),
     cmocka_unit_test_setup_teardown(a_token_that_does_not_fit_fails_and_is_wiped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_token_is_wiped_once_the_adapter_has_the_connect, setup, teardown),
