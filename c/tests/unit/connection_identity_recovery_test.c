@@ -54,6 +54,7 @@ static az_iot_connection_client_options base_options(void)
   opts.identity_recovery.policy.initial_delay_ms = IDENTITY_MS;
   opts.identity_recovery.policy.max_delay_ms = IDENTITY_MS;
   opts.identity_recovery.policy.jitter_pct = 0;
+  opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
   return opts;
 }
 
@@ -139,15 +140,16 @@ static size_t last_index_of(
     az_iot_connection_scope scope,
     az_iot_connection_state state)
 {
-  for (size_t i = log->count; i > 0; --i)
+  size_t found = SIZE_MAX;
+  for (size_t i = log->count; i > 0 && found == SIZE_MAX; --i)
   {
     if (log->scopes[i - 1] == scope && log->states[i - 1] == state)
     {
-      return i - 1;
+      found = i - 1;
     }
   }
-  fail_msg("no such event");
-  return SIZE_MAX;
+  assert_int_not_equal(found, SIZE_MAX);
+  return found;
 }
 
 static void reject_identity(az_iot_test_conn* fx)
@@ -389,10 +391,10 @@ static void identity_recovery_stops_at_max_duration(void** state)
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_IDENTITY_REJECTED);
 }
 
-static void a_zeroed_identity_policy_faults_on_the_first_refusal(void** state)
+static void mode_none_faults_on_the_first_refusal(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.policy = az_iot_connection_client_get_disabled_retry_policy();
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_NONE;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   reject_identity(fx);
@@ -414,6 +416,40 @@ static void a_disabled_reconnection_policy_faults_on_the_first_refusal(void** st
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_IDENTITY_REJECTED);
+}
+
+/* max_duration_seconds bounds the whole episode: transient failures after a
+ * refusal cannot outlive it, and the fault reports the refusal. */
+static void max_duration_bounds_transient_retries_after_a_refusal(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  reject_identity(fx);
+  fire_retry(fx);
+
+  for (int n = 0; n < 200
+       && az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB)
+           != AZ_IOT_CONN_STATE_FAULTED;
+       ++n)
+  {
+    /* Keep only this round's events; the log is bounded. */
+    memset(&fx->log, 0, sizeof(fx->log));
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    assert_non_null(m);
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+    pump(fx, 2);
+    if (az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB)
+        == AZ_IOT_CONN_STATE_RECONNECTING)
+    {
+      fire_retry(fx);
+    }
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_IDENTITY_REJECTED);
 }
 
 /* Only HUB:CONNECTED restarts the ladder; a transient failure in between does
@@ -496,12 +532,12 @@ static void refusals_do_not_trigger_the_unreachable_hub_threshold(void** state)
   assert_string_equal(last_connect_host(fx), HUB_HOST);
 }
 
-/* auto_reprovision: DPS assigns, the hub refuses again. The cycle keeps its
+/* REPROVISION mode: DPS assigns, the hub refuses again. The cycle keeps its
  * backoff and stops at max_attempts instead of re-registering forever. */
-static void auto_reprovision_cycles_are_bounded(void** state)
+static void reprovision_cycles_are_bounded(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.auto_reprovision = true;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
   fx->client->opts.identity_recovery.policy.initial_delay_ms = 10;
   fx->client->opts.identity_recovery.policy.max_delay_ms = 40;
   fx->client->opts.identity_recovery.policy.max_attempts = 3;
@@ -559,7 +595,7 @@ static void request_reprovision_runs_the_pending_retry_through_dps_now(void** st
 static void close_and_open_after_a_fault_returns_to_the_cached_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.policy = az_iot_connection_client_get_disabled_retry_policy();
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_NONE;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
   reject_identity(fx);
@@ -623,8 +659,8 @@ static void request_reprovision_during_a_registration_does_not_linger(void** sta
   assert_string_equal(last_connect_host(fx), HUB_HOST);
 }
 
-/* DPS refusing the bootstrap identity is retried on reconnection_policy, and
- * reported as such: the identity ladder is the hub's. */
+/* DPS refusing the bootstrap identity is retried on reconnection_policy, not
+ * the identity ladder, which is the hub's. The cause is not retriable. */
 static void a_dps_refusal_is_not_on_the_identity_ladder(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -632,7 +668,7 @@ static void a_dps_refusal_is_not_on_the_identity_ladder(void** state)
   reject_identity(fx);
   size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RECONNECTING);
   assert_true(fx->log.recovery_present[i]);
-  assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_TRANSIENT);
+  assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_TERMINAL);
   assert_int_equal(fx->log.recovery[i].next_attempt_delay_ms, RECONNECT_MS);
   assert_string_equal(fx->log.recovery_endpoint[i], DPS_HOST);
   assert_int_equal(fx->client->identity_retry_attempt, 0);
@@ -651,6 +687,24 @@ static void request_reprovision_needs_a_dps_client(void** state)
 /* defaults                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* A zeroed identity_recovery keeps the earlier behaviour: a CONNACK refusal
+ * re-provisions, paced by reconnection_policy. */
+static void zeroed_identity_recovery_reprovisions_on_the_reconnection_schedule(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  memset(&fx->client->opts.identity_recovery, 0, sizeof(fx->client->opts.identity_recovery));
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+
+  reject_identity(fx);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(r->next_attempt_delay_ms, RECONNECT_MS);
+  assert_true(r->next_attempt_reprovisions);
+  fire_retry(fx);
+  assert_string_equal(last_connect_host(fx), DPS_HOST);
+}
+
 static void options_default_enables_slow_hub_recovery_without_dps(void** state)
 {
   (void)state;
@@ -660,7 +714,7 @@ static void options_default_enables_slow_hub_recovery_without_dps(void** state)
   assert_int_equal(opts.identity_recovery.policy.max_attempts, 0u);
   assert_int_equal(opts.identity_recovery.policy.jitter_pct, 25u);
   assert_int_equal(opts.identity_recovery.max_duration_seconds, 0u);
-  assert_false(opts.identity_recovery.auto_reprovision);
+  assert_int_equal(opts.identity_recovery.mode, AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB);
 }
 
 int main(void)
@@ -677,8 +731,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         identity_backoff_grows_until_max_attempts_faults, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(identity_recovery_stops_at_max_duration, setup_v3, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_zeroed_identity_policy_faults_on_the_first_refusal, setup_v3, teardown),
+    cmocka_unit_test_setup_teardown(mode_none_faults_on_the_first_refusal, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
         a_disabled_reconnection_policy_faults_on_the_first_refusal, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
@@ -687,7 +740,7 @@ int main(void)
         a_refusal_retries_the_assigned_hub_without_dps, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         refusals_do_not_trigger_the_unreachable_hub_threshold, setup_dps, teardown),
-    cmocka_unit_test_setup_teardown(auto_reprovision_cycles_are_bounded, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(reprovision_cycles_are_bounded, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         request_reprovision_runs_the_pending_retry_through_dps_now, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
@@ -701,6 +754,10 @@ int main(void)
         a_dps_refusal_is_not_on_the_identity_ladder, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         mqttv5_mid_session_not_authorized_faults_without_a_policy, setup_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        zeroed_identity_recovery_reprovisions_on_the_reconnection_schedule, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        max_duration_bounds_transient_retries_after_a_refusal, setup_v3, teardown),
     cmocka_unit_test(options_default_enables_slow_hub_recovery_without_dps),
   };
   return cmocka_run_group_tests_name("connection_identity_recovery", tests, NULL, NULL);

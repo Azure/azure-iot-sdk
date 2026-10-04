@@ -348,7 +348,7 @@ static void connack_fail_with_reconnect_schedules_retry(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_AUTH));
   /* First do_work delivers the failed CONNACK; deferred apply schedules a
    * reconnect (state -> RECONNECTING) and tears down the active adapter. */
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -385,7 +385,7 @@ static void max_attempts_exhausted_transitions_to_faulted(void** state)
   {
     az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
     assert_non_null(m);
-    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_AUTH));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     if (i < 2)
     {
@@ -397,7 +397,7 @@ static void max_attempts_exhausted_transitions_to_faulted(void** state)
   }
 
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_MQTT);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_AUTH);
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 }
 
@@ -434,7 +434,7 @@ static void close_during_reconnecting_goes_idle(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_AUTH));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RECONNECTING);
 

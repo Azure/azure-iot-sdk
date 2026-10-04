@@ -354,7 +354,7 @@ registration attempts, and a registration that follows an exhausted hub ladder s
 
 Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
 the failure: a hub failure retried as a re-registration (threshold crossed, or
-`identity_recovery.auto_reprovision`) climbs a DPS ladder. A hub identity refusal climbs a third,
+a CONNACK refusal in `REPROVISION` mode) climbs a DPS ladder. A hub identity refusal climbs a third,
 identity ladder on `opts.identity_recovery` (see [connection-c.md §5.2](connection-c.md#52-what-triggers-a-reconnect)).
 
 Reset points differ per ladder:

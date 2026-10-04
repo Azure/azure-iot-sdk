@@ -85,7 +85,8 @@ The assignment is cached. Reconnects go back to the same hub, and the client re-
 when:
 
 - the application calls `az_iot_connection_client_request_reprovision()`,
-- the hub rejects the device identity and `identity_recovery.auto_reprovision` is set,
+- the hub rejects the device identity at CONNACK and `identity_recovery.mode` is
+  `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`,
 - `dps.max_hub_connect_attempts_before_reprovision` consecutive hub connects fail (default 50),
 - a registration fails or returns no assignment, or
 - the client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
@@ -109,6 +110,7 @@ build the common shapes.
   attempts.
 - A `Retry-After` from DPS is honoured even when it exceeds `max_delay_ms`.
 - `close()` never triggers a reconnect.
+- A failure inside `open()` itself is returned from `open()` and is not retried.
 
 ### Identity recovery
 
@@ -117,27 +119,29 @@ When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`
 disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
 happens next:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `policy` | 5 min initial, 1 h cap, ±25%, no limit | Retry schedule for the cached hub. A zeroed policy faults on the first refusal. |
-| `max_duration_seconds` | 0 | Stop after this long since the first refusal. `0` = no limit. Not kept across restarts. |
-| `auto_reprovision` | false | Register through DPS instead of retrying the hub, on the same schedule. |
+| Field | `options_default()` | Zeroed | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `RETRY_HUB` | `REPROVISION` | What the next attempt does; see below. |
+| `policy` | 5 min initial, 1 h cap, ±25%, no limit | uses `reconnection_policy` | Retry schedule after a refusal. |
+| `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. Covers every retry until `HUB:CONNECTED`. Not kept across restarts. |
 
-- By default the SDK retries the cached hub. It does not contact DPS or request a certificate.
-- The schedule is separate from `reconnection_policy`, and DPS registrations do not reset it.
+| `mode` | Next attempt after a refusal |
+| --- | --- |
+| `AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB` | The cached hub. No DPS registration, no certificate request. |
+| `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` | A DPS registration after a CONNACK refusal (the earlier behaviour); the hub after an mqttv5 DISCONNECT refusal. With `dps.request_operational_certificate`, every registration requests a new certificate. |
+| `AZ_IOT_IDENTITY_RECOVERY_NONE` | None: the refusal faults. |
+
+- The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
   Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
-  still back off and stop at `policy.max_attempts`.
+  still back off and stop at the policy's `max_attempts`.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`.
 - With `reconnection_policy` disabled, the first refusal faults.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
-  If a retry is pending, it runs on the next `do_work()`.
-- With `auto_reprovision` and `dps.request_operational_certificate`, every re-provision requests
-  a new certificate.
+  A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
 `RECONNECTING` and `FAULTED` events carry `recovery`: the classification
 (`AZ_IOT_CONN_FAILURE_TRANSIENT`, `_IDENTITY`, `_TERMINAL`), the endpoint, the attempt count, the
 delay to the next attempt and whether it goes to DPS. `error` carries the raw reason code.
-- A failure inside `open()` itself is returned from `open()` and is not retried.
 
 What survives a reconnect:
 

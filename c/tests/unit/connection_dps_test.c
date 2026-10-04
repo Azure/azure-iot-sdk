@@ -181,7 +181,6 @@ static int setup_with_reconnect(void** state)
   opts.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
   opts.reconnection_policy.max_attempts = 3;
   opts.reconnection_policy.jitter_pct = 0;
-  opts.identity_recovery.policy = opts.reconnection_policy;
   assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
@@ -196,11 +195,11 @@ static int setup_with_reconnect(void** state)
   return 0;
 }
 
-/* Opt into re-provisioning on an identity refusal; the tests using this pin the
+/* REPROVISION mode, the zero value, stated explicitly; the tests using this pin the
  * re-provisioning path itself. */
-static void enable_auto_reprovision(az_iot_test_conn* fx)
+static void use_reprovision_mode(az_iot_test_conn* fx)
 {
-  fx->client->opts.identity_recovery.auto_reprovision = true;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
 }
 
 /* Provision, then hand back the hub adapter sitting in CONNECTING. */
@@ -221,11 +220,12 @@ static az_iot_mock_mqtt_client* provision_to_hub_connecting(az_iot_test_conn* fx
   return hub;
 }
 
-/* By default an identity rejection is retried against the cached hub: the
+/* In RETRY_HUB mode an identity rejection is retried against the cached hub: the
  * refusal does not say the assignment is stale, so DPS is not contacted. */
 static void hub_identity_rejection_retries_the_cached_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
@@ -244,12 +244,12 @@ static void hub_identity_rejection_retries_the_cached_hub(void** state)
   assert_string_equal(c->connect.host, "myhub.azure-devices.net");
 }
 
-/* With auto_reprovision a DPS-provisioned device goes back to DPS for a fresh
+/* In REPROVISION mode a DPS-provisioned device goes back to DPS for a fresh
  * assignment. */
 static void hub_identity_rejection_reprovisions_through_dps(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
@@ -443,7 +443,7 @@ static void a_successful_hub_connection_resets_the_failure_count(void** state)
 static void reprovisioning_connects_to_the_new_assignment(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
@@ -486,7 +486,7 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
 static void repeated_identity_rejection_still_honors_max_attempts(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* m = provision_to_hub_connecting(fx);
 
   for (int i = 0; i < 6 && !az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED); ++i)
@@ -521,14 +521,14 @@ static void identity_rejection_without_a_policy_faults(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 }
 
-/* ...but with auto_reprovision the verdict is not thrown away with the retry.
+/* ...but in REPROVISION mode the verdict is not thrown away with the retry.
  * Disabling retries stops the SDK acting on its own; it does not make the
  * client forget the opt-in, so the next open() registers instead of walking
  * back into the hub that just rejected it. */
 static void identity_rejection_without_a_policy_still_reprovisions_on_reopen(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
   assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
 
@@ -1264,7 +1264,7 @@ static void close_from_a_faulted_hub_still_ends_the_held_session(void** state)
 static void a_reprovision_adopts_the_session_its_users_hold(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
 
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
@@ -2634,7 +2634,7 @@ static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
 static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   set_dps_profile_override(NULL);
 
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
@@ -2708,14 +2708,14 @@ static void a_half_usable_assignment_is_not_partially_adopted(void** state)
   assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
 }
 
-/* An identity rejection with auto_reprovision records that the device must
+/* An identity rejection in REPROVISION mode records that the device must
  * re-provision, and a failing registration can then exhaust the policy and
  * fault. close() must not throw that intent away: the cached host would
  * otherwise send open() back to the hub that just rejected this identity. */
 static void the_reprovision_demand_survives_close_and_open(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   fx->client->opts.reconnection_policy.max_attempts = 1;
 
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
@@ -2952,7 +2952,7 @@ static void the_scoped_getter_reports_each_lifecycle_separately(void** state)
 static void a_diverted_retry_consumes_its_pending_token(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
+  use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
@@ -3089,8 +3089,7 @@ static void the_hub_ladder_cannot_spend_the_dps_budget(void** state)
 static void a_successful_registration_clears_both_ladders(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  enable_auto_reprovision(fx);
-  fx->client->opts.identity_recovery.policy = fx->client->opts.reconnection_policy;
+  use_reprovision_mode(fx);
 
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
   assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
@@ -3100,7 +3099,7 @@ static void a_successful_registration_clears_both_ladders(void** state)
   }
 
   /* Two hub failures, then an identity rejection that sends us back to DPS
-   * (auto_reprovision). */
+   * (REPROVISION mode). */
   for (int i = 0; i < 2; ++i)
   {
     az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
