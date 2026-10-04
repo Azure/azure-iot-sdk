@@ -386,17 +386,23 @@ registration attempts, and a registration that follows an exhausted hub ladder s
 `initial_delay_ms` instead of inheriting the hub's capped backoff.
 
 Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
-the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
-registration.
+the failure: a hub failure retried as a re-registration (threshold crossed, or a CONNACK refusal in
+`AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode) climbs a DPS ladder.
+
+A hub identity refusal (`AZ_IOT_ERR_IDENTITY_REJECTED` at CONNACK, `AZ_IOT_ERR_AUTH` from an mqttv5
+DISCONNECT) climbs a third ladder, `identity_retry_attempt`, on `opts.identity_recovery.policy`
+(`reconnection_policy` when that is zeroed). `identity_recovery.max_duration_seconds` bounds every
+retry, on any ladder, from the first refusal until `HUB:CONNECTED`.
 
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | both ladders reset |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
 | Hub CONNACK succeeds (before the MQTTv5 birth handshake) | `HUB` resets; `DPS` untouched |
+| `HUB:CONNECTED` (after the birth-ack on MQTTv5) | identity ladder resets |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
-| `open()` / `close()` | both ladders reset |
+| `open()` / `close()` | all ladders reset |
 
 ### 5.1 Backoff policy
 
@@ -450,12 +456,26 @@ Not triggers, because they fault instead:
   feature clients, rather than guessing a protocol (§4). Terminal even with a policy configured, and
   it also forces the next `open()` back through DPS so the stale cached host cannot be reused.
 
-`AZ_IOT_ERR_IDENTITY_REJECTED` on CONNACK is a special case: it sets `needs_reprovision` whatever the
-reconnection policy, so the next attempt — the automatic retry, or the application's next `open()` —
-runs `dps_start()` for a fresh assignment instead of reconnecting to the same rejected credential.
-On the retry path the flag is cleared before the attempt **only when a cached assignment exists**, so
-a failing registration falls back to an ordinary hub retry rather than looping through provisioning;
-with no cached assignment the demand survives and the next retry provisions again.
+A hub identity refusal is a special case. `schedule_reconnect()` hands it to
+`schedule_identity_recovery()`, which schedules the next attempt on the identity ladder. The refusal
+does not say whether the device is disabled, its credential revoked or its assignment moved.
+`identity_recovery.mode` decides the attempt:
+
+- `RETRY_HUB` (`options_default()`): the cached hub. No DPS registration, no certificate request.
+- `REPROVISION` (zero, the earlier behaviour): `note_identity_refusal()` sets `needs_reprovision`
+  for a CONNACK refusal, whatever the reconnection policy, so the retry, or the next `open()`,
+  registers through DPS. An mqttv5 DISCONNECT refusal retries the hub.
+- `NONE`: the refusal faults.
+
+The refusal resets `consecutive_hub_connect_failures`, because the hub answered. The identity
+ladder is not reset by a registration, so DPS-accept / hub-reject cycles stay bounded. The hub
+faults with the refusal as the reason when the ladder is spent, when `max_duration_seconds` passes
+(checked in `schedule_reconnect()` too, so transient failures in the episode cannot outlive it), or
+when `reconnection_policy` is disabled. `az_iot_connection_client_request_reprovision()` sets
+`needs_reprovision` on demand and brings a pending hub retry forward. On the retry path the flag is
+cleared before the attempt **only when a cached assignment exists**, so a failing registration falls
+back to an ordinary hub retry rather than looping through provisioning; with no cached assignment
+the demand survives and the next retry provisions again.
 
 Every trigger above is conditional on `reconnect_enabled()`. With no retry policy, CONNACK, presence
 and adapter failures transition to `FAULTED`; a transport disconnect transitions to `IDLE`.
@@ -481,7 +501,7 @@ checked before backoff is scheduled.
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
 | Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
-| DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — an identity rejection at CONNACK, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
+| DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
 | In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. |
 
 ### 5.4 The first attempt
@@ -784,7 +804,7 @@ connection failure path:
 | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | A compile-time buffer bound was exceeded. |
 | `AZ_IOT_ERR_NOT_FOUND` | A required field was absent from a service payload. |
 | `AZ_IOT_ERR_INTERNAL` | A dependency call failed in a way the SDK cannot attribute. |
-| `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused *who the device claims to be*. The only result that drives re-provisioning. |
+| `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused *who the device claims to be*. From the hub, retried on `identity_recovery` (§5.2). |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | A SUBACK carried a code the broker will repeat. Terminal even when a reconnection policy is configured on a `FAILS_SESSION` persistent subscription; the DPS and presence paths retry it ([§9.5](#95-the-realization-table)). |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned material the adapter cannot use — a certificate with no key, or a key URI with no engine or provider to resolve it. Caught before the connect, so the device gets this instead of an opaque TLS failure seconds later. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a `connectionProfile` this build does not know. |
@@ -817,9 +837,10 @@ call it rather than reporting a blanket `AZ_IOT_ERR_MQTT` — the rule is normat
 | Every other non-zero v5 code | `AZ_IOT_ERR_MQTT` | Not an identity verdict. |
 | Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | The two schemes overlap numerically — `2`, `4` and `5` are identity refusals in v3.1.1 and mean something else entirely in v5 — so guessing a scheme would be guessing whether to abandon a credential. This is a public entry point that adapters call with a version they supply, so the value is genuinely untrusted. |
 
-`AZ_IOT_ERR_IDENTITY_REJECTED` is the **only** result that changes where the next attempt goes: it
-sets `needs_reprovision` whatever the reconnection policy, so the next attempt — the automatic retry,
-or the application's next `open()` — runs `dps_start()` for a fresh assignment (§5.2). Everything else retries against the same endpoint.
+`AZ_IOT_ERR_IDENTITY_REJECTED` from the hub, like `AZ_IOT_ERR_AUTH` from an mqttv5 DISCONNECT, is
+retried on the identity ladder. A CONNACK refusal sends the next attempt (or the next `open()`) to
+DPS only in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode (§5.2). Everything else retries against the
+same endpoint on `reconnection_policy`.
 
 ### 9.3 SUBACK mapping
 
@@ -909,7 +930,7 @@ connection client itself, or a feature client.
 | Credential | Certificate material the adapter cannot use — a certificate with no key, a key URI with no engine or provider, a key reference nothing can express | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` (core) or `AZ_IOT_ERR_TLS` (key custody) | `connection_client.c` validation before the connect, and `az_iot_paho_key_custody.c` | the attempt fails before any socket is opened | Deliberate: caught up front so the device gets a specific result instead of an opaque TLS failure several seconds later. This is the one place a TLS-flavoured result is produced. |
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
-| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | sets `needs_reprovision`; the next attempt runs `dps_start()` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
+| CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | identity ladder; `dps_start()` in `REPROVISION` mode, the cached hub in `RETRY_HUB` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
 | Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_factory_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
 
 #### 9.5.3 Phase 3 — CONNECT / CONNACK
@@ -917,7 +938,7 @@ connection client itself, or a feature client.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | CONNACK | Accepted | `AZ_IOT_OK` | adapter | MQTTv5: start the presence handshake, then the subscription gate. MQTTv3: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
-| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` is set whatever the policy; the next attempt runs `dps_start()` — as a retry when a policy is configured, otherwise on the application's next `open()`. | The retry is still scheduled through the reconnection policy, so backoff and `max_attempts` bound it — a device whose enrollment has been deleted must not hammer DPS either. |
+| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `schedule_identity_recovery()`: per `identity_recovery.mode`, the cached hub (`RETRY_HUB`), `dps_start()` (`REPROVISION`, zero; `needs_reprovision` is set whatever the policy, so the next `open()` registers too) or `FAULTED` (`NONE`). `FAULTED` when the ladder or `max_duration_seconds` is spent, or a policy is disabled. | The identity ladder survives registrations, so DPS-accept / hub-reject cycles stay bounded. No certificate is requested in `RETRY_HUB` mode. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
 | CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |
@@ -943,7 +964,7 @@ connection client itself, or a feature client.
 | Assignment | Unrecognised `connectionProfile`, or one that does not fit the 64-byte buffer (63 bytes plus NUL) | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`; `connection_profile_raw_truncated` says when it was cut. Terminal regardless of policy, via `reject_assignment()`. Implemented; depends on the service returning the field. |
 | Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | `dps_apply_deferred()` branches on `status != AZ_IOT_OK`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Any DPS phase | DPS message arrives in the wrong phase | ignored | connection client | dropped | Guarded on `dps_phase` being REGISTERING or POLLING. |
-| Hub CONNACK | Identity rejected | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `needs_reprovision` → `dps_start()` on the next attempt | See [§9.2](#92-connack-mapping). |
+| Hub CONNACK | Identity rejected | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | identity ladder; DPS in `REPROVISION` mode, the cached hub in `RETRY_HUB` | See [§5.2](#52-what-triggers-a-reconnect). |
 
 #### 9.5.5 Phase 5 — presence handshake (MQTTv5)
 
@@ -993,7 +1014,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with the failure; the connection survives | Correctly **Contained**, but the reason code is **flattened**: `response->reasonCode` is not inspected, so a caller cannot tell a deterministic refusal from a quota it should back off on. |
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
-| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise | `0x87` is reported non-retriable and still reconnects; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
+| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RECONNECTING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |
