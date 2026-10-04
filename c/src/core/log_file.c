@@ -171,8 +171,9 @@ static bool rename_if_present(const char* from, const char* to)
  * The active file is first staged as `<path>.0`. If any later step fails, the
  * moves already made are undone and the staged file is moved back, so no
  * generation but the oldest (dropped by design) is lost, and rotation is
- * retried on the next line. A `<path>.0` left by a failed move-back is
- * placed as `<path>.1` instead of the active file, which then stays active.
+ * retried on the next line. A `<path>.0` left by a failed move-back or an
+ * interrupted process is placed as `<path>.1` instead of the active file,
+ * which then stays active.
  * The active file is always reopened with its real size.
  */
 static void file_rotate(az_iot_log_file_sink* fs)
@@ -317,6 +318,17 @@ AZ_NODISCARD az_iot_result az_iot_log_file_sink_open(
   if (!file_reopen(file_sink))
   {
     return AZ_IOT_ERR_NOT_FOUND;
+  }
+  /* A "<path>.0" left by an interrupted rotation is placed as "<path>.1" now,
+   * not when the active file next fills. */
+  char staged[AZ_IOT_LOG_FILE_PATH_MAX];
+  if (rotated_name(staged, file_sink->_internal.path, 0u) && file_exists(staged))
+  {
+    file_rotate(file_sink);
+    if (file_sink->_internal.stream == NULL)
+    {
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
   }
   file_sink->_internal.open = true;
 

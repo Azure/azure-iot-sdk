@@ -282,23 +282,34 @@ static void file_sink_writes_the_documented_line_format(void** state)
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  /* 2026-10-03T18:04:05.123Z [INFO ] [app] ... log_test.c:<line>: hello */
-  assert_true(strlen(text) > 25);
-  assert_int_equal('-', text[4]);
-  assert_int_equal('-', text[7]);
-  assert_int_equal('T', text[10]);
-  assert_int_equal(':', text[13]);
-  assert_int_equal(':', text[16]);
-  assert_int_equal('.', text[19]);
-  assert_int_equal('Z', text[23]);
-  assert_memory_equal(text + 24, " [INFO ] [app] ", 15);
-  /* File name without its directory. */
-  const char* where = strstr(text, "log_test.c:");
+  /* 18:04:05.123Z [INFO] [app] [<tid>] [log_test.c:<line>] hello */
+  assert_true(strlen(text) > 14);
+  for (size_t i = 0; i < 12; ++i)
+  {
+    if (i == 2 || i == 5)
+    {
+      assert_int_equal(':', text[i]);
+    }
+    else if (i == 8)
+    {
+      assert_int_equal('.', text[i]);
+    }
+    else
+    {
+      assert_true(text[i] >= '0' && text[i] <= '9');
+    }
+  }
+  assert_memory_equal(text + 12, "Z [INFO] [app] ", 15);
+  /* File name without its directory, in brackets with the line. */
+  const char* where = strstr(text, "[log_test.c:");
   assert_non_null(where);
-  assert_true(where[-1] == ' ');
-  const char* tail = strstr(text, ": hello\n");
+  const char* tail = strstr(where, "] hello\n");
   assert_non_null(tail);
-  assert_int_equal('\0', tail[strlen(": hello\n")]);
+  for (const char* d = where + strlen("[log_test.c:"); d < tail; ++d)
+  {
+    assert_true(*d >= '0' && *d <= '9');
+  }
+  assert_int_equal('\0', tail[strlen("] hello\n")]);
 
   remove_log_files(path);
 }
@@ -401,12 +412,12 @@ static void file_sink_marks_a_truncated_line(void** state)
   remove_log_files(path);
 }
 
-/* The message part of a line, after "<file>:<line>: ". */
+/* The message part of a line, after "[<file>:<line>] ". */
 static const char* line_message(const char* text)
 {
-  const char* p = strstr(text, "log_test.c:");
+  const char* p = strstr(text, "[log_test.c:");
   assert_non_null(p);
-  p = strstr(p, ": ");
+  p = strstr(p, "] ");
   assert_non_null(p);
   return p + 2;
 }
@@ -583,48 +594,55 @@ static void file_sink_restores_the_active_file_when_shifting_fails(void** state)
   remove_log_files(path);
 }
 
-/* A "<path>.0" left behind is placed as "<path>.1" first; the active file
- * rotates on the next line, so both are kept in order. */
-static void file_sink_places_a_leftover_staged_file_first(void** state)
+/* A "<path>.0" left by an interrupted rotation is placed as "<path>.1" at open,
+ * whatever the size of the active file. */
+static void file_sink_recovers_a_leftover_staged_file_at_open(void** state)
 {
   (void)state;
   char path[256];
   char p[300];
   char text[FILE_BUF];
-  char big[400];
   az_iot_log_file_sink fs;
   az_iot_log_sink sink;
   az_iot_log_file_sink_options o = az_iot_log_file_sink_options_default();
   o.max_file_bytes = 300;
   o.max_files = 3;
   temp_log_path(path, sizeof(path), "leftover");
+
+  /* Crash right after staging: no active file, only "<path>.0". */
   remove_log_files(path);
-  memset(big, 'a', sizeof(big) - 2);
-  big[sizeof(big) - 2] = '\n';
-  big[sizeof(big) - 1] = '\0';
-  write_text(path, big);
   rotated_path(p, sizeof(p), path, 0);
   write_text(p, "leftover\n");
-
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "first");
-  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "second");
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
   assert_int_equal(-1, read_file(p, text, sizeof(text)));
-  rotated_path(p, sizeof(p), path, 2);
-  assert_true(read_file(p, text, sizeof(text)) > 0);
-  assert_string_equal(text, "leftover\n");
   rotated_path(p, sizeof(p), path, 1);
   assert_true(read_file(p, text, sizeof(text)) > 0);
-  assert_memory_equal(text, big, strlen(big));
-  assert_non_null(strstr(text, "first\n"));
+  assert_string_equal(text, "leftover\n");
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(1, count_lines(text));
-  assert_non_null(strstr(text, "second\n"));
+  assert_non_null(strstr(text, "] first\n"));
+
+  /* Leftover beside a small active file: placed first, active kept as is. */
+  remove_log_files(path);
+  write_text(path, "small\n");
+  rotated_path(p, sizeof(p), path, 0);
+  write_text(p, "leftover\n");
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, &o, AZ_IOT_LOG_LEVEL_TRACE, &sink));
+  az_iot_log_file_sink_close(&fs);
+
+  assert_int_equal(-1, read_file(p, text, sizeof(text)));
+  rotated_path(p, sizeof(p), path, 1);
+  assert_true(read_file(p, text, sizeof(text)) > 0);
+  assert_string_equal(text, "leftover\n");
+  assert_true(read_file(path, text, sizeof(text)) > 0);
+  assert_string_equal(text, "small\n");
 
   remove_log_files(path);
 }
@@ -685,8 +703,8 @@ static void file_sink_writes_and_escapes_the_component(void** state)
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(2, count_lines(text));
-  assert_non_null(strstr(text, " [WARN ] [su] "));
-  assert_non_null(strstr(text, " [WARN ] [x\\ny] "));
+  assert_non_null(strstr(text, "Z [WARN] [su] "));
+  assert_non_null(strstr(text, "Z [WARN] [x\\ny] "));
   remove_log_files(path);
 }
 
@@ -802,7 +820,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(file_sink_recovers_from_a_failed_rotation, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_sink_restores_the_active_file_when_shifting_fails, setup, teardown),
-    cmocka_unit_test_setup_teardown(file_sink_places_a_leftover_staged_file_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_sink_recovers_a_leftover_staged_file_at_open, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_escapes_control_characters, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_writes_and_escapes_the_component, setup, teardown),
     cmocka_unit_test_setup_teardown(file_sink_never_splits_an_escape, setup, teardown),

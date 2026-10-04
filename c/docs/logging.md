@@ -49,16 +49,16 @@ az_iot_log_file_sink_close(&file_sink);
 The built-in sinks write:
 
 ```text
-2026-10-03T18:16:17.408Z [INFO ] [connection] [t:10294] connection_client.c:3756: open: sdk=1.0.0-preview route=dps ...
+18:16:17.408Z [INFO] [connection] [10294] [connection_client.c:3756] open: sdk=1.0.0-preview route=dps ...
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `2026-10-03T18:16:17.408Z` | UTC wall-clock time, milliseconds. A device without a set clock shows 1970. |
-| `[INFO ]` | Level. |
+| `18:16:17.408Z` | UTC time of day, milliseconds. No date: use the file's timestamps or log one from the application (`app` component) at start. |
+| `[INFO]` | Level. |
 | `[connection]` | Component. See [Components](#components). |
-| `[t:10294]` | OS thread id (Windows, Linux). MQTT adapter threads differ from the application's. |
-| `connection_client.c:3756` | Source file and line. |
+| `[10294]` | OS thread id (Windows, Linux); omitted elsewhere. MQTT adapter threads differ from the application's. |
+| `[connection_client.c:3756]` | Source file and line. |
 | `open: ...` | Message. |
 
 Control characters in the component and message are escaped (`\n`, `\r`, `\xNN`; tab is kept), so each message

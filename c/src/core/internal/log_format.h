@@ -23,9 +23,9 @@ extern "C"
 /** @brief Longest component written; longer ones are cut. */
 #define AZ_IOT_LOG__COMPONENT_MAX 32u
 
-/** @brief Bound on everything but the message: time (24), level (8), component
- * (AZ_IOT_LOG__COMPONENT_MAX + 3), thread (15), file (AZ_IOT_LOG__FILE_NAME_MAX),
- * line (11), separators (4), newline and NUL. */
+/** @brief Bound on everything but the message: time (13), level (8), component
+ * (AZ_IOT_LOG__COMPONENT_MAX + 3), thread (13), file and line
+ * (AZ_IOT_LOG__FILE_NAME_MAX + 15), newline and NUL; rounded up. */
 #define AZ_IOT_LOG__LINE_PREFIX_MAX \
   (64u + AZ_IOT_LOG__COMPONENT_MAX + 3u + AZ_IOT_LOG__FILE_NAME_MAX)
 
@@ -35,7 +35,7 @@ extern "C"
 
   /**
    * @brief Build one newline-terminated line:
-   * `<UTC time> [<LEVEL>] [<component>] [t:<tid>] <file>:<line>: <message>`.
+   * `HH:MM:SS.mmmZ [<LEVEL>] [<component>] [<tid>] [<file>:<line>] <message>`.
    *
    * Control characters in @p component and @p msg are escaped (`\n`, `\r`, `\xNN`) so a message
    * is always one line; the escaped message is cut to AZ_IOT_LOG_MESSAGE_MAX - 1
