@@ -108,7 +108,7 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
