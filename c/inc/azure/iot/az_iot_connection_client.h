@@ -585,9 +585,9 @@ extern "C"
       /** @brief Retry schedule after a refusal. Zeroed (initial_delay_ms 0),
        * reconnection_policy is used. */
       az_iot_retry_policy policy;
-      /** @brief Stop after this many seconds since the first refusal; 0 = no
-       * limit. Bounds every retry until HUB:CONNECTED, not only those after a
-       * refusal. Counted from the monotonic clock, so not across a restart. */
+      /** @brief No attempt starts this many seconds or more after the first
+       * refusal, until HUB:CONNECTED; recovery stops once the next one could
+       * not. 0 = no limit. Monotonic clock, so not kept across a restart. */
       uint32_t max_duration_seconds;
       /** @brief What the next attempt does after a refusal. */
       az_iot_identity_recovery_mode mode;

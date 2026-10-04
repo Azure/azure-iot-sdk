@@ -471,8 +471,9 @@ The refusal resets `consecutive_hub_connect_failures`, because the hub answered.
 ladder is not reset by a registration, so DPS-accept / hub-reject cycles stay bounded. The hub
 faults with the refusal as the reason when the ladder is spent, when `max_duration_seconds` passes,
 or when `reconnection_policy` is disabled. The duration is also enforced outside the identity
-ladder, so nothing in the episode starts past it: `schedule_reconnect()` clamps or stops transient
-retries; a DPS retry-after that lands past it stops recovery; the DPS pump abandons a registration
+ladder, so nothing in the episode starts at or past it: no retry is scheduled to land there (the
+fault comes when the retry would have been scheduled); a due retry that `do_work()` reaches past it is
+not started; a DPS retry-after that lands past it stops recovery; the DPS pump abandons a registration
 still running (held, registering or polling); and an assignment adopted after it does not start a
 hub connect. `az_iot_connection_client_request_reprovision()` sets
 `needs_reprovision` on demand and brings a pending hub retry forward. On the retry path the flag is

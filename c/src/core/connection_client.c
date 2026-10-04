@@ -1039,23 +1039,17 @@ static void schedule_reconnect(
       &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
   c->recovery_report.classification = classify_failure(failure_scope, reason);
   c->recovery_report.attempt = c->retry_attempt[scope];
-  /* An identity recovery episode bounds every retry until HUB:CONNECTED, and
-   * a fault it ends reports the refusal that started it. */
+  /* An identity recovery episode bounds every retry until HUB:CONNECTED: one
+   * that would start at or past the deadline is not scheduled, and the fault
+   * reports the refusal that started the episode. */
   uint64_t now = az_iot_time_mono_ms();
   uint64_t deadline = identity_recovery_deadline_ms(c);
-  if (retry && deadline != 0)
+  if (retry && deadline != 0 && now + delay >= deadline)
   {
-    if (now >= deadline)
-    {
-      AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
-      retry = false;
-      reason = c->identity_recovery_reason;
-      c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
-    }
-    else if (now + delay > deadline)
-    {
-      delay = (uint32_t)(deadline - now);
-    }
+    AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
+    retry = false;
+    reason = c->identity_recovery_reason;
+    c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
   }
   c->recovery_report.delay_ms = retry ? delay : 0u;
   c->recovery_report.reprovisions = retry && c->needs_reprovision;
@@ -1138,21 +1132,17 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
   bool retry = !c->user_close && az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
       && c->opts.identity_recovery.mode != AZ_IOT_IDENTITY_RECOVERY_NONE;
   uint64_t deadline = identity_recovery_deadline_ms(c);
-  if (retry && deadline != 0 && now >= deadline)
-  {
-    AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
-    retry = false;
-  }
   if (retry
       && !az_iot_retry_policy__next(
           identity_recovery_policy(c), &c->identity_retry_attempt, &c->rng_state, &delay))
   {
     retry = false;
   }
-  /* No attempt starts after the deadline. */
-  if (retry && deadline != 0 && now + delay > deadline)
+  /* No attempt is scheduled to start at or past the deadline. */
+  if (retry && deadline != 0 && now + delay >= deadline)
   {
-    delay = (uint32_t)(deadline - now);
+    AZ_IOT_LOG_WARN("connection: identity recovery duration spent; stopping");
+    retry = false;
   }
 
   c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
@@ -2378,7 +2368,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       {
         uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
         uint64_t identity_deadline = identity_recovery_deadline_ms(c);
-        if (identity_deadline != 0 && floor_ms > identity_deadline)
+        if (identity_deadline != 0 && floor_ms >= identity_deadline)
         {
           /* Honoring the retry-after would start past max_duration_seconds. */
           stop_identity_recovery(c, AZ_IOT_CONN_SCOPE_DPS);
@@ -4576,6 +4566,16 @@ az_iot_result az_iot_connection_client_do_work(
   {
     az_iot_result cr;
     az_iot_connection_scope attempted;
+    /* Checked again here: do_work() may run well after the due time. */
+    if (identity_recovery_expired(client))
+    {
+      stop_identity_recovery(
+          client,
+          client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+              ? AZ_IOT_CONN_SCOPE_HUB
+              : AZ_IOT_CONN_SCOPE_DPS);
+      return r;
+    }
     client->reconnect_due_ms = 0;
     if (client->needs_reprovision)
     {
