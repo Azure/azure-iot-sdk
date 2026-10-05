@@ -6,7 +6,8 @@
 /* OpenSSL-backed "managed" certificate provider (design decision D5).
  *
  * A ready-to-use az_iot_certificate_provider for CSR-based enrollment. It:
- *   - authenticates to DPS with a caller-supplied X.509 bootstrap identity;
+ *   - authenticates to DPS with a caller-supplied X.509 bootstrap identity,
+ *     if any (none: DPS uses SAS from dps_auth);
  *   - owns an operational private key (loaded from disk if present, else
  *     generated on first use and persisted);
  *   - produces PKCS#10 CSRs over that operational key (get_csr);

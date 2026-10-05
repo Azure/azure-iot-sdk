@@ -3800,10 +3800,16 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
-    az_iot_result lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, &mat);
+    az_iot_result op_lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, &mat);
+    az_iot_result lr = op_lr;
     if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
     {
       lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
+      /* A bootstrap NOT_FOUND must not hide the operational error. */
+      if (lr == AZ_IOT_ERR_NOT_FOUND && op_lr != AZ_IOT_ERR_NOT_FOUND)
+      {
+        lr = op_lr;
+      }
     }
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
     if (lr == AZ_IOT_ERR_NOT_FOUND && hub_has_sas)
