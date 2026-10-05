@@ -246,7 +246,8 @@ extern "C"
      * AZ_IOT_CONNECTION_PROFILE_MQTT_V3 for DPS. */
     az_iot_connection_profile profile;
     /** @brief The token's `sr` value, NUL-terminated, already URL-encoded:
-     * `<id_scope>%2Fregistrations%2F<registration_id>` for DPS,
+     * `<id_scope>%2fregistrations%2f<registration_id>` for DPS (lowercase,
+     * as azure-sdk-for-c builds it),
      * `<hub host>%2Fdevices%2F<device id>` for an mqttv3 hub. */
     const char* resource_uri;
     /** @brief The token's `skn` value, NUL-terminated: `registration` for DPS,
@@ -843,8 +844,7 @@ extern "C"
      * INT32_MAX are not used.
      *
      * Owned by the client from init() to deinit(), which wipes it; must not
-     * be shared. The token is wiped as soon as the MQTT adapter has the
-     * CONNECT.
+     * be shared. The token is wiped as soon as the transport has taken it.
      */
     struct
     {
@@ -987,7 +987,9 @@ extern "C"
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
     /** @brief The transition is a planned SAS token renewal, not a failure.
-     * Always false until renewal is implemented. */
+     * Only where renewal needs a reconnect (MQTT); a transport that
+     * re-authenticates in session has no transition to flag. Always false
+     * until renewal is implemented. */
     bool is_credential_renewal;
     /** @brief The credential this event is about: the one that connected on
      * CONNECTED, the one rejected on a rejection. */
