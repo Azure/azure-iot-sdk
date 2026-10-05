@@ -1548,7 +1548,14 @@ typedef struct csr_test_ctx
   char issued_leaf[128];
   int32_t service_code;
   uint32_t retry_after_s;
+  az_iot_result last_status;
 } csr_test_ctx;
+
+static void ignore_puback(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)user_ctx;
+}
 
 static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
 {
@@ -1578,6 +1585,7 @@ static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
       break;
     case AZ_IOT_CSR_FAILED:
       t->failed++;
+      t->last_status = evt->status;
       t->service_code = evt->service_code;
       t->retry_after_s = evt->retry_after_s;
       break;
@@ -1706,7 +1714,7 @@ static void send_csr_error_reports_service_code(void** state)
 static void send_csr_cancel_frees_slot(void** state)
 {
   fixture* fx = *state;
-  (void)connect_fixture(fx);
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
 
   csr_test_ctx tc = { 0 };
   az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
@@ -1722,12 +1730,114 @@ static void send_csr_cancel_frees_slot(void** state)
       az_iot_connection_client_send_csr(fx->client, &csr, "req-b", NULL, on_csr_evt, &tc),
       AZ_IOT_ERR_BUSY);
 
-  /* Cancel frees the slot without firing a callback; a new send then succeeds. */
+  /* Cancel frees the operation without firing a callback. The cancelled
+   * request still holds the reserved PUBACK slot, so a new send waits for its
+   * PUBACK rather than going out untracked. */
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
   assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
   assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
   assert_int_equal(
       az_iot_connection_client_send_csr(fx->client, &csr, "req-c", NULL, on_csr_evt, &tc),
+      AZ_IOT_ERR_BUSY);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-c", NULL, on_csr_evt, &tc),
       AZ_IOT_OK);
+}
+
+/* A renewal request the broker rejects completes the operation at once, with
+ * the PUBACK status, instead of waiting out the response timeout. */
+static void send_csr_rejected_puback_fails_the_operation(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-rej", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.last_status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-rej", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+}
+
+/* An accepted PUBACK changes nothing: the operation waits for its response. */
+static void send_csr_accepted_puback_keeps_the_operation_open(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-ok", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-2", NULL, on_csr_evt, &tc),
+      AZ_IOT_ERR_BUSY);
+}
+
+/* A session that ends before the PUBACK leaves the operation open: its
+ * response may still arrive on the next session. The slot is released. */
+static void send_csr_unacknowledged_at_disconnect_stays_open(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-drop", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+}
+
+/* The renewal's slot is reserved at init, so shared publishes filling the
+ * table cannot push a renewal out of tracking. */
+static void send_csr_is_tracked_when_the_shared_pool_is_full(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  size_t shared = 0;
+  while (az_iot_connection_client__publish(fx->client, NULL, &filler, ignore_puback, NULL)
+         == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 1);
+
+  csr_test_ctx tc = { 0 };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-full", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.failed, 1);
 }
 
 /* MQTTv5 requires MQTT v5. With only a v3.1.1 factory registered there is no
@@ -1999,6 +2109,8 @@ static void send_csr_emits_the_replace_field_only_when_supplied(void** state)
   assert_null(strstr(body, "replace"));
 
   assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, first->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client_clear_calls(m);
 
   assert_int_equal(
@@ -2653,6 +2765,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(send_csr_rejected_puback_fails_the_operation, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_accepted_puback_keeps_the_operation_open, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_unacknowledged_at_disconnect_stays_open, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_is_tracked_when_the_shared_pool_is_full, setup, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_subscribes_the_credentials_response_filter, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -169,6 +169,9 @@ The callback receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CS
 the chain, or `AZ_IOT_CSR_FAILED` with `status`, `service_code` and `retry_after_s`. One
 renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
 internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
+Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. After
+`cancel_csr()`, a new request returns `AZ_IOT_ERR_BUSY` until the cancelled one is acknowledged.
 
 **The application owns the rest.** The SDK neither stores the renewed chain nor reconnects.
 On `AZ_IOT_CSR_ISSUED` the application copies or persists the chain (the chain is valid only

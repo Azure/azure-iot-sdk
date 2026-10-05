@@ -69,7 +69,7 @@ The tables state each outcome that is not a failed call or a dropped message.
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
 | `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
-| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding an `AZ_IOT_MAX_PENDING_PUBACKS` reservation; an mqttv5 direct method client takes one. At most 254. |
+| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding an `AZ_IOT_MAX_PENDING_PUBACKS` reservation; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
@@ -156,13 +156,13 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and an invocation ends at `respond()`, before its result is acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. When all are in use, sends without one. |
-| Certificate renewal | 1 request | 1 operation at a time | None |
+| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. A new request waits (`AZ_IOT_ERR_BUSY`) for a cancelled one's acknowledgement. |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
 
-With the defaults, telemetry gets all 16 slots, or 8 when an mqttv5 direct method client is
-attached. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
+With the defaults, telemetry gets all 16 slots, 8 when an mqttv5 direct method client is
+attached, and one fewer when `opts.csr_payload_buffer` is set. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
 16 bytes on 32-bit targets and 32 bytes on 64-bit targets; a reservation entry is 8 or 16 bytes.
 
 ## Run time
