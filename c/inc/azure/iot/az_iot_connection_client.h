@@ -1171,8 +1171,9 @@ extern "C"
 #if AZ_IOT_SAS_KEY_MAX < AZ_IOT_SHA256_SIZE
 #error "AZ_IOT_SAS_KEY_MAX must be at least AZ_IOT_SHA256_SIZE (32)"
 #endif
-/* Its base64 length is an int32_t az_span size. */
-#if (AZ_IOT_SAS_KEY_MAX + 2) / 3 > 2147483647 / 4
+/* Its base64 length is an int32_t az_span size: at most (INT32_MAX / 4) * 3
+ * bytes. Compared directly so no arithmetic on the override can wrap. */
+#if AZ_IOT_SAS_KEY_MAX > (2147483647 / 4) * 3
 #error "AZ_IOT_SAS_KEY_MAX is too large: its base64 length must fit int32_t"
 #endif
 /**
