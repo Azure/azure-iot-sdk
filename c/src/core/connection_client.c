@@ -2767,6 +2767,12 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
      * the only place that knows the announcement happened. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, r);
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
+    /* Those callbacks may close() + open() and start a newer session: report
+     * this start as replaced, so no caller settles or paces over it. */
+    if (c->dps_mqtt != NULL)
+    {
+      c->dps_start_cancelled = true;
+    }
   }
   return r;
 }
