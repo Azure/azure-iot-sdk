@@ -5688,13 +5688,18 @@ az_iot_result az_iot_connection_client_do_work(
     {
       attempted = AZ_IOT_CONN_SCOPE_HUB;
       cr = start_connect_attempt(client);
-      /* A DPS retry that fell back to this hub attempt is spent; left at
+      /* A DPS retry that fell back to this hub attempt is spent. Left at
        * RETRY_PENDING, close() would take the no-session path and leave the
-       * hub connected. */
-      if (client->active_client != NULL && client->dps_mqtt == NULL
+       * hub connected, and request_reprovision() would mistake it for a
+       * pending registration. Settle it to what the session really is. */
+      if (client->active_client != NULL
           && client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
       {
-        set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+        az_iot_connection_state dps_now = (client->dps_mqtt == NULL)
+            ? AZ_IOT_CONN_STATE_IDLE
+            : (az_iot_connection_client__dps_session_ready(client) ? AZ_IOT_CONN_STATE_CONNECTED
+                                                                   : AZ_IOT_CONN_STATE_CONNECTING);
+        set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, dps_now, AZ_IOT_OK);
       }
     }
     if (attempted == AZ_IOT_CONN_SCOPE_DPS && cr != AZ_IOT_OK && client->dps_start_cancelled)

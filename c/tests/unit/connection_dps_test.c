@@ -4226,6 +4226,10 @@ static void a_registration_retry_on_a_held_session_is_reported_each_time(void** 
     assert_non_null(hub);
     assert_ptr_not_equal(hub, dps);
     assert_non_null(fx->client->active_client);
+    /* The spent DPS retry settles to the held session's real state. */
+    assert_int_equal(
+        az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+        AZ_IOT_CONN_STATE_CONNECTED);
   }
 
   /* A successful retry on the held session: SETTING_UP then CONNECTED, no
@@ -4235,9 +4239,17 @@ static void a_registration_retry_on_a_held_session_is_reported_each_time(void** 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  fx->client->needs_reprovision = true;
+  /* With no registration pending, a reprovision request brings the hub
+   * retry forward rather than waiting out its backoff. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms() + 3600000u; /* a long backoff */
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  assert_true(fx->client->needs_reprovision);
+  assert_true(fx->client->reconnect_due_ms <= az_iot_time_mono_ms());
   fx->log.count = 0;
-  fx->client->reconnect_due_ms = az_iot_time_mono_ms();
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->log.count, 2);
   for (size_t i = 0; i < 2; ++i)
