@@ -176,6 +176,18 @@ static az_iot_result sign_token(
  * @brief az_iot_sas_token_callback: records the request and answers PENDING.
  * Must return promptly; the token is produced by issue_pending_token().
  */
+/** @brief Current Unix time in @p now; false if the clock fails ((time_t)-1,
+ * even if time_t is unsigned) or is not set (<= 0). */
+static bool clock_now(time_t* now)
+{
+  *now = time(NULL);
+  if (*now == (time_t)-1)
+  {
+    return false;
+  }
+  return *now > 0;
+}
+
 static void request_token(
     const az_iot_sas_token_request* request,
     char* token_buffer,
@@ -187,7 +199,8 @@ static void request_token(
   (void)token_buffer_size;
   sample_context* ctx = (sample_context*)user_ctx;
   pending_request* p = &ctx->pending;
-  if (time(NULL) == (time_t)-1)
+  time_t now;
+  if (!clock_now(&now))
   {
     response->status = AZ_IOT_SAS_TOKEN_UNAVAILABLE; /* no clock yet */
     response->retry_after_seconds = SAMPLE_NO_CLOCK_RETRY_S;
@@ -224,17 +237,16 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t len = 0;
   az_iot_sas_token_response response = { 0 };
-  time_t now = time(NULL);
-  /* (time_t)-1: failure, even if time_t is unsigned; <= 0: clock not set. */
-  az_iot_result r = (now == (time_t)-1 || now <= 0) ? AZ_IOT_ERR_BUSY /* UNAVAILABLE below */
-                                                    : sign_token(
-                                                          &ctx->store,
-                                                          p->resource_uri,
-                                                          p->key_name,
-                                                          (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
-                                                          token,
-                                                          sizeof(token),
-                                                          &len);
+  time_t now;
+  az_iot_result r = !clock_now(&now) ? AZ_IOT_ERR_BUSY /* UNAVAILABLE below */
+                                     : sign_token(
+                                           &ctx->store,
+                                           p->resource_uri,
+                                           p->key_name,
+                                           (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
+                                           token,
+                                           sizeof(token),
+                                           &len);
   if (r == AZ_IOT_OK)
   {
     response.status = AZ_IOT_SAS_TOKEN_READY;
@@ -243,7 +255,9 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   }
   else
   {
-    response.status = AZ_IOT_SAS_TOKEN_UNAVAILABLE; /* 0: reconnection policy */
+    response.status = AZ_IOT_SAS_TOKEN_UNAVAILABLE;
+    /* No clock: retry soon. Other failures: 0, the reconnection policy decides. */
+    response.retry_after_seconds = r == AZ_IOT_ERR_BUSY ? SAMPLE_NO_CLOCK_RETRY_S : 0u;
     len = 0;
   }
   r = az_iot_connection_client_complete_sas_token(
