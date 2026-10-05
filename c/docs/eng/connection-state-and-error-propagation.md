@@ -66,7 +66,7 @@ Rules:
 7. **Duplicate transitions are suppressed per scope.**
 
 With two scopes, "a retry is pending" cannot be read from state alone: a hub failure whose recovery
-is a re-registration leaves `HUB` in `RECONNECTING` while the attempt runs on `DPS`.
+is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `DPS`.
 
 ---
 
@@ -152,7 +152,7 @@ There is no hub source: a hub CONNACK and a DPS CONNACK are both `_MQTT`.
 
 A failure is usually recorded in an adapter callback and reported later from the pump, so the detail
 is staged per scope and attached when the transition runs. It rides every event of one failure's
-sequence (`DISCONNECTING` → `IDLE` → `RECONNECTING`/`FAULTED`) and is discarded when the scope next
+sequence (`DISCONNECTING` → `IDLE` → `RETRY_PENDING`/`FAULTED`) and is discarded when the scope next
 reaches `CONNECTING` or `CONNECTED`. A success stages nothing.
 
 `code` 0 means "none supplied"; `source` disambiguates it.

@@ -10,7 +10,7 @@
  *   - the active MQTT client for the current session
  *   - the lifecycle state machine
  *     (IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE,
- *      with RECONNECTING and FAULTED side branches)
+ *      with RETRY_PENDING and FAULTED side branches)
  *   - DPS provisioning (when opts.dps.id_scope is set and opts.host is NULL,
  *     open() internally provisions via DPS before connecting to the hub)
  *
@@ -22,7 +22,7 @@
  *
  * Reconnect (Phase 2.2): when opts.reconnection_policy is enabled
  * (initial_delay_ms > 0), unexpected drops (CONNACK fail, peer DISCONNECT,
- * inbound ERROR) transition to RECONNECTING; do_work() then re-opens after the
+ * inbound ERROR) transition to RETRY_PENDING; do_work() then re-opens after the
  * computed backoff (with jitter). User-initiated close() always goes to IDLE
  * regardless. If max_attempts > 0 is configured and reached, we transition to
  * FAULTED. A hub that refuses the identity is retried on the separate
@@ -564,7 +564,7 @@ static void set_state_to(
     az_iot_result reason)
 {
   /* One failure produces a SEQUENCE of transitions -- a dying session reports
-   * DISCONNECTING, then IDLE, then RECONNECTING or FAULTED -- and they are all
+   * DISCONNECTING, then IDLE, then RETRY_PENDING or FAULTED -- and they are all
    * reporting the same failure, so the detail rides all of them rather than
    * being consumed by whichever ran first. (It was: the terminal event, the one
    * an application acts on, arrived with nothing.)
@@ -587,7 +587,7 @@ static void set_state_to(
     .next_attempt_reprovisions = false,
   };
   bool reports_recovery = false;
-  if (next == AZ_IOT_CONN_STATE_RECONNECTING || next == AZ_IOT_CONN_STATE_FAULTED)
+  if (next == AZ_IOT_CONN_STATE_RETRY_PENDING || next == AZ_IOT_CONN_STATE_FAULTED)
   {
     reports_recovery = (reason != AZ_IOT_OK);
     if (reports_recovery && c->recovery_report.staged)
@@ -1311,7 +1311,7 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
 static uint64_t identity_recovery_deadline_ms(const az_iot_connection_client* c);
 
 /** @brief Give up the single pending retry: FAULTED on @p scope, and on the
- * other scope if it is still RECONNECTING, since nothing will retry it. Both
+ * other scope if it is still RETRY_PENDING, since nothing will retry it. Both
  * events carry the staged recovery report. */
 static void fault_retry_scopes(
     az_iot_connection_client* c,
@@ -1324,7 +1324,7 @@ static void fault_retry_scopes(
   c->reconnect_due_ms = 0;
   set_state_to(c, scope, AZ_IOT_CONN_STATE_FAULTED, reason);
   /* A callback may have closed the client, which settles both scopes. */
-  if (c->state[other] == AZ_IOT_CONN_STATE_RECONNECTING)
+  if (c->state[other] == AZ_IOT_CONN_STATE_RETRY_PENDING)
   {
     c->recovery_report.staged = staged;
     set_state_to(c, other, AZ_IOT_CONN_STATE_FAULTED, reason);
@@ -1420,7 +1420,7 @@ static void schedule_reconnect(
   /* Reported against the scope that FAILED, not the ladder the retry climbs:
    * a hub failure retried as a registration is still a HUB session going
    * down. The ladder scope is separate and lives in retry_attempt[] above. */
-  set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+  set_state_to(c, failure_scope, AZ_IOT_CONN_STATE_RETRY_PENDING, reason);
 }
 
 /** @brief Retry schedule for identity recovery: its own policy, or
@@ -1525,7 +1525,7 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
       (unsigned)delay,
       (unsigned)c->identity_retry_attempt);
   c->reconnect_due_ms = now + delay;
-  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING, reason);
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING, reason);
 }
 
 /* In REPROVISION mode a CONNACK refusal makes the next attempt (or open())
@@ -2750,7 +2750,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
     /* Settle the lifecycle, or the scope sits at CONNECTING for the life of the
      * client and the next dps_start() announces nothing. A failure below
-     * overwrites this with RECONNECTING or FAULTED, which is right: "closed,
+     * overwrites this with RETRY_PENDING or FAULTED, which is right: "closed,
      * then failed" is two facts. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, status);
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, status);
@@ -2806,7 +2806,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
        * either one alone decide. The policy's max_delay_ms deliberately does
        * NOT cap this: it bounds how long the SDK waits of its own accord, not
        * how long the service asked to be left alone. */
-      if (retry_after_secs > 0 && c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
+      if (retry_after_secs > 0 && c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
       {
         uint64_t floor_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_secs * 1000ull;
         uint64_t identity_deadline = identity_recovery_deadline_ms(c);
@@ -5019,8 +5019,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * Either scope may be the one waiting -- a registration retry is scheduled on
    * DPS, a hub retry on HUB -- and there is one deadline, so one of them
    * waiting means the client as a whole is waiting. */
-  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
-      || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
+      || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
   {
     client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
     client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -5041,7 +5041,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
    * only escape would then be deinit() plus a full re-init, which also forces
    * the application to rebuild every attached feature client.
    *
-   * Same shape as the RECONNECTING branch above: cancel the bookkeeping and
+   * Same shape as the RETRY_PENDING branch above: cancel the bookkeeping and
    * transition. The configuration is untouched, so a DPS client re-provisions
    * on the next open() and a client that had already been assigned a hub
    * reconnects to it. */
@@ -5108,11 +5108,11 @@ az_iot_connection_client_request_reprovision(az_iot_connection_client* client)
   }
   client->needs_reprovision = true;
   /* A pending hub retry, possibly an hour away on the identity ladder, runs on
-   * the next do_work(). A pending registration retry (DPS:RECONNECTING) keeps
+   * the next do_work(). A pending registration retry (DPS:RETRY_PENDING) keeps
    * its schedule: it carries the DPS backoff and any service retry-after. */
   if (client->reconnect_due_ms != 0
-      && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
-      && client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_RECONNECTING)
+      && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
+      && client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_RETRY_PENDING)
   {
     uint64_t now = az_iot_time_mono_ms();
     client->reconnect_due_ms = now ? now : 1u;
@@ -5374,11 +5374,11 @@ az_iot_result az_iot_connection_client_do_work(
    * `reconnect_due_ms` is the pending-retry token, and firing CONSUMES it.
    * Gating on the state alone is not enough now that the two scopes move
    * independently: a hub failure whose recovery is a re-registration leaves
-   * HUB in RECONNECTING while the attempt runs on DPS, so a state-only test
+   * HUB in RETRY_PENDING while the attempt runs on DPS, so a state-only test
    * would re-fire on every tick for as long as the hub stayed down. */
   if (client->reconnect_due_ms != 0
-      && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
-          || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RECONNECTING)
+      && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
+          || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
       && client->active_client == NULL && az_iot_time_mono_ms() >= client->reconnect_due_ms)
   {
     az_iot_result cr;
@@ -5388,7 +5388,7 @@ az_iot_result az_iot_connection_client_do_work(
     {
       stop_identity_recovery(
           client,
-          client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RECONNECTING
+          client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
               ? AZ_IOT_CONN_SCOPE_HUB
               : AZ_IOT_CONN_SCOPE_DPS);
       return r;
@@ -5951,7 +5951,7 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
    * lifecycle out of its terminal state, so the application would never see
    * the fault settle.
    *
-   * RECONNECTING: a registration retry is already scheduled. Opening a session
+   * RETRY_PENDING: a registration retry is already scheduled. Opening a session
    * here moves the DPS lifecycle to CONNECTING without consuming the pending
    * deadline, so the retry gate stops matching and the registration never
    * happens -- the device would stay unregistered indefinitely.
@@ -5967,7 +5967,7 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     {
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
-    if (client->state[i] == AZ_IOT_CONN_STATE_RECONNECTING)
+    if (client->state[i] == AZ_IOT_CONN_STATE_RETRY_PENDING)
     {
       return AZ_IOT_ERR_BUSY;
     }
@@ -6891,8 +6891,8 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s)
       return "AZ_IOT_CONN_STATE_CONNECTING";
     case AZ_IOT_CONN_STATE_CONNECTED:
       return "AZ_IOT_CONN_STATE_CONNECTED";
-    case AZ_IOT_CONN_STATE_RECONNECTING:
-      return "AZ_IOT_CONN_STATE_RECONNECTING";
+    case AZ_IOT_CONN_STATE_RETRY_PENDING:
+      return "AZ_IOT_CONN_STATE_RETRY_PENDING";
     case AZ_IOT_CONN_STATE_DISCONNECTING:
       return "AZ_IOT_CONN_STATE_DISCONNECTING";
     case AZ_IOT_CONN_STATE_FAULTED:

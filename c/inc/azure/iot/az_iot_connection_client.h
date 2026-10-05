@@ -375,7 +375,7 @@ extern "C"
        * Not implemented yet: validated only. Until it is, the service ends
        * the session when the token expires and the reconnect signs a new
        * one. When implemented: MQTT 3.1.1 cannot re-authenticate a live session, so renewal
-       * reconnects: RECONNECTING, then CONNECTED, both with
+       * reconnects: RETRY_PENDING, then CONNECTED, both with
        * az_iot_connection_state_event::is_credential_renewal set and reason
        * AZ_IOT_OK; a hub session resumes per session_continuity. With a
        * PENDING user-provided token, the session continues until the token
@@ -858,7 +858,7 @@ extern "C"
     AZ_IOT_CONN_STATE_IDLE = 0,
     AZ_IOT_CONN_STATE_CONNECTING,
     AZ_IOT_CONN_STATE_CONNECTED,
-    AZ_IOT_CONN_STATE_RECONNECTING,
+    AZ_IOT_CONN_STATE_RETRY_PENDING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
     /* The connection gave up: either no reconnection policy is configured, or
      * its attempts were exhausted, or the failure is one a retry cannot fix
@@ -948,7 +948,7 @@ extern "C"
     AZ_IOT_CONN_FAILURE_TERMINAL
   } az_iot_connection_failure_class;
 
-  /** @brief Recovery progress, carried by RECONNECTING and FAULTED events. */
+  /** @brief Recovery progress, carried by RETRY_PENDING and FAULTED events. */
   typedef struct az_iot_connection_recovery_info
   {
     az_iot_connection_failure_class classification;
@@ -982,7 +982,7 @@ extern "C"
     /* Diagnostic detail, or NULL when none is available. Valid only until the
      * callback returns. */
     const az_iot_connection_error_detail* error;
-    /* Non-NULL on a RECONNECTING or FAULTED event that reports a failure.
+    /* Non-NULL on a RETRY_PENDING or FAULTED event that reports a failure.
      * FAULTED with AZ_IOT_CONN_FAILURE_IDENTITY means no further automatic
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
@@ -1558,7 +1558,7 @@ extern "C"
      * `dps_pending_finalize` queues), so the two are not the same call.
      *
      * NOT consumed by the first transition that carries it. One failure
-     * produces a SEQUENCE -- DISCONNECTING, IDLE, then RECONNECTING or
+     * produces a SEQUENCE -- DISCONNECTING, IDLE, then RETRY_PENDING or
      * FAULTED -- all reporting the same thing, so it rides every one of them.
      * Consuming it on the first left the terminal event, the one applications
      * act on, with nothing. It is discarded instead when the scope next
@@ -1622,7 +1622,7 @@ extern "C"
     /* The refusal that started the episode; the reason of a duration fault. */
     az_iot_result identity_recovery_reason;
 
-    /* Retry progress staged by schedule_reconnect() for the RECONNECTING or
+    /* Retry progress staged by schedule_reconnect() for the RETRY_PENDING or
      * FAULTED event it emits; consumed by that event. */
     struct
     {
@@ -1859,7 +1859,7 @@ extern "C"
   /* Close the session and return the client to AZ_IOT_CONN_STATE_IDLE.
    *
    * Legal from every state. It is idempotent from IDLE, cancels a pending retry
-   * from RECONNECTING, cancels a provisioning exchange that has not reached a
+   * from RETRY_PENDING, cancels a provisioning exchange that has not reached a
    * hub yet, and acknowledges a fault from FAULTED -- in all of those IDLE is
    * reached before this call returns. From a state with a live hub session the
    * disconnect is asynchronous: IDLE is announced on the state callback once
@@ -1877,7 +1877,7 @@ extern "C"
    * assignment is cached.
    *
    * The explicit counterpart of AZ_IOT_IDENTITY_RECOVERY_REPROVISION. From
-   * RECONNECTING the pending retry runs on the next do_work(); from IDLE or
+   * RETRY_PENDING the pending retry runs on the next do_work(); from IDLE or
    * FAULTED (after close()) the next open() registers; otherwise the next
    * connect attempt does.
    *

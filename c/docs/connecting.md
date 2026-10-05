@@ -54,7 +54,7 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | `IDLE` | Not connected. `open()` is legal only here. |
 | `CONNECTING` | A connect attempt is in progress, including DPS provisioning. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
-| `RECONNECTING` | Waiting out a backoff delay before the next attempt. |
+| `RETRY_PENDING` | Waiting out a backoff delay before the next attempt. |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
 | `FAULTED` | Stopped after a failure. The SDK does not retry from here. Call `close()` to return to `IDLE`, then `open()` again. |
 
@@ -140,7 +140,7 @@ happens next:
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
-`RECONNECTING` and `FAULTED` events carry `recovery`: the classification
+`RETRY_PENDING` and `FAULTED` events carry `recovery`: the classification
 (`AZ_IOT_CONN_FAILURE_TRANSIENT`, `_IDENTITY`, `_TERMINAL`), the endpoint, the attempt count, the
 delay to the next attempt and whether it goes to DPS. `error` carries the raw reason code.
 
