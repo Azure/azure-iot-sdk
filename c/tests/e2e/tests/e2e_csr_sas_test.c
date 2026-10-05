@@ -24,22 +24,41 @@
 #include "e2e_log.h"
 #include "e2e_sas_device.h"
 
-#define OP_KEY "e2e_csr_sas_operational_key.pem"
-#define OP_CERT "e2e_csr_sas_operational_cert.pem"
+/* Per-run operational files, named after the registration ID; removed by the
+ * teardown, which runs even when an assertion fails. */
+static char g_op_key[192];
+static char g_op_cert[192];
+
+static int remove_operational_files(void** state)
+{
+  (void)state;
+  if (g_op_key[0] != '\0')
+  {
+    (void)remove(g_op_key);
+  }
+  if (g_op_cert[0] != '\0')
+  {
+    (void)remove(g_op_cert);
+  }
+  return 0;
+}
 
 static void test_sas_onboarding_then_an_issued_certificate(void** state)
 {
   (void)state;
   e2e_sas_config cfg;
   e2e_sas_config_load(&cfg);
-  (void)remove(OP_KEY);
-  (void)remove(OP_CERT);
+  int n = snprintf(g_op_key, sizeof(g_op_key), "e2e_op_key_%s.pem", cfg.registration_id);
+  assert_true(n > 0 && (size_t)n < sizeof(g_op_key));
+  n = snprintf(g_op_cert, sizeof(g_op_cert), "e2e_op_cert_%s.pem", cfg.registration_id);
+  assert_true(n > 0 && (size_t)n < sizeof(g_op_cert));
+  (void)remove_operational_files(NULL);
 
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_certificate_provider_managed_options mopts = {
     .trusted_ca_pem_path = cfg.trusted_ca,
-    .operational_key_pem_path = OP_KEY,
-    .operational_cert_pem_path = OP_CERT,
+    .operational_key_pem_path = g_op_key,
+    .operational_cert_pem_path = g_op_cert,
     .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
   };
   assert_int_equal(az_iot_certificate_provider_managed_init(&provider, &mopts), AZ_IOT_OK);
@@ -58,8 +77,6 @@ static void test_sas_onboarding_then_an_issued_certificate(void** state)
   assert_true(provider.has_operational);
 
   az_iot_certificate_provider_managed_deinit(&provider);
-  (void)remove(OP_KEY);
-  (void)remove(OP_CERT);
   e2e_sas_config_free(&cfg);
 }
 
@@ -67,7 +84,8 @@ int main(void)
 {
   e2e_install_log_sink();
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_sas_onboarding_then_an_issued_certificate),
+    cmocka_unit_test_teardown(
+        test_sas_onboarding_then_an_issued_certificate, remove_operational_files),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -21,6 +21,7 @@
 
 #define E2E_SAS_CONNECT_TIMEOUT_S 120
 #define E2E_SAS_SEND_TIMEOUT_S 30
+#define E2E_SAS_CLOSE_TIMEOUT_S 30
 
 /* One key (DPS and hub share it), IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
@@ -160,11 +161,13 @@ void e2e_sas_connect_and_send(
   assert_int_equal(ctx.send_done, 1);
   assert_int_equal(ctx.send_status, AZ_IOT_OK);
 
-  az_iot_connection_client_close(&conn);
-  for (int i = 0; i < 100 && ctx.hub_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  assert_int_equal(az_iot_connection_client_close(&conn), AZ_IOT_OK);
+  start = time(NULL);
+  while (ctx.hub_state != AZ_IOT_CONN_STATE_IDLE && (time(NULL) - start) < E2E_SAS_CLOSE_TIMEOUT_S)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
+  assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
 }
