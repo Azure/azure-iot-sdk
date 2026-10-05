@@ -119,7 +119,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@bf33be2f814713414a934bfe4c4ff579acc95286 # v1.0.1 + dps-symmkey-group-enrollment-devices
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@9109e1ce6d9d19bbc750f4715b85db1f5167190e # v1.0.1 + dps-symmkey-group-enrollment-devices (#456)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
