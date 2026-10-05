@@ -395,7 +395,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   out.qos = AZ_IOT_MQTT_QOS_0;
   out.retain = false;
 
-  az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, &out, NULL, NULL);
+  az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, dm, &out, NULL, NULL);
   slot->_internal.in_use = false;
   return r;
 }

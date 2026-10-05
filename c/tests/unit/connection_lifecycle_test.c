@@ -1265,7 +1265,8 @@ static void publish_before_connected_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 static void subscribe_before_connected_is_rejected(void** state)
@@ -1294,7 +1295,8 @@ static void publish_after_disconnect_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 /* ------------------------------------------------------------------------- */
