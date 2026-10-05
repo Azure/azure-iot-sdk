@@ -10,6 +10,7 @@
 
 #include <azure/core/internal/az_precondition_internal.h>
 
+#include <stdbool.h>
 #include <string.h>
 
 AZ_NODISCARD az_result _az_mqtt_write_byte(az_span* dest, uint8_t b)
@@ -177,6 +178,19 @@ AZ_NODISCARD az_result _az_mqtt_decode_fixed_header(
 
   *out_packet_type = (az_mqtt_packet_type)(first_byte >> 4);
   *out_flags = first_byte & 0x0F;
+
+  // Reserved flags (MQTT 3.1.1 2.2.2, 5.0 2.1.3): 0b0010 for PUBREL, SUBSCRIBE and UNSUBSCRIBE;
+  // 0 for the others except PUBLISH, whose flags carry DUP, QoS and RETAIN.
+  if (*out_packet_type != AZ_MQTT_PACKET_TYPE_PUBLISH)
+  {
+    bool const two = *out_packet_type == AZ_MQTT_PACKET_TYPE_PUBREL
+        || *out_packet_type == AZ_MQTT_PACKET_TYPE_SUBSCRIBE
+        || *out_packet_type == AZ_MQTT_PACKET_TYPE_UNSUBSCRIBE;
+    if (*out_flags != (two ? 0x02 : 0x00))
+    {
+      return AZ_MQTT_ERROR_MALFORMED_PACKET;
+    }
+  }
 
   rc = _az_mqtt_read_vbi(src, out_remaining);
   if (az_result_failed(rc))

@@ -144,17 +144,23 @@ static void _azm_deliver(_azm_client* m, az_iot_mqtt_event const* event)
   }
 }
 
-/** @brief Deliver the held events, oldest first, then the QoS 0 publish acknowledgements. */
+/**
+ * @brief Deliver the held events, oldest first, then the QoS 0 publish acknowledgements. Only
+ * those held on entry: what the callbacks raise is held for the next call.
+ */
 static bool _azm_deliver_pending(_azm_client* m)
 {
   bool delivered = false;
-  while (m->pending_count > 0 || m->pending_qos0_acks > 0)
+  int events = m->pending_count;
+  uint32_t qos0_acks = m->pending_qos0_acks;
+  while (events > 0 || qos0_acks > 0)
   {
     az_iot_mqtt_event event;
-    if (m->pending_count > 0)
+    if (events > 0)
     {
       event = m->pending[0];
       m->pending_count--;
+      events--;
       memmove(&m->pending[0], &m->pending[1], (size_t)m->pending_count * sizeof(m->pending[0]));
     }
     else
@@ -163,6 +169,7 @@ static bool _azm_deliver_pending(_azm_client* m)
       event.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
       event.status = AZ_IOT_OK;
       m->pending_qos0_acks--;
+      qos0_acks--;
     }
     _azm_deliver(m, &event);
     delivered = true;
@@ -773,8 +780,9 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   uint32_t const timeout_seconds = o->connect_timeout_seconds != 0
       ? o->connect_timeout_seconds
       : _AZM_DEFAULT_CONNECT_TIMEOUT_SECONDS;
-  m->connect_timeout_ms
-      = timeout_seconds > (uint32_t)(INT32_MAX / 1000) ? -1 : (int32_t)(timeout_seconds * 1000u);
+  m->connect_timeout_ms = timeout_seconds > (uint32_t)(INT32_MAX / 1000)
+      ? INT32_MAX
+      : (int32_t)(timeout_seconds * 1000u);
   // Name resolution and the socket connect run in process_loop(), not here.
   m->connecting = true;
   m->start_pending = true;

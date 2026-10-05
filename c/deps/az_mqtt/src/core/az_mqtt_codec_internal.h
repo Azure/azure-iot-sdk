@@ -62,7 +62,10 @@ AZ_NODISCARD AZ_INLINE az_result _az_mqtt_read_binary_data(az_span* src, az_span
   return _az_mqtt_read_utf8_string(src, out);
 }
 
-/** @brief Read a fixed header; advance @p src. */
+/**
+ * @brief Read a fixed header; advance @p src.
+ * @retval AZ_MQTT_ERROR_MALFORMED_PACKET Reserved flags not as MQTT requires for the type.
+ */
 AZ_NODISCARD az_result _az_mqtt_decode_fixed_header(
     az_span* src,
     az_mqtt_packet_type* out_packet_type,

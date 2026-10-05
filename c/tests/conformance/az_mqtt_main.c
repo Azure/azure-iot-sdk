@@ -123,11 +123,25 @@ int main(void)
   char ws_port_buf[16];
   char ws_path_buf[256];
   const char* ws_port_str = NULL;
-  if (env_or_null("AZ_IOT_CONFORMANCE_WS_PORT", ws_port_buf, sizeof(ws_port_buf), &ws_port_str) == 0
-      && ws_port_str != NULL)
+  if (env_or_null("AZ_IOT_CONFORMANCE_WS_PORT", ws_port_buf, sizeof(ws_port_buf), &ws_port_str)
+      != 0)
   {
-    unsigned long p = strtoul(ws_port_str, NULL, 10);
-    if (p > 0 && p <= 65535)
+    az_iot_az_mqtt_factory_destroy(f);
+    return 1;
+  }
+  if (ws_port_str != NULL)
+  {
+    /* Set but not a port: fail rather than run without the WebSocket cases. */
+    char* end = NULL;
+    errno = 0;
+    unsigned long p = strtoul(ws_port_str, &end, 10);
+    if (errno != 0 || end == ws_port_str || *end != '\0' || ws_port_str[0] == '-' || p == 0
+        || p > 65535)
+    {
+      fprintf(stderr, "conformance: AZ_IOT_CONFORMANCE_WS_PORT is not a port: '%s'\n", ws_port_str);
+      az_iot_az_mqtt_factory_destroy(f);
+      return 1;
+    }
     {
       opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS;
       opts.websocket_port = (uint16_t)p;
