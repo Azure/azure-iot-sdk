@@ -213,14 +213,6 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedProvisioningPublishAsync;
         }
 
-        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
-        {
-            if (PublishReceivedAsync != null)
-            {
-                await PublishReceivedAsync.Invoke(args);
-            }
-        }
-
         /// <summary>
         /// Connect this device to IoT hub, provisioning it through Device Provisioning Service first if it cannot
         /// connect directly to an IoT hub assignment it already holds.
@@ -293,6 +285,94 @@ namespace Microsoft.Azure.Iot.Device
             return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
         }
 
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        {
+            Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
+            {
+                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+            };
+
+            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        /// <summary>
+        /// Disconnect this device from IoT hub.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
+            // started is no longer wanted.
+            CancelCurrentReprovisioning();
+
+            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+            CurrentConnectionContext = null;
+
+            Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
+            CurrentEndpoint = ConnectionEndpoint.None;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        public virtual void Dispose(bool disposing)
+        {
+            DetachConnectionCallbacks();
+
+            if (disposing)
+            {
+                ManagedMqttConnection.Dispose();
+            }
+            else if (!_isUserSuppliedMqttClient)
+            {
+                ManagedMqttConnection.Dispose();
+            }
+
+            _isDisposed = true;
+        }
+
+        /// <summary>
+        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
+        /// </summary>
+        public virtual void Dispose()
+        {
+            DetachConnectionCallbacks();
+
+            ManagedMqttConnection.Dispose();
+
+            _isDisposed = true;
+        }
+
+        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
+        {
+            if (PublishReceivedAsync != null)
+            {
+                await PublishReceivedAsync.Invoke(args);
+            }
+        }
         /// <summary>
         /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
         /// </summary>
@@ -483,87 +563,6 @@ namespace Microsoft.Azure.Iot.Device
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
             }
-        }
-
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
-            {
-                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
-        /// <summary>
-        /// Disconnect this device from IoT hub.
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
-            // started is no longer wanted.
-            CancelCurrentReprovisioning();
-
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
-
-            Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
-            CurrentEndpoint = ConnectionEndpoint.None;
-        }
-
-        /// <summary>
-        /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
-        /// </summary>
-        /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
-        public virtual void Dispose(bool disposing)
-        {
-            DetachConnectionCallbacks();
-
-            if (disposing)
-            {
-                ManagedMqttConnection.Dispose();
-            }
-            else if (!_isUserSuppliedMqttClient)
-            {
-                ManagedMqttConnection.Dispose();
-            }
-
-            _isDisposed = true;
-        }
-
-        /// <summary>
-        /// Releases the unmanaged resources and disposes of the managed resources used by this client 
-        /// </summary>
-        public virtual void Dispose()
-        {
-            DetachConnectionCallbacks();
-
-            ManagedMqttConnection.Dispose();
-
-            _isDisposed = true;
         }
 
         /// <summary>
