@@ -2689,11 +2689,14 @@ static az_iot_result dps_start(az_iot_connection_client* c)
  *
  * The flag is raised BEFORE the transition because set_state_to() runs the
  * application's state callback synchronously, and close() + open() from inside
- * that callback must already see the demand to re-provision. */
+ * that callback must already see the demand to re-provision.
+ *
+ * A hub waiting on this registration as its retry is faulted too: nothing else
+ * would retry it. */
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
   c->needs_reprovision = true;
-  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED, reason);
+  fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_DPS, reason);
 }
 
 /* Process deferred DPS finalization. Called from _do_work() after process_loop.
