@@ -66,19 +66,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         }
 
         [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
-        public async Task TestTryConnectAfterDeviceDeletedReturnsFalseBeforeExplicitReprovisioning()
+        public async Task TestReprovisioningAfterDeviceDeletedUsingCachedAssignment()
         {
             // In this test, the test device provisions to an IoT hub and connects, and the connection context that
             // provisioning returned is cached. The test then deliberately disconnects the device and deletes the
-            // device's identity from the IoT hub's registry. A direct connection with the cached context should fail
-            // without provisioning, after which the application explicitly provisions again.
+            // device's identity from the IoT hub's registry. A fresh client seeded with the cached context should fail
+            // to connect directly and automatically fall back to provisioning again.
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
             using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
 
             // A fast reconnect cadence and a low re-provision threshold keep the direct connection attempt inside this
-            // test's time budget, so TryConnectAsync returns false rather than retrying the unreachable hub for the
-            // production default number of attempts.
+            // test's time budget, so the direct connection is abandoned (rather than retrying the unreachable hub for
+            // the production default number of attempts) and provisioning takes over.
             ConnectionClientOptions options = new()
             {
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3),
@@ -106,14 +106,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await device.ConnectionClient.DisconnectAsync(cancellationToken);
             await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
 
-            // Try the cached IoT hub credentials without provisioning. The deleted identity cannot connect, so the
-            // application is told to proceed through provisioning explicitly.
-            Assert.False(await device.ConnectionClient.TryConnectAsync(cachedConnectionContext, cancellationToken));
-
-            await device.ConnectionClient.ProvisionAndConnectAsync(
+            // Build a fresh client seeded with the cached assignment, as an application would after restoring persisted
+            // provisioning state. ProvisionAndConnectAsync first tries to connect directly to that assignment; the
+            // deleted identity cannot connect, so once the retry policy is exhausted it automatically falls back to
+            // provisioning and reconnects to whichever hub it is assigned.
+            using ConnectionClient reconnectingClient = new(options, cachedConnectionContext);
+            await reconnectingClient.ProvisionAndConnectAsync(
                 new ProvisioningSettings(Setup.DpsIdScope),
                 device.AuthenticationProvider,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the
             // device recovered by re-provisioning rather than by reconnecting to the hub it had been removed from.
@@ -122,7 +123,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 "The device did not reappear in the IoT hub registry, so it did not re-provision after the hub became unreachable.");
 
             // Since the device should be provisioned to the hub again, it should be capable of doing basic operations like sending telemetry.
-            TelemetryClient telemetryClient = new(device.ConnectionClient);
+            TelemetryClient telemetryClient = new(reconnectingClient);
             await telemetryClient.SendTelemetryAsync(new Device.Models.Telemetry.DeviceToCloudTelemetry(), cancellationToken);
             telemetryClient.Dispose(false);
         }

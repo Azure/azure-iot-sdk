@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             ConnectionContext connectionContext = await connectionClient
-                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             RegistrationRequestPayload? sentPayload = mockDps.RegistrationRequestPayload;
@@ -109,7 +109,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Exception exception = await Assert.ThrowsAnyAsync<Exception>(
                 async () => await connectionClient
-                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
             // The service's own answer, rather than a placeholder, is what says why the registration did not start.
@@ -140,7 +140,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             ConnectionContext connectionContext = await connectionClient
-                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             RegistrationRequestPayload? sentPayload = mockDps.RegistrationRequestPayload;
@@ -174,7 +174,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await Assert.ThrowsAsync<InvalidOperationException>(
                 async () => await connectionClient
-                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
         }
 

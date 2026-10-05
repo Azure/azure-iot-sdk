@@ -35,7 +35,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        /// <param name="connectionContext">
+        /// An optional IoT hub assignment the application restored (for example, one persisted to disk across a device
+        /// reboot). When supplied, <see cref="AbstractConnectionClient.ProvisionAndConnectAsync"/> attempts to connect
+        /// directly to this IoT hub before provisioning for a new assignment.
+        /// </param>
+        public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
             options ??= new ConnectionClientOptions();
 

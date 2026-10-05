@@ -101,12 +101,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
             };
 
-            // TryConnectAsync only completes once the presence flow has successfully subscribed to the classic topics, which
-            // requires recovering from the injected failure on the first attempt. A timeout guards against a regression
-            // where the failure is not retried (which would hang forever).
-            bool connected = await connectionClient.TryConnectAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+            // ConnectToHubAsync only completes once the presence flow has successfully subscribed to the classic topics,
+            // which requires recovering from the injected failure on the first attempt. A timeout guards against a
+            // regression where the failure is not retried (which would hang forever).
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-            Assert.True(connected);
 
             // The presence flow's failure handling must have disconnected at least once...
             Assert.True(disconnectCount >= 1, $"Expected at least one disconnect from the failed presence subscribe, but saw {disconnectCount}.");

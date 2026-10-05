@@ -177,9 +177,18 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public AbstractConnectionClient(ConnectionClientOptions? options = null)
+        /// <param name="connectionContext">
+        /// An optional IoT hub assignment the application restored (for example, one persisted to disk across a device
+        /// reboot). When supplied, <see cref="ProvisionAndConnectAsync"/> attempts to connect directly to this IoT hub
+        /// before provisioning for a new assignment.
+        /// </param>
+        public AbstractConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
         {
             options ??= new ConnectionClientOptions();
+
+            // Seed any assignment the application restored so that ProvisionAndConnectAsync can try connecting directly
+            // to it before falling back to provisioning for a fresh one.
+            CurrentConnectionContext = connectionContext;
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
 
@@ -213,19 +222,35 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
+        /// Connect this device to IoT hub, provisioning it through Device Provisioning Service first if it cannot
+        /// connect directly to an IoT hub assignment it already holds.
         /// </summary>
         /// <remarks>
+        /// <para>
+        /// Unless <paramref name="forceProvisioning"/> is set, this method first tries to connect directly to the IoT
+        /// hub named by the <see cref="ConnectionContext"/> this client already holds -- one returned by an earlier
+        /// provisioning run in this process, or one the application restored into this client at construction. The
+        /// connection layer retries that direct connection under the configured retry policy, so the attempt is only
+        /// abandoned once the retry policy is exhausted or the hub rejects this device's identity with a fatal error.
+        /// When there is no cached connection context, when the direct connection is abandoned, or when
+        /// <paramref name="forceProvisioning"/> is set, this device provisions through Device Provisioning Service and
+        /// connects to the hub it is assigned.
+        /// </para>
+        /// <para>
         /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
         /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
         /// application having to do anything.
+        /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
         /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
-        /// <param name="twinOptions">The optional flags to control twin updates to this device from IoT hub.</param>
+        /// <param name="forceProvisioning">
+        /// When <c>true</c>, skip trying to connect directly to any cached IoT hub assignment and provision through
+        /// Device Provisioning Service immediately.
+        /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The received twin push upon connecting to IoT hub if any part of the twin was configured to be pushed in <see cref="TwinPushOptions"/>.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        /// <returns>The connection context for the IoT hub this device connected to.</returns>
+        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -234,6 +259,49 @@ namespace Microsoft.Azure.Iot.Device
                 throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
             }
 
+            // Remember what this device was asked to provision with before attempting either path, so that a connection
+            // established directly from a cached assignment -- not only one established after provisioning -- can still
+            // be recovered by re-provisioning if it later faults on this device's identity.
+            _lastProvisioningSettings = provisioningSettings;
+            _lastProvisioningAuthentication = authentication;
+
+            // Unless the caller insists on provisioning, try the IoT hub assignment this client already holds first. A
+            // cached context comes either from a previous provisioning run in this process or from one the application
+            // restored into this client at construction. The connection layer retries the direct connection under the
+            // configured retry policy, so it only fails once that policy is exhausted or the hub rejects this device's
+            // identity -- exactly the cases in which the cached assignment is no good and this device must ask Device
+            // Provisioning Service for a fresh one.
+            ConnectionContext? cachedConnectionContext = CurrentConnectionContext;
+            if (!forceProvisioning && cachedConnectionContext != null)
+            {
+                try
+                {
+                    await ConnectToHubAsync(cachedConnectionContext, cancellationToken);
+                    return cachedConnectionContext;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // The caller cancelled, so this is not a failure of the cached assignment to fall back from.
+                    throw;
+                }
+                catch (DeviceException e)
+                {
+                    Trace.TraceWarning("Could not connect directly to the cached IoT hub assignment; provisioning for a fresh one. {0}", e);
+                }
+            }
+
+            return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
+        }
+
+        /// <summary>
+        /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
+        /// </summary>
+        /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields.</param>
+        /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The connection context for the IoT hub this device was assigned and connected to.</returns>
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken)
+        {
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
             if (provisioningResult.Status != ProvisioningRegistrationStatus.Assigned)
@@ -326,55 +394,17 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Try to connect this device directly to IoT hub using the connection context cached in memory.
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>
-        /// <c>true</c> when the device connects successfully; otherwise, <c>false</c>. Returns <c>false</c> immediately
-        /// when no connection context has been cached.
-        /// </returns>
-        public Task<bool> TryConnectAsync(CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            ConnectionContext? connectionContext = CurrentConnectionContext;
-            return connectionContext == null
-                ? Task.FromResult(false)
-                : TryConnectAsync(connectionContext, cancellationToken);
-        }
-
-        /// <summary>
-        /// Try to connect this device directly to the IoT hub named by the given cached connection context.
-        /// </summary>
-        /// <remarks>
-        /// This method does not provision the device. It returns <c>false</c> when the hub connection cannot be
-        /// established because of a terminal connection failure or because the retry policy is exhausted.
-        /// </remarks>
-        /// <param name="connectionContext">The cached hub and identity to connect as.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns><c>true</c> when the device connects successfully; otherwise, <c>false</c>.</returns>
-        public async Task<bool> TryConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            try
-            {
-                await ConnectToHubAsync(connectionContext, cancellationToken);
-                return true;
-            }
-            catch (DeviceException)
-            {
-                return false;
-            }
-        }
-
-        /// <summary>
         /// Connect this device to the IoT hub named by the given connection context and run the device presence flow,
         /// throwing if the attempt fails.
         /// </summary>
+        /// <remarks>
+        /// The connection layer retries a retryable failure under the configured retry policy, so this call only
+        /// throws once the retry policy is exhausted or the failure is terminal (including an identity-terminal
+        /// rejection). This method does not provision the device.
+        /// </remarks>
         /// <param name="connectionContext">The hub and identity to connect as.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        private async Task ConnectToHubAsync(ConnectionContext connectionContext, CancellationToken cancellationToken)
+        internal async Task ConnectToHubAsync(ConnectionContext connectionContext, CancellationToken cancellationToken)
         {
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
@@ -627,7 +657,7 @@ namespace Microsoft.Azure.Iot.Device
                 // fault for a connection that is still being actively driven. That is the case either when a
                 // re-provisioning attempt is already in flight and this fault ended one of its own connect attempts
                 // (that loop owns the decision to retry or give up), or when the failed direct connection left a
-                // standing re-provision demand that the caller can act on after TryConnectAsync returns false.
+                // standing re-provision demand that the caller can act on after the direct connect attempt fails.
                 return;
             }
 
@@ -755,7 +785,9 @@ namespace Microsoft.Azure.Iot.Device
 
                 try
                 {
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, cancellationToken);
+                    // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
+                    // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
+                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
                     return;

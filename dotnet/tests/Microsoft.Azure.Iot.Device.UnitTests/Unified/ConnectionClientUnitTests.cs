@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -25,25 +25,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task TryConnectAsyncWithoutCachedConnectionContextReturnsFalse()
-        {
-            using ConnectionClient connectionClient = new();
-
-            Assert.False(await connectionClient.TryConnectAsync(TestContext.Current.CancellationToken));
-        }
-
-        [Fact]
-        public async Task TryConnectAsyncUsesCachedConnectionContext()
+        public async Task ProvisionAndConnectUsesSeededConnectionContext()
         {
             MockMqttClient mockMqttClient = new(false);
+            ConnectionContext connectionContext = GetMockConnectionContext(false);
             using ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
-            });
-            ConnectionContext connectionContext = GetMockConnectionContext(false);
-            connectionClient.CurrentConnectionContext = connectionContext;
+            }, connectionContext);
 
-            Assert.True(await connectionClient.TryConnectAsync(TestContext.Current.CancellationToken));
+            // The seeded assignment connects, so this device connects directly using it rather than provisioning.
+            ConnectionContext result = await connectionClient.ProvisionAndConnectAsync(
+                new ProvisioningSettings("someIdScope"),
+                connectionContext.AuthenticationProvider,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Same(connectionContext, result);
             Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
         }
 
@@ -60,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             TelemetryClient telemetryClient = new(connectionClient);
 
-            Assert.True(await connectionClient.TryConnectAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken));
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -111,7 +108,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            Assert.True(await connectionClient.TryConnectAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken));
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -167,7 +164,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            Assert.True(await connectionClient.TryConnectAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken));
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;

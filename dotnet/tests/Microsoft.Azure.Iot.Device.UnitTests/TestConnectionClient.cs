@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// </summary>
     internal sealed class TestConnectionClient : AbstractConnectionClient, IDisposable
     {
-        public TestConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        public TestConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
         }
 

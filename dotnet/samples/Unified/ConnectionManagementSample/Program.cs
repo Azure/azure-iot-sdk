@@ -40,11 +40,16 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
-        // Always provision the device first so that the provisioning result is up-to-date
+        // Always provision the device first so that the provisioning result is up-to-date. Passing forceProvisioning
+        // skips any attempt to connect directly to a cached IoT Hub assignment.
         ProvisioningSettings provisioningSettings = new(idScope);
-        ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken);
+        ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(
+            provisioningSettings,
+            authentication,
+            forceProvisioning: true,
+            cancellationToken: cancellationToken);
 
-        // At this point in the sample, the device has connected to IoT Hub and only provisioned if it was necessary. Use it with your TelemetryClient/TwinClient/DirectMethodClient/etc
+        // At this point in the sample, the device has connected to IoT Hub. Use it with your TelemetryClient/TwinClient/DirectMethodClient/etc
 
         await connectionClient.DisconnectAsync();
     }
@@ -69,8 +74,6 @@ internal class Program
         string iotHubHostName = SampleConstants.LoadIotHubHostName();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
-        using ConnectionClient connectionClient = new ConnectionClient();
-
         ConnectionContext persistedConnectionContext = new()
         {
             AuthenticationProvider = authentication,
@@ -80,19 +83,18 @@ internal class Program
             IssuedClientCertificates = null,
         };
 
-        // User may attempt to connect directly to IoT Hub using credentials that were persisted during device reboot.
-        // This call should return false if the connection to IoT Hub cannot be established without provisioning again. 
-        // This call should not provision the device, though.
-        if (!await connectionClient.TryConnectAsync(persistedConnectionContext, cancellationToken))
-        {
-            // If the connection client cannot connect directly to IoT Hub (identity terminal error or retry policy expires),
-            // then go through provisioning again
-            ProvisioningSettings provisioningSettings = new(idScope);
+        // Provide the credentials that were persisted during device reboot to the connection client at construction.
+        using ConnectionClient connectionClient = new ConnectionClient(connectionContext: persistedConnectionContext);
 
-            // During this call, the client may reprovision even if initial provisioning was successful if connection to IoT Hub
-            // cannot be established.
-            ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken);
-        }
+        ProvisioningSettings provisioningSettings = new(idScope);
+
+        // ProvisionAndConnectAsync first attempts to connect directly to IoT Hub using the persisted connection context.
+        // If that connection cannot be established (identity terminal error or the retry policy expires), it
+        // automatically falls back to provisioning the device again and connecting to whichever hub it is assigned.
+        ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(
+            provisioningSettings,
+            authentication,
+            cancellationToken: cancellationToken);
 
         // At this point in the sample, the device has connected to IoT Hub and only provisioned if it was necessary. Use it with your TelemetryClient/TwinClient/DirectMethodClient/etc
 
@@ -119,17 +121,14 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
-        // Try to connect using cachced provisioning results
-        if (!await connectionClient.TryConnectAsync(cancellationToken))
-        {
-            // If the connection client cannot connect directly to IoT Hub (identity terminal error, retry policy expires, or there are no cached provisioning results),
-            // then go through provisioning again
-            // 
-            // During this call, the client may reprovision even if initial provisioning was successful if connection to IoT Hub
-            // cannot be established.
-            ProvisioningSettings provisioningSettings = new(idScope);
-            ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken);
-        }
+        // ProvisionAndConnectAsync first tries to connect directly to IoT Hub using any connection context cached in
+        // memory from a previous provisioning run. If there is no cached context, or the cached context can no longer
+        // connect (identity terminal error or the retry policy expires), it falls back to provisioning the device again.
+        ProvisioningSettings provisioningSettings = new(idScope);
+        ConnectionContext currentConnectionContext = await connectionClient.ProvisionAndConnectAsync(
+            provisioningSettings,
+            authentication,
+            cancellationToken: cancellationToken);
 
         // At this point in the sample, the device has connected to IoT Hub and only provisioned if it was necessary. Use it with your TelemetryClient/TwinClient/DirectMethodClient/etc
 
