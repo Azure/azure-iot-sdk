@@ -149,5 +149,5 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
   mqtt_message.user_properties_count = property_count;
   mqtt_message.content_type = content_type;
   return az_iot_connection_client__publish(
-      client->_internal.conn, &mqtt_message, callback, user_ctx);
+      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }
