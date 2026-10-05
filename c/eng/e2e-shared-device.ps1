@@ -9,8 +9,7 @@ Writes the e2e test config for one device on a shared e2e environment.
 Issues a device certificate for -RegistrationId, signed by the shared DPS X.509 enrollment
 group's CA, and writes the test-config script the workflow sources (the variables the
 provisioning action emits), including the shared symmetric-key group's key for the SAS
-suites. Devices register through the groups on first connect, so no Azure call is made here;
-the workflow deletes the hub devices afterwards (e2e-delete-devices.ps1).
+suites. Devices register through the groups on first connect, so no Azure call is made here.
 
 Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key

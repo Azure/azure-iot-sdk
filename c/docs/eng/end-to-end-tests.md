@@ -221,9 +221,8 @@ X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-share
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
 secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
 (`service` policy only), and `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
-key). Each leg then deletes its hub devices
-([`c/eng/e2e-delete-devices.ps1`](../../eng/e2e-delete-devices.ps1)) with
-`E2E_SHARED_IOTHUB_REGISTRY_CS` (a `RegistryWrite` policy). The hub needs consumer groups
+key). Devices the runs register stay in the shared hub; they are removed manually. The hub
+needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
 Pull requests from forks get no secrets and fail.
 
@@ -234,8 +233,7 @@ cannot reuse the one above. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
 CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
-to the same certificate policy, and `E2E_CSR_SHARED_IOTHUB_REGISTRY_CS` deletes the run's
-hub devices. Device records the certificate namespace keeps are not deleted.
+to the same certificate policy.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).

@@ -54,11 +54,9 @@
 # skip setup/teardown and use a long-lived cert-management environment instead.
 # Each run issues its own bootstrap device from the enrollment group's issuing CA
 # and takes the symmetric-key group's key for the SAS suite
-# (c/eng/e2e-shared-device.ps1 -Csr). Afterwards a separate step deletes the
-# run's hub devices over the IoT Hub REST API with a RegistryWrite policy key
-# (c/eng/e2e-delete-devices.ps1). The test job never logs in to Azure. Same
-# tests. Push and nightly runs always provision. Unset the variable to return
-# to per-run provisioning.
+# (c/eng/e2e-shared-device.ps1 -Csr); the test job never logs in to Azure. Same
+# tests. Push and nightly runs always provision. Unset the variable to return to
+# per-run provisioning.
 
 name: ci-c-e2e-csr
 
@@ -76,7 +74,6 @@ on:
       # The e2e harness (shared device fixture + CSR test + service facade).
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
-      - 'c/eng/e2e-delete-devices.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   push:
     branches: [ main ]
@@ -89,7 +86,6 @@ on:
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
-      - 'c/eng/e2e-delete-devices.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   schedule:
     - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
@@ -295,18 +291,6 @@ jobs:
           name: coverage-trace-e2e-csr
           path: c/coverage/e2e-csr.json
           if-no-files-found: error
-
-      - name: Delete this run's devices (shared environment)
-        # The shared hub keeps every device a registration creates; provisioned
-        # runs delete their whole resource group instead.
-        if: always() && env.E2E_SHARED == 'true'
-        shell: pwsh
-        env:
-          E2E_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_CSR_SHARED_IOTHUB_REGISTRY_CS }}
-        run: |
-          ./c/eng/e2e-delete-devices.ps1 -DeviceId @(
-            'ci-csr-${{ github.run_id }}-${{ github.run_attempt }}',
-            'sas-csr-${{ github.run_id }}-${{ github.run_attempt }}')
 
   teardown:
     permissions:

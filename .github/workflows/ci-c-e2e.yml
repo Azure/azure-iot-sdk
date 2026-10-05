@@ -46,11 +46,10 @@
 # setup/teardown and use a long-lived IoT Hub + DPS instead. Each leg issues its
 # own device certificate from the DPS X.509 enrollment group's CA, and takes the
 # DPS symmetric-key group's key for the SAS suite (c/eng/e2e-shared-device.ps1),
-# so legs never share a device. Test code gets the hub's 'service' policy key.
-# Afterwards a separate step deletes the leg's hub devices over the IoT Hub REST
-# API with a RegistryWrite policy key (c/eng/e2e-delete-devices.ps1). The test
-# job never logs in to Azure. Same tests. Push and nightly runs always
-# provision. Unset the variable to return to per-run provisioning.
+# so legs never share a device and no Azure call is made. Test code gets only the
+# hub's 'service' policy key, and the test job never logs in to Azure. Same
+# tests. Push and nightly runs always provision. Unset the variable to return to
+# per-run provisioning.
 
 name: ci-c-e2e
 
@@ -474,18 +473,6 @@ jobs:
           name: coverage-trace-e2e
           path: c/coverage/e2e.json
           if-no-files-found: error
-
-      - name: Delete this leg's devices (shared environment)
-        # The shared hub keeps every device a registration creates; provisioned
-        # runs delete their whole resource group instead.
-        if: always() && env.E2E_SHARED == 'true'
-        shell: pwsh
-        env:
-          E2E_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
-        run: |
-          ./c/eng/e2e-delete-devices.ps1 -DeviceId @(
-            'ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}',
-            'sas-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}')
 
   teardown:
     permissions:
