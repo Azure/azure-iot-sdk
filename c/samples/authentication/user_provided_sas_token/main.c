@@ -172,10 +172,6 @@ static az_iot_result sign_token(
   return r;
 }
 
-/**
- * @brief az_iot_sas_token_callback: records the request and answers PENDING.
- * Must return promptly; the token is produced by issue_pending_token().
- */
 /** @brief Current Unix time in @p now; false if the clock fails ((time_t)-1,
  * even if time_t is unsigned) or is not set (<= 0). */
 static bool clock_now(time_t* now)
@@ -188,6 +184,10 @@ static bool clock_now(time_t* now)
   return *now > 0;
 }
 
+/**
+ * @brief az_iot_sas_token_callback: records the request and answers PENDING.
+ * Must return promptly; the token is produced by issue_pending_token().
+ */
 static void request_token(
     const az_iot_sas_token_request* request,
     char* token_buffer,
