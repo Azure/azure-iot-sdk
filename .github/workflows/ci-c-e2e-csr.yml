@@ -53,9 +53,12 @@
 # When the repository variable E2E_CSR_SHARED_ID_SCOPE is set, PULL REQUEST runs
 # skip setup/teardown and use a long-lived cert-management environment instead.
 # Each run issues its own bootstrap device from the enrollment group's issuing CA
-# (c/eng/e2e-shared-device.ps1 -Csr); the test job never logs in to Azure. Same
-# test. Push and nightly runs always provision. Unset the variable to return to
-# per-run provisioning.
+# and takes the symmetric-key group's key for the SAS suite
+# (c/eng/e2e-shared-device.ps1 -Csr). Afterwards a separate step deletes the
+# run's hub devices over the IoT Hub REST API with a RegistryWrite policy key
+# (c/eng/e2e-delete-devices.ps1). The test job never logs in to Azure. Same
+# tests. Push and nightly runs always provision. Unset the variable to return
+# to per-run provisioning.
 
 name: ci-c-e2e-csr
 
