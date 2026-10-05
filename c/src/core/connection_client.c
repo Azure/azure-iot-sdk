@@ -6131,8 +6131,94 @@ void az_iot_connection_client__set_dps_message_observer(
   client->dps_message_observer_ctx = user_ctx;
 }
 
+#if AZ_IOT_MAX_PENDING_PUBACKS > UINT16_MAX
+#error "AZ_IOT_MAX_PENDING_PUBACKS must be at most 65535"
+#endif
+#if AZ_IOT_MAX_PUBACK_RESERVATIONS >= UINT8_MAX
+#error "AZ_IOT_MAX_PUBACK_RESERVATIONS must be at most 254"
+#endif
+
+#define PUBACK_POOL_SHARED UINT8_MAX
+
+/** @brief puback_reservations[] index held by @p owner, or PUBACK_POOL_SHARED if none. */
+static uint8_t puback_pool_of(const az_iot_connection_client* c, const void* owner)
+{
+  if (owner != NULL)
+  {
+    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    {
+      if (c->puback_reservations[i].owner == owner)
+      {
+        return i;
+      }
+    }
+  }
+  return PUBACK_POOL_SHARED;
+}
+
+/** @brief Slots reserved by every owner except the one at @p skip. */
+static size_t puback_reserved_except(const az_iot_connection_client* c, uint8_t skip)
+{
+  size_t reserved = 0;
+  for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  {
+    if (i != skip)
+    {
+      reserved += c->puback_reservations[i].count;
+    }
+  }
+  return reserved;
+}
+
+/** @brief Slots @p pool may hold: its reservation, or what no reservation took. */
+static size_t puback_pool_capacity(const az_iot_connection_client* c, uint8_t pool)
+{
+  return pool != PUBACK_POOL_SHARED
+      ? c->puback_reservations[pool].count
+      : AZ_IOT_MAX_PENDING_PUBACKS - puback_reserved_except(c, PUBACK_POOL_SHARED);
+}
+
+/** @brief Slots in use that count against @p pool. */
+static size_t puback_pool_used(const az_iot_connection_client* c, uint8_t pool)
+{
+  size_t used = 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
+    {
+      ++used;
+    }
+  }
+  return used;
+}
+
+/**
+ * @brief A free pending_pubacks[] index @p pool may take, or AZ_IOT_MAX_PENDING_PUBACKS if the
+ *        pool is at capacity.
+ *
+ * Every pool's in-flight count stays within its capacity (reserve_pubacks() refuses a change that
+ * would break that) and the capacities add up to the table size, so a pool below capacity always
+ * finds a free slot.
+ */
+static size_t puback_free_slot(const az_iot_connection_client* c, uint8_t pool)
+{
+  if (puback_pool_used(c, pool) >= puback_pool_capacity(c, pool))
+  {
+    return AZ_IOT_MAX_PENDING_PUBACKS;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    if (!c->pending_pubacks[i].in_use)
+    {
+      return i;
+    }
+  }
+  return AZ_IOT_MAX_PENDING_PUBACKS;
+}
+
 az_iot_result az_iot_connection_client__publish(
     az_iot_connection_client* client,
+    const void* owner,
     const az_iot_mqtt_message* msg,
     az_iot_publish_ack_callback ack_cb,
     void* ack_user_ctx)
@@ -6147,7 +6233,7 @@ az_iot_result az_iot_connection_client__publish(
   }
 
   /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
-   * so a full table sends nothing and the caller can retry without
+   * so a full pool sends nothing and the caller can retry without
    * duplicating. The reserved slot has no cb, so neither the PUBACK match nor
    * teardown_active() acts on it. Adapters deliver events only from
    * process_loop() (az_iot_mqtt_iface), so no PUBACK can arrive before the
@@ -6155,14 +6241,8 @@ az_iot_result az_iot_connection_client__publish(
   size_t slot = AZ_IOT_MAX_PENDING_PUBACKS;
   if (msg->qos != AZ_IOT_MQTT_QOS_0 && ack_cb)
   {
-    for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
-    {
-      if (!client->pending_pubacks[i].in_use)
-      {
-        slot = i;
-        break;
-      }
-    }
+    uint8_t pool = puback_pool_of(client, owner);
+    slot = puback_free_slot(client, pool);
     if (slot == AZ_IOT_MAX_PENDING_PUBACKS)
     {
       return AZ_IOT_ERR_BUSY;
@@ -6170,6 +6250,7 @@ az_iot_result az_iot_connection_client__publish(
     client->pending_pubacks[slot].packet_id = 0;
     client->pending_pubacks[slot].cb = NULL;
     client->pending_pubacks[slot].user_ctx = NULL;
+    client->pending_pubacks[slot].reservation = pool;
     client->pending_pubacks[slot].in_use = true;
   }
 
@@ -6201,20 +6282,88 @@ az_iot_result az_iot_connection_client__publish(
   return AZ_IOT_OK;
 }
 
-bool az_iot_connection_client__has_free_puback_slot(const az_iot_connection_client* client)
+az_iot_result az_iot_connection_client__reserve_pubacks(
+    az_iot_connection_client* client,
+    const void* owner,
+    size_t count)
+{
+  if (client == NULL || owner == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (count == 0)
+  {
+    az_iot_connection_client__release_pubacks(client, owner);
+    return AZ_IOT_OK;
+  }
+
+  uint8_t entry = puback_pool_of(client, owner);
+  if (entry == PUBACK_POOL_SHARED)
+  {
+    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    {
+      if (client->puback_reservations[i].owner == NULL)
+      {
+        entry = i;
+        break;
+      }
+    }
+  }
+  size_t others = puback_reserved_except(client, entry);
+  if (entry == PUBACK_POOL_SHARED || count > AZ_IOT_MAX_PENDING_PUBACKS - others)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "cannot reserve %lu pending-PUBACK slots: %lu of %u reserved by others, %u holders at most",
+        (unsigned long)count,
+        (unsigned long)others,
+        (unsigned)AZ_IOT_MAX_PENDING_PUBACKS,
+        (unsigned)AZ_IOT_MAX_PUBACK_RESERVATIONS);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* Keep every pool within its capacity, so a granted reservation is usable at once instead of
+   * waiting for shared publishes already in flight to be acknowledged. */
+  if (puback_pool_used(client, PUBACK_POOL_SHARED) > AZ_IOT_MAX_PENDING_PUBACKS - others - count
+      || (client->puback_reservations[entry].owner == owner
+          && puback_pool_used(client, entry) > count))
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  client->puback_reservations[entry].owner = owner;
+  client->puback_reservations[entry].count = (uint16_t)count;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__release_pubacks(az_iot_connection_client* client, const void* owner)
 {
   if (client == NULL)
   {
-    return false;
+    return;
   }
+  uint8_t entry = puback_pool_of(client, owner);
+  if (entry == PUBACK_POOL_SHARED)
+  {
+    return;
+  }
+  /* In-flight publishes keep their callbacks and move to the shared pool, whose capacity grows by
+   * at least as much, so the entry can be reused at once. */
   for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
   {
-    if (!client->pending_pubacks[i].in_use)
+    if (client->pending_pubacks[i].in_use && client->pending_pubacks[i].reservation == entry)
     {
-      return true;
+      client->pending_pubacks[i].reservation = PUBACK_POOL_SHARED;
     }
   }
-  return false;
+  client->puback_reservations[entry].owner = NULL;
+  client->puback_reservations[entry].count = 0;
+}
+
+bool az_iot_connection_client__can_track_publish(
+    const az_iot_connection_client* client,
+    const void* owner)
+{
+  return client != NULL
+      && puback_free_slot(client, puback_pool_of(client, owner)) < AZ_IOT_MAX_PENDING_PUBACKS;
 }
 
 az_iot_result az_iot_connection_client__subscribe(
@@ -6706,7 +6855,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
-  az_iot_result r = az_iot_connection_client__publish(client, &msg, NULL, NULL);
+  az_iot_result r = az_iot_connection_client__publish(client, NULL, &msg, NULL, NULL);
   if (r != AZ_IOT_OK)
   {
     client->csr_op.in_use = false;

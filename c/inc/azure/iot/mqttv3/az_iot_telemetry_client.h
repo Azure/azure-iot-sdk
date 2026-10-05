@@ -45,8 +45,8 @@ extern "C"
    *
    * @return AZ_IOT_OK if handed to the transport.
    * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments.
-   * @return AZ_IOT_ERR_BUSY if AZ_IOT_MAX_PENDING_PUBACKS publishes are awaiting
-   *         acknowledgement; nothing was sent, retry later.
+   * @return AZ_IOT_ERR_BUSY if the AZ_IOT_MAX_PENDING_PUBACKS slots not reserved by other
+   *         feature clients are all awaiting acknowledgement; nothing was sent, retry later.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
       az_iot_mqttv3_telemetry_client* client,

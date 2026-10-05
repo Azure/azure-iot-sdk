@@ -227,7 +227,7 @@ static az_iot_result publish_twin(
   out.correlation_data = correlation_id;
   out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
 
-  r = az_iot_connection_client__publish(TI(t).conn, &out, NULL, NULL);
+  r = az_iot_connection_client__publish(TI(t).conn, t, &out, NULL, NULL);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
