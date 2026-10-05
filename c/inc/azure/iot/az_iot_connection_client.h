@@ -938,9 +938,10 @@ extern "C"
     /** @brief The cause may clear on its own (is_retriable). Retries, when
      * enabled, follow reconnection_policy. */
     AZ_IOT_CONN_FAILURE_TRANSIENT,
-    /** @brief The service refused the identity or credential. Retries, when
-     * enabled, follow opts.identity_recovery; the retry with the next
-     * credential source (attempt 0, no delay) does not. */
+    /** @brief The service refused the identity or credential. Also reported,
+     * on either scope, for the immediate retry with the next credential
+     * source (attempt 0, no delay). Otherwise hub only: retries, when enabled,
+     * follow opts.identity_recovery. */
     AZ_IOT_CONN_FAILURE_IDENTITY,
     /** @brief Retrying unchanged inputs cannot fix the cause (not
      * is_retriable). Any retry follows reconnection_policy. */

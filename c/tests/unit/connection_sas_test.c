@@ -776,15 +776,16 @@ static const recorded_event* last_event(
     az_iot_connection_scope scope,
     az_iot_connection_state state)
 {
-  for (size_t i = fx->log_count; i > 0; --i)
+  const recorded_event* found = NULL;
+  for (size_t i = fx->log_count; i > 0 && found == NULL; --i)
   {
     if (fx->log[i - 1].scope == scope && fx->log[i - 1].state == state)
     {
-      return &fx->log[i - 1];
+      found = &fx->log[i - 1];
     }
   }
-  fail_msg("no such event");
-  return NULL;
+  assert_non_null(found);
+  return found;
 }
 
 /** @brief No attempt is in flight: the rejected one was torn down and none followed. */
@@ -912,6 +913,28 @@ static void open_starts_again_at_the_first_source(void** state)
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
 }
 
+static void dps_x509_rejected_falls_back_to_the_primary_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_test_provider provider;
+  az_iot_test_provider_init(&provider, "provider-ca.pem");
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.certificate_provider = &provider.base;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, "");
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
+  assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(e->delay_ms, 0);
+
+  const az_iot_mock_call* call = last_connect(fx);
+  assert_string_equal(call->password, DPS_TOKEN);
+  assert_string_equal(call->connect.client_cert_path, "");
+  assert_string_equal(call->connect.trusted_ca_path, "provider-ca.pem");
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1032,6 +1055,8 @@ int main(void)
         a_fully_rejected_pass_goes_to_identity_recovery_then_restarts, setup, teardown),
     cmocka_unit_test_setup_teardown(fallback_does_not_need_a_reconnection_policy, setup, teardown),
     cmocka_unit_test_setup_teardown(open_starts_again_at_the_first_source, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_x509_rejected_falls_back_to_the_primary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_registration_error_401000_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
