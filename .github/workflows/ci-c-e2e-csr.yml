@@ -73,6 +73,7 @@ on:
       # The e2e harness (shared device fixture + CSR test + service facade).
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-delete-devices.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   push:
     branches: [ main ]
@@ -85,6 +86,7 @@ on:
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-delete-devices.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
   schedule:
     - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
@@ -186,8 +188,8 @@ jobs:
       - name: Build CSR e2e test
         working-directory: c
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_BUILD_E2E_CSR=ON ${{ env.E2E_SHARED != 'true' && '-DAZ_IOT_BUILD_E2E_SAS=ON' || '' }}
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr ${{ env.E2E_SHARED != 'true' && 'az_iot_tests_e2e_csr_sas' || '' }}
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_BUILD_E2E_CSR=ON
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'
@@ -203,6 +205,7 @@ jobs:
           E2E_CSR_SHARED_GROUP_CA: ${{ secrets.E2E_CSR_SHARED_GROUP_CA }}
           E2E_CSR_SHARED_ID_SCOPE: ${{ vars.E2E_CSR_SHARED_ID_SCOPE }}
           E2E_CSR_SHARED_DPS_HOST: ${{ vars.E2E_CSR_SHARED_DPS_HOST }}
+          E2E_CSR_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_CSR_SHARED_SAS_GROUP_KEY }}
           E2E_REGISTRATION_ID: ci-csr-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           ./c/eng/e2e-shared-device.ps1 -Csr -RegistrationId $env:E2E_REGISTRATION_ID `
@@ -250,18 +253,19 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
-          # SAS suite (built only when not shared): the symmetric-key group.
-          if ($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
-            Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
-            $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
-            $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-csr-${{ github.run_id }}-${{ github.run_attempt }}"
+          # SAS suite: the symmetric-key group (provisioned, or the shared one),
+          # linked to the certificate policy.
+          if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
+            throw "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY not found in the test config; the SAS suite needs a DPS symmetric-key enrollment group."
           }
+          Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
+          $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
+          $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-csr-${{ github.run_id }}-${{ github.run_attempt }}"
           # Verbose SDK logging so a connect/DPS failure surfaces its reason.
           $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
-          # `-R e2e_csr` selects az_iot_tests_e2e_csr, and az_iot_tests_e2e_csr_sas
-          # when built.
+          # `-R e2e_csr` selects az_iot_tests_e2e_csr and az_iot_tests_e2e_csr_sas.
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_csr `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-csr.xml
@@ -288,6 +292,18 @@ jobs:
           name: coverage-trace-e2e-csr
           path: c/coverage/e2e-csr.json
           if-no-files-found: error
+
+      - name: Delete this run's devices (shared environment)
+        # The shared hub keeps every device a registration creates; provisioned
+        # runs delete their whole resource group instead.
+        if: always() && env.E2E_SHARED == 'true'
+        shell: pwsh
+        env:
+          E2E_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_CSR_SHARED_IOTHUB_REGISTRY_CS }}
+        run: |
+          ./c/eng/e2e-delete-devices.ps1 -DeviceId @(
+            'ci-csr-${{ github.run_id }}-${{ github.run_attempt }}',
+            'sas-csr-${{ github.run_id }}-${{ github.run_attempt }}')
 
   teardown:
     permissions:

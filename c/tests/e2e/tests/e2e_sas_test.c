@@ -7,8 +7,7 @@
  * and connects to the assigned mqttv3 hub with SAS tokens the SDK signs from
  * the group key, then sends telemetry.
  *
- * Built only with AZ_IOT_BUILD_E2E_SAS, which only the e2e workflows set when
- * they provision the group. Environment: AZ_IOT_DPS_ID_SCOPE,
+ * Environment: AZ_IOT_DPS_ID_SCOPE,
  * AZ_IOT_DPS_SAS_GROUP_KEY, AZ_IOT_DPS_SAS_REGISTRATION_ID, AZ_IOT_TRUSTED_CA;
  * optional AZ_IOT_DPS_GLOBAL_ENDPOINT. */
 

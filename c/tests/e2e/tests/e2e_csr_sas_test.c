@@ -9,8 +9,8 @@
  * the assigned hub with it (X.509), then sends telemetry. The managed provider
  * runs without a bootstrap identity.
  *
- * Built only with AZ_IOT_BUILD_E2E_SAS and AZ_IOT_BUILD_E2E_CSR, which only the
- * ci-c-e2e-csr workflow sets. Environment as e2e_sas_test.c. */
+ * Built with AZ_IOT_BUILD_E2E_CSR (ci-c-e2e-csr). Environment as
+ * e2e_sas_test.c. */
 
 #include <stdarg.h>
 #include <stddef.h>

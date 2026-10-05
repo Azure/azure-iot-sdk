@@ -8,20 +8,24 @@ Writes the e2e test config for one device on a shared e2e environment.
 .DESCRIPTION
 Issues a device certificate for -RegistrationId, signed by the shared DPS X.509 enrollment
 group's CA, and writes the test-config script the workflow sources (the variables the
-provisioning action emits). The device registers through the group on first connect, so no
-Azure call is made here and nothing needs releasing.
+provisioning action emits), including the shared symmetric-key group's key for the SAS
+suites. Devices register through the groups on first connect, so no Azure call is made here;
+the workflow deletes the hub devices afterwards (e2e-delete-devices.ps1).
 
 Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
   E2E_SHARED_IOTHUB_CS       IoT Hub 'service' policy connection string
   E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy
   E2E_SHARED_ID_SCOPE        DPS ID scope
+  E2E_SHARED_SAS_GROUP_KEY   primary key of the DPS symmetric-key enrollment group
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
                              private key, then any CA certificates above it (issuer first)
   E2E_CSR_SHARED_ID_SCOPE    DPS ID scope
   E2E_CSR_SHARED_DPS_HOST    DPS device endpoint (optional)
+  E2E_CSR_SHARED_SAS_GROUP_KEY  primary key of the DPS symmetric-key enrollment group, linked to
+                             the certificate policy
 #>
 param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
@@ -35,7 +39,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Prefix = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
-$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE') } else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
+$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') } else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
 $Missing = $Required | ForEach-Object { "${Prefix}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
@@ -97,6 +101,7 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOT_DPS_GROUP_X509_CERTIFICATE' (ConvertTo-B64 $Chain)
         Format-Assignment 'IOT_DPS_GROUP_X509_KEY' $KeyB64
         if ($env:E2E_CSR_SHARED_DPS_HOST) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' $env:E2E_CSR_SHARED_DPS_HOST }
+        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' $env:E2E_CSR_SHARED_SAS_GROUP_KEY
     )
 } else {
     @(
@@ -107,6 +112,7 @@ $Lines = if ($Csr) {
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
+        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' $env:E2E_SHARED_SAS_GROUP_KEY
     )
 }
 $OutDir = Split-Path -Parent $OutFile

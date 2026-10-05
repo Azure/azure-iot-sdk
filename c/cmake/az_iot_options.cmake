@@ -54,9 +54,6 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
-# The SAS e2e suites need a DPS symmetric-key enrollment group, which the e2e
-# workflows provision only on their non-shared runs. Same rule: built when run.
-option(AZ_IOT_BUILD_E2E_SAS    "Build the SAS e2e tests (needs a DPS symmetric-key enrollment group)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
 # OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
 # built when it is going to be run, not built-and-skipped. The token URI comes

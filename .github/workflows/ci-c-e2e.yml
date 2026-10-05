@@ -210,8 +210,8 @@ jobs:
         # Linux-only for now: it needs an OpenSSL pkcs11 provider, which the
         # Windows runner image does not carry.
         run: |
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }} ${{ env.E2E_SHARED != 'true' && '-DAZ_IOT_BUILD_E2E_SAS=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time ${{ env.E2E_SHARED != 'true' && 'az_iot_tests_e2e_sas' || '' }}
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_sas
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -234,6 +234,7 @@ jobs:
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
           E2E_REGISTRATION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}
           E2E_DEVICE_INDEX: ${{ matrix.device-index }}
           E2E_RUN_ID: ${{ github.run_id }}
@@ -306,13 +307,14 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
-          # SAS suite (built only when not shared): the symmetric-key group and a
-          # per-leg registration ID under it.
-          if ($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
-            Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
-            $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
-            $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-${{ github.run_id }}-${{ github.run_attempt }}-$idx"
+          # SAS suite: the symmetric-key group (provisioned, or the shared one) and
+          # a per-leg registration ID under it.
+          if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
+            throw "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY not found in the test config; the SAS suite needs a DPS symmetric-key enrollment group."
           }
+          Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
+          $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
+          $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-${{ github.run_id }}-${{ github.run_attempt }}-$idx"
 
           # Republish the DEVICE-side configuration (an id scope, a registration id
           # and three file paths -- no secrets) so the sample step below can reuse
@@ -335,8 +337,6 @@ jobs:
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
-          # The SAS suite (az_iot_tests_e2e_sas) is built only on non-shared
-          # runs, which provision a symmetric-key enrollment group.
           # The crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
@@ -472,6 +472,18 @@ jobs:
           name: coverage-trace-e2e
           path: c/coverage/e2e.json
           if-no-files-found: error
+
+      - name: Delete this leg's devices (shared environment)
+        # The shared hub keeps every device a registration creates; provisioned
+        # runs delete their whole resource group instead.
+        if: always() && env.E2E_SHARED == 'true'
+        shell: pwsh
+        env:
+          E2E_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
+        run: |
+          ./c/eng/e2e-delete-devices.ps1 -DeviceId @(
+            'ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}',
+            'sas-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}')
 
   teardown:
     permissions:
