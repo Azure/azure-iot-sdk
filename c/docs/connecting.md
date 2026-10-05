@@ -253,7 +253,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
   `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
   `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
-  counts once. The token is wiped once the adapter has the CONNECT; the whole buffer at
+  counts once. The token is wiped once the transport has taken it; the whole buffer at
   `deinit()`.
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
   re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
