@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/samples/Unified/">
     <Project Path="samples/Unified/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />
+    <Project Path="samples/Unified/ConnectionManagementSample/ConnectionManagementSample.csproj" Id="0416760b-489a-4de6-8796-e797a1289470" />
     <Project Path="samples/Unified/CustomMqttClientSample/CustomMqttClientSample.csproj" Id="d9e54799-f86c-440a-b7a7-63f4fc150000" />
     <Project Path="samples/Unified/DirectMethodsSample/DirectMethodsClientSample.csproj" />
     <Project Path="samples/Unified/TelemetryClientSample/TelemetryClientSample.csproj" Id="648020f8-cf99-467d-9196-258cbc909fd4" />
