@@ -1710,6 +1710,9 @@ extern "C"
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
     size_t sas_token_size;
+    /* close() calls, counted even when it has nothing to do: lets a path that
+     * ran state callbacks tell that one of them closed the client. */
+    uint32_t close_count;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct

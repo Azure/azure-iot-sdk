@@ -2864,6 +2864,8 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   bool device_provisioned = (status == AZ_IOT_OK) && have_assignment;
   /* Read before the transitions below run callbacks. */
   bool credential_rejected = !device_provisioned && dps_rejected_credential(c, status);
+  /* The transitions below run state callbacks, which may close() the client. */
+  uint32_t closes = c->close_count;
   if (device_provisioned)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -2898,7 +2900,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     /* A rejected credential: the next ensure() reopens at once with the next
      * source, policy or not; no pacing, as for a registration. */
     /* Demand is checked again: the IDLE callback above may have released it. */
-    if (credential_rejected && !c->user_close && dps_session_demanded(c)
+    if (credential_rejected && !c->user_close && c->close_count == closes && dps_session_demanded(c)
         && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
     {
       AZ_IOT_LOG_WARNF(
@@ -2927,6 +2929,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
+    /* A state callback closed the client: no retry of any kind follows. */
+    if (c->close_count != closes)
+    {
+      return;
+    }
     /* A rejected credential moves to the next source at once, policy or not. */
     if (credential_rejected && !c->user_close && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
     {
@@ -5165,6 +5172,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  client->close_count++;
 
   /* Before the idempotency check below, not after it. close() is the
    * documented exit from a settled refusal, and on a DPS-only device both

@@ -1056,6 +1056,45 @@ static void a_release_during_the_rejection_does_not_advance(void** state)
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].pass_from, AZ_IOT_AUTH_SOURCE_NONE);
 }
 
+/* close() from the IDLE callback that reports a DPS rejection: no fallback
+ * attempt follows. */
+static void close_on_dps_idle(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_IDLE
+      && event->reason != AZ_IOT_OK)
+  {
+    (void)az_iot_connection_client_close(&fx->client);
+  }
+}
+
+static void a_close_during_the_dps_rejection_stops_the_fallback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, close_on_dps_idle, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(no_connect_pending(fx));
+  assert_int_equal(fx->client.reconnect_due_ms, 0);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
+  for (size_t i = 0; i < fx->log_count; ++i)
+  {
+    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RECONNECTING);
+  }
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1185,6 +1224,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_feature_held_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_released_session_starts_a_new_pass, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_release_during_the_rejection_does_not_advance, setup, teardown),
     cmocka_unit_test_setup_teardown(
