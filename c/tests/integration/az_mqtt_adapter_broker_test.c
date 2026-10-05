@@ -53,7 +53,8 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   az_iot_mqtt_connect_options o = { 0 };
   o.host = host != NULL ? host : "localhost";
   o.port = (uint16_t)(port != NULL ? atoi(port) : 1883);
-  o.client_id = f->version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
+  o.client_id
+      = f->version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
   o.clean_start = true;
   o.connect_timeout_seconds = 10;
   assert_int_equal(r.client->iface->connect(r.client, &o), AZ_IOT_OK);
