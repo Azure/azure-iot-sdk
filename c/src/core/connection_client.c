@@ -2894,7 +2894,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   {
     /* A rejected credential: the next ensure() reopens at once with the next
      * source, policy or not; no pacing, as for a registration. */
-    if (credential_rejected && !c->user_close && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
+    /* Demand is checked again: the IDLE callback above may have released it. */
+    if (credential_rejected && !c->user_close && dps_session_demanded(c)
+        && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
     {
       AZ_IOT_LOG_WARNF(
           AZ_IOT_LOG_COMPONENT_DPS,
@@ -6089,8 +6091,14 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
   if (client->dps_user_count == 0)
   {
     /* The demand is gone. A later holder is NEW demand and must not inherit a
-     * backoff, or a latched refusal, earned by whoever came before it. */
+     * backoff, a latched refusal, or a credential fallback pass, earned by
+     * whoever came before it. A registration owns its own pass. */
     dps_user_retry_reset(client);
+    if (!client->dps_registration_ref && !client->dps_standing_ref)
+    {
+      client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+      client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+    }
   }
   /* The session is NOT torn down here even if this was the last ref. Release
    * is reachable from inside a message callback, and freeing the adapter there
