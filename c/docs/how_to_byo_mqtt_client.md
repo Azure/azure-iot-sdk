@@ -30,7 +30,8 @@ inc/azure/iot/adapters/
 └── az_iot_adapter_mymqtt.h # public factory builders (one per version)
 ```
 
-You can take [adapters/paho/](../adapters/paho/) as a working reference.
+You can take [adapters/paho/](../adapters/paho/) (a client with its own I/O thread) or
+[adapters/az_mqtt/](../adapters/az_mqtt/) (a single-threaded client) as a working reference.
 
 ## Step 1 — Implement the iface vtable
 

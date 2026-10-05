@@ -45,6 +45,19 @@ function(_az_iot_pc_deps tgt openssl_req)
             list(APPEND _requires_private libssl)
         elseif(_item STREQUAL "OpenSSL::Crypto")
             list(APPEND _requires_private "libcrypto${openssl_req}")
+        elseif(_item MATCHES "^az_mqtt(v3|v5|_core)$")
+            # Bundled az_mqtt (deps/az_mqtt) libraries: link them and their own dependencies.
+            list(APPEND _libs_private "-l${_item}")
+            get_target_property(_az_mqtt_deps ${_item} LINK_LIBRARIES)
+            if(_az_mqtt_deps)
+                list(APPEND _queue ${_az_mqtt_deps})
+            endif()
+        elseif(_item STREQUAL "az::core")
+            list(APPEND _requires azure-iot-sdk-core)
+        elseif(_item STREQUAL "Threads::Threads")
+            list(APPEND _libs_private -pthread)
+        elseif(_item STREQUAL "MbedTLS::mbedtls")
+            list(APPEND _requires_private mbedtls)
         elseif(_item MATCHES "^MbedTLS::(mbedcrypto|tfpsacrypto)$")
             # mbedcrypto.pc links tfpsacrypto on mbedTLS 4.x.
             list(APPEND _requires_private mbedcrypto)
@@ -99,6 +112,7 @@ set(_az_iot_pc_descriptions
     mqttv3                        "IoT Hub mqttv3 clients"
     mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
+    adapter_az_mqtt               "az_mqtt MQTT adapter"
     adapter_rust_mqtt             "Rust MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
@@ -130,7 +144,7 @@ foreach(_i RANGE 0 ${_last} 2)
         set(_openssl_req "")
         get_target_property(_defs ${_tgt} COMPILE_DEFINITIONS)
         if(_tgt MATCHES "^az_iot_(crypto_openssl|certificate_provider_managed)$"
-           OR "AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs)
+           OR "AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs OR "AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _defs)
             set(_openssl_req " >= 3.0")
         endif()
         _az_iot_pc_deps(${_tgt} "${_openssl_req}")

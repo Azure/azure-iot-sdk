@@ -36,6 +36,7 @@ set(_sources
     mqttv3                        mqttv3_test.c
     mqttv5                        mqttv5_test.c
     adapter_paho                  adapter_paho_test.c
+    adapter_az_mqtt               adapter_az_mqtt_test.c
     adapter_rust_mqtt             adapter_rust_mqtt_test.c
     crypto_openssl                crypto_test.c
     crypto_mbedtls                crypto_test.c

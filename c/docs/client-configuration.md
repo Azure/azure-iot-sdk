@@ -20,6 +20,9 @@ it adds `c/`.
 | `AZ_IOT_WITH_CERT_PROVIDER_MANAGED` | `ON` | Build the OpenSSL managed certificate provider (CSR and key handling). Built only when OpenSSL 3.0+ is found. |
 | `AZ_IOT_WITH_CRYPTO_OPENSSL` | `ON` | Build the OpenSSL crypto backend, `az_iot_crypto_openssl()`. Built only when OpenSSL 3.0+ is found. |
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
+| `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
+| `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
+| `AZ_IOT_AZ_MQTT_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | `270336`, `64`, `16` | Per-client limits of the az_mqtt adapter: largest packet each way (send and receive buffers), QoS 1/2 exchanges in flight, MQTT 5 user properties per packet. Each client allocates its buffers when created. |
 | `AZ_IOT_WITH_RUST_MQTT` | `OFF` | Build the Rust MQTT adapter shell: a C adapter that forwards to a Rust MQTT client the application installs at run time. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
