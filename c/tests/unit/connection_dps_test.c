@@ -4479,6 +4479,26 @@ static void a_refused_provisioning_subscribe_reports_the_step(void** state)
   assert_dps_local_failure(fx, i, AZ_IOT_ERR_MQTT, "provisioning subscribe() failed");
 }
 
+/* A status query the adapter refuses synchronously has no adapter event; the
+ * failure carries the step as LOCAL detail. */
+static void a_refused_status_query_reports_the_step(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ACCEPTED_NOW, k_assigning_body));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  /* retry-after 0: the next pump issues the query, which is refused. */
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_dps_local_failure(fx, i, AZ_IOT_ERR_MQTT, "status query publish() failed");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4735,6 +4755,7 @@ int main(void)
     cmocka_unit_test(a_failed_registration_retry_falls_back_with_the_cached_hub_protocol),
     cmocka_unit_test_setup_teardown(
         a_refused_provisioning_subscribe_reports_the_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_status_query_reports_the_step, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

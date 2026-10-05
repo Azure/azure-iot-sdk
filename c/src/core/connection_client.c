@@ -1949,6 +1949,8 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
       &c->dps_prov, op_id, topic, sizeof(topic), &topic_len);
   if (az_result_failed(ar))
   {
+    stage_local_error(
+        c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_ERR_INTERNAL, "status query topic could not be built");
     return AZ_IOT_ERR_INTERNAL;
   }
 
@@ -1961,6 +1963,10 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
   if (r == AZ_IOT_OK)
   {
     c->dps_phase = DPS_PHASE_REGISTERING;
+  }
+  else
+  {
+    stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, r, "status query publish() failed");
   }
   return r;
 }
