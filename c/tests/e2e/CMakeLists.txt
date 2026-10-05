@@ -121,6 +121,31 @@ if(AZ_IOT_BUILD_E2E_CSR)
 endif()
 
 # ---------------------------------------------------------------------------
+# az_iot_tests_e2e_sas, az_iot_tests_e2e_csr_sas
+#
+# SAS from a DPS symmetric-key enrollment group: DPS and hub over SAS; and,
+# with AZ_IOT_BUILD_E2E_CSR (group linked to a signing CA), SAS onboarding with
+# a DPS-issued certificate for the hub. Built only with AZ_IOT_BUILD_E2E_SAS,
+# which the e2e workflows set when they provision the group.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_SAS)
+    if(NOT TARGET az_iot_crypto_openssl)
+        message(FATAL_ERROR
+            "AZ_IOT_BUILD_E2E_SAS=ON requires the OpenSSL crypto backend (az_iot_crypto_openssl).")
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_sas tests/e2e_sas_test.c tests/e2e_sas_device.c)
+    target_link_libraries(az_iot_tests_e2e_sas PRIVATE
+        az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl)
+    if(AZ_IOT_BUILD_E2E_CSR)
+        az_iot_add_cmocka_test(az_iot_tests_e2e_csr_sas
+            tests/e2e_csr_sas_test.c tests/e2e_sas_device.c)
+        target_link_libraries(az_iot_tests_e2e_csr_sas PRIVATE
+            az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
+            az_iot_certificate_provider_managed)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload
 #
 # MQTTv3 file-upload device flow against a real hub that has an Azure Storage

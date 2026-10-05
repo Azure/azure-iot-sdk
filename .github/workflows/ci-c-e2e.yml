@@ -119,7 +119,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@bf33be2f814713414a934bfe4c4ff579acc95286 # v1.0.1 + dps-symmkey-group-enrollment-devices
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -132,6 +132,9 @@ jobs:
           # claim their own device (see the per-leg device-index selection below)
           # and never share a device twin.
           dps-x509-individual-enrollments: '2'
+          # A symmetric-key enrollment group for the SAS e2e suite
+          # (az_iot_tests_e2e_sas); each leg registers its own device under it.
+          dps-symmkey-group-enrollment-devices: '1'
           # Provision an Azure Storage account associated with the hub so the
           # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
           # SAS URI and upload a blob.
@@ -207,8 +210,8 @@ jobs:
         # Linux-only for now: it needs an OpenSSL pkcs11 provider, which the
         # Windows runner image does not carry.
         run: |
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }} ${{ env.E2E_SHARED != 'true' && '-DAZ_IOT_BUILD_E2E_SAS=ON' || '' }}
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time ${{ env.E2E_SHARED != 'true' && 'az_iot_tests_e2e_sas' || '' }}
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -303,6 +306,13 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+          # SAS suite (built only when not shared): the symmetric-key group and a
+          # per-leg registration ID under it.
+          if ($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
+            Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
+            $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
+            $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-${{ github.run_id }}-${{ github.run_attempt }}-$idx"
+          }
 
           # Republish the DEVICE-side configuration (an id scope, a registration id
           # and three file paths -- no secrets) so the sample step below can reuse
@@ -325,6 +335,8 @@ jobs:
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
           # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # The SAS suite (az_iot_tests_e2e_sas) is built only on non-shared
+          # runs, which provision a symmetric-key enrollment group.
           # The crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it

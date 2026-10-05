@@ -115,6 +115,16 @@ correlation marker so a fresh hub never confuses stale data:
 4. **twin** — the cloud patches a desired property (the device observes it), then
    the device reports a property (the cloud reads it back via a twin GET).
 
+**SAS suites** (`AZ_IOT_BUILD_E2E_SAS`; non-shared runs, which provision a DPS
+symmetric-key enrollment group; env `AZ_IOT_DPS_SAS_GROUP_KEY`,
+`AZ_IOT_DPS_SAS_REGISTRATION_ID`, `AZ_IOT_DPS_ID_SCOPE`, `AZ_IOT_TRUSTED_CA`):
+
+- [`e2e_sas_test.c`](../../tests/e2e/tests/e2e_sas_test.c) — DPS and hub over SAS
+  from the group key, then telemetry. `ci-c-e2e`.
+- [`e2e_csr_sas_test.c`](../../tests/e2e/tests/e2e_csr_sas_test.c) — DPS over SAS
+  with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
+  `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
+
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
 > The device uses Paho's own independent TLS stack, so the two never collide.
