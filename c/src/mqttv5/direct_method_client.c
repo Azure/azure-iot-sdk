@@ -51,6 +51,10 @@
  * than published into a request the service has given up on. */
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
 
+/* Pending-PUBACK slots reserved at init: per invocation, a probe-ack plus a
+ * result or abandon may await their PUBACKs at once. */
+#define DM_PUBACK_RESERVATION (2u * (size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
+
 /* Budgets travel in whole seconds; the monotonic clock counts milliseconds. */
 #define MS_PER_SECOND 1000u
 
@@ -357,19 +361,21 @@ static az_iot_result publish_typed(
   out.content_type = DM_CONTENT_TYPE;
   out.message_expiry_seconds = expiry_seconds;
 
-  /* The ack only feeds a log line, so a full pending-ack table must not cost
-   * the message: send it untracked instead. */
+  /* The ack only feeds a log line, so an exhausted reservation must not cost
+   * the message: send it untracked instead. Refused probes, and invocations
+   * answered faster than their PUBACKs arrive, can push past
+   * DM_PUBACK_RESERVATION. */
   az_iot_publish_ack_callback ack_cb = on_publish_ack;
-  if (!az_iot_connection_client__has_free_puback_slot(DI(dm).conn))
+  if (!az_iot_connection_client__can_track_publish(DI(dm).conn, dm))
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "sending '%s' without ack tracking, the pending-ack table is full",
+        "sending '%s' without ack tracking, its pending-ack slots are all in use",
         type_value);
     ack_cb = NULL;
   }
   az_iot_result result
-      = az_iot_connection_client__publish(DI(dm).conn, &out, ack_cb, (void*)type_value);
+      = az_iot_connection_client__publish(DI(dm).conn, dm, &out, ack_cb, (void*)type_value);
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
@@ -897,6 +903,10 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
   DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__reserve_pubacks(conn, client, DM_PUBACK_RESERVATION);
+  }
   if (result != AZ_IOT_OK)
   {
     az_iot_connection_client__release_profile(conn);
@@ -916,6 +926,7 @@ void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_clien
     return;
   }
   az_iot_connection_client__unregister_feature_client_bind(DI(client).conn, client);
+  az_iot_connection_client__release_pubacks(DI(client).conn, client);
   az_iot_connection_client__release_profile(DI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(DI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);

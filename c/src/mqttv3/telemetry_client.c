@@ -120,5 +120,5 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
   mqtt_message.payload_len = message->payload_len;
   mqtt_message.qos = AZ_IOT_MQTT_QOS_1;
   return az_iot_connection_client__publish(
-      client->_internal.conn, &mqtt_message, callback, user_ctx);
+      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }
