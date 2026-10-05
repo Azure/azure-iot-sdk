@@ -935,6 +935,55 @@ static void dps_x509_rejected_falls_back_to_the_primary_key(void** state)
   assert_string_equal(call->connect.trusted_ca_path, "provider-ca.pem");
 }
 
+/* provision_only: the pump reopens the session with the next source at once,
+ * without a reconnection policy. */
+static void a_provision_only_session_falls_back_to_the_secondary_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  opts.dps.provision_only = true;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].pass_from, AZ_IOT_AUTH_SOURCE_NONE);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
+}
+
+/* A session held by a feature client: its next ensure() reopens at once with
+ * the next source; a full rejected pass is paced as before. */
+static void a_feature_held_session_falls_back_to_the_secondary_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_false(fx->client.dps_user_retry_blocked);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+
+  /* Whole pass rejected: paced under the policy, not reopened at once. */
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_null(fx->client.dps_mqtt);
+
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1059,6 +1108,10 @@ int main(void)
         dps_x509_rejected_falls_back_to_the_primary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_registration_error_401000_falls_back_to_the_secondary_key, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_feature_held_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
         other_dps_registration_errors_do_not_fall_back, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_keys_and_tokens, setup, teardown),

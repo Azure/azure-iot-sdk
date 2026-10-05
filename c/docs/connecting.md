@@ -248,7 +248,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   and no delay. Other failures retry the same source under the policy. A pass tries each source
   once, from the one it began with, wrapping; it counts as one policy attempt. The source that
   connects is kept until rejected; `open()` starts again at the first. `identity_recovery`
-  applies only after a pass in which all of the hub's credentials are rejected.
+  applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way; a fully rejected pass is paced by the policy.
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in

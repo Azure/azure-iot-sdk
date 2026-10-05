@@ -2293,6 +2293,12 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         dps_finalize(c, evt->status, false);
         return;
       }
+      /* Without a registration, CONNACK is the service's verdict: the source
+       * is kept and a later rejection starts a new pass. */
+      if (!c->dps_registration_ref)
+      {
+        c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      }
       {
         uint16_t pid = 0;
         az_iot_result r = c->dps_mqtt->iface->subscribe(
@@ -2886,6 +2892,16 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * wrong. Its users ask again through dps_session_ensure(). */
   if (!was_registering)
   {
+    /* A rejected credential: the next ensure() reopens at once with the next
+     * source, policy or not; no pacing, as for a registration. */
+    if (credential_rejected && !c->user_close && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_DPS,
+          "the provisioning session's credential was rejected (%s); trying the next one",
+          az_iot_result_to_string(status));
+      return;
+    }
     if (status != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF(
