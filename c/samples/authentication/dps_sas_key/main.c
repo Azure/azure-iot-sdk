@@ -107,11 +107,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
   }
-  /* A rejected credential with another source to try reconnects at once. */
+  /* Terminal: FAULTED, or hub IDLE with an error (no retry follows). A DPS
+   * failure passes DISCONNECTING and IDLE before RECONNECTING or FAULTED. A
+   * non-retriable RECONNECTING stops the sample unless it is the immediate
+   * retry with the next credential (no delay). */
   bool falling_back = event->state == AZ_IOT_CONN_STATE_RECONNECTING && event->recovery != NULL
       && event->recovery->next_attempt_delay_ms == 0;
   if (event->reason != AZ_IOT_OK
-      && (event->state == AZ_IOT_CONN_STATE_FAULTED || (!event->is_retriable && !falling_back)))
+      && (event->state == AZ_IOT_CONN_STATE_FAULTED
+          || (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_IDLE)
+          || (event->state == AZ_IOT_CONN_STATE_RECONNECTING && !event->is_retriable
+              && !falling_back)))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;
