@@ -283,8 +283,11 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
   }
+  /* A rejected credential with another source to try reconnects at once. */
+  bool falling_back = event->state == AZ_IOT_CONN_STATE_RECONNECTING && event->recovery != NULL
+      && event->recovery->next_attempt_delay_ms == 0;
   if (event->reason != AZ_IOT_OK
-      && (event->state == AZ_IOT_CONN_STATE_FAULTED || !event->is_retriable))
+      && (event->state == AZ_IOT_CONN_STATE_FAULTED || (!event->is_retriable && !falling_back)))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;

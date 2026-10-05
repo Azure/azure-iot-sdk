@@ -3,9 +3,8 @@
 
 # SAS keys to DPS and to the hub
 
-> The secondary key and `renewal_percent` are accepted but not used yet: fallback and planned
-> renewal are not implemented. Until then the hub ends the session at token expiry and the client
-> reconnects with a new token.
+> `renewal_percent` is accepted but not used yet: planned renewal is not implemented. Until then
+> the hub ends the session at token expiry and the client reconnects with a new token.
 
 Registers with DPS and connects to the assigned hub with SAS tokens the SDK signs from symmetric
 keys, then sends one telemetry message on whichever hub generation DPS assigned. See
@@ -15,8 +14,8 @@ keys, then sends one telemetry message on whichever hub generation DPS assigned.
 
 - `dps_auth` and `hub_auth` carry the same keys: the hub identity DPS creates has them. No
   `certificate_provider`, so SAS is the only source.
-- Primary key, and optionally a secondary key (accepted, not used yet). The state callback prints
-  which credential connected.
+- Primary key, and optionally a secondary key, tried when the primary is rejected. The state
+  callback prints which credential connected.
 - Enrollment-group keys are accepted; the SDK derives the device keys from them.
 - `crypto = az_iot_crypto_openssl()` provides HMAC-SHA256. No `certificate_provider`.
 - Tokens last `sas.token_lifetime_seconds` (default one hour). At expiry the service ends the

@@ -8,9 +8,10 @@
  * @brief SAS from a symmetric key, to DPS and to the assigned hub.
  *
  * The SDK signs a SAS token with the primary key for each DPS attempt and for
- * the hub. The secondary key and AZ_IOT_SAS_RENEWAL_PERCENT are accepted but
- * not used yet: fallback and planned renewal are not implemented, so at token
- * expiry the service ends the session and the reconnect signs a new token.
+ * the hub, and with the secondary key when the primary is rejected.
+ * AZ_IOT_SAS_RENEWAL_PERCENT is accepted but not used yet: planned renewal is
+ * not implemented, so at token expiry the service ends the session and the
+ * reconnect signs a new token.
  * Takes individual enrollment keys, or enrollment-group keys from which the
  * device keys are derived. Sends one telemetry message on
  * whichever hub generation DPS assigned; a hub that does not accept SAS fails
@@ -106,8 +107,11 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
   }
+  /* A rejected credential with another source to try reconnects at once. */
+  bool falling_back = event->state == AZ_IOT_CONN_STATE_RECONNECTING && event->recovery != NULL
+      && event->recovery->next_attempt_delay_ms == 0;
   if (event->reason != AZ_IOT_OK
-      && (event->state == AZ_IOT_CONN_STATE_FAULTED || !event->is_retriable))
+      && (event->state == AZ_IOT_CONN_STATE_FAULTED || (!event->is_retriable && !falling_back)))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;
