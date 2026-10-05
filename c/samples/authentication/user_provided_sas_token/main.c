@@ -225,15 +225,15 @@ static void issue_pending_token(az_iot_connection_client* client, sample_context
   size_t len = 0;
   az_iot_sas_token_response response = { 0 };
   time_t now = time(NULL);
-  az_iot_result r = now == (time_t)-1 ? AZ_IOT_ERR_BUSY /* no clock: UNAVAILABLE below */
-                                      : sign_token(
-                                            &ctx->store,
-                                            p->resource_uri,
-                                            p->key_name,
-                                            (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
-                                            token,
-                                            sizeof(token),
-                                            &len);
+  az_iot_result r = now <= 0 ? AZ_IOT_ERR_BUSY /* no clock: UNAVAILABLE below */
+                             : sign_token(
+                                   &ctx->store,
+                                   p->resource_uri,
+                                   p->key_name,
+                                   (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
+                                   token,
+                                   sizeof(token),
+                                   &len);
   if (r == AZ_IOT_OK)
   {
     response.status = AZ_IOT_SAS_TOKEN_READY;

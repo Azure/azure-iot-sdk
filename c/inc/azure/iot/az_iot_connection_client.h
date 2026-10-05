@@ -1171,6 +1171,10 @@ extern "C"
 #if AZ_IOT_SAS_KEY_MAX < AZ_IOT_SHA256_SIZE
 #error "AZ_IOT_SAS_KEY_MAX must be at least AZ_IOT_SHA256_SIZE (32)"
 #endif
+/* Its base64 length is an int32_t az_span size. */
+#if (AZ_IOT_SAS_KEY_MAX + 2) / 3 > 2147483647 / 4
+#error "AZ_IOT_SAS_KEY_MAX is too large: its base64 length must fit int32_t"
+#endif
 /**
  * @brief Bytes of az_iot_connection_client_options::sas_buffer for
  * @p key_count keys and a @p token_size token area: 80 bytes of signing
