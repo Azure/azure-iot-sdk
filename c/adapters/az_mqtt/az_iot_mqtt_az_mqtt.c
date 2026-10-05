@@ -143,4 +143,11 @@ const char* az_iot_az_mqtt_string_writer_add(az_iot_az_mqtt_string_writer* w, az
 
 void az_iot_az_mqtt_factory_free(void* factory_ctx) { free(factory_ctx); }
 
-void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory) { free(factory); }
+void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory)
+{
+  // factory_ctx is the factory itself: destroy() frees both.
+  if (factory != NULL && factory->destroy != NULL)
+  {
+    factory->destroy(factory->factory_ctx);
+  }
+}
