@@ -132,6 +132,7 @@ typedef struct
   az_iot_connection_scope scope;
   az_iot_connection_state state;
   az_iot_auth_source source;
+  az_iot_result reason;
   az_iot_connection_failure_class classification;
   uint32_t attempt;
   uint32_t delay_ms;
@@ -187,6 +188,7 @@ static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
     e->scope = event->scope;
     e->state = event->state;
     e->source = event->auth_source;
+    e->reason = event->reason;
     e->classification
         = event->recovery != NULL ? event->recovery->classification : AZ_IOT_CONN_FAILURE_NONE;
     e->attempt = event->recovery != NULL ? event->recovery->attempt : 0u;
@@ -948,6 +950,18 @@ static void a_provision_only_session_falls_back_to_the_secondary_key(void** stat
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+  /* No RECONNECTING for a session without a registration: IDLE reports the
+   * rejection, CONNECTING the next source. */
+  const recorded_event* idle = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(idle->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+  assert_int_equal(idle->reason, AZ_IOT_ERR_IDENTITY_REJECTED);
+  for (size_t i = 0; i < fx->log_count; ++i)
+  {
+    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RECONNECTING);
+  }
+  assert_int_equal(
+      last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING)->source,
+      AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].pass_from, AZ_IOT_AUTH_SOURCE_NONE);
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);

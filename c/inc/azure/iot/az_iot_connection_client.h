@@ -332,7 +332,10 @@ extern "C"
    * source that connects is kept until rejected; open() starts again at the
    * first. When a whole pass is rejected, the failure is handled as without
    * fallback: for the hub, identity_recovery applies to the pass, not to each
-   * source.
+   * source. A provisioning session without a registration (provision_only, or
+   * held by a feature client) falls back too, but reports only DISCONNECTING
+   * and IDLE with the rejected auth_source and reason, then CONNECTING with the
+   * next source; no RECONNECTING, as for its other failures.
    *
    * Keys are copied and decoded by init(); later changes to the strings have
    * no effect. To change keys, re-initialize the client (and its feature
