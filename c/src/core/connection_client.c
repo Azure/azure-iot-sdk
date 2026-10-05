@@ -2256,6 +2256,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             &pid);
         if (r != AZ_IOT_OK)
         {
+          stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, r, "provisioning subscribe() failed");
           dps_finalize(c, r, false);
           return;
         }
@@ -3442,6 +3443,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "could not re-subscribe '%s' on connect",
           c->persistent_subs[i].topic_filter);
+      stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "re-subscribe() failed on connect");
       fail_subscription_restore(c, r);
       return;
     }
@@ -3529,6 +3531,8 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUB_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
   {
+    stage_local_error(
+        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
@@ -3545,6 +3549,7 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
       = c->active_client->iface->subscribe(c->active_client, topic, AZ_IOT_MQTT_QOS_1, &pid);
   if (r != AZ_IOT_OK)
   {
+    stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "presence subscribe() failed");
     return r;
   }
 
@@ -3569,6 +3574,8 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
   {
+    stage_local_error(
+        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
@@ -3596,6 +3603,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   az_iot_result r = c->active_client->iface->publish(c->active_client, &msg, &pid);
   if (r != AZ_IOT_OK)
   {
+    stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "presence birth publish() failed");
     return r;
   }
 

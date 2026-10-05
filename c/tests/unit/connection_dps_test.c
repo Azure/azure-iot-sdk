@@ -4461,6 +4461,24 @@ static void a_failed_registration_retry_falls_back_with_the_cached_hub_protocol(
   }
 }
 
+/* A provisioning SUBSCRIBE the adapter refuses synchronously comes with no
+ * adapter event; the failure carries the step as LOCAL detail. */
+static void a_refused_provisioning_subscribe_reports_the_step(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open(fx);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_dps_local_failure(fx, i, AZ_IOT_ERR_MQTT, "provisioning subscribe() failed");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4715,6 +4733,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         close_from_dps_setting_up_beside_a_live_hub_cancels_the_start, setup, teardown),
     cmocka_unit_test(a_failed_registration_retry_falls_back_with_the_cached_hub_protocol),
+    cmocka_unit_test_setup_teardown(
+        a_refused_provisioning_subscribe_reports_the_step, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -809,6 +809,12 @@ static void a_failed_subscribe_call_reconnects(void** state)
 
   assert_false(az_iot_connection_client__is_connected(fx->client));
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  /* No adapter event names the failure, so the detail is the step. */
+  size_t i = fx->log.count - 1u;
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_LOCAL);
+  assert_int_equal(fx->log.error_codes[i], (int32_t)AZ_IOT_ERR_MQTT);
+  assert_string_equal(fx->log.error_message[i], "re-subscribe() failed on connect");
 }
 
 /* A filter whose failure is scoped to itself still FAILS: its owner is told and

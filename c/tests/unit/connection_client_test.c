@@ -1754,6 +1754,56 @@ static void hub_mqtt_v5_without_v5_factory_is_not_supported(void** state)
 /* If the birth PUBLISH itself cannot be handed to the adapter the handshake
  * can never complete, so the attempt must end rather than sit in CONNECTING
  * waiting for an ack that was never solicited. */
+/* A presence SUBSCRIBE or birth PUBLISH the adapter refuses synchronously
+ * comes with no adapter event, so the failure carries the step as LOCAL
+ * detail. */
+static void hub_mqtt_v5_refused_presence_calls_report_the_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_test_state_log log = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &log),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+
+  const char* k_step[] = { "presence subscribe() failed", "presence birth publish() failed" };
+  for (size_t k = 0; k < 2; ++k)
+  {
+    log.count = 0;
+    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    assert_non_null(m);
+    if (k == 0)
+    {
+      az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
+    }
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    if (k == 1)
+    {
+      const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+      assert_non_null(sub);
+      az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+      assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+      (void)az_iot_connection_client_do_work(fx->client, 0);
+    }
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+
+    size_t i = log.count - 1u;
+    assert_int_equal(log.states[i], AZ_IOT_CONN_STATE_FAULTED);
+    assert_int_equal(log.reasons[i], AZ_IOT_ERR_MQTT);
+    assert_true(log.error_present[i]);
+    assert_int_equal(log.error_sources[i], AZ_IOT_CONN_ERR_SRC_LOCAL);
+    assert_int_equal(log.error_codes[i], (int32_t)AZ_IOT_ERR_MQTT);
+    assert_string_equal(log.error_message[i], k_step[k]);
+    assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &log),
+      AZ_IOT_OK);
+}
+
 static void hub_mqtt_v5_birth_publish_failure_faults(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2591,6 +2641,8 @@ int main(void)
     cmocka_unit_test(hub_mqtt_v5_without_v5_factory_is_not_supported),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_publish_failure_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_refused_presence_calls_report_the_step, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_before_suback_is_ignored, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
