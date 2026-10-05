@@ -4320,6 +4320,46 @@ static void close_from_dps_setting_up_cancels_the_retry(void** state)
       AZ_IOT_OK);
 }
 
+/* A feature client opens a provisioning session beside a connected hub, and
+ * the application closes the client from that session's SETTING_UP. No
+ * session exists yet, so close() must settle DPS itself: the start is
+ * abandoned rather than connecting after the close. */
+static void close_from_dps_setting_up_beside_a_live_hub_cancels_the_start(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_null(fx->client->dps_mqtt);
+
+  az_iot_test_state_log unused = { 0 };
+  close_from_callback_ctx ctx = { fx->client, &unused, 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, close_on_setting_up, &ctx),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  assert_int_not_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_OK);
+
+  assert_int_equal(ctx.closed, 1);
+  /* No provisioning adapter was created: the last one is still the hub's. */
+  assert_ptr_equal(az_iot_mock_mqtt_factory_last_client(fx->factory), hub);
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  /* The hub's teardown stays asynchronous. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_DISCONNECTING);
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, close_on_setting_up, &ctx),
+      AZ_IOT_OK);
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4571,6 +4611,8 @@ int main(void)
         a_hub_setup_failure_after_assignment_is_retried, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         close_from_dps_setting_up_cancels_the_retry, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_from_dps_setting_up_beside_a_live_hub_cancels_the_start, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

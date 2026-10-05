@@ -71,6 +71,9 @@ Every attempt moves its scope: `SETTING_UP`, then `CONNECTING` and `CONNECTED`, 
 So each failed attempt produces an event, including under a policy that retries forever. A step that
 fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
 as `code`, and the step as `message`, for example `certificate provider load() failed`.
+`open()` first validates the configuration (credential shape, CSR support, registration payload
+and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
+`open()`'s return value.
 
 ## Provisioning and the hub profile
 

@@ -69,6 +69,8 @@ Rules:
    `RETRY_PENDING`, `FAULTED` or `IDLE` (from `open()`, or a session a feature client asked for),
    with no `DISCONNECTING` for a session that never existed. A registration on a provisioning session that is already up reports
    `SETTING_UP → CONNECTED`.
+   `open()`'s configuration checks run before any attempt: a refusal is returned and raises no
+   event.
 
 With two scopes, "a retry is pending" cannot be read from state alone: a hub failure whose recovery
 is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `DPS`.

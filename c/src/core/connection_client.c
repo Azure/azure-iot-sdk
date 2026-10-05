@@ -5173,6 +5173,13 @@ static void dps_close_session(az_iot_connection_client* c)
 {
   if (!c->dps_mqtt)
   {
+    /* A start still in SETTING_UP has no session yet: settling the scope is
+     * what cancels it, since dps_start() re-checks the state. */
+    if (c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_SETTING_UP)
+    {
+      c->dps_phase = DPS_PHASE_NONE;
+      set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    }
     return;
   }
   if (c->dps_mqtt->iface && c->dps_mqtt->iface->disconnect)
