@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-name: ci-dotnet
+name: ci-dotnet-e2e-csr
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet.yml'
+      - '.github/workflows/ci-dotnet-cert-management.yml'
   push:
     branches: [ main ]
     paths:
@@ -19,7 +19,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet.yml'
+      - '.github/workflows/ci-dotnet-cert-management.yml'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -37,7 +37,7 @@ permissions:
 # nothing while the group stays behind. Both setup and teardown compute this name
 # independently, so teardown never depends on setup completing.
 env:
-  E2E_RESOURCE_GROUP: DotnetE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
+  E2E_RESOURCE_GROUP: DotnetCertMgmtE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   setup:
@@ -70,8 +70,8 @@ jobs:
           # An undefined repository variable arrives as an empty string, which
           # would otherwise override the action default, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          enable-file-upload: 'false'
-          enable-certificate-management: 'false'
+          enable-file-upload: 'true'
+          enable-certificate-management: 'true'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
 
@@ -118,19 +118,82 @@ jobs:
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
 
+          # Select this leg's device. Two DPS enrollments are provisioned; the
+          # Linux and Windows legs each claim a DISTINCT one (via matrix
+          # device-index) so they never share a device twin -- the mocked ADU
+          # suite patches large desired properties, and a shared twin would bloat
+          # the other leg's twin GET and flake test_twin. Fall back to the
+          # unsuffixed index-0 vars if the pinned provisioning action emits a
+          # pre-indexing test config.
+          $idx = '${{ matrix.device-index }}'
+          $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
+          $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
+          $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$idx" -ErrorAction SilentlyContinue).Value
+          if (-not $regId -or -not $certB64 -or -not $keyB64) {
+            Write-Host "Indexed device $idx not available; using the shared index-0 device."
+            $regId   = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID
+            $certB64 = $env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE
+            $keyB64  = $env:IOT_DPS_INDIVIDUAL_X509_KEY
+          }
+          Write-Host "e2e device (index $idx): $regId"
+
+          $groupRegId   = $env:IOT_DPS_GROUP_X509_REGISTRATION_ID
+          $groupCertB64 = $env:IOT_DPS_GROUP_X509_CERTIFICATE
+          $groupKeyB64  = $env:IOT_DPS_GROUP_X509_KEY
+          if (-not $groupRegId -or -not $groupCertB64 -or -not $groupKeyB64) {
+            throw "IOT_DPS_GROUP_X509_* not found in the provisioning config; the environment was not provisioned with an X.509 enrollment group."
+          }
+          Write-Host "CSR bootstrap device: $groupRegId"
+
+          # Materialize the device X.509 material to files. The in-process test
+          # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
+          # CA trust bundle here (no network download).
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("az-iot-c-e2e-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $certPath = Join-Path $dir "device-cert.pem"
+          $keyPath  = Join-Path $dir "device-key.pem"
+          $caPath   = Join-Path $dir "trusted-ca.pem"
+
+          [System.IO.File]::WriteAllText($certPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
+          [System.IO.File]::WriteAllText($keyPath,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
+
+          if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
+            Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+          }
+          else {
+            # Export the machine + user Root stores as a PEM bundle.
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($loc in @('LocalMachine', 'CurrentUser')) {
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
+              $store.Open('ReadOnly')
+              foreach ($c in $store.Certificates) { [void]$sb.AppendLine($c.ExportCertificatePem()) }
+              $store.Close()
+            }
+            [System.IO.File]::WriteAllText($caPath, $sb.ToString())
+          }
+
           # Map the config's DPS vars onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $regId
+          $env:AZ_IOT_CLIENT_CERT         = $certPath
+          $env:AZ_IOT_CLIENT_KEY          = $keyPath
+          $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          # Certificate management integration tests run in the dedicated
-          # ci-dotnet-cert-management pipeline; everything else runs here.
+          # Only the certificate management integration tests run in this
+          # pipeline; all other tests run in the ci-dotnet pipeline.
           dotnet test ./dotnet/Project.slnx `
-            --filter "FullyQualifiedName!~CertificateManagementIntegrationTests" `
+            --filter "FullyQualifiedName~CertificateManagementIntegrationTests" `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
             --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
             --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
+            --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
+            --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
+            --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 
@@ -145,7 +208,7 @@ jobs:
         id: test-reporter
         if: always()
         with:
-          name: dotnet test report
+          name: dotnet cert management test report
           path: '**/test-results.trx'
           reporter: dotnet-trx  
 
