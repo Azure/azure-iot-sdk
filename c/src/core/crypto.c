@@ -14,8 +14,7 @@
 /** @brief SHA-256 block size, in bytes. */
 #define SHA256_BLOCK_SIZE 64u
 
-/** @brief Zeroes @p len bytes at @p p; the compiler may not elide it. */
-static void secure_zero(void* p, size_t len)
+void az_iot_crypto__wipe(void* p, size_t len)
 {
   volatile uint8_t* v = (volatile uint8_t*)p;
   while (len-- > 0)
@@ -56,7 +55,7 @@ static az_iot_result sha256_2(
   }
   /* final() releases the context on every path. */
   az_iot_result fr = crypto->sha256_final(crypto, &ctx, r == AZ_IOT_OK ? out : NULL);
-  secure_zero(&ctx, sizeof(ctx));
+  az_iot_crypto__wipe(&ctx, sizeof(ctx));
   return r != AZ_IOT_OK ? r : fr;
 }
 
@@ -119,8 +118,8 @@ AZ_NODISCARD az_iot_result az_iot_crypto__hmac_sha256(
     r = sha256_2(crypto, pad, sizeof(pad), inner, sizeof(inner), out);
   }
 
-  secure_zero(k0, sizeof(k0));
-  secure_zero(pad, sizeof(pad));
-  secure_zero(inner, sizeof(inner));
+  az_iot_crypto__wipe(k0, sizeof(k0));
+  az_iot_crypto__wipe(pad, sizeof(pad));
+  az_iot_crypto__wipe(inner, sizeof(inner));
   return r;
 }

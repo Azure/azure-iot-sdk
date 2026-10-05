@@ -267,6 +267,24 @@ model (D9).
    Scope the *feature* to X.509 (matches the material struct), but route bootstrap
    auth through the provider so a future TPM/SAS provider can supply a token instead of a
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
+
+   **SAS.** SAS is not routed through the provider. Per role, the client tries the
+   provider's certificates first, then the SAS sources in `dps_auth` / `hub_auth` (primary
+   key, secondary key, user-provided token), moving on when the service rejects a credential.
+   The provider keeps serving X.509 roles, CSRs and issued chains; with SAS onboarding the
+   managed provider runs without a bootstrap identity. TPM *attestation* is out of scope: DPS
+   does not support it over MQTT.
+
+   **Multiple certificates per role (proposed).** `load()` gains an index:
+   `load(self, role, index, out_material)`. Index 0 is today's certificate; a provider returns
+   `AZ_IOT_ERR_NOT_FOUND` past its last one (or for a role it has no certificate for). The
+   client remembers the index that connected, so the provider stays stateless. No count()
+   hook: the sentinel cannot go stale when a renewal adds a certificate. The client stops at
+   `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4) even without the sentinel, guarding against a
+   provider that never returns it. Covers a
+   `selfSigned` identity's primary and secondary thumbprints, and keeping the previous issued
+   certificate as a rollback after renewal. The library is unreleased, so this changes the
+   existing signature; the vtable version is not bumped.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is

@@ -454,7 +454,9 @@ Not triggers, because they fault instead:
   `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` for a profile the SDK does not speak, or
   `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` when the assigned generation contradicts the attached
   feature clients, rather than guessing a protocol (§4). Terminal even with a policy configured, and
-  it also forces the next `open()` back through DPS so the stale cached host cannot be reused.
+  it also forces the next `open()` back through DPS so the stale cached host cannot be reused. When
+  the registration was a retry after a hub failure, the waiting HUB scope faults with the same
+  reason (`fault_retry_scopes()`).
 
 A hub identity refusal is a special case. `schedule_reconnect()` hands it to
 `schedule_identity_recovery()`, which schedules the next attempt on the identity ladder. The refusal
