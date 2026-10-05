@@ -184,9 +184,10 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 ## Certificates
 
-Every connection uses TLS with X.509 client authentication. `certificate_provider` supplies the
-trusted CA and the device credential; `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE`
-without one.
+Every connection uses TLS. `certificate_provider` supplies the trusted CA and the X.509 device
+credential. `open()` fails with `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` without one, unless every role
+the client uses has a SAS key (see [Authentication](#authentication)); a SAS role then uses
+server-authenticated TLS. `dps.request_operational_certificate` always needs a provider.
 
 Operational certificates:
 
@@ -208,6 +209,72 @@ Operational certificates:
 
 Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 [`samples/authentication`](../samples/authentication/README.md).
+
+## Authentication
+
+> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then a SAS token signed
+> with the primary key; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; `auth_source` in
+> state events. Proposed, not implemented yet: fallback to further certificates and to the
+> secondary key on rejection, `user_provided_token` (`init()` returns
+> `AZ_IOT_ERR_NOT_SUPPORTED`), and planned renewal (`renewal_percent`). Until renewal lands, the
+> hub ends the session when the token expires and the client reconnects with a new one.
+
+Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
+order, skipping any not set:
+
+| Source | Configure | Notes |
+| --- | --- | --- |
+| X.509 certificates | `certificate_provider` | As today. The provider may offer more than one per role (index 0, 1, ...). |
+| Primary, secondary key | `dps_auth` / `hub_auth`: `sas.primary_key_base64` (+ `secondary_key_base64`, `is_enrollment_group_key`) | The SDK signs tokens with the backend in `crypto`, and needs a Unix time: `time()`, or `unix_time.get_time`. |
+| User-provided token | `sas.user_provided_token` | The application supplies tokens; the SDK never sees its key. |
+
+Setting only X.509, or only SAS, uses that alone. A zeroed `az_iot_auth` means no SAS.
+
+```c
+copts.dps_auth.sas.primary_key_base64 = primary;
+copts.dps_auth.sas.secondary_key_base64 = secondary;  /* optional */
+copts.hub_auth = copts.dps_auth;          /* same keys for the hub; leave zeroed for X.509 only */
+copts.crypto = az_iot_crypto_openssl();   /* HMAC-SHA256 for the tokens */
+static uint8_t sas_buf[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))]; /* IDs <= 256 */
+copts.sas_buffer.buffer = sas_buf;        /* keys + token, app memory */
+copts.sas_buffer.size = sizeof(sas_buf);
+copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
+```
+
+- **Fallback.** When the service rejects a credential (`AZ_IOT_ERR_IDENTITY_REJECTED`), the next
+  source is tried at once, without a `reconnection_policy` delay. Other failures retry the same
+  source under the policy. One pass over all sources counts as one policy attempt; with the
+  policy disabled, `open()` still makes one full pass. The source that connects is kept until
+  rejected; `open()` starts again at the first. `identity_recovery` applies only after a pass in
+  which all of the hub's credentials are rejected. State events report the credential in
+  `auth_source` (and `x509_index`).
+- **Cost.** Only devices configured with more than one source pay for fallback: one extra
+  connect per rejected source, once per credential change (the working source is kept).
+- **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
+  `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
+  `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
+  counts once. The token is wiped once the transport has taken it; the whole buffer at
+  `deinit()`.
+- **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
+  re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
+  re-initializing.
+- **Token callback.** It must not block. It answers `READY`, `PENDING` (deliver later with
+  `az_iot_connection_client_complete_sas_token()`, within `connect_timeout_seconds`), or
+  `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
+- **Renewal.** Per role, in `sas`: at `renewal_percent` (default 80; 1-99) of
+  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`.
+  Applies to any session held open. MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
+  reconnects; those state events carry `is_credential_renewal` and reason `AZ_IOT_OK`.
+- **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
+  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
+- **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
+  certificate first; DPS can still use SAS. See
+  [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
+- **mqttv5 hubs** do not accept SAS yet; the design allows for it. The token request carries the
+  hub generation, and renewal can use MQTT 5 in-session re-authentication instead of a reconnect.
+  Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED`.
+- **Server trust.** `trusted_ca` applies to every connection. Without it, the X.509 provider's CA
+  is used if there is one, otherwise the adapter's default store.
 
 ## Crypto backend
 

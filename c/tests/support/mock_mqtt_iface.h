@@ -80,6 +80,7 @@ extern "C"
     char content_type[64]; /* PUBLISH Content Type, "" if none */
     uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */
+    char password[1024]; /* CONNECT password, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
      * core targeted. `topic` also carries the host for backwards compatibility. */
     struct

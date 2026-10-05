@@ -817,6 +817,93 @@ static void a_registration_polling_past_the_identity_deadline_is_abandoned(void*
   assert_identity_recovery_stopped(fx);
 }
 
+/* Register on the DPS adapter the last attempt opened, and answer with @p body. */
+static void answer_registration(az_iot_test_conn* fx, const char* body)
+{
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(dps);
+  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      dps, DPS_RESPONSE_TOPIC_ASSIGNED, (const uint8_t*)body, strlen(body), AZ_IOT_MQTT_QOS_1));
+  pump(fx, 5);
+}
+
+static const char k_assigned_unknown_profile[]
+    = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+      "\"registrationState\":{\"registrationId\":\"ut-device\","
+      "\"assignedHub\":\"" HUB_HOST "\",\"connectionProfile\":\"mqttV9\","
+      "\"deviceId\":\"assigned-device\"}}";
+
+/* Both scopes settled at FAULTED with @p reason, and nothing left to retry. */
+static void assert_both_scopes_faulted(az_iot_test_conn* fx, az_iot_result reason)
+{
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->log.reasons[i], reason);
+  assert_true(fx->log.recovery_present[i]);
+  assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_TERMINAL);
+}
+
+/* A re-registration after a refusal returns an assignment the client cannot
+ * use: the hub waiting on it is faulted too, not left RECONNECTING. */
+static void a_rejected_reassignment_after_a_refusal_faults_the_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity(fx);
+  fire_retry(fx);
+
+  answer_registration(fx, k_assigned_unknown_profile);
+  assert_both_scopes_faulted(fx, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+  /* Nothing further is attempted. */
+  pump(fx, 3);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+}
+
+/* Same when the re-registration came from the unreachable-hub threshold. */
+static void a_rejected_reassignment_after_an_unreachable_hub_faults_the_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  pump(fx, 2);
+  fire_retry(fx);
+
+  answer_registration(fx, k_assigned_unknown_profile);
+  assert_both_scopes_faulted(fx, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+}
+
+/* On a first registration no hub is waiting, so only DPS faults. */
+static void a_rejected_first_assignment_leaves_the_hub_idle(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  answer_registration(fx, k_assigned_unknown_profile);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+}
+
 static void request_reprovision_needs_a_dps_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -902,6 +989,12 @@ int main(void)
         a_delayed_registration_retry_past_the_deadline_faults_both_scopes, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         a_registration_polling_past_the_identity_deadline_is_abandoned, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_reassignment_after_a_refusal_faults_the_hub, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_reassignment_after_an_unreachable_hub_faults_the_hub, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_first_assignment_leaves_the_hub_idle, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(request_reprovision_needs_a_dps_client, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
         request_reprovision_keeps_a_pending_registration_schedule, setup_dps, teardown),
