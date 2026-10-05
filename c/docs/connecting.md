@@ -52,9 +52,10 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | State | Meaning |
 | --- | --- |
 | `IDLE` | Not connected. `open()` is legal only here. |
-| `CONNECTING` | A connect attempt is in progress, including DPS provisioning. |
+| `SETTING_UP` | An attempt's local steps before the network connect: feature-client binds, adapter creation, credential load or SAS signing, registration body. Entered by every attempt, including each retry. |
+| `CONNECTING` | The network connect was issued; the handshake is in flight. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
-| `RETRY_PENDING` | Waiting out a backoff delay before the next attempt. |
+| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
 | `FAULTED` | Stopped after a failure. The SDK does not retry from here. Call `close()` to return to `IDLE`, then `open()` again. |
 
@@ -64,8 +65,12 @@ State is tracked per scope: `AZ_IOT_CONN_SCOPE_DPS` for the provisioning session
 `az_iot_connection_client_add_state_observer()`.
 
 Each state event carries `scope`, `state`, `reason` (an `az_iot_result`), `is_retriable`, and
-optional `error` detail (source, wire code, service message). The event is valid only during the
-callback.
+optional `error` detail (source, code, message). The event is valid only during the callback.
+
+Every attempt moves its scope: `SETTING_UP`, then `CONNECTING` and `CONNECTED`, or a failure state.
+So each failed attempt produces an event, including under a policy that retries forever. A step that
+fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
+as `code`, and the step as `message`, for example `certificate provider load() failed`.
 
 ## Provisioning and the hub profile
 

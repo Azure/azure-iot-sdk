@@ -25,6 +25,7 @@
 #include "internal/mono_time.h"
 #include "internal/retry_policy.h"
 
+#include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -218,7 +219,11 @@ static void open_without_factory_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(fx->rec.count, 0);
+  /* The attempt is reported although it failed before anything was sent. */
+  assert_int_equal(fx->rec.count, 2);
+  assert_int_equal(fx->rec.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(fx->rec.states[1], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->rec.reasons[1], AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
 static void open_invokes_connect_and_transitions_to_connecting(void** state)
@@ -229,9 +234,10 @@ static void open_invokes_connect_and_transitions_to_connecting(void** state)
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  /* Fired once: IDLE -> CONNECTING. */
-  assert_int_equal(fx->rec.count, 1);
-  assert_int_equal(fx->rec.states[0], AZ_IOT_CONN_STATE_CONNECTING);
+  /* Fired twice: IDLE -> SETTING_UP -> CONNECTING. */
+  assert_int_equal(fx->rec.count, 2);
+  assert_int_equal(fx->rec.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(fx->rec.states[1], AZ_IOT_CONN_STATE_CONNECTING);
 
   /* The factory created exactly one client and connect() was issued on it. */
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -254,11 +260,11 @@ static void connected_event_transitions_to_connected(void** state)
 
   assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
 
-  /* CONNECTING (from open) then CONNECTED (from event). */
-  assert_int_equal(fx->rec.count, 2);
-  assert_int_equal(fx->rec.states[0], AZ_IOT_CONN_STATE_CONNECTING);
-  assert_int_equal(fx->rec.states[1], AZ_IOT_CONN_STATE_CONNECTED);
-  assert_int_equal(fx->rec.reasons[1], AZ_IOT_OK);
+  /* SETTING_UP and CONNECTING (from open), then CONNECTED (from event). */
+  assert_int_equal(fx->rec.count, 3);
+  assert_int_equal(fx->rec.states[1], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_equal(fx->rec.states[2], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(fx->rec.reasons[2], AZ_IOT_OK);
 }
 
 static void connack_failure_transitions_to_faulted(void** state)
@@ -272,10 +278,10 @@ static void connack_failure_transitions_to_faulted(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_AUTH));
   assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
 
-  /* CONNECTING then FAULTED with the reason from the failed CONNACK. */
-  assert_int_equal(fx->rec.count, 2);
-  assert_int_equal(fx->rec.states[1], AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(fx->rec.reasons[1], AZ_IOT_ERR_AUTH);
+  /* SETTING_UP, CONNECTING, then FAULTED with the reason from the CONNACK. */
+  assert_int_equal(fx->rec.count, 3);
+  assert_int_equal(fx->rec.states[2], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->rec.reasons[2], AZ_IOT_ERR_AUTH);
 
   /* Active adapter was torn down (last_client cache cleared by mock_destroy). */
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
@@ -2314,6 +2320,191 @@ static void a_provider_that_stops_loading_fails_the_reconnect(void** state)
   az_iot_connection_client_deinit(&client);
 }
 
+/* ---- every failed attempt is reported ---- */
+
+/* Connected once, then dropped: HUB is RETRY_PENDING, retrying for ever. */
+static az_iot_mqtt_factory* hub_retrying_for_ever(
+    az_iot_connection_client* client,
+    tls_provider* prov,
+    az_iot_test_state_log* log)
+{
+  az_iot_mqtt_factory* factory = tls_client_init(client, prov, false, true);
+  client->opts.reconnection_policy.max_attempts = 0;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(client, az_iot_test_on_state, log), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(client, 0);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  return factory;
+}
+
+/* Fire the pending retry; return the log index of its RETRY_PENDING. */
+static size_t fire_retry(az_iot_connection_client* client, az_iot_test_state_log* log)
+{
+  log->count = 0;
+  client->reconnect_due_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(client, 0);
+  assert_int_equal(log->scopes[0], AZ_IOT_CONN_SCOPE_HUB);
+  assert_int_equal(log->states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_false(log->error_present[0]);
+  size_t i = az_iot_test_index_of(log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_int_equal(i, log->count - 1u);
+  return i;
+}
+
+static void assert_local_failure(
+    const az_iot_test_state_log* log,
+    size_t i,
+    az_iot_result reason,
+    const char* step)
+{
+  assert_int_equal(log->reasons[i], reason);
+  assert_true(log->error_present[i]);
+  assert_int_equal(log->error_sources[i], AZ_IOT_CONN_ERR_SRC_LOCAL);
+  assert_int_equal(log->error_codes[i], (int32_t)reason);
+  assert_string_equal(log->error_message[i], step);
+}
+
+/* With retries for ever, a retry that failed before anything was sent used to
+ * be invisible: HUB was already waiting to retry and the repeat was dropped. */
+static void every_failed_hub_setup_is_reported_with_its_step(void** state)
+{
+  (void)state;
+  tls_provider prov = { .base.vtable = &k_tls_vtable, .operational_rc = AZ_IOT_ERR_NOT_FOUND };
+  az_iot_test_state_log log = { 0 };
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory = hub_retrying_for_ever(&client, &prov, &log);
+
+  prov.bootstrap_rc = AZ_IOT_ERR_INTERNAL;
+  for (int attempt = 0; attempt < 3; ++attempt)
+  {
+    size_t i = fire_retry(&client, &log);
+    assert_int_equal(log.count, 2);
+    assert_local_failure(&log, i, AZ_IOT_ERR_INTERNAL, "certificate provider load() failed");
+    assert_true(log.is_retriable[i]);
+  }
+
+  /* A different cause is reported as such. */
+  client.opts.certificate_provider = NULL;
+  size_t i = fire_retry(&client, &log);
+  assert_local_failure(
+      &log, i, AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "no certificate provider and no SAS key");
+  assert_false(log.is_retriable[i]);
+
+  /* Recovery starts clean: CONNECTED carries no stale detail. */
+  client.opts.certificate_provider = &prov.base;
+  prov.bootstrap_rc = AZ_IOT_OK;
+  log.count = 0;
+  client.reconnect_due_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&client, 0);
+  assert_int_equal(log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(log.states[1], AZ_IOT_CONN_STATE_CONNECTING);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&client, 0);
+  assert_int_equal(
+      az_iot_test_last_state_for(&log, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_CONNECTED);
+  assert_false(log.error_present[log.count - 1u]);
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A synchronous adapter connect() failure is reported after CONNECTING. */
+static void a_refused_adapter_connect_is_reported_with_its_step(void** state)
+{
+  (void)state;
+  tls_provider prov = { .base.vtable = &k_tls_vtable, .operational_rc = AZ_IOT_ERR_NOT_FOUND };
+  az_iot_test_state_log log = { 0 };
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory = hub_retrying_for_ever(&client, &prov, &log);
+
+  for (int attempt = 0; attempt < 2; ++attempt)
+  {
+    az_iot_mock_mqtt_factory_fail_next_connect(factory, AZ_IOT_ERR_TLS);
+    size_t i = fire_retry(&client, &log);
+    assert_int_equal(log.count, 3);
+    assert_int_equal(log.states[1], AZ_IOT_CONN_STATE_CONNECTING);
+    assert_local_failure(&log, i, AZ_IOT_ERR_TLS, "MQTT adapter connect() failed");
+  }
+  az_iot_connection_client_deinit(&client);
+}
+
+/* open()'s own setup failure is reported, settled at IDLE and returned. */
+static void open_setup_failure_settles_idle_with_its_step(void** state)
+{
+  (void)state;
+  tls_provider prov = { .base.vtable = &k_tls_vtable,
+                        .operational_rc = AZ_IOT_ERR_NOT_FOUND,
+                        .bootstrap_rc = AZ_IOT_ERR_INTERNAL };
+  az_iot_test_state_log log = { 0 };
+  az_iot_connection_client client;
+  (void)tls_client_init(&client, &prov, false, true);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&client, az_iot_test_on_state, &log), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_INTERNAL);
+  assert_int_equal(log.count, 2);
+  assert_int_equal(log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(log.states[1], AZ_IOT_CONN_STATE_IDLE);
+  assert_local_failure(&log, 1, AZ_IOT_ERR_INTERNAL, "certificate provider load() failed");
+  az_iot_connection_client_deinit(&client);
+}
+
+typedef struct closing_observer
+{
+  az_iot_connection_client* client;
+  az_iot_connection_state on;
+  bool armed;
+} closing_observer;
+
+static void close_on_state(const az_iot_connection_state_event* event, void* ctx)
+{
+  closing_observer* o = (closing_observer*)ctx;
+  if (o->armed && event->state == o->on)
+  {
+    o->armed = false;
+    assert_int_equal(az_iot_connection_client_close(o->client), AZ_IOT_OK);
+  }
+}
+
+/* close() from either announcement of a retry cancels it: nothing connects
+ * behind the application's back, and no failure is reported. */
+static void close_from_a_hub_announcement_cancels_the_attempt(void** state)
+{
+  (void)state;
+  const az_iot_connection_state k_on[]
+      = { AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_CONN_STATE_CONNECTING };
+  for (size_t k = 0; k < 2; ++k)
+  {
+    tls_provider prov = { .base.vtable = &k_tls_vtable, .operational_rc = AZ_IOT_ERR_NOT_FOUND };
+    az_iot_test_state_log log = { 0 };
+    az_iot_connection_client client;
+    az_iot_mqtt_factory* factory = hub_retrying_for_ever(&client, &prov, &log);
+    closing_observer o = { .client = &client, .on = k_on[k], .armed = true };
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(&client, close_on_state, &o), AZ_IOT_OK);
+    log.count = 0;
+    client.reconnect_due_ms = az_iot_time_mono_ms();
+    (void)az_iot_connection_client_do_work(&client, 0);
+
+    assert_false(o.armed);
+    assert_null(client.active_client);
+    assert_int_equal(az_iot_test_count_state(&log, AZ_IOT_CONN_STATE_RETRY_PENDING), 0);
+    assert_int_equal(
+        az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+    /* No adapter left behind. */
+    assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+    az_iot_connection_client_deinit(&client);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2424,6 +2615,10 @@ int main(void)
     cmocka_unit_test(a_dps_session_without_a_certificate_provider_is_refused),
     cmocka_unit_test(a_failed_load_fails_the_connect_instead_of_going_plaintext),
     cmocka_unit_test(a_provider_that_stops_loading_fails_the_reconnect),
+    cmocka_unit_test(every_failed_hub_setup_is_reported_with_its_step),
+    cmocka_unit_test(a_refused_adapter_connect_is_reported_with_its_step),
+    cmocka_unit_test(open_setup_failure_settles_idle_with_its_step),
+    cmocka_unit_test(close_from_a_hub_announcement_cancels_the_attempt),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -56,7 +56,11 @@ through the internal `set_state_to()` helper, which is also what raises the user
 stateDiagram-v2
     direction LR
     [*] --> IDLE
-    IDLE --> CONNECTING: open()
+    IDLE --> SETTING_UP: open()
+    SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> RETRY_PENDING: local step failed
+    SETTING_UP --> FAULTED: local step failed, reconnect disabled
+    SETTING_UP --> IDLE: open() step failed
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
     CONNECTING --> RETRY_PENDING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
@@ -64,7 +68,7 @@ stateDiagram-v2
     CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> IDLE: drop, reconnect disabled
     CONNECTED --> DISCONNECTING: close()
-    RETRY_PENDING --> CONNECTING: backoff elapsed
+    RETRY_PENDING --> SETTING_UP: backoff elapsed
     RETRY_PENDING --> FAULTED: attempts exhausted
     RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
@@ -119,7 +123,7 @@ sequenceDiagram
     participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
-    Conn->>Conn: state = CONNECTING
+    Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
 
     opt no valid assignment cached
         Conn->>Cert: load(BOOTSTRAP)
@@ -154,6 +158,7 @@ sequenceDiagram
     alt not found
         Conn->>Cert: load(BOOTSTRAP)
     end
+    Conn->>Conn: HUB state = CONNECTING
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
@@ -373,7 +378,7 @@ sequenceDiagram
         Conn->>Conn: state = RETRY_PENDING
         Conn-->>App: state callback(RETRY_PENDING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
-        Conn->>Conn: start_connect_attempt() -> full sequence of section 3
+        Conn->>Conn: SETTING_UP -> CONNECTING: full sequence of section 3
         Hub-->>Conn: CONNACK ok
         Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
@@ -1057,6 +1062,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | `close()` while `IDLE` | — | `AZ_IOT_OK` | connection client | idempotent no-op | |
+| `close()` while `SETTING_UP` (from its state callback) | — | `AZ_IOT_OK` | connection client | no adapter exists yet: settles both scopes to `IDLE`; the attempt is abandoned, not reported as a failure, and no retry is scheduled | Same for a `close()` from the `CONNECTING` announcement. |
 | `close()` while `CONNECTING`, hub attempt in flight | — | `AZ_IOT_OK` | connection client | sets `user_close`, `DISCONNECTING`, calls `disconnect()` | `active_client` is assigned at the end of `start_connect_attempt()`, after `HUB:CONNECTING` has been raised. A `close()` from a state observer during that transition sees no adapter and takes the no-adapter path. |
 | `close()` while `CONNECTING`, provisioning in flight | — | `AZ_IOT_OK` | connection client | disconnects and tears down the DPS session, drops `dps_pending_finalize`, resets the attempt counter, goes to `IDLE` | The pending finalize is dropped on purpose: it describes the outcome of a session being abandoned, and acting on it in the next pump tick would move a client the application has just closed. `needs_reprovision` survives. |
 | `close()` while `CONNECTED` | — | `AZ_IOT_OK`, or the adapter's disconnect error | connection client | sets `user_close`, transitions to `DISCONNECTING`, calls the adapter's `disconnect()` | |

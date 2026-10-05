@@ -856,8 +856,12 @@ extern "C"
   typedef enum az_iot_connection_state
   {
     AZ_IOT_CONN_STATE_IDLE = 0,
+    /** @brief The adapter's connect() was issued; the handshake is in flight
+     * (on the hub, until subscriptions or the birth-ack complete). */
     AZ_IOT_CONN_STATE_CONNECTING,
     AZ_IOT_CONN_STATE_CONNECTED,
+    /** @brief A retry is scheduled; nothing is in flight. The next attempt
+     * starts in AZ_IOT_CONN_STATE_SETTING_UP. */
     AZ_IOT_CONN_STATE_RETRY_PENDING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
     /* The connection gave up: either no reconnection policy is configured, or
@@ -875,7 +879,12 @@ extern "C"
      * the state: an unattended device can back off, ask for new credentials or
      * report the fault before trying again, instead of the SDK looping on a
      * failure it has already been told not to retry. */
-    AZ_IOT_CONN_STATE_FAULTED
+    AZ_IOT_CONN_STATE_FAULTED,
+    /** @brief An attempt's local steps before the adapter's connect():
+     * feature-client binds, adapter creation, credential load or SAS signing,
+     * registration body. Entered by every attempt, including each retry, so a
+     * failure here is reported (error source AZ_IOT_CONN_ERR_SRC_LOCAL). */
+    AZ_IOT_CONN_STATE_SETTING_UP
   } az_iot_connection_state;
 
   /* SDK-produced, callback-lifetime view of a connection-state transition.
@@ -915,7 +924,11 @@ extern "C"
     AZ_IOT_CONN_ERR_SRC_MQTT,
     /** @brief The provisioning service's own verdict. `code` is
      * `extended_error_code` (e.g. 401001). */
-    AZ_IOT_CONN_ERR_SRC_DPS
+    AZ_IOT_CONN_ERR_SRC_DPS,
+    /** @brief A step of the attempt failed on the device: configuration,
+     * credential, feature-client bind, or the MQTT adapter API. `code` is the
+     * step's az_iot_result; `message` names the step. */
+    AZ_IOT_CONN_ERR_SRC_LOCAL
   } az_iot_connection_error_source;
 
   /**
@@ -928,8 +941,8 @@ extern "C"
     az_iot_connection_error_source source;
     /** @brief The code itself. 0 means "none supplied" and is ambiguous. */
     int32_t code;
-    /** @brief Service-supplied text, empty when there is none. DPS supplies it;
-     * MQTT does not. Callback lifetime -- copy to retain. */
+    /** @brief Service-supplied text (DPS), or the failed step (LOCAL); empty
+     * otherwise. Callback lifetime -- copy to retain. */
     az_span message;
   } az_iot_connection_error_detail;
 
@@ -1525,12 +1538,12 @@ extern "C"
     az_iot_retry_state dps_user_retry;
     bool dps_user_retry_blocked;
 
-    /* Set by dps_start() when an observer closed the client from inside the
-     * synchronous DPS:CONNECTING announcement. That cancellation returns the
-     * same result code as a genuine start failure, and the two need opposite
-     * treatment: a failure should be paced, a close is the caller's documented
-     * escape and has already reset the pacing. Cleared at the top of every
-     * dps_start(). */
+    /* Set when an observer closed the client from inside a synchronous DPS
+     * announcement that starts an attempt (SETTING_UP or CONNECTING). That
+     * cancellation returns the same result code as a genuine start failure,
+     * and the two need opposite treatment: a failure is paced or retried, a
+     * close is the caller's documented escape and has already reset the
+     * pacing. Cleared at the start of every such attempt. */
     bool dps_start_cancelled;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
