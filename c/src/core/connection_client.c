@@ -2727,6 +2727,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
+  uint32_t start_seq = ++c->dps_start_seq;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
 
   /* That announcement ran the application's state callback synchronously, and
@@ -2735,7 +2736,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
    * `mc` afterwards would be a use-after-free, so detect the cancellation and
    * leave: the session the caller asked for no longer exists, and the client
    * is already back in IDLE. */
-  if (c->dps_mqtt != mc)
+  if (c->dps_mqtt != mc || c->dps_start_seq != start_seq)
   {
     AZ_IOT_LOG_DEBUG(
         AZ_IOT_LOG_COMPONENT_DPS,
@@ -5113,6 +5114,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     if (r == AZ_IOT_ERR_BUSY || r == AZ_IOT_OK)
     {
       return AZ_IOT_OK;
+    }
+    /* close() + open() from the start's announcement left a newer session
+     * that owns the ref now. */
+    if (client->dps_start_cancelled && client->dps_mqtt != NULL)
+    {
+      return r;
     }
     client->dps_standing_ref = false;
     AZ_IOT_LOG_ERRORF(

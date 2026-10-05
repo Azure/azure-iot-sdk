@@ -1546,6 +1546,10 @@ extern "C"
      * close is the caller's documented escape and has already reset the
      * pacing. Cleared at the start of every such attempt. */
     bool dps_start_cancelled;
+    /* Bumped by every provisioning session start. A start compares it after
+     * its CONNECTING announcement: a close() + open() there may reuse the freed
+     * adapter's address, so the pointer alone cannot tell the sessions apart. */
+    uint32_t dps_start_seq;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;

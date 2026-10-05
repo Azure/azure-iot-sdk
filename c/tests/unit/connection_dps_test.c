@@ -4620,6 +4620,83 @@ static void open_during_a_pending_registration_retry_is_rejected(void** state)
   }
 }
 
+typedef struct reopen_ctx
+{
+  az_iot_connection_client* client;
+  az_iot_connection_state on;
+  int fired;
+  az_iot_result reopen;
+} reopen_ctx;
+
+/* close() then open() from the first DPS announcement of the given state. */
+static void close_and_reopen_on(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  reopen_ctx* ctx = (reopen_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == ctx->on && ctx->fired == 0)
+  {
+    ctx->fired = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+    ctx->reopen = az_iot_connection_client_open(ctx->client);
+  }
+}
+
+/* A provision_only open() whose start is replaced by a close() + open() from
+ * its own announcement must leave the newer session its standing ref: without
+ * it the pump collects that session and never reopens it. */
+static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** state)
+{
+  (void)state;
+  const az_iot_connection_state k_on[]
+      = { AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_CONN_STATE_CONNECTING };
+  for (size_t k = 0; k < 2; ++k)
+  {
+    az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
+    assert_non_null(fx);
+    az_iot_connection_client_options opts = dps_options();
+    opts.dps.provision_only = true;
+    assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+    fx->client = &fx->client_storage;
+    fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_non_null(fx->factory);
+    assert_int_equal(
+        az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+    reopen_ctx ctx = { fx->client, k_on[k], 0, AZ_IOT_ERR_INTERNAL };
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(fx->client, close_and_reopen_on, &ctx),
+        AZ_IOT_OK);
+
+    /* The outer start was cancelled; the nested one succeeded. */
+    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+    assert_int_equal(ctx.fired, 1);
+    assert_int_equal(ctx.reopen, AZ_IOT_OK);
+    assert_true(fx->client->dps_standing_ref);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    assert_non_null(m);
+    assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), m);
+    /* Connected once: the cancelled outer start did not reuse it. */
+    assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_CONNECT), 1);
+
+    /* The newer session comes up and is kept, with no feature client. */
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+    assert_non_null(sub);
+    assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+    for (int i = 0; i < 3; ++i)
+    {
+      (void)az_iot_connection_client_do_work(fx->client, 0);
+    }
+    assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), m);
+    assert_int_equal(
+        az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+        AZ_IOT_CONN_STATE_CONNECTED);
+
+    assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+    az_iot_connection_client_deinit(&fx->client_storage);
+    free(fx);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4881,6 +4958,7 @@ int main(void)
         a_feature_session_started_after_close_does_not_register, setup, teardown),
     cmocka_unit_test_setup_teardown(
         open_during_a_pending_registration_retry_is_rejected, setup_with_reconnect, teardown),
+    cmocka_unit_test(a_provision_only_reopen_from_the_callback_keeps_the_session),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
