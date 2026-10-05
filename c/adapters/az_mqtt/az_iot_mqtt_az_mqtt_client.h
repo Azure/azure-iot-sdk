@@ -554,7 +554,16 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
       return rc;
     }
   }
+  // Pointer and count pairs (MQTT 3.1.1 ignores user properties).
+  if ((o->lwt.payload == NULL && o->lwt.payload_len > 0) || o->lwt.payload_len > (size_t)INT32_MAX)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
 #if AZ_IOT_AZ_MQTT_V == 5
+  if (o->user_properties == NULL && o->user_properties_count > 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (o->user_properties_count > AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -882,6 +891,11 @@ static az_iot_result _azm_publish(
   publish.qos = (az_mqtt_qos)msg->qos;
   publish.retain = msg->retain;
 #if AZ_IOT_AZ_MQTT_V == 5
+  if ((msg->user_properties == NULL && msg->user_properties_count > 0)
+      || (msg->correlation_data == NULL && msg->correlation_data_len > 0))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (msg->user_properties_count > AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
       || msg->correlation_data_len > (size_t)INT32_MAX)
   {

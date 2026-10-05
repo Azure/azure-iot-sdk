@@ -655,6 +655,9 @@ if(AZ_IOT_WITH_PAHO)
 endif()
 
 if(AZ_IOT_WITH_AZ_MQTT)
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
+
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     foreach(_v 3 5)
         set(_t az_iot_conformance_az_mqtt_v${_v})

@@ -48,6 +48,9 @@ extern "C"
   /**
    * @brief Destroy a factory from either function above (NULL: no-op). Clients it created are
    * not destroyed; they follow the az_iot_mqtt_iface destroy() contract.
+   *
+   * Not for a factory registered with az_iot_connection_client_register_mqtt_factory(): the
+   * connection client owns it then, and az_iot_connection_client_deinit() destroys it.
    */
   void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 
