@@ -4902,10 +4902,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * A standing ref is an open client whatever the DPS scope says: between a
    * drop and the paced reopen the scope is legitimately IDLE with no session,
    * and a second open() accepted there would reset the ladder and start an
-   * unpaced attempt with no close() in between. */
+   * unpaced attempt with no close() in between. A registration retry waiting
+   * in DPS:RETRY_PENDING holds no ref, for the same reason. */
   if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_IDLE
       || (client->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE
           && client->dps_registration_ref)
+      || client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING
       || client->dps_standing_ref)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "open: client not in IDLE state");
@@ -5194,6 +5196,9 @@ static void dps_close_session(az_iot_connection_client* c)
     if (c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_SETTING_UP)
     {
       c->dps_phase = DPS_PHASE_NONE;
+      /* The registration goes with it: a session started from the callback
+       * registers only if a later open() asks. */
+      c->dps_registration_ref = false;
       set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     }
     return;

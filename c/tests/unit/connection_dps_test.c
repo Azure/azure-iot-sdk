@@ -4518,6 +4518,108 @@ static void a_refused_status_query_reports_the_step(void** state)
   assert_dps_local_failure(fx, i, AZ_IOT_ERR_MQTT, "status query publish() failed");
 }
 
+typedef struct close_then_ensure_ctx
+{
+  az_iot_connection_client* client;
+  int fired;
+} close_then_ensure_ctx;
+
+/* close() from a registration's SETTING_UP, then a feature client asks for
+ * a session from the same callback. */
+static void close_then_ensure(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_then_ensure_ctx* ctx = (close_then_ensure_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_SETTING_UP
+      && ctx->fired == 0)
+  {
+    ctx->fired = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+    (void)az_iot_connection_client__dps_session_ensure(ctx->client);
+  }
+}
+
+/* The closed registration's ref must not carry over to the feature session:
+ * its SUBACK would otherwise register and connect a hub after close(). */
+static void a_feature_session_started_after_close_does_not_register(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  close_then_ensure_ctx ctx = { fx->client, 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, close_then_ensure, &ctx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  /* The close() cancelled the registration start, which open() reports. */
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(ctx.fired, 1);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), m);
+  assert_false(fx->client->dps_registration_ref);
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  /* Ready for its users; no registration was published. */
+  assert_true(az_iot_connection_client__dps_session_ready(fx->client));
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, close_then_ensure, &ctx),
+      AZ_IOT_OK);
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
+/* open() during a pending registration retry must not reset it: the client
+ * is not IDLE, and accepting would bypass the scheduled backoff. Both a
+ * synchronous retry failure and a service refusal leave DPS:RETRY_PENDING. */
+static void open_during_a_pending_registration_retry_is_rejected(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  for (int sync = 0; sync < 2; ++sync)
+  {
+    if (sync)
+    {
+      /* The retry fires and fails before a session exists. */
+      az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_TLS);
+      fx->client->reconnect_due_ms = az_iot_time_mono_ms();
+      (void)az_iot_connection_client_do_work(fx->client, 0);
+    }
+    assert_int_equal(
+        az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+        AZ_IOT_CONN_STATE_RETRY_PENDING);
+    assert_int_equal(
+        az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+        AZ_IOT_CONN_STATE_IDLE);
+    assert_false(fx->client->dps_registration_ref);
+
+    uint64_t due = fx->client->reconnect_due_ms;
+    uint32_t attempt = fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS];
+    assert_int_not_equal(due, 0);
+    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
+    assert_int_equal(fx->client->reconnect_due_ms, due);
+    assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], attempt);
+    assert_null(fx->client->dps_mqtt);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4775,6 +4877,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_provisioning_subscribe_reports_the_step, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_status_query_reports_the_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_feature_session_started_after_close_does_not_register, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        open_during_a_pending_registration_retry_is_rejected, setup_with_reconnect, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
