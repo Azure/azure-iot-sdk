@@ -657,10 +657,14 @@ endif()
 if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
+    target_compile_definitions(az_iot_tests_az_mqtt_adapter PRIVATE
+        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
         integration/az_mqtt_adapter_broker_test.c NO_CTEST)
     target_link_libraries(az_iot_az_mqtt_adapter_broker PRIVATE az_iot_adapter_az_mqtt)
+    target_compile_definitions(az_iot_az_mqtt_adapter_broker PRIVATE
+        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()

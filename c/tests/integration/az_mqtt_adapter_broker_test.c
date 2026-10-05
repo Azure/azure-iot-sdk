@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter against a broker (AZ_IOT_MQTT_BROKER_HOST / _PORT): process_loop() returns when
- * an event callback raises more events. */
+ * an event callback raises more events; a publish larger than the send buffer is refused. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -64,8 +64,14 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   }
   assert_int_equal(r.connected, 1);
 
+  static uint8_t too_large[AZ_IOT_AZ_MQTT_BUFFER_SIZE + 1];
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "az-iot/az-mqtt-adapter-test";
+  msg.payload = too_large;
+  msg.payload_len = sizeof(too_large);
+  assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  msg.payload = NULL;
+  msg.payload_len = 0;
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_OK);
   // Each callback publishes again. Every call must still return, with acknowledgements delivered
   // (at most two per call: the one held on entry, and one after the receive step).

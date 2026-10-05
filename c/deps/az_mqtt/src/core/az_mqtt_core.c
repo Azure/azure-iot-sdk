@@ -886,6 +886,12 @@ static az_result _read_packet(
   if (az_result_failed(rc))
     return rc;
 
+  // Before waiting for a body whose length a malformed header may have made up.
+  if (!_az_mqtt_fixed_header_flags_valid(az_span_ptr(_S(core).receive_buffer)[0]))
+  {
+    return AZ_MQTT_ERROR_MALFORMED_PACKET;
+  }
+
   int32_t header_size = 1;
   int32_t remaining_length = 0;
   int shift = 0;

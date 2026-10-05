@@ -160,6 +160,17 @@ AZ_NODISCARD az_result _az_mqtt_read_utf8_string(az_span* src, az_span* out)
 }
 
 
+bool _az_mqtt_fixed_header_flags_valid(uint8_t first_byte)
+{
+  az_mqtt_packet_type const type = (az_mqtt_packet_type)(first_byte >> 4);
+  uint8_t const flags = first_byte & 0x0F;
+  // MQTT 3.1.1 2.2.2, 5.0 2.1.3. PUBLISH flags carry DUP, QoS and RETAIN, checked by its decoder.
+  bool const requires_0010 = type == AZ_MQTT_PACKET_TYPE_PUBREL
+      || type == AZ_MQTT_PACKET_TYPE_SUBSCRIBE || type == AZ_MQTT_PACKET_TYPE_UNSUBSCRIBE;
+  uint8_t const reserved_flags = requires_0010 ? 0x02 : 0x00;
+  return type == AZ_MQTT_PACKET_TYPE_PUBLISH || flags == reserved_flags;
+}
+
 AZ_NODISCARD az_result _az_mqtt_decode_fixed_header(
     az_span* src,
     az_mqtt_packet_type* out_packet_type,
@@ -179,17 +190,9 @@ AZ_NODISCARD az_result _az_mqtt_decode_fixed_header(
   *out_packet_type = (az_mqtt_packet_type)(first_byte >> 4);
   *out_flags = first_byte & 0x0F;
 
-  // Reserved flags (MQTT 3.1.1 2.2.2, 5.0 2.1.3): 0b0010 for PUBREL, SUBSCRIBE and UNSUBSCRIBE;
-  // 0 for the others except PUBLISH, whose flags carry DUP, QoS and RETAIN.
-  if (*out_packet_type != AZ_MQTT_PACKET_TYPE_PUBLISH)
+  if (!_az_mqtt_fixed_header_flags_valid(first_byte))
   {
-    bool const two = *out_packet_type == AZ_MQTT_PACKET_TYPE_PUBREL
-        || *out_packet_type == AZ_MQTT_PACKET_TYPE_SUBSCRIBE
-        || *out_packet_type == AZ_MQTT_PACKET_TYPE_UNSUBSCRIBE;
-    if (*out_flags != (two ? 0x02 : 0x00))
-    {
-      return AZ_MQTT_ERROR_MALFORMED_PACKET;
-    }
+    return AZ_MQTT_ERROR_MALFORMED_PACKET;
   }
 
   rc = _az_mqtt_read_vbi(src, out_remaining);

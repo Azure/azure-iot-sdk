@@ -54,7 +54,9 @@ az_iot_result az_iot_az_mqtt_request_result(az_result rc)
   {
     return AZ_IOT_ERR_BUSY;
   }
-  if (rc == AZ_MQTT_ERROR_BUFFER_TOO_SMALL || rc == AZ_MQTT_ERROR_PACKET_TOO_LARGE)
+  // AZ_ERROR_NOT_ENOUGH_SPACE: the packet does not fit the send buffer.
+  if (rc == AZ_MQTT_ERROR_BUFFER_TOO_SMALL || rc == AZ_MQTT_ERROR_PACKET_TOO_LARGE
+      || rc == AZ_ERROR_NOT_ENOUGH_SPACE)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -86,6 +88,16 @@ az_iot_result az_iot_az_mqtt_session_result(az_result rc)
   if (rc == AZ_MQTT_ERROR_NOT_SUPPORTED)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  // A CONNECT or an inbound packet larger than the buffers.
+  if (rc == AZ_ERROR_NOT_ENOUGH_SPACE)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  // A CONNECT the encoder refuses (e.g. a field over 65,535 bytes).
+  if (rc == AZ_MQTT_ERROR_INVALID_CONFIG || rc == AZ_ERROR_ARG)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   return AZ_IOT_ERR_MQTT;
 }

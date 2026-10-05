@@ -523,6 +523,9 @@ static bool _azm_session_persists(az_iot_mqtt_connect_options const* o)
 #endif
 }
 
+/** @brief Whether @p qos is 0, 1 or 2. */
+static bool _azm_qos_valid(az_iot_mqtt_qos qos) { return (unsigned)qos <= AZ_IOT_MQTT_QOS_2; }
+
 static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
 {
   // Fail closed: a transport, proxy or credential this adapter cannot honour is refused.
@@ -566,6 +569,17 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (az_iot_az_mqtt_has_text(o->lwt.topic) && !_azm_qos_valid(o->lwt.qos))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+#if AZ_IOT_AZ_MQTT_V == 3
+  // MQTT 3.1.1 3.1.2.9: no password without a user name (MQTT 5 allows it).
+  if (az_iot_az_mqtt_has_text(o->password) && !az_iot_az_mqtt_has_text(o->username))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+#endif
 #if AZ_IOT_AZ_MQTT_V == 5
   if (o->user_properties == NULL && o->user_properties_count > 0)
   {
@@ -830,7 +844,7 @@ static az_iot_result _azm_subscribe(
     az_iot_mqtt_qos qos,
     uint16_t* out_packet_id)
 {
-  if (self == NULL || topic_filter == NULL)
+  if (self == NULL || topic_filter == NULL || !_azm_qos_valid(qos))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -883,7 +897,7 @@ static az_iot_result _azm_publish(
     az_iot_mqtt_message const* msg,
     uint16_t* out_packet_id)
 {
-  if (self == NULL || msg == NULL || msg->topic == NULL
+  if (self == NULL || msg == NULL || msg->topic == NULL || !_azm_qos_valid(msg->qos)
       || (msg->payload == NULL && msg->payload_len > 0) || msg->payload_len > (size_t)INT32_MAX)
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -971,9 +985,13 @@ static az_iot_result _azm_process_loop(az_iot_mqtt_client* self, uint32_t timeou
   if (m->start_pending)
   {
     m->start_pending = false;
-    // A failure ends the session; _azm_on_connection_closed reports it.
     az_result const rc = _AZM(client_connect_start)(&m->client, m->connect_timeout_ms);
-    (void)rc;
+    if (az_result_failed(rc) && m->connecting)
+    {
+      // Refused before the session started (e.g. CONNECT larger than the send buffer), so the
+      // close callback did not run.
+      _azm_on_connection_closed(&m->client, rc);
+    }
   }
   if (m->connecting || m->connected)
   {
