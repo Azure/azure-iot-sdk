@@ -619,14 +619,14 @@ jobs:
           -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
       - name: Build
-        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
       - name: Conformance
         env:
           AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
           AZ_IOT_MQTT_BROKER_PORT: '1883'
           AZ_IOT_CONFORMANCE_WS_PORT: '8080'
           AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
-        run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_conformance_az_mqtt_' --no-tests=error
+        run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
