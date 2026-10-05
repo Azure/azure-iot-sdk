@@ -93,9 +93,6 @@ typedef struct
   char* strings;
   uint8_t* message_storage; /* Allocated on the first connect whose session outlives it. */
   az_mqtt_inflight_entry inflight[AZ_IOT_AZ_MQTT_INFLIGHT_MAX];
-  /* Outgoing QoS 2 and incoming QoS 2 packet identifiers in flight: on_pubcomp reports both. */
-  uint16_t outgoing_qos2[AZ_IOT_AZ_MQTT_INFLIGHT_MAX];
-  uint16_t incoming_qos2[AZ_IOT_AZ_MQTT_INFLIGHT_MAX];
 #if AZ_IOT_AZ_MQTT_V == 5
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   az_mqtt5_user_property publish_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
@@ -206,34 +203,6 @@ static void _azm_emit_status(
   event.protocol_code = protocol_code;
   event.transport_code = transport_code;
   _azm_emit(m, &event);
-}
-
-// ──────────────────────── Packet identifier sets ─────────────
-
-static bool _azm_ids_take(uint16_t* ids, uint16_t id)
-{
-  for (int i = 0; i < AZ_IOT_AZ_MQTT_INFLIGHT_MAX; i++)
-  {
-    if (ids[i] == id)
-    {
-      ids[i] = 0;
-      return true;
-    }
-  }
-  return false;
-}
-
-static void _azm_ids_put(uint16_t* ids, uint16_t id)
-{
-  // An identifier is never 0, and in-flight entries bound how many are pending.
-  for (int i = 0; i < AZ_IOT_AZ_MQTT_INFLIGHT_MAX; i++)
-  {
-    if (ids[i] == 0)
-    {
-      ids[i] = id;
-      return;
-    }
-  }
 }
 
 // ──────────────────────── az_mqtt callbacks ──────────────────
@@ -398,10 +367,6 @@ static void _azm_on_publish(_AZM(client) * client, _AZM(publish_data) const* pub
     message.correlation_data_len = (size_t)az_span_size(publish->correlation_data);
   }
 #endif
-  if (publish->qos == AZ_MQTT_QOS_EXACTLY_ONCE)
-  {
-    _azm_ids_put(m->incoming_qos2, publish->packet_id);
-  }
   az_iot_mqtt_event event;
   memset(&event, 0, sizeof(event));
   event.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -436,14 +401,8 @@ static void _azm_on_puback(_AZM(client) * client, _AZM(ack_data) const* ack)
 static void _azm_on_pubcomp(_AZM(client) * client, _AZM(ack_data) const* ack)
 {
   _azm_client* m = _azm_of(client);
-  // An incoming QoS 2 exchange completed (PUBREL received): no event. The identifier spaces are
-  // separate, so one in both sets is ambiguous; the incoming one is assumed first, and the
-  // outgoing one is then reported by the next completion with that identifier.
-  if (_azm_ids_take(m->incoming_qos2, ack->packet_id))
-  {
-    return;
-  }
-  if (_azm_ids_take(m->outgoing_qos2, ack->packet_id))
+  // An incoming QoS 2 exchange completed (PUBREL received): no event.
+  if (!ack->incoming)
   {
     _azm_emit_publish_ack(m, ack);
   }
@@ -802,8 +761,6 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   m->connack_code = 0;
   m->session_present = false;
   m->native_count = 0;
-  memset(m->outgoing_qos2, 0, sizeof(m->outgoing_qos2));
-  memset(m->incoming_qos2, 0, sizeof(m->incoming_qos2));
   uint32_t const timeout_seconds = o->connect_timeout_seconds != 0
       ? o->connect_timeout_seconds
       : _AZM_DEFAULT_CONNECT_TIMEOUT_SECONDS;
@@ -972,10 +929,6 @@ static az_iot_result _azm_publish(
   {
     m->pending_qos0_acks++; // Sent: acknowledged by the next process_loop().
   }
-  else if (msg->qos == AZ_IOT_MQTT_QOS_2)
-  {
-    _azm_ids_put(m->outgoing_qos2, packet_id);
-  }
   if (out_packet_id != NULL)
   {
     *out_packet_id = packet_id;
@@ -1091,6 +1044,9 @@ az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void)
   {
     factory->version = _AZM_VERSION;
     factory->create = _azm_create;
+    // The connection client frees a registered factory through destroy(factory_ctx).
+    factory->factory_ctx = factory;
+    factory->destroy = az_iot_az_mqtt_factory_free;
   }
   return factory;
 }

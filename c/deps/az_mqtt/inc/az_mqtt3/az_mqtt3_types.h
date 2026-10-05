@@ -109,6 +109,11 @@ typedef struct
   uint16_t packet_id;
   /** @brief AZ_OK: received. Otherwise why an outgoing exchange was dropped unacknowledged. */
   az_result status;
+  /**
+   * @brief on_pubcomp: true for an incoming QoS 2 exchange (PUBREL received), false for an
+   * outgoing one. Packet identifiers are per direction, so both may carry the same one.
+   */
+  bool incoming;
 } az_mqtt3_ack_data;
 
 /** @brief Received SUBACK. */

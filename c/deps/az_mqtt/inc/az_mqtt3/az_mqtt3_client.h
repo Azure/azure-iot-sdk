@@ -56,7 +56,7 @@ typedef void (*az_mqtt3_on_puback_fn)(az_mqtt3_client* client, az_mqtt3_ack_data
 /**
  * @brief A QoS 2 exchange completed: PUBCOMP received (outgoing) or PUBREL
  * received and PUBCOMP sent (incoming, held in an in-flight entry); or an outgoing one was
- * dropped unacknowledged (ack->status says why).
+ * dropped unacknowledged (ack->status says why). ack->incoming tells the direction.
  */
 typedef void (*az_mqtt3_on_pubcomp_fn)(az_mqtt3_client* client, az_mqtt3_ack_data const* ack);
 

@@ -66,7 +66,7 @@ typedef void (*az_mqtt5_on_puback_fn)(az_mqtt5_client* client, az_mqtt5_ack_data
  * @brief A QoS 2 exchange ended: PUBCOMP received; or a PUBREC with a reason code
  * of 0x80 or more (failed: no PUBREL is sent, @p ack is the PUBREC); or, for an
  * inbound one held in an in-flight entry, PUBREL received and PUBCOMP sent; or an outgoing one
- * was dropped unacknowledged (ack->status says why).
+ * was dropped unacknowledged (ack->status says why). ack->incoming tells the direction.
  */
 typedef void (*az_mqtt5_on_pubcomp_fn)(az_mqtt5_client* client, az_mqtt5_ack_data const* ack);
 

@@ -254,6 +254,11 @@ typedef struct
    * (reason_code then 0x95 for AZ_MQTT_ERROR_PACKET_TOO_LARGE, else 0x80).
    */
   az_result status;
+  /**
+   * @brief on_pubcomp: true for an incoming QoS 2 exchange (PUBREL received), false for an
+   * outgoing one. Packet identifiers are per direction, so both may carry the same one.
+   */
+  bool incoming;
 } az_mqtt5_ack_data;
 
 // ──────────────────────── SUBACK / UNSUBACK ──────────────────

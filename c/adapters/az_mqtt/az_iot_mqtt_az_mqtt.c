@@ -129,4 +129,6 @@ const char* az_iot_az_mqtt_string_writer_add(az_iot_az_mqtt_string_writer* w, az
   return out;
 }
 
+void az_iot_az_mqtt_factory_free(void* factory_ctx) { free(factory_ctx); }
+
 void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory) { free(factory); }

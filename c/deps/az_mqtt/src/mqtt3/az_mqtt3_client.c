@@ -163,6 +163,7 @@ static az_result _handle_ack(az_mqtt3_client* client, az_mqtt_packet_type type, 
       _az_RETURN_IF_FAILED(_send_ack(client, az_mqtt3_codec_encode_pubcomp, ack.packet_id));
       callback = client->_internal.on_pubcomp;
       kind = _AZ_MQTT_INFLIGHT_INBOUND_QOS2;
+      ack.incoming = true;
       break;
     case AZ_MQTT_PACKET_TYPE_PUBCOMP:
       callback = client->_internal.on_pubcomp;

@@ -158,6 +158,7 @@ Warnings in our code are errors in every job.
 | Linux | {OpenSSL, mbedTLS 3.6.7 / 4.1.1 / 4.2.0, no TLS} × {gcc, clang}: build, link-isolation check, all tests (mqttv3, mqttv5, and both linked together), including e2e against a local Mosquitto (plain and TLS) |
 | Single version | Builds and tests with only mqttv3 or only mqttv5 enabled |
 | Sanitizers | ASan + UBSan (+ leak check) over all tests |
+| Subproject | `add_subdirectory()` from a parent project, with the parent's azure-sdk-for-c and with the bundled one; fails if the parent's cache changes ([tests/subproject](tests/subproject/CMakeLists.txt)) |
 | Hardened | Release build with `_FORTIFY_SOURCE=3`, stack protector, CET, full RELRO and PIE, verified on every executable, then all tests |
 | Windows | MSVC `/W4 /WX`, Schannel, all tests |
 

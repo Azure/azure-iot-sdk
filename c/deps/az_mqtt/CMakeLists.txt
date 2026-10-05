@@ -167,7 +167,8 @@ elseif(AZ_MQTT_TLS_BACKEND STREQUAL "mbedtls")
     find_library(MBEDTLS_X509_LIB   NAMES mbedx509   REQUIRED)
     find_library(MBEDTLS_CRYPTO_LIB NAMES mbedcrypto REQUIRED)
     find_path(MBEDTLS_INCLUDE_DIR NAMES mbedtls/ssl.h REQUIRED)
-    target_include_directories(az_mqtt_core PRIVATE ${MBEDTLS_INCLUDE_DIR})
+    # Third-party headers: our warning set must not apply to them.
+    target_include_directories(az_mqtt_core SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIR})
     # Order matters: ssl depends on x509 depends on crypto.
     target_link_libraries(az_mqtt_core PRIVATE
         ${MBEDTLS_SSL_LIB} ${MBEDTLS_X509_LIB} ${MBEDTLS_CRYPTO_LIB})

@@ -283,6 +283,7 @@ static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, 
     {
       return AZ_OK;
     }
+    ack.incoming = true;
   }
   uint32_t const generation = _CORE(client).session_generation;
   if (callback != NULL)
