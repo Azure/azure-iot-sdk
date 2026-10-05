@@ -157,6 +157,10 @@ static az_iot_result managed_load(
   }
   else
   {
+    if (m->bootstrap_cert_path == NULL)
+    {
+      return AZ_IOT_ERR_NOT_FOUND;
+    }
     out->client_cert_path = m->bootstrap_cert_path;
     out->client_key_path = m->bootstrap_key_path;
   }
@@ -472,8 +476,9 @@ az_iot_result az_iot_certificate_provider_managed_init(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!is_nonempty_cstr(opts->bootstrap_cert_pem_path)
-      || !is_nonempty_cstr(opts->bootstrap_key_pem_path)
+  /* Bootstrap identity: both or neither (SAS onboarding has none). */
+  bool has_bootstrap = is_nonempty_cstr(opts->bootstrap_cert_pem_path);
+  if (has_bootstrap != is_nonempty_cstr(opts->bootstrap_key_pem_path)
       || !is_nonempty_cstr(opts->operational_key_pem_path)
       || !is_nonempty_cstr(opts->operational_cert_pem_path))
   {
@@ -484,11 +489,14 @@ az_iot_result az_iot_certificate_provider_managed_init(
   provider->base.vtable = &s_managed_vtable;
   provider->key_type = (int)opts->key_type;
 
-  provider->bootstrap_cert_path = dup_str(opts->bootstrap_cert_pem_path);
-  provider->bootstrap_key_path = dup_str(opts->bootstrap_key_pem_path);
+  if (has_bootstrap)
+  {
+    provider->bootstrap_cert_path = dup_str(opts->bootstrap_cert_pem_path);
+    provider->bootstrap_key_path = dup_str(opts->bootstrap_key_pem_path);
+  }
   provider->operational_key_path = dup_str(opts->operational_key_pem_path);
   provider->operational_cert_path = dup_str(opts->operational_cert_pem_path);
-  if (!provider->bootstrap_cert_path || !provider->bootstrap_key_path
+  if ((has_bootstrap && (!provider->bootstrap_cert_path || !provider->bootstrap_key_path))
       || !provider->operational_key_path || !provider->operational_cert_path)
   {
     az_iot_certificate_provider_managed_deinit(provider);

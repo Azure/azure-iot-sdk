@@ -96,7 +96,12 @@ extern "C"
   {
     uint32_t version; /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
 
-    /* v1 core. load() returns credential material for the requested role. */
+    /* v1 core. load() returns credential material for the requested role.
+     * AZ_IOT_ERR_NOT_FOUND: no certificate for the role; trusted_ca_pem/_path
+     * may still be set (valid while the provider lives), and are then used
+     * for a role that authenticates with SAS. Any other error fails the
+     * attempt. (Proposed, not implemented: an index parameter for several
+     * certificates per role; see docs/eng/certificate-management.md.) */
     az_iot_result (*load)(
         az_iot_certificate_provider* self,
         az_iot_cert_role role,
