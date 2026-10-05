@@ -67,10 +67,13 @@ Rules:
 8. **Every attempt starts in `SETTING_UP`**, before any step that can fail on the device, so a
    failed attempt is always a transition and is never suppressed. A failure there goes straight to
    `RETRY_PENDING`, `FAULTED` or `IDLE` (from `open()`, or a session a feature client asked for),
-   with no `DISCONNECTING` for a session that never existed. A registration on a provisioning session that is already up reports
-   `SETTING_UP → CONNECTED`.
-   `open()`'s configuration checks run before any attempt: a refusal is returned and raises no
-   event.
+   with no `DISCONNECTING` for a session that never existed. A registration on a provisioning
+   session that is already up reports `SETTING_UP → CONNECTED`.
+9. **`open()` validates its configuration before any attempt starts**: the state, the
+   credential setup, CSR support, and the registration payload and its buffer. A refusal there is
+   returned and raises no event. Every later `open()` failure (no factory, credential `load()`,
+   SAS signing, adapter `connect()`) belongs to the attempt: it reports `SETTING_UP`, then `IDLE`
+   with the reason and LOCAL detail, and is also returned.
 
 With two scopes, "a retry is pending" cannot be read from state alone: a hub failure whose recovery
 is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `DPS`.
