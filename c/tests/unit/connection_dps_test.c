@@ -4453,6 +4453,25 @@ static void a_failed_registration_retry_falls_back_with_the_cached_hub_protocol(
         az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB),
         AZ_IOT_CONN_STATE_CONNECTED);
 
+    /* The spent DPS retry no longer stands, so close() disconnects the live
+     * hub rather than taking the no-session path. */
+    if (!held)
+    {
+      assert_int_equal(
+          az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+    }
+    assert_int_equal(az_iot_connection_client_close(&pf.c), AZ_IOT_OK);
+    assert_non_null(az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT));
+    assert_int_equal(
+        az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB),
+        AZ_IOT_CONN_STATE_DISCONNECTING);
+    assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+    (void)az_iot_connection_client_do_work(&pf.c, 0);
+    assert_int_equal(
+        az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+    assert_int_equal(
+        az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+
     if (held)
     {
       az_iot_connection_client__dps_user_release(&pf.c);
