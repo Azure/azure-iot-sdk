@@ -5374,6 +5374,23 @@ az_iot_connection_client_request_reprovision(az_iot_connection_client* client)
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Settle a DPS:RETRY_PENDING whose retry fell back to the cached hub to
+ * the provisioning session's real state: CONNECTED when ready, CONNECTING
+ * while it comes up, IDLE when there is none.
+ */
+static void settle_spent_dps_retry(az_iot_connection_client* c)
+{
+  if (c->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_RETRY_PENDING)
+  {
+    return;
+  }
+  az_iot_connection_state now = (c->dps_mqtt == NULL)  ? AZ_IOT_CONN_STATE_IDLE
+      : az_iot_connection_client__dps_session_ready(c) ? AZ_IOT_CONN_STATE_CONNECTED
+                                                       : AZ_IOT_CONN_STATE_CONNECTING;
+  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, now, AZ_IOT_OK);
+}
+
 az_iot_result az_iot_connection_client_do_work(
     az_iot_connection_client* client,
     uint32_t timeout_ms)
@@ -5692,14 +5709,9 @@ az_iot_result az_iot_connection_client_do_work(
        * RETRY_PENDING, close() would take the no-session path and leave the
        * hub connected, and request_reprovision() would mistake it for a
        * pending registration. Settle it to what the session really is. */
-      if (client->active_client != NULL
-          && client->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
+      if (client->active_client != NULL)
       {
-        az_iot_connection_state dps_now = (client->dps_mqtt == NULL)
-            ? AZ_IOT_CONN_STATE_IDLE
-            : (az_iot_connection_client__dps_session_ready(client) ? AZ_IOT_CONN_STATE_CONNECTED
-                                                                   : AZ_IOT_CONN_STATE_CONNECTING);
-        set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, dps_now, AZ_IOT_OK);
+        settle_spent_dps_retry(client);
       }
     }
     if (attempted == AZ_IOT_CONN_SCOPE_DPS && cr != AZ_IOT_OK && client->dps_start_cancelled)
@@ -5725,6 +5737,14 @@ az_iot_result az_iot_connection_client_do_work(
         client->dps_registration_ref = false;
       }
       schedule_reconnect(client, attempted, cr);
+      /* A failed hub fallback also spends the DPS retry it replaced; the next
+       * retry is scheduled above. Settled after scheduling, so a close() from
+       * this callback finds HUB:RETRY_PENDING and settles the client. */
+      if (attempted == AZ_IOT_CONN_SCOPE_HUB
+          && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING)
+      {
+        settle_spent_dps_retry(client);
+      }
     }
   }
 
@@ -6311,6 +6331,12 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
       /* A failure before the session existed leaves DPS:SETTING_UP; a held
        * session's failure settles at IDLE, as dps_apply_deferred() does. */
       set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
+      /* That callback may close() + open() and start a newer session; report
+       * it as replaced so callers keep its refs. */
+      if (client->dps_mqtt != NULL)
+      {
+        client->dps_start_cancelled = true;
+      }
     }
     return r;
   }

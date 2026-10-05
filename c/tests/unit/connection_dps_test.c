@@ -4638,6 +4638,8 @@ typedef struct reopen_ctx
   az_iot_connection_state on;
   int fired;
   az_iot_result reopen;
+  /* Registered before the reopen when set: the outer start lacked it. */
+  az_iot_mqtt_factory* factory;
 } reopen_ctx;
 
 /* close() then open() from the first DPS announcement of the given state. */
@@ -4647,6 +4649,11 @@ static void close_and_reopen_on(const az_iot_connection_state_event* event, void
   if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == ctx->on && ctx->fired == 0)
   {
     ctx->fired = 1;
+    if (ctx->factory != NULL)
+    {
+      assert_int_equal(
+          az_iot_connection_client_register_mqtt_factory(ctx->client, ctx->factory), AZ_IOT_OK);
+    }
     (void)az_iot_connection_client_close(ctx->client);
     ctx->reopen = az_iot_connection_client_open(ctx->client);
   }
@@ -4658,9 +4665,11 @@ static void close_and_reopen_on(const az_iot_connection_state_event* event, void
 static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** state)
 {
   (void)state;
+  /* The third case reopens from the IDLE that reports a failed start: the
+   * outer open() has no factory, the callback registers one. */
   const az_iot_connection_state k_on[]
-      = { AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_CONN_STATE_CONNECTING };
-  for (size_t k = 0; k < 2; ++k)
+      = { AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_CONN_STATE_IDLE };
+  for (size_t k = 0; k < 3; ++k)
   {
     az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
@@ -4670,15 +4679,21 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
     fx->client = &fx->client_storage;
     fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
     assert_non_null(fx->factory);
-    assert_int_equal(
-        az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-    reopen_ctx ctx = { fx->client, k_on[k], 0, AZ_IOT_ERR_INTERNAL };
+    bool late = (k == 2);
+    if (!late)
+    {
+      assert_int_equal(
+          az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+    }
+    reopen_ctx ctx = { fx->client, k_on[k], 0, AZ_IOT_ERR_INTERNAL, late ? fx->factory : NULL };
     assert_int_equal(
         az_iot_connection_client_add_state_observer(fx->client, close_and_reopen_on, &ctx),
         AZ_IOT_OK);
 
-    /* The outer start was cancelled; the nested one succeeded. */
-    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+    /* The outer start was cancelled or failed; the nested one succeeded. */
+    assert_int_equal(
+        az_iot_connection_client_open(fx->client),
+        late ? AZ_IOT_ERR_NOT_SUPPORTED : AZ_IOT_ERR_NOT_CONNECTED);
     assert_int_equal(ctx.fired, 1);
     assert_int_equal(ctx.reopen, AZ_IOT_OK);
     assert_true(fx->client->dps_standing_ref);
@@ -4707,6 +4722,46 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
     az_iot_connection_client_deinit(&fx->client_storage);
     free(fx);
   }
+}
+
+/* A registration retry that fails falls back to the cached hub; when that hub
+ * attempt fails too, the DPS retry it replaced is spent. Left at
+ * RETRY_PENDING, request_reprovision() would take it for a pending
+ * registration and keep the hub's backoff. */
+static void a_failed_hub_fallback_settles_the_spent_dps_retry(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.reconnection_policy.max_attempts = 0;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+
+  /* The registration retry fails before a session exists. */
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_TLS);
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_false(fx->client->needs_reprovision);
+
+  /* The hub fallback fails too. */
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_TLS);
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(fx->client->active_client);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+
+  /* A new reprovision request brings the hub's pending retry forward. */
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms() + 3600000u; /* a long backoff */
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  assert_true(fx->client->reconnect_due_ms <= az_iot_time_mono_ms());
 }
 
 int main(void)
@@ -4971,6 +5026,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         open_during_a_pending_registration_retry_is_rejected, setup_with_reconnect, teardown),
     cmocka_unit_test(a_provision_only_reopen_from_the_callback_keeps_the_session),
+    cmocka_unit_test_setup_teardown(
+        a_failed_hub_fallback_settles_the_spent_dps_retry, setup_with_reconnect, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
