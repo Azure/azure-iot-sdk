@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
@@ -21,6 +22,7 @@ namespace SetupSampleDevice
                 File.Delete(outputPath + "deviceId.txt");
                 File.Delete(outputPath + "idscope.txt");
                 File.Delete(outputPath + "iothubhostname.txt");
+                File.Delete(outputPath + "connectionprofile.txt");
                 File.Delete(outputPath + "certificate.cer");
                 File.Delete(outputPath + "certificate.pfx");
             }
@@ -43,6 +45,11 @@ namespace SetupSampleDevice
         public static void SaveIotHubHostName(string iotHubHostName)
         {
             File.WriteAllText(outputPath + "iothubhostname.txt", iotHubHostName);
+        }
+
+        public static void SaveConnectionProfile(ConnectionProfile connectionProfile)
+        {
+            File.WriteAllText(outputPath + "connectionprofile.txt", connectionProfile.ToString());
         }
 
         public static void SaveX509(byte[] pfx, byte[] certificate)
@@ -83,7 +90,7 @@ namespace SetupSampleDevice
             return File.ReadAllText(outputPath + "idscope.txt");
         }
 
-        public static string LoadIotHubHostName()
+        public static string? LoadIotHubHostName()
         {
             string? iotHubHostName = System.Environment.GetEnvironmentVariable("IOT_HUB_HOST_NAME");
             if (iotHubHostName != null)
@@ -93,10 +100,27 @@ namespace SetupSampleDevice
 
             if (!File.Exists(outputPath + "iothubhostname.txt"))
             {
-                throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
+                return null;
             }
 
             return File.ReadAllText(outputPath + "iothubhostname.txt");
+        }
+
+        public static ConnectionProfile LoadConnectionProfile()
+        {
+            string? connectionProfile = System.Environment.GetEnvironmentVariable("IOT_HUB_CONNECTION_PROFILE");
+            if (string.IsNullOrEmpty(connectionProfile) && File.Exists(outputPath + "connectionprofile.txt"))
+            {
+                connectionProfile = File.ReadAllText(outputPath + "connectionprofile.txt");
+            }
+
+            // Default to the classic profile when no profile was persisted, matching the enum's default.
+            if (string.IsNullOrEmpty(connectionProfile))
+            {
+                return ConnectionProfile.Classic;
+            }
+
+            return Enum.Parse<ConnectionProfile>(connectionProfile, ignoreCase: true);
         }
 
         public static byte[] LoadPfx()
