@@ -2383,6 +2383,8 @@ static void every_failed_hub_setup_is_reported_with_its_step(void** state)
   az_iot_connection_client client;
   az_iot_mqtt_factory* factory = hub_retrying_for_ever(&client, &prov, &log);
 
+  /* The dropped session authenticated with X.509; a retry selects none yet. */
+  assert_int_equal(client.auth[AZ_IOT_CONN_SCOPE_HUB].source, AZ_IOT_AUTH_SOURCE_X509);
   prov.bootstrap_rc = AZ_IOT_ERR_INTERNAL;
   for (int attempt = 0; attempt < 3; ++attempt)
   {
@@ -2390,6 +2392,8 @@ static void every_failed_hub_setup_is_reported_with_its_step(void** state)
     assert_int_equal(log.count, 2);
     assert_local_failure(&log, i, AZ_IOT_ERR_INTERNAL, "certificate provider load() failed");
     assert_true(log.is_retriable[i]);
+    assert_int_equal(log.auth_sources[0], AZ_IOT_AUTH_SOURCE_NONE);
+    assert_int_equal(log.auth_sources[i], AZ_IOT_AUTH_SOURCE_NONE);
   }
 
   /* A different cause is reported as such. */

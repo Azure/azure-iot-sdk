@@ -1005,7 +1005,8 @@ extern "C"
      * until renewal is implemented. */
     bool is_credential_renewal;
     /** @brief The credential this event is about: the one that connected on
-     * CONNECTED, the one rejected on a rejection. */
+     * CONNECTED, the one rejected on a rejection. AZ_IOT_AUTH_SOURCE_NONE from
+     * a new session's SETTING_UP until a credential is selected. */
     az_iot_auth_source auth_source;
     /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index.
      * Always 0 until multiple certificates per role are implemented. */

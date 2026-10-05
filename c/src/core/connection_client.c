@@ -2653,8 +2653,6 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         "no certificate provider and no SAS key");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
-  c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_NONE;
-  c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = 0;
   if (c->opts.certificate_provider)
   {
     az_iot_certificate_material mat = { 0 };
@@ -2779,6 +2777,9 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
 static az_iot_result dps_start(az_iot_connection_client* c)
 {
   c->dps_start_cancelled = false;
+  /* A new session: no credential is selected yet, so none is reported. */
+  c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_NONE;
+  c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
   /* close() is legal from the state callback; close() + open() there leaves a
    * newer session in place. Either way this start is no longer wanted. */
@@ -3881,6 +3882,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
  */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 {
+  /* A new session: no credential is selected yet, so none is reported. */
+  c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
+  c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
   /* close() is legal from the state callback; close() + open() there leaves a
    * newer attempt in place. Either way this one is no longer wanted. */
@@ -3994,8 +3998,6 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         "no certificate provider and no SAS key");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
-  c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
-  c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
   if (c->opts.certificate_provider)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;

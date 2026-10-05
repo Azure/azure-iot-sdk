@@ -4167,6 +4167,7 @@ static void every_failed_registration_setup_is_reported_with_its_step(void** sta
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
+  assert_int_equal(fx->client->auth[AZ_IOT_CONN_SCOPE_DPS].source, AZ_IOT_AUTH_SOURCE_X509);
   prov.rc = AZ_IOT_ERR_INTERNAL;
   for (int attempt = 0; attempt < 3; ++attempt)
   {
@@ -4174,6 +4175,10 @@ static void every_failed_registration_setup_is_reported_with_its_step(void** sta
     assert_int_equal(fx->log.count, 2);
     assert_dps_local_failure(fx, i, AZ_IOT_ERR_INTERNAL, "certificate provider load() failed");
     assert_true(fx->log.is_retriable[i]);
+    /* No credential was selected for this attempt, so the previous session's
+     * is not reported. */
+    assert_int_equal(fx->log.auth_sources[0], AZ_IOT_AUTH_SOURCE_NONE);
+    assert_int_equal(fx->log.auth_sources[i], AZ_IOT_AUTH_SOURCE_NONE);
   }
 
   fx->client->opts.certificate_provider = NULL;
@@ -4222,6 +4227,29 @@ static void a_registration_retry_on_a_held_session_is_reported_each_time(void** 
     assert_ptr_not_equal(hub, dps);
     assert_non_null(fx->client->active_client);
   }
+
+  /* A successful retry on the held session: SETTING_UP then CONNECTED, no
+   * error, and the session's credential is still the one reported. */
+  az_iot_auth_source session_source = fx->client->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+  assert_int_not_equal(session_source, AZ_IOT_AUTH_SOURCE_NONE);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  fx->client->needs_reprovision = true;
+  fx->log.count = 0;
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->log.count, 2);
+  for (size_t i = 0; i < 2; ++i)
+  {
+    assert_int_equal(fx->log.scopes[i], AZ_IOT_CONN_SCOPE_DPS);
+    assert_int_equal(fx->log.reasons[i], AZ_IOT_OK);
+    assert_false(fx->log.error_present[i]);
+    assert_int_equal(fx->log.auth_sources[i], session_source);
+  }
+  assert_int_equal(fx->log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(fx->log.states[1], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_true(fx->client->dps_registration_ref);
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
