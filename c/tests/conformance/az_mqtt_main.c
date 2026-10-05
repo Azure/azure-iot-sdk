@@ -131,8 +131,13 @@ int main(void)
     {
       opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS;
       opts.websocket_port = (uint16_t)p;
-      (void)env_or_null(
-          "AZ_IOT_CONFORMANCE_WS_PATH", ws_path_buf, sizeof(ws_path_buf), &opts.websocket_path);
+      if (env_or_null(
+              "AZ_IOT_CONFORMANCE_WS_PATH", ws_path_buf, sizeof(ws_path_buf), &opts.websocket_path)
+          != 0)
+      {
+        az_iot_az_mqtt_factory_destroy(f);
+        return 1;
+      }
     }
   }
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;

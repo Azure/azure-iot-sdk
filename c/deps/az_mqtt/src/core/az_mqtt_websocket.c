@@ -37,7 +37,7 @@ typedef char _http_state_fits
 
 // ──────────────────────── SHA-1 ──────────────────────────────
 
-static uint32_t _rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+static uint32_t _sha1_rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
 static void _sha1_block(uint32_t h[5], uint8_t const* block)
 {
@@ -49,7 +49,7 @@ static void _sha1_block(uint32_t h[5], uint8_t const* block)
   }
   for (int i = 16; i < 80; i++)
   {
-    w[i] = _rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    w[i] = _sha1_rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
   }
   uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
   for (int i = 0; i < 80; i++)
@@ -76,10 +76,10 @@ static void _sha1_block(uint32_t h[5], uint8_t const* block)
       f = b ^ c ^ d;
       k = 0xCA62C1D6;
     }
-    uint32_t const t = _rotl(a, 5) + f + e + k + w[i];
+    uint32_t const t = _sha1_rotl(a, 5) + f + e + k + w[i];
     e = d;
     d = c;
-    c = _rotl(b, 30);
+    c = _sha1_rotl(b, 30);
     b = a;
     a = t;
   }

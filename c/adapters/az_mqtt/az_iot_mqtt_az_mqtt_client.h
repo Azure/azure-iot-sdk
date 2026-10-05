@@ -9,10 +9,15 @@
  * az_iot_mqtt_az_mqtt_v3.c and az_iot_mqtt_az_mqtt_v5.c, with AZ_IOT_AZ_MQTT_V set to 3 or 5;
  * everything here is static except the factory constructor.
  *
- * Single-threaded: every az_mqtt callback runs inside process_loop(), connect() or disconnect(),
- * on the caller's thread. Events are delivered from process_loop() only. An event raised
- * elsewhere (inside connect() or disconnect(), or while the application handles an event) is
- * held and delivered first by the next process_loop() step.
+ * Single-threaded: every az_mqtt callback runs inside process_loop() or disconnect(), on the
+ * caller's thread. connect() only prepares: name resolution, the socket connect, the handshakes
+ * and every receive run in process_loop(). Sends (publish, subscribe, unsubscribe, disconnect)
+ * are written when called; they wait only while the socket send buffer is full, at most
+ * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS.
+ *
+ * Events are delivered from process_loop() only. An event raised elsewhere (inside disconnect(),
+ * or while the application handles an event) is held and delivered first by the next
+ * process_loop() step.
  */
 
 #include "az_iot_mqtt_az_mqtt_internal.h"
@@ -106,6 +111,8 @@ typedef struct
   int native_count;
   /* Session: connecting until CONNECTED is reported; then connected until closed. */
   bool connecting;
+  bool start_pending; /* connect() called: the next process_loop() starts it. */
+  int32_t connect_timeout_ms;
   bool connected;
   bool closing; /* disconnect() called. */
   bool connack_received;
@@ -564,6 +571,14 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
         AZ_IOT_LOG_COMPONENT_AZ_MQTT, "sign callback and key password are not supported");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
+#if defined(_WIN32)
+  if (o->tls.client_cert_path != NULL || o->tls.client_cert_pem != NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_AZ_MQTT, "client certificates are not supported on Windows");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+#endif
   if (o->tls.client_key_uri != NULL || o->tls.crypto_engine_id != NULL)
   {
     if (!az_iot_az_mqtt_has_text(o->tls.client_key_uri)
@@ -789,27 +804,14 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   m->native_count = 0;
   memset(m->outgoing_qos2, 0, sizeof(m->outgoing_qos2));
   memset(m->incoming_qos2, 0, sizeof(m->incoming_qos2));
-  m->connecting = true;
   uint32_t const timeout_seconds = o->connect_timeout_seconds != 0
       ? o->connect_timeout_seconds
       : _AZM_DEFAULT_CONNECT_TIMEOUT_SECONDS;
-  int32_t const timeout_ms
+  m->connect_timeout_ms
       = timeout_seconds > (uint32_t)(INT32_MAX / 1000) ? -1 : (int32_t)(timeout_seconds * 1000u);
-  result = _AZM(client_connect_start)(&m->client, timeout_ms);
-  if (az_result_failed(result))
-  {
-    // The session already ended (a CONNECTED failure is held). A configuration the adapter or
-    // platform cannot honour is the caller's to fix: return it instead.
-    az_iot_result const failed = az_iot_az_mqtt_session_result(result);
-    if (failed == AZ_IOT_ERR_NOT_SUPPORTED || result == AZ_MQTT_ERROR_INVALID_CONFIG)
-    {
-      if (m->pending_count > 0)
-      {
-        m->pending_count--; // The CONNECTED failure just held.
-      }
-      return failed == AZ_IOT_ERR_NOT_SUPPORTED ? failed : AZ_IOT_ERR_INVALID_ARG;
-    }
-  }
+  // Name resolution and the socket connect run in process_loop(), not here.
+  m->connecting = true;
+  m->start_pending = true;
   return AZ_IOT_OK;
 }
 
@@ -827,6 +829,7 @@ static az_iot_result _azm_disconnect(az_iot_mqtt_client* self)
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   m->closing = true;
+  m->start_pending = false;
 #if AZ_IOT_AZ_MQTT_V == 5
   az_result const rc
       = az_mqtt5_client_disconnect(&m->client, (az_mqtt5_reason_code)m->disconnect_reason_code);
@@ -990,6 +993,13 @@ static az_iot_result _azm_process_loop(az_iot_mqtt_client* self, uint32_t timeou
   int32_t const timeout = timeout_ms > (uint32_t)INT32_MAX ? INT32_MAX : (int32_t)timeout_ms;
   m->in_loop = true;
   bool delivered = _azm_deliver_pending(m);
+  if (m->start_pending)
+  {
+    m->start_pending = false;
+    // A failure ends the session; _azm_on_connection_closed reports it.
+    az_result const rc = _AZM(client_connect_start)(&m->client, m->connect_timeout_ms);
+    (void)rc;
+  }
   if (m->connecting || m->connected)
   {
     // A failure ends the session; _azm_on_connection_closed reports it.

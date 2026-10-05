@@ -55,9 +55,9 @@ az_iot_result az_iot_az_mqtt_request_result(az_result rc);
 az_iot_result az_iot_az_mqtt_session_result(az_result rc);
 
 /**
- * @brief Load the OpenSSL 3 provider @p name (kept loaded for the process; the default provider
- * stays available).
- * @retval AZ_IOT_OK Loaded, or already loaded.
+ * @brief Make the OpenSSL 3 provider @p name available: loaded once for the process and never
+ * unloaded; the default provider stays available.
+ * @retval AZ_IOT_OK Available.
  * @retval AZ_IOT_ERR_NOT_SUPPORTED Not an OpenSSL build, or the provider cannot be loaded.
  */
 az_iot_result az_iot_az_mqtt_load_key_provider(const char* name);

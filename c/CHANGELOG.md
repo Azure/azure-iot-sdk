@@ -6,7 +6,8 @@
 
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
-  over the bundled `deps/az_mqtt` client, with all I/O in `process_loop()`; TLS through OpenSSL 3
+  over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
+  `process_loop()`, sends written when called); TLS through OpenSSL 3
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows; WebSockets, HTTP CONNECT proxy, and
   key references through an OpenSSL 3 provider.
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines

@@ -5,8 +5,12 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file az_iot_adapter_az_mqtt.h
- * @brief MQTT adapter over az_mqtt (c/deps/az_mqtt): single-threaded, all I/O in
- * process_loop().
+ * @brief MQTT adapter over az_mqtt (c/deps/az_mqtt): single-threaded, no adapter thread.
+ *
+ * connect() only prepares: name resolution, the socket connect, the TLS and MQTT handshakes and
+ * every receive run in process_loop(). Sends (publish, subscribe, unsubscribe, disconnect) are
+ * written when called and wait only while the socket send buffer is full, at most
+ * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS.
  *
  * Register one or both factories with the connection client; the SDK picks one by MQTT
  * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its

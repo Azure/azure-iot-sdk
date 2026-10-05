@@ -11,7 +11,11 @@
 
 #include <az_mqtt/az_mqtt_types.h>
 
+#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
+
 #if defined(AZ_IOT_AZ_MQTT_OPENSSL)
+#include <openssl/err.h>
 #include <openssl/provider.h>
 #endif
 
@@ -89,7 +93,19 @@ az_iot_result az_iot_az_mqtt_session_result(az_result rc)
 az_iot_result az_iot_az_mqtt_load_key_provider(const char* name)
 {
 #if defined(AZ_IOT_AZ_MQTT_OPENSSL)
-  return OSSL_PROVIDER_try_load(NULL, name, 1) != NULL ? AZ_IOT_OK : AZ_IOT_ERR_NOT_SUPPORTED;
+  // Process-wide and never unloaded (as in the Paho adapter): loaded once, then reused, so
+  // reconnects take no further reference, and keys of other sessions stay valid.
+  if (OSSL_PROVIDER_available(NULL, name))
+  {
+    return AZ_IOT_OK;
+  }
+  if (OSSL_PROVIDER_try_load(NULL, name, 1) != NULL)
+  {
+    AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_AZ_MQTT, "loaded OpenSSL provider '%s'", name);
+    return AZ_IOT_OK;
+  }
+  ERR_clear_error();
+  return AZ_IOT_ERR_NOT_SUPPORTED;
 #else
   (void)name;
   return AZ_IOT_ERR_NOT_SUPPORTED;

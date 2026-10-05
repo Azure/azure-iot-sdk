@@ -572,7 +572,7 @@ jobs:
       - name: Install deps
         run: >
           sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev mosquitto
-          softhsm2 opensc meson pkg-config
+          mosquitto-clients softhsm2 opensc meson pkg-config
       - name: Start Mosquitto (TCP 1883, WebSocket 8080)
         run: |
           sudo systemctl stop mosquitto || true

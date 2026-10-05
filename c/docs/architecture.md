@@ -99,8 +99,8 @@ fresh adapter instance, so a device provisioned onto an mqttv5 hub uses a 3.1.1 
 a 5 adapter for the hub.
 
 The Paho C adapter (`az_iot_adapter_paho.h`) registers both versions. So does the az_mqtt adapter
-(`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it runs all I/O inside
-`process_loop()`, with no thread of its own, over the bundled
+(`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it connects and receives inside
+`process_loop()` and writes sends when called, with no thread of its own, over the bundled
 [deps/az_mqtt](../deps/az_mqtt/VENDORED.md) client. To use another MQTT library, see
 [Bring your own MQTT client](how_to_byo_mqtt_client.md).
 
