@@ -5634,7 +5634,8 @@ az_iot_result az_iot_connection_client_do_work(
        * endpoint and the client would never reach DPS again, so the demand
        * survives and the next retry provisions. */
       client->needs_reprovision = (client->opts.host == NULL);
-      client->session_role = AZ_IOT_MQTT_ROLE_DPS;
+      /* session_role stays the cached hub's: the provisioning session carries
+       * its own role, and the hub fallback must keep the assigned protocol. */
       attempted = AZ_IOT_CONN_SCOPE_DPS;
       /* Adopt a session that is already up rather than building a second one:
        * a session its users hold survives registration, and an unconditional

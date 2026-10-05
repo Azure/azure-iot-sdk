@@ -4360,6 +4360,79 @@ static void close_from_dps_setting_up_beside_a_live_hub_cancels_the_start(void**
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* A registration retry that fails falls back to the cached hub, which must
+ * keep its assigned protocol: on an MQTTv5 assignment, the v5 adapter and
+ * the birth handshake. Both a refused publish on a session a feature client
+ * holds and a failed session start are covered. */
+static void a_failed_registration_retry_falls_back_with_the_cached_hub_protocol(void** state)
+{
+  (void)state;
+  for (int held = 0; held < 2; ++held)
+  {
+    profile_fixture pf = { 0 };
+    profile_fixture_open(&pf);
+    pf.c.opts.reconnection_policy.initial_delay_ms = REPROVISION_DELAY_MS;
+    pf.c.opts.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
+    pf.c.opts.reconnection_policy.max_attempts = 0;
+    pf.c.opts.reconnection_policy.jitter_pct = 0;
+    if (held)
+    {
+      assert_int_equal(az_iot_connection_client__dps_user_acquire(&pf.c), AZ_IOT_OK);
+    }
+    profile_assign(&pf, k_assigned_mqtt_v5);
+    assert_hub_leg_used(&pf, pf.v5);
+
+    /* The hub fails and the application asks for a re-registration. */
+    az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
+    assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+    (void)az_iot_connection_client_do_work(&pf.c, 0);
+    assert_int_equal(az_iot_connection_client_request_reprovision(&pf.c), AZ_IOT_OK);
+
+    /* The registration retry fails. */
+    if (held)
+    {
+      az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_client_from(pf.c.dps_mqtt);
+      assert_non_null(dps);
+      az_iot_mock_mqtt_client_set_next_result(dps, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+    }
+    else
+    {
+      assert_null(pf.c.dps_mqtt);
+      az_iot_mock_mqtt_factory_fail_next_connect(pf.v3, AZ_IOT_ERR_TLS);
+    }
+    pf.log.count = 0;
+    pf.c.reconnect_due_ms = az_iot_time_mono_ms();
+    (void)az_iot_connection_client_do_work(&pf.c, 0);
+    assert_int_not_equal(
+        az_iot_test_index_of(&pf.log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING),
+        SIZE_MAX);
+
+    /* The fallback reaches the cached hub over MQTT v5. */
+    pf.c.reconnect_due_ms = az_iot_time_mono_ms();
+    (void)az_iot_connection_client_do_work(&pf.c, 0);
+    assert_int_equal(pf.c.session_role, AZ_IOT_MQTT_ROLE_HUB_MQTT_V5);
+    hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
+    assert_non_null(hub);
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
+    assert_non_null(call);
+    assert_string_equal(call->connect.host, "myhub.azure-devices.net");
+
+    /* CONNACK starts the birth handshake instead of announcing CONNECTED. */
+    assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(&pf.c, 0);
+    assert_non_null(az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE));
+    assert_int_not_equal(
+        az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB),
+        AZ_IOT_CONN_STATE_CONNECTED);
+
+    if (held)
+    {
+      az_iot_connection_client__dps_user_release(&pf.c);
+    }
+    profile_fixture_close(&pf);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -4613,6 +4686,7 @@ int main(void)
         close_from_dps_setting_up_cancels_the_retry, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         close_from_dps_setting_up_beside_a_live_hub_cancels_the_start, setup, teardown),
+    cmocka_unit_test(a_failed_registration_retry_falls_back_with_the_cached_hub_protocol),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
