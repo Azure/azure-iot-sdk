@@ -19,7 +19,8 @@
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows. Non-extractable keys:
  * az_iot_mqtt_tls_options.client_key_uri + crypto_engine_id (an OpenSSL 3 provider), OpenSSL
  * builds only. Not supported (connect() returns AZ_IOT_ERR_NOT_SUPPORTED): the sign callback,
- * client_key_password, and, on Windows, a client certificate.
+ * client_key_password, and, on Windows, a client certificate or an in-memory CA
+ * (trusted_ca_pem without trusted_ca_path).
  */
 #ifndef AZ_IOT_ADAPTER_AZ_MQTT_H
 #define AZ_IOT_ADAPTER_AZ_MQTT_H

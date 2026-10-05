@@ -881,12 +881,11 @@ static az_result _read_packet(
     az_span* out_body,
     int32_t* out_packet_size)
 {
-  // Fixed header: type byte + 1-4 byte Remaining Length.
-  az_result rc = _ensure_received(core, 2, deadline_ms);
+  // Fixed header: type byte + 1-4 byte Remaining Length. The type byte is checked first, so a
+  // malformed one fails without waiting for more.
+  az_result rc = _ensure_received(core, 1, deadline_ms);
   if (az_result_failed(rc))
     return rc;
-
-  // Before waiting for a body whose length a malformed header may have made up.
   if (!_az_mqtt_fixed_header_flags_valid(az_span_ptr(_S(core).receive_buffer)[0]))
   {
     return AZ_MQTT_ERROR_MALFORMED_PACKET;

@@ -547,6 +547,12 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
         AZ_IOT_LOG_COMPONENT_AZ_MQTT, "client certificates are not supported on Windows");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
+  // Schannel takes a CA file only (trusted_ca_path wins when both are set).
+  if (o->tls.trusted_ca_pem != NULL && o->tls.trusted_ca_path == NULL)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_AZ_MQTT, "in-memory CA PEM is not supported on Windows");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
 #endif
   if (o->tls.client_key_uri != NULL || o->tls.crypto_engine_id != NULL)
   {
