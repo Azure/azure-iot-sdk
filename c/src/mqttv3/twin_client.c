@@ -554,7 +554,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_get(
   out.topic = topic;
   out.qos = AZ_IOT_MQTT_QOS_0;
 
-  r = az_iot_connection_client__publish(TI(twin).conn, &out, NULL, NULL);
+  r = az_iot_connection_client__publish(TI(twin).conn, twin, &out, NULL, NULL);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
@@ -613,7 +613,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_patch_reported(
   out.payload_len = patch_len;
   out.qos = AZ_IOT_MQTT_QOS_0;
 
-  r = az_iot_connection_client__publish(TI(twin).conn, &out, NULL, NULL);
+  r = az_iot_connection_client__publish(TI(twin).conn, twin, &out, NULL, NULL);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(

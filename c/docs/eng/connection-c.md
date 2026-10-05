@@ -454,7 +454,9 @@ Not triggers, because they fault instead:
   `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` for a profile the SDK does not speak, or
   `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` when the assigned generation contradicts the attached
   feature clients, rather than guessing a protocol (§4). Terminal even with a policy configured, and
-  it also forces the next `open()` back through DPS so the stale cached host cannot be reused.
+  it also forces the next `open()` back through DPS so the stale cached host cannot be reused. When
+  the registration was a retry after a hub failure, the waiting HUB scope faults with the same
+  reason (`fault_retry_scopes()`).
 
 A hub identity refusal is a special case. `schedule_reconnect()` hands it to
 `schedule_identity_recovery()`, which schedules the next attempt on the identity ladder. The refusal
@@ -879,7 +881,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | Constant | Value | What it bounds | Result when exceeded |
 | --- | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | Registered adapter factories | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback** | `AZ_IOT_ERR_BUSY` — nothing is sent |
+| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback**: per-feature-client reservations plus a shared pool | `AZ_IOT_ERR_BUSY` when the caller's pool is full — nothing is sent; a reservation that does not fit fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, one whose slots publishes in flight occupy with `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Persistent topic-filter string | `AZ_IOT_ERR_INVALID_ARG` |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Session-end handlers (re-registering the same context upserts) | `AZ_IOT_ERR_NOT_SUPPORTED` |
@@ -894,6 +896,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` | 8448 | Recommended size for the caller-supplied CSR payload buffer; smaller works for small keys | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the CSR does not fit; an empty buffer is refused at `open()` |
 | `CSR_MAX_BASE64` | 8192 | Base64 CSR body ([connection_client.c](../../src/core/connection_client.c)) | `AZ_IOT_ERR_INVALID_ARG` |
 | `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients bound to one connection | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding a pending-PUBACK reservation | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |

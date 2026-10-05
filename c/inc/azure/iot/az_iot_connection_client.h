@@ -1091,8 +1091,15 @@ extern "C"
 #ifndef AZ_IOT_MAX_MQTT_FACTORIES
 #define AZ_IOT_MAX_MQTT_FACTORIES 4
 #endif
+/* QoS 1 publishes awaiting a PUBACK with a completion callback, across all feature clients.
+ * Feature clients may reserve part of it; the rest is shared. At most 65535. */
 #ifndef AZ_IOT_MAX_PENDING_PUBACKS
 #define AZ_IOT_MAX_PENDING_PUBACKS 16
+#endif
+/* Feature clients that can hold an AZ_IOT_MAX_PENDING_PUBACKS reservation at once. An mqttv5
+ * direct method client takes one. At most 254. */
+#ifndef AZ_IOT_MAX_PUBACK_RESERVATIONS
+#define AZ_IOT_MAX_PUBACK_RESERVATIONS 2
 #endif
 /* Topic filters the connection re-subscribes on every session. Feature clients
  * take one slot per filter they need, so the default leaves headroom over what
@@ -1413,6 +1420,8 @@ extern "C"
       az_iot_publish_ack_callback cb;
       void* user_ctx;
       bool in_use;
+      /* Index into puback_reservations[] the slot counts against; UINT8_MAX for the shared pool. */
+      uint8_t reservation;
     } pending_pubacks[AZ_IOT_MAX_PENDING_PUBACKS];
 
     struct
@@ -1701,6 +1710,13 @@ extern "C"
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
     size_t sas_token_size;
+
+    /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
+    struct
+    {
+      const void* owner;
+      uint16_t count;
+    } puback_reservations[AZ_IOT_MAX_PUBACK_RESERVATIONS];
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
