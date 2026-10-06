@@ -262,6 +262,7 @@ AZ_NODISCARD az_result az_mqtt5_client_init(az_mqtt5_client* client, az_mqtt5_cl
  * az_mqtt5_client_process_loop() until the state leaves CONNECTING.
  *
  * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
+ * @retval AZ_ERROR_ARG CONNECT cannot be encoded (az_mqtt5_codec_encode_connect()).
  */
 AZ_NODISCARD az_result az_mqtt5_client_connect(az_mqtt5_client* client, int32_t timeout_ms);
 
@@ -284,6 +285,7 @@ AZ_NODISCARD az_result az_mqtt5_client_connect(az_mqtt5_client* client, int32_t 
  *
  * @retval AZ_OK Started.
  * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
+ * @retval AZ_ERROR_ARG CONNECT cannot be encoded (az_mqtt5_codec_encode_connect()).
  */
 AZ_NODISCARD az_result
 az_mqtt5_client_connect_start(az_mqtt5_client* client, int32_t timeout_ms);
@@ -319,7 +321,7 @@ AZ_NODISCARD az_result az_mqtt5_client_process_loop(az_mqtt5_client* client, int
  *         (QoS 1/2) an earlier PUBLISH still awaits its resend after a resume.
  * @retval AZ_MQTT_ERROR_OUT_OF_STORAGE, AZ_MQTT_ERROR_INVALID_CONFIG See inflight_message_buffer.
  * @retval AZ_ERROR_ARG Topic with a wildcard ('+', '#'), not valid UTF-8, or empty without
- *         topic_alias.
+ *         topic_alias; response_topic with a wildcard or not valid UTF-8.
  * @retval AZ_MQTT_ERROR_NOT_SUPPORTED QoS above the server's Maximum QoS, retain without
  *         Retain Available, a Topic Alias above its Topic Alias Maximum, or (QoS 1/2) one on a
  *         session that outlives the connection.
@@ -334,6 +336,7 @@ AZ_NODISCARD az_result az_mqtt5_client_publish(
  * @brief Subscribe to topic(s). Holds an in-flight entry until SUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  * @retval AZ_MQTT_ERROR_PACKET_TOO_LARGE Over the server's Maximum Packet Size.
  */
 AZ_NODISCARD az_result az_mqtt5_client_subscribe(
@@ -346,6 +349,7 @@ AZ_NODISCARD az_result az_mqtt5_client_subscribe(
  * @brief Unsubscribe from topic(s). Holds an in-flight entry until UNSUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  * @retval AZ_MQTT_ERROR_PACKET_TOO_LARGE Over the server's Maximum Packet Size.
  */
 AZ_NODISCARD az_result az_mqtt5_client_unsubscribe(

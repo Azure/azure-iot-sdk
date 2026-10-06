@@ -29,7 +29,9 @@
  * @brief Encode a CONNECT packet into the destination buffer.
  * @param[in,out] dest  Buffer to write into. On success, advanced past the written bytes.
  * @param[in]     opts  CONNECT options.
- * @return AZ_OK or AZ_ERROR_NOT_ENOUGH_SPACE.
+ * @retval AZ_ERROR_NOT_ENOUGH_SPACE @p dest too small.
+ * @retval AZ_ERROR_ARG A string not valid UTF-8 or over 65,535 bytes, a Will Topic empty or with
+ * a wildcard, or a Will Response Topic with a wildcard.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_connect_options const* opts);
 
@@ -38,7 +40,8 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_con
  * @param[in,out] dest      Buffer; advanced on success.
  * @param[in]     opts      Publish options.
  * @param[in]     packet_id Packet identifier (must be non-zero for QoS>0).
- * @retval AZ_ERROR_ARG Topic with a wildcard, or empty without a Topic Alias.
+ * @retval AZ_ERROR_ARG Topic with a wildcard or empty without a Topic Alias; Response Topic with
+ * a wildcard; either not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
     az_span* dest,
@@ -82,7 +85,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_pubcomp(
  * @param[in]     subs      Array of subscriptions.
  * @param[in]     sub_count Number of subscriptions.
  * @param[in]     packet_id Packet identifier.
- * @retval AZ_ERROR_ARG A Topic Filter empty or with a misplaced wildcard.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
     az_span* dest,
@@ -92,7 +95,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
 
 /**
  * @brief Encode an UNSUBSCRIBE packet.
- * @retval AZ_ERROR_ARG A Topic Filter empty or with a misplaced wildcard.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_unsubscribe(
     az_span* dest,

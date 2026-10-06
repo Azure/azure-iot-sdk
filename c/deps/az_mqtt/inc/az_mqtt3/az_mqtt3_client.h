@@ -207,6 +207,7 @@ az_mqtt3_client_init(az_mqtt3_client* client, az_mqtt3_client_options const* opt
  * az_mqtt3_client_process_loop() until the state leaves CONNECTING.
  *
  * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
+ * @retval AZ_ERROR_ARG CONNECT cannot be encoded (az_mqtt3_codec_encode_connect()).
  */
 AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t timeout_ms);
 
@@ -229,6 +230,7 @@ AZ_NODISCARD az_result az_mqtt3_client_connect(az_mqtt3_client* client, int32_t 
  *
  * @retval AZ_OK Started.
  * @retval AZ_MQTT_ERROR_INVALID_STATE Not DISCONNECTED.
+ * @retval AZ_ERROR_ARG CONNECT cannot be encoded (az_mqtt3_codec_encode_connect()).
  */
 AZ_NODISCARD az_result
 az_mqtt3_client_connect_start(az_mqtt3_client* client, int32_t timeout_ms);
@@ -274,6 +276,7 @@ AZ_NODISCARD az_result az_mqtt3_client_publish(
  * @brief Subscribe to topic(s). Holds an in-flight entry until SUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt3_client_subscribe(
     az_mqtt3_client* client,
@@ -285,6 +288,7 @@ AZ_NODISCARD az_result az_mqtt3_client_subscribe(
  * @brief Unsubscribe from topic(s). Holds an in-flight entry until UNSUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt3_client_unsubscribe(
     az_mqtt3_client* client,
