@@ -10,7 +10,7 @@
  * connect() only prepares: name resolution, the socket connect, the TLS and MQTT handshakes and
  * every receive run in process_loop(). Sends (publish, subscribe, unsubscribe, disconnect) are
  * written when called and wait only while the socket send buffer is full, at most
- * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS.
+ * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS (over WebSockets, up to twice that).
  *
  * Register one or both factories with the connection client; the SDK picks one by MQTT
  * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its

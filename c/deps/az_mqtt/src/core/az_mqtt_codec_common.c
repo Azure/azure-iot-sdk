@@ -38,6 +38,11 @@ AZ_NODISCARD az_result _az_mqtt_write_uint16(az_span* dest, uint16_t val)
 
 AZ_NODISCARD az_result _az_mqtt_write_utf8_string(az_span* dest, az_span str)
 {
+  return _az_mqtt_utf8_valid(str) ? _az_mqtt_write_binary_data(dest, str) : AZ_ERROR_ARG;
+}
+
+AZ_NODISCARD az_result _az_mqtt_write_binary_data(az_span* dest, az_span str)
+{
   int32_t len = az_span_size(str);
   if (len > 65535)
   {

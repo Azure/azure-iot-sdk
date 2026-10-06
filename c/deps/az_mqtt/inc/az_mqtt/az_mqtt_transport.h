@@ -178,8 +178,9 @@ AZ_NODISCARD AZ_INLINE az_result az_mqtt_tls_options_check(az_mqtt_tls_options c
 
 #ifndef AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS
 /**
- * @brief Longest az_mqtt_transport_send() waits for the peer to accept data.
- * On expiry the connection is unusable (a partial packet may have been sent).
+ * @brief Longest az_mqtt_transport_send() waits for the peer to accept data (over WebSockets,
+ * up to twice this; see AZ_MQTT_WEBSOCKET_SEND_CHUNK). On expiry the connection is unusable (a
+ * partial packet may have been sent).
  */
 #define AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS 30000
 #endif

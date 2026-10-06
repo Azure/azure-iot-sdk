@@ -34,7 +34,8 @@
 #ifndef AZ_MQTT_WEBSOCKET_SEND_CHUNK
 /**
  * @brief Stack buffer frames are masked in on their way out, in bytes (at least 15): a packet
- * larger than it takes several sends on the transport below.
+ * larger than it takes several sends on the transport below. None starts later than
+ * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS after the first, so a send waits at most twice that.
  */
 #define AZ_MQTT_WEBSOCKET_SEND_CHUNK 512
 #endif

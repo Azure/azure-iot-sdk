@@ -7,6 +7,7 @@
  * az_mqtt_websocket_internal.h.
  */
 
+#include "az_mqtt_io_layers_internal.h"
 #include "az_mqtt_websocket_internal.h"
 
 #include "../platform/az_mqtt_http_connect.h"
@@ -716,9 +717,16 @@ static void _report(az_mqtt_websocket* ws, int32_t code, az_result result)
   }
 }
 
-/** @brief Send @p payload as one masked frame of @p opcode, through a stack buffer. */
+/**
+ * @brief Send @p payload as one masked frame of @p opcode, through a stack buffer.
+ *
+ * Each piece goes through the lower send, which may wait up to AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS;
+ * no piece starts after that time from the first, so a frame takes at most twice that.
+ * @retval AZ_MQTT_ERROR_TIMEOUT The frame was cut off; the connection is unusable.
+ */
 static az_result _send_frame(az_mqtt_websocket* ws, uint8_t opcode, az_span payload)
 {
+  int64_t const deadline = _az_mqtt_io_layer_deadline(AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS);
   uint8_t chunk[AZ_MQTT_WEBSOCKET_SEND_CHUNK];
   uint8_t mask[4];
   _az_RETURN_IF_FAILED(az_mqtt_transport_random(AZ_SPAN_FROM_BUFFER(mask)));
@@ -727,6 +735,10 @@ static az_result _send_frame(az_mqtt_websocket* ws, uint8_t opcode, az_span payl
   int32_t offset = 0;
   do
   {
+    if (offset > 0 && _az_mqtt_io_layer_remaining(deadline) == 0)
+    {
+      return AZ_MQTT_ERROR_TIMEOUT;
+    }
     int32_t const room = (int32_t)sizeof(chunk) - used;
     int32_t const take = size - offset < room ? size - offset : room;
     if (take > 0)
