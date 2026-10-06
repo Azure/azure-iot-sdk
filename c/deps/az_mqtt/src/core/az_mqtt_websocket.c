@@ -722,7 +722,8 @@ static void _report(az_mqtt_websocket* ws, int32_t code, az_result result)
  *
  * Each piece goes through the lower send, which may wait up to AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS;
  * no piece starts after that time from the first, so a frame takes at most twice that.
- * @retval AZ_MQTT_ERROR_TIMEOUT The frame was cut off; the connection is unusable.
+ * @retval AZ_MQTT_ERROR_TIMEOUT The frame was cut off.
+ * On any failure the WebSocket is CLOSED: a partial frame makes the stream unusable.
  */
 static az_result _send_frame(az_mqtt_websocket* ws, uint8_t opcode, az_span payload)
 {
@@ -737,6 +738,7 @@ static az_result _send_frame(az_mqtt_websocket* ws, uint8_t opcode, az_span payl
   {
     if (offset > 0 && _az_mqtt_io_layer_remaining(deadline) == 0)
     {
+      _W(ws).stage = _AZ_MQTT_WEBSOCKET_CLOSED;
       return AZ_MQTT_ERROR_TIMEOUT;
     }
     int32_t const room = (int32_t)sizeof(chunk) - used;
@@ -746,7 +748,12 @@ static az_result _send_frame(az_mqtt_websocket* ws, uint8_t opcode, az_span payl
       memcpy(chunk + used, az_span_ptr(payload) + offset, (size_t)take);
       _az_mqtt_websocket_mask(chunk + used, take, mask, (uint64_t)offset);
     }
-    _az_RETURN_IF_FAILED(az_mqtt_transport_send(_W(ws).lower, az_span_create(chunk, used + take)));
+    az_result const rc = az_mqtt_transport_send(_W(ws).lower, az_span_create(chunk, used + take));
+    if (az_result_failed(rc))
+    {
+      _W(ws).stage = _AZ_MQTT_WEBSOCKET_CLOSED;
+      return rc;
+    }
     offset += take;
     used = 0;
   } while (offset < size);

@@ -16,7 +16,7 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 4 | Property section encoded as VBI length followed by property list | [§2.2.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | All packet encoders/decoders write/read the property length VBI | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 5 | Unknown property IDs must cause a DISCONNECT with reason `Malformed Packet` | [[MQTT-2.2.2-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | Unknown property IDs are silently skipped; no DISCONNECT sent | |
 | 6 | A property must not appear more than once (except User Property) | [[MQTT-2.2.2-3]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | Duplicate properties are not detected; last value wins silently | |
-| 7 | UTF-8 strings must be valid UTF-8 | [[MQTT-1.5.4-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No UTF-8 validation is performed on encoded or decoded strings | |
+| 7 | UTF-8 strings must be valid UTF-8 | [[MQTT-1.5.4-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Received strings: malformed UTF-8, surrogates or U+0000 are a malformed packet; sent strings: refused with `AZ_ERROR_ARG` | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c) |
 | 8 | Binary data and UTF-8 string lengths encoded as 2-byte big-endian prefix | [§1.5.6](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `_az_mqtt_read_binary_data` / `_az_mqtt_write_binary_data` | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c) |
 | **CONNECT ([§3.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 9 | Protocol Name field must be `MQTT` | [[MQTT-3.1.2-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Hard-coded 4-byte literal in encoder | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
@@ -165,9 +165,9 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 110 |
+| Yes | 113 |
 | Partial | 3 |
-| No | 22 |
+| No | 19 |
 
 ### Key gaps (client-facing impact)
 
@@ -178,4 +178,3 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | Enhanced authentication (AUTH exchange) not implemented | [[MQTT-4.12.0-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
 | Topic Alias mapping table not maintained | [§3.3.2.3.4](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
 | Unknown / duplicate property IDs not rejected | [[MQTT-2.2.2-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html), [[MQTT-2.2.2-3]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
-| UTF-8 string validation not performed | [[MQTT-1.5.4-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |

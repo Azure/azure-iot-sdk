@@ -14,7 +14,7 @@ to the current implementation status of `az_mqttv3` (on `az_mqtt_core`).
 | 2 | Remaining Length encoded as Variable Byte Integer (1–4 bytes) | [§2.2.3](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | VBI encoder / decoder in packet read/write | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c), [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 3 | Maximum remaining length is 268,435,455 bytes | [§2.2.3](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | 4-byte VBI cap enforced in decode loop | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 4 | String data preceded by 2-byte big-endian length prefix | [§2.3.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `_az_mqtt_read_binary_data` / `_az_mqtt_write_binary_data` | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c) |
-| 5 | UTF-8 strings must be valid UTF-8 (informative) | [§2.3.2](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | No | No UTF-8 validation is performed on encoded or decoded strings | |
+| 5 | UTF-8 strings must be valid UTF-8 (informative) | [§2.3.2](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | Received strings: malformed UTF-8, surrogates or U+0000 are a malformed packet; sent strings: refused with `AZ_ERROR_ARG` | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c) |
 | **CONNECT ([§3.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html))** |||||
 | 6 | Protocol Name field must be `MQTT` (bytes: 0x00, 0x04, M, Q, T, T) | [§3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | Hard-coded 4-byte literal in encoder | [src/mqtt3/az_mqtt3_codec.c](../../src/mqtt3/az_mqtt3_codec.c) |
 | 7 | Protocol Version byte must be `4` (0x04) | [§3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `0x04` written in `az_mqtt3_codec_encode_connect` | [src/mqtt3/az_mqtt3_codec.c](../../src/mqtt3/az_mqtt3_codec.c) |
@@ -98,9 +98,9 @@ to the current implementation status of `az_mqttv3` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 57 |
+| Yes | 59 |
 | Partial | 2 |
-| No | 10 |
+| No | 8 |
 
 ### Key gaps (client-facing impact)
 
@@ -109,5 +109,4 @@ to the current implementation status of `az_mqttv3` (on `az_mqtt_core`).
 | QoS 2 receive duplicate detection needs a free `inflight_control_buffer` entry | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | A QoS 1/2 PUBLISH given an expiry interval is dropped instead of resent once it elapsed (opt-in; MQTT itself would resend it) | [§3.3.1, 3.6](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | Topic wildcards not validated in PUBLISH | [§3.3.2.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
-| UTF-8 string validation not performed | [§2.3.2](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | Will flag consistency validation not enforced | [§3.1.2.4](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |

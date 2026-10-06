@@ -1412,6 +1412,8 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_ack(az_span body, az_mqtt5_ack_data
   az_result rc = _az_mqtt_read_uint16(&body, &out->packet_id);
   if (az_result_failed(rc))
     return rc;
+  if (out->packet_id == 0)
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Packet identifiers are non-zero.
 
   // If remaining length was 2, no reason code / properties
   if (az_span_size(body) == 0)
@@ -1539,6 +1541,8 @@ static az_result _decode_suback_common(az_span body, az_mqtt5_suback_data* out)
   az_result rc = _az_mqtt_read_uint16(&body, &out->packet_id);
   if (az_result_failed(rc))
     return rc;
+  if (out->packet_id == 0)
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Packet identifiers are non-zero.
 
   // Properties
   rc = _decode_suback_props(&body, out);

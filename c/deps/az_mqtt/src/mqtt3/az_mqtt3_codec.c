@@ -428,6 +428,8 @@ AZ_NODISCARD az_result az_mqtt3_codec_decode_ack(az_span body, az_mqtt3_ack_data
   az_result rc = _az_mqtt_read_uint16(&body, &out->packet_id);
   if (az_result_failed(rc))
     return rc;
+  if (out->packet_id == 0)
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Packet identifiers are non-zero.
   return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
 }
 
@@ -438,6 +440,8 @@ AZ_NODISCARD az_result az_mqtt3_codec_decode_suback(az_span body, az_mqtt3_subac
   az_result rc = _az_mqtt_read_uint16(&body, &out->packet_id);
   if (az_result_failed(rc))
     return rc;
+  if (out->packet_id == 0)
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Packet identifiers are non-zero.
   out->return_codes = body;
   // One return code per topic filter, and a SUBSCRIBE has at least one.
   return az_span_size(body) > 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
