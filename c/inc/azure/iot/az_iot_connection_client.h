@@ -329,7 +329,9 @@ extern "C"
    * reconnection_policy delay, even with the policy disabled. Other failures
    * retry the same source under the policy. A pass tries each source once,
    * from the one it began with, wrapping; it counts as one policy attempt. The
-   * source that connects is kept until rejected; open() starts again at the
+   * source a fallback selected is kept until rejected; otherwise each attempt
+   * starts at the first available source, so a certificate that becomes
+   * available (e.g. one DPS issued) is used next. open() starts again at the
    * first. When a whole pass is rejected, the failure is handled as without
    * fallback: for the hub, identity_recovery applies to the pass, not to each
    * source. A provisioning session without a registration (provision_only, or

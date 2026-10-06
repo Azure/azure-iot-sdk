@@ -246,9 +246,10 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `reconnection_policy` delay, even with the policy disabled. The `RECONNECTING` event carries the
   rejected credential in `auth_source`, classification `AZ_IOT_CONN_FAILURE_IDENTITY`, attempt 0
   and no delay. Other failures retry the same source under the policy. A pass tries each source
-  once, from the one it began with, wrapping; it counts as one policy attempt. The source that
-  connects is kept until rejected; `open()` starts again at the first. `identity_recovery`
-  applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way, but report no `RECONNECTING`: `DISCONNECTING` and `IDLE` carry the rejected `auth_source` and reason, then `CONNECTING` the next source. A fully rejected pass is paced by the policy.
+  once, from the one it began with, wrapping; it counts as one policy attempt. The source a
+  fallback selected is kept until rejected; otherwise each attempt starts at the first available
+  source, so a certificate that becomes available (such as one DPS issued) is used next. `open()`
+  starts again at the first. `identity_recovery` applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way, but report no `RECONNECTING`: `DISCONNECTING` and `IDLE` carry the rejected `auth_source` and reason, then `CONNECTING` the next source. A fully rejected pass is paced by the policy.
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
