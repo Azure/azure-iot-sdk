@@ -163,7 +163,7 @@ static bool _is_valid_path(az_span path)
 
 bool _az_mqtt_websocket_path_is_valid(az_span path) { return _is_valid_path(path); }
 
-/** @brief Whether @p host can go in a Host header: non-empty, bounded, no break or space. */
+/** @brief Whether @p host can go in a Host header: non-empty, bounded, no control or space. */
 static bool _is_valid_host(az_span host)
 {
   uint8_t const* p = az_span_ptr(host);
@@ -174,7 +174,7 @@ static bool _is_valid_host(az_span host)
   }
   for (int32_t i = 0; i < size; i++)
   {
-    if (p[i] == '\r' || p[i] == '\n' || p[i] == '\0' || p[i] == ' ')
+    if (p[i] <= ' ' || p[i] == 0x7F)
     {
       return false;
     }

@@ -7,7 +7,8 @@ MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/
   - PINGRESP with a body, disallowed acknowledgement codes, bytes after MQTT 5 properties,
     invalid Topic Names and Filters (including wildcard placement), QoS 0 with DUP, undefined
     CONNACK codes, a CONNACK after connecting, an MQTT 5 AUTH, and SUBACK/UNSUBACK code counts
-    other than the filters requested rejected (ewertons/az_mqtt#36, `781e763`);
+    other than the filters requested, and control characters in proxy and WebSocket hosts
+    rejected (ewertons/az_mqtt#36, `0c802f0`);
   - mbedTLS 4 fallback finds tfpsacrypto; key loading stops on a store error (ewertons/az_mqtt#37, `7085050`).
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`.
 - Not imported: samples, tests, CI, and the `deps/azure-sdk-for-c` submodule. The SDK's

@@ -390,8 +390,9 @@ struct az_mqtt_transport
  * az_mqtt_transport_connect_start() must stay valid until the connect completes. A connect
  * through a proxy never falls back to connecting directly.
  *
- * @retval AZ_MQTT_ERROR_INVALID_CONFIG Port 0; host or credentials too long, or containing CR,
- *         LF or NUL; user name containing ':'; or a password without a user name.
+ * @retval AZ_MQTT_ERROR_INVALID_CONFIG Port 0; host too long or with a control character or
+ *         space; credentials too long or containing CR, LF or NUL; user name containing ':'; or
+ *         a password without a user name.
  * @retval AZ_MQTT_ERROR_NOT_SUPPORTED This transport has no proxy support.
  */
 AZ_NODISCARD az_result
