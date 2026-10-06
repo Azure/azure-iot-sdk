@@ -987,6 +987,8 @@ static void teardown_active(az_iot_connection_client* c)
   }
 }
 
+static void puback_abandon(az_iot_connection_client* c, const void* owner);
+
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
@@ -4814,6 +4816,17 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
           : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
   /* A direct connect has no service to ask, so the seed above is the answer. */
   client->connection_profile_resolved = !dps_configured(client);
+  /* send_csr() needs opts.csr_payload_buffer, so its presence is what marks a device that may
+   * renew. Reserving now, with nothing in flight, cannot fail and keeps every renewal tracked. */
+  if (az_span_size(client->opts.csr_payload_buffer) > 0)
+  {
+    sv = az_iot_connection_client__reserve_pubacks(client, &client->csr_op, 1);
+    if (sv != AZ_IOT_OK)
+    {
+      sas_wipe(client);
+      return sv;
+    }
+  }
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
@@ -5830,6 +5843,7 @@ az_iot_result az_iot_connection_client_do_work(
     az_iot_csr_callback cb = client->csr_op.cb;
     void* uc = client->csr_op.user_ctx;
     client->csr_op.in_use = false;
+    puback_abandon(client, &client->csr_op);
     az_iot_csr_event evt;
     memset(&evt, 0, sizeof(evt));
     evt.kind = AZ_IOT_CSR_FAILED;
@@ -6802,6 +6816,28 @@ static size_t puback_free_slot(const az_iot_connection_client* c, uint8_t pool)
   return AZ_IOT_MAX_PENDING_PUBACKS;
 }
 
+/**
+ * @brief Free @p owner's pending-PUBACK slots without calling their callbacks.
+ *
+ * For a request whose operation has ended. Its late PUBACK then matches no slot: the adapter
+ * gives a new publish a different packet id while the old one is in flight.
+ */
+static void puback_abandon(az_iot_connection_client* c, const void* owner)
+{
+  uint8_t pool = puback_pool_of(c, owner);
+  if (pool == PUBACK_POOL_SHARED)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
+    {
+      memset(&c->pending_pubacks[i], 0, sizeof(c->pending_pubacks[i]));
+    }
+  }
+}
+
 az_iot_result az_iot_connection_client__publish(
     az_iot_connection_client* client,
     const void* owner,
@@ -7189,6 +7225,39 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
   }
 }
 
+/**
+ * @brief PUBACK for a renewal request. A rejection completes the operation now instead of at
+ *        CSR_OP_TIMEOUT_MS. A session that ended first does not: the response may still arrive
+ *        on the next one, as for a request acknowledged before the drop.
+ *
+ * Cancel and timeout abandon the request's slot, so an ack that still matches one is always for
+ * the open operation.
+ */
+static void on_csr_puback(az_iot_result status, void* user_ctx)
+{
+  az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
+  if (status == AZ_IOT_OK || status == AZ_IOT_ERR_NOT_CONNECTED || !c->csr_op.in_use)
+  {
+    return;
+  }
+  az_iot_csr_callback cb = c->csr_op.cb;
+  void* uc = c->csr_op.user_ctx;
+  c->csr_op.in_use = false;
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "certificate renewal request %s rejected (%s)",
+      c->csr_op.request_id,
+      az_iot_result_to_string(status));
+  az_iot_csr_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_CSR_FAILED;
+  evt.status = status;
+  if (cb)
+  {
+    cb(&evt, uc);
+  }
+}
+
 /* Inbound handler for $iothub/credentials/res/{status}/?$rid={rid}. */
 static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
@@ -7238,8 +7307,10 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  /* Terminal: the operation completes here regardless of outcome. */
+  /* Terminal: the operation completes here regardless of outcome. Its PUBACK may still be due;
+   * free the slot first so a renewal started from the callback is not refused. */
   c->csr_op.in_use = false;
+  puback_abandon(c, &c->csr_op);
 
   if (status == 200)
   {
@@ -7441,7 +7512,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
-  az_iot_result r = az_iot_connection_client__publish(client, NULL, &msg, NULL, NULL);
+  az_iot_result r
+      = az_iot_connection_client__publish(client, &client->csr_op, &msg, on_csr_puback, client);
   if (r != AZ_IOT_OK)
   {
     client->csr_op.in_use = false;
@@ -7464,6 +7536,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection
    * can proceed. No callback fires (the caller already knows). A late hub
    * response for this rid is ignored (in_use is clear). */
   client->csr_op.in_use = false;
+  puback_abandon(client, &client->csr_op);
   return AZ_IOT_OK;
 }
 
