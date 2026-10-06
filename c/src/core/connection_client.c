@@ -1390,7 +1390,8 @@ static az_iot_result apply_sas_key(
     /* Both clocks: the monotonic one may stop while the device is suspended. */
     uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
     c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
-    c->sas_token_renewal_due_unix_seconds = now + delay_ms / 1000u;
+    /* Rounded up: a truncated deadline would renew at once, every time. */
+    c->sas_token_renewal_due_unix_seconds = now + (delay_ms + 999u) / 1000u;
   }
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
@@ -4496,14 +4497,22 @@ static uint32_t limit_wait_to_sas_token_renewal(
   {
     return timeout_ms;
   }
+  uint64_t remaining = UINT64_MAX;
   uint64_t deadline = c->sas_token_renewal_in_progress ? c->sas_token_renewal_disconnect_deadline_ms
                                                        : c->sas_token_renewal_due_ms;
-  if (deadline == 0)
+  if (deadline != 0)
   {
-    return timeout_ms;
+    uint64_t now = az_iot_time_mono_ms();
+    remaining = deadline > now ? deadline - now : 0;
   }
-  uint64_t now = az_iot_time_mono_ms();
-  uint64_t remaining = deadline > now ? deadline - now : 0;
+  if (!c->sas_token_renewal_in_progress && c->sas_token_renewal_due_unix_seconds != 0)
+  {
+    uint64_t unix_seconds = unix_now(c);
+    uint64_t unix_remaining = c->sas_token_renewal_due_unix_seconds > unix_seconds
+        ? (c->sas_token_renewal_due_unix_seconds - unix_seconds) * 1000u
+        : 0;
+    remaining = unix_remaining < remaining ? unix_remaining : remaining;
+  }
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 

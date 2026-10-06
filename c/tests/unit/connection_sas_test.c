@@ -1757,7 +1757,9 @@ static void a_suspended_monotonic_clock_still_renews(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
 
   now = NOW + 50u;
-  pump(fx, 1);
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
   assert_true(fx->client.sas_token_renewal_in_progress);
   assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, 0);
@@ -1785,8 +1787,28 @@ static void the_largest_renewal_time_does_not_overflow(void** state)
   uint64_t before = az_iot_time_mono_ms();
   init_and_open(fx, &opts);
   uint64_t delay_ms = (uint64_t)UINT32_MAX * 990u;
-  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + delay_ms / 1000u);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + (delay_ms + 999u) / 1000u);
   assert_true(fx->client.sas_token_renewal_due_ms >= before + delay_ms);
+}
+
+/* A sub-second renewal delay: the Unix deadline is rounded up, so it does not
+ * renew at once. */
+static void a_sub_second_renewal_delay_does_not_renew_at_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.hub_auth.sas.token_lifetime_seconds = 20;
+  opts.hub_auth.sas.renewal_percent = 1;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + 1u);
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms() + 60000u;
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
 }
 
 /* A renewal reconnect that is refused is a failure: no renewal flag, and the
@@ -1881,6 +1903,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),
     cmocka_unit_test_setup_teardown(the_largest_renewal_time_does_not_overflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_sub_second_renewal_delay_does_not_renew_at_once, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
