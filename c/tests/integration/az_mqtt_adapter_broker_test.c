@@ -73,13 +73,12 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   msg.payload = NULL;
   msg.payload_len = 0;
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_OK);
-  // Each callback publishes again. Every call must still return, with acknowledgements delivered
-  // (at most two per call: the one held on entry, and one after the receive step).
+  // Each callback publishes again; that acknowledgement waits for the next call: one per call.
   for (int i = 0; i < 10; i++)
   {
     int const before = r.acks;
     assert_int_equal(r.client->iface->process_loop(r.client, 0), AZ_IOT_OK);
-    assert_in_range(r.acks - before, 1, 2);
+    assert_int_equal(r.acks - before, 1);
   }
   r.client->iface->set_inbound_cb(r.client, NULL, NULL);
   (void)r.client->iface->disconnect(r.client);

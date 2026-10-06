@@ -133,6 +133,9 @@ typedef struct
   az_iot_mqtt_event pending[AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX];
   int pending_count;
   uint32_t pending_qos0_acks;
+  /* Of those, held when this process_loop() started: the only ones it delivers. */
+  int due_count;
+  uint32_t due_qos0_acks;
   az_iot_mqtt_event_callback callback;
   void* callback_context;
 } _azm_client;
@@ -158,21 +161,19 @@ static void _azm_deliver(_azm_client* m, az_iot_mqtt_event const* event)
 
 /**
  * @brief Deliver the held events, oldest first, then the QoS 0 publish acknowledgements. Only
- * those held on entry: what the callbacks raise is held for the next call.
+ * those held when this process_loop() started (due_*): what callbacks raise waits for the next.
  */
 static bool _azm_deliver_pending(_azm_client* m)
 {
   bool delivered = false;
-  int events = m->pending_count;
-  uint32_t qos0_acks = m->pending_qos0_acks;
-  while (events > 0 || qos0_acks > 0)
+  while (m->due_count > 0 || m->due_qos0_acks > 0)
   {
     az_iot_mqtt_event event;
-    if (events > 0)
+    if (m->due_count > 0)
     {
       event = m->pending[0];
       m->pending_count--;
-      events--;
+      m->due_count--;
       memmove(&m->pending[0], &m->pending[1], (size_t)m->pending_count * sizeof(m->pending[0]));
     }
     else
@@ -181,7 +182,7 @@ static bool _azm_deliver_pending(_azm_client* m)
       event.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
       event.status = AZ_IOT_OK;
       m->pending_qos0_acks--;
-      qos0_acks--;
+      m->due_qos0_acks--;
     }
     _azm_deliver(m, &event);
     delivered = true;
@@ -1001,6 +1002,8 @@ static az_iot_result _azm_process_loop(az_iot_mqtt_client* self, uint32_t timeou
   _azm_client* m = _azm_self(self);
   int32_t const timeout = timeout_ms > (uint32_t)INT32_MAX ? INT32_MAX : (int32_t)timeout_ms;
   m->in_loop = true;
+  m->due_count = m->pending_count;
+  m->due_qos0_acks = m->pending_qos0_acks;
   bool delivered = _azm_deliver_pending(m);
   if (m->start_pending)
   {
