@@ -276,7 +276,8 @@ AZ_NODISCARD az_result az_mqtt3_client_publish(
  * @brief Subscribe to topic(s). Holds an in-flight entry until SUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
- * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
+ * @retval AZ_ERROR_ARG Over 65,535 Topic Filters, or one empty, with a misplaced wildcard or
+ *         not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt3_client_subscribe(
     az_mqtt3_client* client,
@@ -288,7 +289,8 @@ AZ_NODISCARD az_result az_mqtt3_client_subscribe(
  * @brief Unsubscribe from topic(s). Holds an in-flight entry until UNSUBACK.
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
- * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
+ * @retval AZ_ERROR_ARG Over 65,535 Topic Filters, or one empty, with a misplaced wildcard or
+ *         not valid UTF-8.
  */
 AZ_NODISCARD az_result az_mqtt3_client_unsubscribe(
     az_mqtt3_client* client,

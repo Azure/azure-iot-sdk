@@ -38,6 +38,8 @@ typedef struct
     uint8_t kind;
     /** @brief From an earlier connection: 0, or a _az_mqtt_inflight_mark (resend or drop). */
     uint8_t mark;
+    /** @brief SUBSCRIBE / UNSUBSCRIBE: Topic Filters requested, as many as codes acknowledged. */
+    uint16_t filter_count;
   } _internal;
 } az_mqtt_inflight_entry;
 

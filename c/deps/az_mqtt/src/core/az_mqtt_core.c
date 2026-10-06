@@ -784,6 +784,27 @@ bool _az_mqtt_core_inflight_release_entry(
   return entry != NULL;
 }
 
+az_result _az_mqtt_core_inflight_release_request(
+    az_mqtt_core* core,
+    _az_mqtt_inflight_kind kind,
+    uint16_t packet_id,
+    int32_t code_count,
+    bool* out_released)
+{
+  az_mqtt_inflight_entry* entry = _az_mqtt_core_inflight_find_entry(core, kind, packet_id);
+  *out_released = entry != NULL;
+  if (entry == NULL)
+  {
+    return AZ_OK;
+  }
+  if (code_count != (int32_t)entry->_internal.filter_count)
+  {
+    return AZ_MQTT_ERROR_PROTOCOL;
+  }
+  _az_mqtt_core_inflight_free_entry(core, entry);
+  return AZ_OK;
+}
+
 az_result _az_mqtt_core_inflight_track_inbound_qos2(
     az_mqtt_core* core,
     uint16_t packet_id,

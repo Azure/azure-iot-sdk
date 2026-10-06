@@ -177,6 +177,19 @@ AZ_NODISCARD bool _az_mqtt_core_inflight_release_entry(
     uint16_t packet_id);
 
 /**
+ * @brief Free the SUBSCRIBE or UNSUBSCRIBE entry (@p kind) holding @p packet_id, if its
+ * filter_count is @p code_count.
+ * @param[out] out_released Whether an entry held @p packet_id.
+ * @retval AZ_MQTT_ERROR_PROTOCOL Not one code per filter requested (3.9.3, 3.11.3); not freed.
+ */
+AZ_NODISCARD az_result _az_mqtt_core_inflight_release_request(
+    az_mqtt_core* core,
+    _az_mqtt_inflight_kind kind,
+    uint16_t packet_id,
+    int32_t code_count,
+    bool* out_released);
+
+/**
  * @brief Track an inbound QoS 2 PUBLISH until its PUBREL.
  *
  * @param[out] out_is_duplicate Whether @p packet_id already awaits PUBREL (do not

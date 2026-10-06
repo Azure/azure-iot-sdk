@@ -266,6 +266,21 @@ static bool _ack_reason_allowed(az_mqtt_packet_type type, uint8_t reason)
   return reason == 0x00 || reason == 0x92; // PUBREL, PUBCOMP (3.6.2.1, 3.7.2.1).
 }
 
+/**
+ * @brief Reason codes in SUBACK / UNSUBACK @p body, decoded already: every byte after the
+ * properties. reason_code_count stops at the caller's capacity.
+ */
+static int32_t _reason_code_total(az_span body)
+{
+  az_span rest = az_span_slice_to_end(body, 2); // Packet Identifier.
+  int32_t properties = 0;
+  if (az_result_failed(_az_mqtt_read_vbi(&rest, &properties)))
+  {
+    return -1;
+  }
+  return az_span_size(rest) - properties;
+}
+
 /** @brief PUBACK, PUBREC, PUBREL or PUBCOMP. */
 static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, az_span body)
 {
@@ -369,9 +384,15 @@ static az_result _handle_suback(az_mqtt5_client* client, az_span body)
       _span_count(client->_internal.buffers.suback_user_properties, (int32_t)sizeof(az_mqtt5_user_property));
 
   az_result rc = az_mqtt5_codec_decode_suback(body, &suback);
-  if (az_result_failed(rc)
-      || !_az_mqtt_core_inflight_release_entry(
-          &client->_internal.core, _AZ_MQTT_INFLIGHT_SUBSCRIBE, suback.packet_id))
+  bool released = false;
+  if (az_result_succeeded(rc))
+    rc = _az_mqtt_core_inflight_release_request(
+        &client->_internal.core,
+        _AZ_MQTT_INFLIGHT_SUBSCRIBE,
+        suback.packet_id,
+        _reason_code_total(body),
+        &released);
+  if (!released || az_result_failed(rc))
     return rc;
 
   if (client->_internal.on_suback != NULL)
@@ -394,9 +415,15 @@ static az_result _handle_unsuback(az_mqtt5_client* client, az_span body)
       _span_count(client->_internal.buffers.suback_user_properties, (int32_t)sizeof(az_mqtt5_user_property));
 
   az_result rc = az_mqtt5_codec_decode_unsuback(body, &unsuback);
-  if (az_result_failed(rc)
-      || !_az_mqtt_core_inflight_release_entry(
-          &client->_internal.core, _AZ_MQTT_INFLIGHT_UNSUBSCRIBE, unsuback.packet_id))
+  bool released = false;
+  if (az_result_succeeded(rc))
+    rc = _az_mqtt_core_inflight_release_request(
+        &client->_internal.core,
+        _AZ_MQTT_INFLIGHT_UNSUBSCRIBE,
+        unsuback.packet_id,
+        _reason_code_total(body),
+        &released);
+  if (!released || az_result_failed(rc))
     return rc;
 
   if (client->_internal.on_unsuback != NULL)
@@ -624,10 +651,15 @@ AZ_NODISCARD az_result az_mqtt5_client_subscribe(
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
+  if (subscription_count > UINT16_MAX)
+  {
+    return AZ_ERROR_ARG; // Counted in the entry, to match the acknowledgement's codes.
+  }
 
   az_mqtt_inflight_entry* entry = NULL;
   _az_RETURN_IF_FAILED(_az_mqtt_core_inflight_reserve_entry(
       &client->_internal.core, _AZ_MQTT_INFLIGHT_SUBSCRIBE, UINT16_MAX, &entry));
+  entry->_internal.filter_count = (uint16_t)subscription_count;
   uint16_t const packet_id = entry->_internal.packet_id;
   az_span send_buf = _SEND_BUFFER(client);
   az_result rc = az_mqtt5_codec_encode_subscribe(
@@ -653,10 +685,15 @@ AZ_NODISCARD az_result az_mqtt5_client_unsubscribe(
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
+  if (filter_count > UINT16_MAX)
+  {
+    return AZ_ERROR_ARG; // Counted in the entry, to match the acknowledgement's codes.
+  }
 
   az_mqtt_inflight_entry* entry = NULL;
   _az_RETURN_IF_FAILED(_az_mqtt_core_inflight_reserve_entry(
       &client->_internal.core, _AZ_MQTT_INFLIGHT_UNSUBSCRIBE, UINT16_MAX, &entry));
+  entry->_internal.filter_count = (uint16_t)filter_count;
   uint16_t const packet_id = entry->_internal.packet_id;
   az_span send_buf = _SEND_BUFFER(client);
   az_result rc
