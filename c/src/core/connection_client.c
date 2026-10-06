@@ -1405,6 +1405,7 @@ static az_iot_result apply_sas_key(
     /* Both clocks: the monotonic one may stop while the device is suspended. */
     uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
     c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
+    c->sas_token_expiry_ms = 0;
     /* Rounded up: a truncated deadline would renew at once, every time. */
     c->sas_token_renewal_due_unix_seconds = now + (delay_ms + 999u) / 1000u;
   }
@@ -2029,6 +2030,7 @@ static user_token_outcome ask_user_token(
       c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_READY;
       c->sas_token_request[scope].token_len = response.token_len;
       c->sas_token_request[scope].valid_seconds = response.valid_seconds;
+      c->sas_token_request[scope].delivered_ms = az_iot_time_mono_ms();
       return USER_TOKEN_READY;
     case AZ_IOT_SAS_TOKEN_PENDING:
       return USER_TOKEN_PENDING;
@@ -2077,6 +2079,19 @@ static void apply_user_token(
     bool* pending)
 {
   *pending = false;
+  uint64_t now_ms = az_iot_time_mono_ms();
+  uint64_t delivered_ms = c->sas_token_request[scope].delivered_ms;
+  uint64_t expiry_ms = delivered_ms + (uint64_t)c->sas_token_request[scope].valid_seconds * 1000u;
+  if (c->sas_token_request[scope].request_id != 0
+      && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY
+      && c->sas_token_holder == (uint8_t)(scope + 1) && now_ms >= expiry_ms)
+  {
+    /* Expired before use: ask again. */
+    c->sas_token_request[scope].asked = false;
+    c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_PENDING;
+    c->sas_token_holder = 0;
+    sas_wipe_token(c);
+  }
   if (c->sas_token_request[scope].request_id != 0
       && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY
       && c->sas_token_holder == (uint8_t)(scope + 1))
@@ -2085,11 +2100,16 @@ static void apply_user_token(
     c->auth[scope].source = AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
     if (scope == AZ_IOT_CONN_SCOPE_HUB)
     {
-      uint64_t delay_ms = get_sas_token_renewal_delay_ms(
-          auth_of(c, scope), c->sas_token_request[scope].valid_seconds);
-      uint64_t now = unix_now(c);
-      c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
-      c->sas_token_renewal_due_unix_seconds = now != 0 ? now + (delay_ms + 999u) / 1000u : 0;
+      /* valid_seconds counts from delivery, not from this use. */
+      uint64_t due_ms = delivered_ms
+          + get_sas_token_renewal_delay_ms(
+                            auth_of(c, scope), c->sas_token_request[scope].valid_seconds);
+      uint64_t unix_seconds = unix_now(c);
+      uint64_t left_ms = due_ms > now_ms ? due_ms - now_ms : 0;
+      c->sas_token_renewal_due_ms = due_ms;
+      c->sas_token_renewal_due_unix_seconds
+          = unix_seconds != 0 ? unix_seconds + (left_ms + 999u) / 1000u : 0;
+      c->sas_token_expiry_ms = expiry_ms;
     }
     /* The transport takes the token; it is wiped after connect(). */
     memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
@@ -4844,6 +4864,15 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     }
     return;
   }
+  /* The token expired while its replacement is still pending: the session
+   * ends, and the reconnect waits for the token. */
+  if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED && c->sas_token_expiry_ms != 0
+      && now >= c->sas_token_expiry_ms)
+  {
+    c->sas_token_expiry_ms = 0;
+    start_sas_token_renewal(c, now);
+    return;
+  }
   if ((c->sas_token_renewal_due_ms != 0 && now >= c->sas_token_renewal_due_ms)
       || (c->sas_token_renewal_due_unix_seconds != 0
           && unix_now(c) >= c->sas_token_renewal_due_unix_seconds))
@@ -5131,6 +5160,11 @@ static uint32_t limit_wait_to_sas_token_deadlines(
     uint64_t deadline = c->sas_token_renewal_in_progress
         ? c->sas_token_renewal_disconnect_deadline_ms
         : c->sas_token_renewal_due_ms;
+    if (!c->sas_token_renewal_in_progress && c->sas_token_expiry_ms != 0
+        && (deadline == 0 || c->sas_token_expiry_ms < deadline))
+    {
+      deadline = c->sas_token_expiry_ms;
+    }
     if (deadline != 0)
     {
       uint64_t left = deadline > now ? deadline - now : 0;
@@ -8476,5 +8510,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
   client->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_READY;
   client->sas_token_request[scope].token_len = response->token_len;
   client->sas_token_request[scope].valid_seconds = response->valid_seconds;
+  client->sas_token_request[scope].delivered_ms = az_iot_time_mono_ms();
   return AZ_IOT_OK;
 }

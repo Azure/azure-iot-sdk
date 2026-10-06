@@ -278,7 +278,9 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   the attempt fails with `AZ_IOT_ERR_BUSY` and is retried under the policy, no sooner than
   `retry_after_seconds`. During the call the request's resource URI shares the token area, so a
   `READY` token has `token_buffer_size` bytes; a delivered one has the whole area. One request per
-  role; a hub renewal request is asked while the session stays up.
+  role; a hub renewal request is asked while the session stays up. `valid_seconds` counts from
+  delivery; a token that expired before use is asked for again, and a session whose token expires
+  before its replacement arrives is ended, the reconnect waiting for the token.
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).

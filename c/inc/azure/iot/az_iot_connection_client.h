@@ -390,9 +390,9 @@ extern "C"
        * failed reconnect is reported and retried as any other failure. A
        * user-provided token is asked for first, while the session continues:
        * the renewal starts once it is READY. If it is UNAVAILABLE, it is asked
-       * for again after its retry_after_seconds (0: 30 s); if it is still
-       * PENDING when the current token expires, the hub ends the session and
-       * the reconnect waits for it.
+       * for again after its retry_after_seconds (0: 30 s); if none is there
+       * when the current token expires, the session ends and the reconnect
+       * waits for one. valid_seconds counts from when the token is delivered.
        */
       uint8_t renewal_percent;
     } sas;
@@ -1784,9 +1784,12 @@ extern "C"
       az_iot_sas_token_status status;
       size_t token_len;
       uint32_t valid_seconds;
+      uint64_t delivered_ms; /* when READY arrived (monotonic); valid_seconds counts from it */
       uint32_t retry_after_seconds;
       uint64_t deadline_ms; /* PENDING bound (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
+    /* When the hub's user-provided token expires (monotonic ms); 0: none. */
+    uint64_t sas_token_expiry_ms;
     uint32_t sas_token_last_request_id;
     /* Bytes a delivered token may use now, terminator excluded. */
     size_t sas_token_capacity;
