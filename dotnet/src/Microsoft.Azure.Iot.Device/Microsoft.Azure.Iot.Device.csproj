@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <VersionPrefix>2.0.0</VersionPrefix>
-    <VersionSuffix>preview</VersionSuffix>
+    <VersionSuffix>preview2</VersionSuffix>
   </PropertyGroup>
 
   <!-- NuGet package metadata. The repository URL is what links the published package to this
