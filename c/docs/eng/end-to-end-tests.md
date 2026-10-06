@@ -115,6 +115,16 @@ correlation marker so a fresh hub never confuses stale data:
 4. **twin** — the cloud patches a desired property (the device observes it), then
    the device reports a property (the cloud reads it back via a twin GET).
 
+**SAS suites** (every run; a DPS symmetric-key enrollment group, provisioned or
+shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
+`AZ_IOT_DPS_ID_SCOPE`, `AZ_IOT_TRUSTED_CA`):
+
+- [`e2e_sas_test.c`](../../tests/e2e/tests/e2e_sas_test.c) — DPS and hub over SAS
+  from the group key, then telemetry. `ci-c-e2e`.
+- [`e2e_csr_sas_test.c`](../../tests/e2e/tests/e2e_csr_sas_test.c) — DPS over SAS
+  with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
+  `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
+
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
 > The device uses Paho's own independent TLS stack, so the two never collide.
@@ -207,11 +217,14 @@ are never leaked.
 **Shared environment (temporary, opt-in).** When repository variable
 `E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
 long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
-X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1)),
-so there is nothing to clean up. Inputs are repository secrets
-`E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
-(`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
-upload with notifications. Push and nightly runs always provision.
+X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
+the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
+secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
+(`service` policy only), and `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
+key). Devices the runs register stay in the shared hub; they are removed manually. The hub
+needs consumer groups
+`e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
+Pull requests from forks get no secrets and fail.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
@@ -219,7 +232,8 @@ keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management envi
 cannot reuse the one above. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
 CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
-device endpoint.
+device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
+to the same certificate policy.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
