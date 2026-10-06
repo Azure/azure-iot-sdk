@@ -4977,6 +4977,27 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
   }
 }
 
+/** @brief Whether @p scope's request for an attempt is past its deadline. */
+static bool sas_token_request_expired(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope)
+{
+  return c->sas_token_request[scope].request_id != 0 && !c->sas_token_request[scope].for_renewal
+      && c->sas_token_request[scope].deadline_ms != 0
+      && az_iot_time_mono_ms() >= c->sas_token_request[scope].deadline_ms;
+}
+
+/** @brief Fails @p scope's attempt whose token was not there in time. */
+static void fail_expired_sas_token_request(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope)
+{
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "no SAS token delivered in time");
+  clear_sas_token_request(c, scope);
+  stage_local_error(c, scope, AZ_IOT_ERR_TIMEOUT, "no SAS token delivered in time");
+  fail_sas_token_attempt(c, scope, AZ_IOT_ERR_TIMEOUT, 0);
+}
+
 /**
  * @brief Moves @p scope's user-provided token request on: calls the callback
  * for a new one, then applies its outcome. A token resumes the attempt waiting
@@ -5005,6 +5026,13 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
     return;
   }
+  /* Past its connect_timeout_seconds, the attempt fails whatever the
+   * outcome, before the callback and after it. */
+  if (sas_token_request_expired(c, scope))
+  {
+    fail_expired_sas_token_request(c, scope);
+    return;
+  }
   if (!c->sas_token_request[scope].asked)
   {
     az_iot_result error = AZ_IOT_OK;
@@ -5025,18 +5053,15 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
       fail_sas_token_attempt(c, scope, error, 0);
       return;
     }
+    if (sas_token_request_expired(c, scope))
+    {
+      fail_expired_sas_token_request(c, scope);
+      return;
+    }
   }
   switch (c->sas_token_request[scope].status)
   {
     case AZ_IOT_SAS_TOKEN_PENDING:
-      if (c->sas_token_request[scope].deadline_ms != 0
-          && az_iot_time_mono_ms() >= c->sas_token_request[scope].deadline_ms)
-      {
-        AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "no SAS token delivered in time");
-        clear_sas_token_request(c, scope);
-        stage_local_error(c, scope, AZ_IOT_ERR_TIMEOUT, "no SAS token delivered in time");
-        fail_sas_token_attempt(c, scope, AZ_IOT_ERR_TIMEOUT, 0);
-      }
       return;
     case AZ_IOT_SAS_TOKEN_UNAVAILABLE:
     {
@@ -8403,11 +8428,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
       found = i;
     }
   }
-  if (found < 0)
+  az_iot_connection_scope scope = found == 0 ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  /* Timed out: do_work() fails it on its next pass. */
+  if (found < 0 || sas_token_request_expired(client, scope))
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
-  az_iot_connection_scope scope = found == 0 ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
   /* The token area is the asked request's until its callback returns. */
   if (client->sas_token_asking != 0 && client->sas_token_asking != (uint8_t)(scope + 1))
   {

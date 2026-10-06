@@ -2341,6 +2341,37 @@ static void a_token_deadline_caps_the_other_sessions_wait(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* A result for a request past its deadline is not used: the attempt fails
+ * with TIMEOUT, and a late completion is NOT_FOUND. */
+static void a_token_after_the_deadline_is_not_used(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 0);
+  assert_true(no_connect_pending(fx));
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+static void a_completion_after_the_deadline_is_not_found(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_ERR_NOT_FOUND);
+  pump(fx, 1);
+  assert_true(no_connect_pending(fx));
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->reason, AZ_IOT_ERR_TIMEOUT);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2373,6 +2404,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_faulted_hub_drops_its_held_token, setup, teardown),
     cmocka_unit_test_setup_teardown(a_long_retry_after_is_not_cut_short, setup, teardown),
     cmocka_unit_test_setup_teardown(a_token_deadline_caps_the_other_sessions_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_token_after_the_deadline_is_not_used, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_completion_after_the_deadline_is_not_found, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(

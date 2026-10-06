@@ -264,7 +264,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
-  `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
+  `sas_buffer`, which the app provides only when it uses SAS keys or `user_provided_token`. Size it with
   `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
   counts once. The token is wiped once the transport has taken it; the whole buffer at
   `deinit()`.
