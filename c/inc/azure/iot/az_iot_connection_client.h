@@ -392,7 +392,8 @@ extern "C"
        * the renewal starts once it is READY. If it is UNAVAILABLE, it is asked
        * for again after its retry_after_seconds (0: 30 s); if none is there
        * when the current token expires, the session ends and the reconnect
-       * waits for one. valid_seconds counts from when the token is delivered.
+       * waits for one, asking no sooner than that retry_after_seconds. valid_seconds counts from
+       * when the token is delivered.
        */
       uint8_t renewal_percent;
     } sas;
@@ -1790,6 +1791,9 @@ extern "C"
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
     /* When the hub's user-provided token expires (monotonic ms); 0: none. */
     uint64_t sas_token_expiry_ms;
+    /* The hub's next token request is not asked before this (monotonic ms):
+     * an UNAVAILABLE renewal's retry_after_seconds. 0: none. */
+    uint64_t sas_token_ask_after_ms;
     uint32_t sas_token_last_request_id;
     /* Bytes a delivered token may use now, terminator excluded. */
     size_t sas_token_capacity;

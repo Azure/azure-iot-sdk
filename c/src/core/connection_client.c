@@ -2116,7 +2116,11 @@ static void apply_user_token(
   }
   az_iot_mqtt_connect_options timings = { 0 };
   resolve_connect_timings(c, &timings);
-  uint64_t deadline_ms = az_iot_time_mono_ms() + (uint64_t)timings.connect_timeout_seconds * 1000u;
+  /* Counted from when the request may be asked. */
+  uint64_t ask_ms = scope == AZ_IOT_CONN_SCOPE_HUB && c->sas_token_ask_after_ms > now_ms
+      ? c->sas_token_ask_after_ms
+      : now_ms;
+  uint64_t deadline_ms = ask_ms + (uint64_t)timings.connect_timeout_seconds * 1000u;
   if (c->sas_token_request[scope].request_id != 0)
   {
     /* A renewal request becomes this attempt's. */
@@ -4822,6 +4826,8 @@ static void retry_sas_token_renewal_later(az_iot_connection_client* c, uint32_t 
       + (retry_after_seconds != 0 ? (uint64_t)retry_after_seconds * 1000u
                                   : (uint64_t)SAS_TOKEN_RENEWAL_RETRY_MS);
   c->sas_token_renewal_due_unix_seconds = 0;
+  /* Held even if the token expires first and the session reconnects. */
+  c->sas_token_ask_after_ms = retry_after_seconds != 0 ? c->sas_token_renewal_due_ms : 0;
 }
 
 /** @brief Opens a request for the hub's renewal token; do_work() asks for it
@@ -5059,6 +5065,15 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
     fail_expired_sas_token_request(c, scope);
     return;
   }
+  if (!c->sas_token_request[scope].asked && scope == AZ_IOT_CONN_SCOPE_HUB
+      && c->sas_token_ask_after_ms != 0)
+  {
+    if (az_iot_time_mono_ms() < c->sas_token_ask_after_ms)
+    {
+      return;
+    }
+    c->sas_token_ask_after_ms = 0;
+  }
   if (!c->sas_token_request[scope].asked)
   {
     az_iot_result error = AZ_IOT_OK;
@@ -5144,6 +5159,11 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       continue;
     }
     uint64_t due = c->sas_token_request[i].asked ? c->sas_token_request[i].deadline_ms : now;
+    if (!c->sas_token_request[i].asked && i == (int)AZ_IOT_CONN_SCOPE_HUB
+        && c->sas_token_ask_after_ms > now)
+    {
+      due = c->sas_token_ask_after_ms;
+    }
     if (due != 0)
     {
       uint64_t left = due > now ? due - now : 0;
@@ -6360,6 +6380,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   client->close_count++;
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
+  client->sas_token_ask_after_ms = 0;
 
   /* Before the idempotency check below, not after it. close() is the
    * documented exit from a settled refusal, and on a DPS-only device both

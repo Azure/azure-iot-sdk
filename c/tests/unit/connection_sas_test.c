@@ -2442,6 +2442,39 @@ static void a_small_token_area_serves_a_token_callback(void** state)
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
 }
 
+/* An UNAVAILABLE renewal's retry_after_seconds outlasts the token: the
+ * reconnect at expiry waits in SETTING_UP and asks only after it. */
+static void a_renewal_retry_after_holds_across_expiry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  g_fake.mode = FAKE_TOKEN_UNAVAILABLE;
+  g_fake.retry_after_seconds = 600;
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  uint64_t ask_after = fx->client.sas_token_ask_after_ms;
+  assert_true(ask_after >= az_iot_time_mono_ms() + 590000u);
+
+  fx->client.sas_token_expiry_ms = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 3);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_SETTING_UP);
+  assert_int_equal(g_fake.calls, 2);
+  assert_true(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms > ask_after);
+
+  g_fake.mode = FAKE_TOKEN_READY;
+  fx->client.sas_token_ask_after_ms = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 3);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2480,6 +2513,7 @@ int main(void)
         a_pending_renewal_past_expiry_ends_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_from_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(a_small_token_area_serves_a_token_callback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_retry_after_holds_across_expiry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(
