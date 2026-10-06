@@ -27,6 +27,14 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         public bool IsIdentityFault => Exception.Retryability == ErrorRetryability.IdentityTerminal;
 
         /// <summary>
+        /// Whether the connection layer gave up on an otherwise retryable IoT hub because it was unreachable for the
+        /// configured number of consecutive attempts, meaning a DPS-provisioned device should re-provision rather than
+        /// fault outright. Unlike <see cref="IsIdentityFault"/> this is a planned crossover to provisioning, not an
+        /// error: the hub simply stopped answering.
+        /// </summary>
+        public bool ReprovisionRequired { get; init; }
+
+        /// <summary>
         /// The disconnect that preceded the fault, if the fault followed an unexpected disconnect rather than a
         /// rejected connect attempt.
         /// </summary>
