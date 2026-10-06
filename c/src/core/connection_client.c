@@ -7070,8 +7070,10 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  /* Terminal: the operation completes here regardless of outcome. */
+  /* Terminal: the operation completes here regardless of outcome. Its PUBACK may still be due;
+   * free the slot first so a renewal started from the callback is not refused. */
   c->csr_op.in_use = false;
+  puback_abandon(c, &c->csr_op);
 
   if (status == 200)
   {

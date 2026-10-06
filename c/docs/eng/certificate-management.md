@@ -170,8 +170,8 @@ the chain, or `AZ_IOT_CSR_FAILED` with `status`, `service_code` and `retry_after
 renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
 internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
 Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
-broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel and timeout
-free the slot, so the next request is never held by an acknowledgement that does not come.
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout and a
+terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
 
 **The application owns the rest.** The SDK neither stores the renewed chain nor reconnects.
 On `AZ_IOT_CSR_ISSUED` the application copies or persists the chain (the chain is valid only

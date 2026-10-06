@@ -1747,6 +1747,57 @@ static void send_csr_cancel_frees_slot(void** state)
   assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
 }
 
+/* A terminal response can beat the request's PUBACK. It ends the operation and
+ * frees the slot, so a renewal started from the callback goes out at once. */
+typedef struct
+{
+  az_iot_connection_client* client;
+  csr_test_ctx tc;
+  az_iot_result resend;
+} csr_resend_ctx;
+
+static void on_csr_resend(const az_iot_csr_event* evt, void* uc)
+{
+  csr_resend_ctx* r = (csr_resend_ctx*)uc;
+  on_csr_evt(evt, &r->tc);
+  if (evt->kind == AZ_IOT_CSR_FAILED)
+  {
+    static const az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+    r->resend
+        = az_iot_connection_client_send_csr(r->client, &csr, "req-2", NULL, on_csr_evt, &r->tc);
+  }
+}
+
+static void send_csr_response_before_puback_frees_the_slot(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_resend_ctx r = { .client = fx->client, .resend = AZ_IOT_ERR_INTERNAL };
+  az_iot_certificate_signing_request csr = { .csr_base64 = "TESTCSR==" };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, &csr, "req-1", NULL, on_csr_resend, &r),
+      AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+
+  const char* err = "{\"errorCode\":409005}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/409/?$rid=req-1",
+      (const uint8_t*)err,
+      strlen(err),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(r.tc.failed, 1);
+  assert_int_equal(r.resend, AZ_IOT_OK);
+
+  /* The first request's late PUBACK does not touch the second. */
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(r.tc.failed, 1);
+  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+}
+
 /* A renewal that times out before its PUBACK frees its slot, so the next
  * renewal is not blocked waiting for an acknowledgement that may never come. */
 static void send_csr_timeout_before_puback_frees_the_slot(void** state)
@@ -2786,6 +2837,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_error_reports_service_code, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_timeout_before_puback_frees_the_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_response_before_puback_frees_the_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(send_csr_rejected_puback_fails_the_operation, setup, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_accepted_puback_keeps_the_operation_open, setup, teardown),
