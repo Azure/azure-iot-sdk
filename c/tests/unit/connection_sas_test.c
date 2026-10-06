@@ -19,6 +19,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "internal/connection_client_internal.h"
 #include "internal/mono_time.h"
+#include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -719,6 +720,47 @@ static void no_unix_time_fails_the_attempt_with_busy(void** state)
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_BUSY);
 }
 
+static uint64_t switchable_time(void* user_ctx) { return *(const uint64_t*)user_ctx; }
+
+/* Without a Unix time no token can be signed, so every retry fails while
+ * setting up. Each is reported, with the step, under a retry-for-ever policy. */
+static void each_retry_without_unix_time_is_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.reconnection_policy.initial_delay_ms = 20;
+  opts.reconnection_policy.max_delay_ms = 20;
+  opts.reconnection_policy.jitter_pct = 0;
+  init_and_open(fx, &opts);
+  az_iot_test_state_log log = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &log),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  now = 0;
+  for (int attempt = 0; attempt < 2; ++attempt)
+  {
+    log.count = 0;
+    fx->client.reconnect_due_ms = az_iot_time_mono_ms();
+    (void)az_iot_connection_client_do_work(&fx->client, 0);
+    assert_int_equal(log.count, 2);
+    assert_int_equal(log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
+    assert_int_equal(log.states[1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+    assert_int_equal(log.reasons[1], AZ_IOT_ERR_BUSY);
+    assert_true(log.error_present[1]);
+    assert_int_equal(log.error_sources[1], AZ_IOT_CONN_ERR_SRC_LOCAL);
+    assert_string_equal(log.error_message[1], "SAS token signing failed");
+  }
+}
+
 static void dps_connects_with_a_sas_token(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -828,7 +870,7 @@ static void hub_x509_rejected_falls_back_to_the_primary_key(void** state)
   assert_string_equal(last_connect(fx)->password, "");
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
-  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
   assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(e->attempt, 0);
@@ -871,7 +913,7 @@ static void a_kept_secondary_key_wraps_to_the_primary_when_rejected(void** state
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
   assert_true(no_connect_pending(fx));
-  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
   assert_int_equal(e->delay_ms, IDENTITY_MS);
 }
@@ -893,7 +935,7 @@ static void a_fully_rejected_pass_goes_to_identity_recovery_then_restarts(void**
   assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
 
-  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
   assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(e->attempt, 1);
@@ -947,7 +989,7 @@ static void dps_x509_rejected_falls_back_to_the_primary_key(void** state)
   assert_string_equal(last_connect(fx)->password, "");
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
-  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RECONNECTING);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
   assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(e->delay_ms, 0);
@@ -971,14 +1013,14 @@ static void a_provision_only_session_falls_back_to_the_secondary_key(void** stat
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
-  /* No RECONNECTING for a session without a registration: IDLE reports the
+  /* No RETRY_PENDING for a session without a registration: IDLE reports the
    * rejection, CONNECTING the next source. */
   const recorded_event* idle = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE);
   assert_int_equal(idle->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
   assert_int_equal(idle->reason, AZ_IOT_ERR_IDENTITY_REJECTED);
   for (size_t i = 0; i < fx->log_count; ++i)
   {
-    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RECONNECTING);
+    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RETRY_PENDING);
   }
   assert_int_equal(
       last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING)->source,
@@ -1112,7 +1154,7 @@ static void a_close_during_the_dps_rejection_stops_the_fallback(void** state)
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
   for (size_t i = 0; i < fx->log_count; ++i)
   {
-    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RECONNECTING);
+    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RETRY_PENDING);
   }
 }
 
@@ -1287,7 +1329,7 @@ static void dps_registration_error_401000_falls_back_to_the_secondary_key(void**
       AZ_IOT_MQTT_QOS_1));
   pump(fx, 4);
 
-  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RECONNECTING);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
   assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(e->delay_ms, 0);
@@ -1356,6 +1398,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(no_buffer_is_needed_without_sas, setup, teardown),
     cmocka_unit_test_setup_teardown(identical_dps_and_hub_keys_share_one_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(no_unix_time_fails_the_attempt_with_busy, setup, teardown),
+    cmocka_unit_test_setup_teardown(each_retry_without_unix_time_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_time_that_would_overflow_the_expiry_fails_with_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connects_with_a_sas_token, setup, teardown),

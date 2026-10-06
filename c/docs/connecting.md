@@ -52,9 +52,10 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | State | Meaning |
 | --- | --- |
 | `IDLE` | Not connected. `open()` is legal only here. |
-| `CONNECTING` | A connect attempt is in progress, including DPS provisioning. |
+| `SETTING_UP` | A connection or registration attempt's local steps: feature-client binds, adapter creation, credential load or SAS signing, registration body. Entered by every attempt, including each retry. |
+| `CONNECTING` | The network connect is starting: announced just before it is issued, then held while the handshake is in flight. `close()` from this announcement cancels the attempt. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
-| `RECONNECTING` | Waiting out a backoff delay before the next attempt. |
+| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
 | `FAULTED` | Stopped after a failure. The SDK does not retry from here. Call `close()` to return to `IDLE`, then `open()` again. |
 
@@ -64,8 +65,17 @@ State is tracked per scope: `AZ_IOT_CONN_SCOPE_DPS` for the provisioning session
 `az_iot_connection_client_add_state_observer()`.
 
 Each state event carries `scope`, `state`, `reason` (an `az_iot_result`), `is_retriable`, and
-optional `error` detail (source, wire code, service message). The event is valid only during the
-callback.
+optional `error` detail (source, code, message). The event is valid only during the callback.
+
+Every attempt moves its scope: `SETTING_UP`, then `CONNECTING` and `CONNECTED`, or a failure state.
+A DPS registration on a provisioning session that is already up goes `SETTING_UP` → `CONNECTED`,
+with no `CONNECTING`, since nothing new is connected.
+So each failed attempt produces an event, including under a policy that retries forever. A step that
+fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
+as `code`, and the step as `message`, for example `certificate provider load() failed`.
+`open()` first validates the configuration (credential shape, CSR support, registration payload
+and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
+`open()`'s return value.
 
 ## Provisioning and the hub profile
 
@@ -140,7 +150,7 @@ happens next:
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
-`RECONNECTING` and `FAULTED` events carry `recovery`: the classification
+`RETRY_PENDING` and `FAULTED` events carry `recovery`: the classification
 (`AZ_IOT_CONN_FAILURE_TRANSIENT`, `_IDENTITY`, `_TERMINAL`), the endpoint, the attempt count, the
 delay to the next attempt and whether it goes to DPS. `error` carries the raw reason code.
 
@@ -243,13 +253,13 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 
 - **Fallback.** When the service rejects a credential -- a CONNACK refusal, or for DPS
   registration error `401000` -- the next source is tried at once, without a
-  `reconnection_policy` delay, even with the policy disabled. The `RECONNECTING` event carries the
+  `reconnection_policy` delay, even with the policy disabled. The `RETRY_PENDING` event carries the
   rejected credential in `auth_source`, classification `AZ_IOT_CONN_FAILURE_IDENTITY`, attempt 0
   and no delay. Other failures retry the same source under the policy. A pass tries each source
   once, from the one it began with, wrapping; it counts as one policy attempt. The source a
   fallback selected is kept until rejected; otherwise each attempt starts at the first available
   source, so a certificate that becomes available (such as one DPS issued) is used next. `open()`
-  starts again at the first. `identity_recovery` applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way, but report no `RECONNECTING`: `DISCONNECTING` and `IDLE` carry the rejected `auth_source` and reason, then `CONNECTING` the next source. A fully rejected pass is paced by the policy.
+  starts again at the first. `identity_recovery` applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way, but report no `RETRY_PENDING`: `DISCONNECTING` and `IDLE` carry the rejected `auth_source` and reason, then `CONNECTING` the next source. A fully rejected pass is paced by the policy.
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
