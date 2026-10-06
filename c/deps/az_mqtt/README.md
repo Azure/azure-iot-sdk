@@ -19,7 +19,7 @@ the [Azure SDK for C](https://github.com/Azure/azure-sdk-for-c) span and platfor
 - Connect is blocking (`az_mqttN_client_connect`) or not (`az_mqttN_client_connect_start`, then
   `az_mqttN_client_process_loop` until CONNECTED; only name resolution may block).
 - Requests awaiting acknowledgement are tracked in caller storage
-  (`options.inflight_control_buffer`, 4 B per `az_mqtt_inflight_entry`): unique packet identifiers,
+  (`options.inflight_control_buffer`, 6 B per `az_mqtt_inflight_entry`): unique packet identifiers,
   QoS 2 duplicate detection, acknowledgements for unknown identifiers ignored. With no free entry a
   request fails with `AZ_MQTT_ERROR_FLOW_CONTROL`.
 - Session resumption: with a session that outlives the connection (mqttv3 Clean Session 0;
@@ -116,6 +116,9 @@ it instead of `deps/azure-sdk-for-c`.
   - `az_mqtt3_client_disconnect(client)` takes no reason code;
   - removed: `buffers`, `on_disconnect`, properties, AUTH.
 - mqttv3: `az_mqtt3_codec_decode_ack` rejects bytes after the packet identifier. An AUTH packet (reserved in 3.1.1) is a protocol error.
+- mqttv5: a received AUTH packet is a protocol error (enhanced authentication is not implemented).
+- `az_mqtt_inflight_entry` is 6 B (was 4 B): it keeps the filter count of a SUBSCRIBE or
+  UNSUBSCRIBE. A SUBACK (MQTT 5: or UNSUBACK) with a different number of codes is a protocol error.
 - Transport failures that were `AZ_MQTT_ERROR_TRANSPORT` may now be one of the specific results
   above.
 - `options.inflight_control_buffer` is required for QoS 1/2 publish, subscribe and unsubscribe;

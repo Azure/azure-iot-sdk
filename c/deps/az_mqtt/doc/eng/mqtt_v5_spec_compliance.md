@@ -72,14 +72,14 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 58 | If CONNACK reason code ≥ 0x80 the server closes the Network Connection | [§3.2.2.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `_handle_connack` leaves state DISCONNECTED; `az_mqtt5_client_connect` closes transport | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | **PUBLISH ([§3.3](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 59 | PUBLISH encoded with DUP, QoS, RETAIN in first byte flags | [§3.3.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_encode_publish` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 60 | DUP flag must be 0 for QoS 0 | [[MQTT-3.3.1-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No validation; caller may set DUP via raw flags | |
+| 60 | DUP flag must be 0 for QoS 0 | [[MQTT-3.3.1-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Received QoS 0 PUBLISH with DUP: AZ_MQTT_ERROR_MALFORMED_PACKET. Sent: DUP is set only on QoS 1/2 resends | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 61 | Packet Identifier present when QoS > 0 | [[MQTT-3.3.2-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Encoder writes `packet_id` when QoS>0 | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 62 | Packet Identifier must not be 0 for QoS > 0 | [[MQTT-3.3.4-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | The next identifier skips 0 | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 63 | Packet Identifier must be unique across all in-flight packets | [[MQTT-2.2.1-3]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | An identifier is skipped while an outgoing request holds it in the caller's `inflight_control_buffer` entries; with no free entry, QoS > 0 PUBLISH, SUBSCRIBE and UNSUBSCRIBE fail with `AZ_MQTT_ERROR_FLOW_CONTROL` | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 64 | DUP flag on received PUBLISH decoded | [§3.3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `publish_data.dup` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 65 | Retain flag encoded/decoded | [§3.3.1.3](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `publish_options.retain` / `publish_data.retain` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 66 | Retain flag must be 0 when forwarding (server responsibility; client receives them correctly) | [[MQTT-3.3.1-9]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Client only receives; retain bit from server in received PUBLISH | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 67 | Topic Name: must not contain wildcard characters in send | [[MQTT-3.3.2-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No topic validation on outgoing PUBLISH | |
+| 67 | Topic Name: must not contain wildcard characters in send | [[MQTT-3.3.2-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_encode_publish` and `az_mqtt5_client_publish`: a wildcard, or empty without a Topic Alias, is AZ_ERROR_ARG | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 68 | Payload Format Indicator property | [§3.3.2.3.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `publish_options.payload_format_indicator` / `publish_data.payload_format_indicator` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 69 | Message Expiry Interval property | [§3.3.2.3.3](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `publish_options.message_expiry_interval` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 70 | Topic Alias property (send) | [§3.3.2.3.4](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Partial | Encoded when `publish_options.topic_alias != 0`, but no alias↔topic mapping table managed by the library | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
@@ -108,7 +108,7 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 91 | PUBREC / PUBREL / PUBCOMP decoded | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html)–3.7 | Yes | `az_mqtt5_codec_decode_ack` handles all three | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | **SUBSCRIBE ([§3.8](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 92 | SUBSCRIBE encoded with fixed flags = 0x02 | [[MQTT-3.8.1-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `0x02` hard-coded in `az_mqtt5_codec_encode_subscribe` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 93 | SUBSCRIBE contains at least one Topic Filter | [[MQTT-3.8.3-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No validation that `sub_count > 0` | |
+| 93 | SUBSCRIBE contains at least one Topic Filter | [[MQTT-3.8.3-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_client_subscribe`: a count of 0 or less is AZ_ERROR_ARG (the codec requires it as a precondition) | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 94 | Subscription Options: QoS | [§3.8.3.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `subscription.qos` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 95 | Subscription Options: No Local | [§3.8.3.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `subscription.no_local` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 96 | Subscription Options: Retain As Published | [§3.8.3.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `subscription.retain_as_published` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
@@ -117,14 +117,14 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 99 | User Property (SUBSCRIBE) | [§3.8.2.1.3](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | Not supported in `az_mqtt5_codec_encode_subscribe` | |
 | 100 | Bits 2 and 3 of Subscription Options reserved, must be 0 | [[MQTT-3.8.3-5]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Options byte built only from known bits | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | **SUBACK ([§3.9](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
-| 101 | SUBACK decoded — packet identifier, reason codes, user properties | [§3.9](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_decode_suback` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
+| 101 | SUBACK decoded — packet identifier, reason codes, user properties | [§3.9](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_decode_suback`; a code count other than the SUBSCRIBE's filters is AZ_MQTT_ERROR_PROTOCOL | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c), [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 102 | SUBACK reason string decoded | [§3.9.2.1.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `suback_data.reason_string` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | **UNSUBSCRIBE ([§3.10](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 103 | UNSUBSCRIBE encoded with fixed flags = 0x02 | [[MQTT-3.10.1-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `0x02` hard-coded | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 104 | UNSUBSCRIBE must contain at least one Topic Filter | [[MQTT-3.10.3-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No validation that `filter_count > 0` | |
+| 104 | UNSUBSCRIBE must contain at least one Topic Filter | [[MQTT-3.10.3-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_client_unsubscribe`: a count of 0 or less is AZ_ERROR_ARG (the codec requires it as a precondition) | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 105 | User Property (UNSUBSCRIBE) | [§3.10.2.1.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | Not supported in `az_mqtt5_codec_encode_unsubscribe` | |
 | **UNSUBACK ([§3.11](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
-| 106 | UNSUBACK decoded — packet identifier, reason codes, user properties | [§3.11](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_decode_unsuback` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
+| 106 | UNSUBACK decoded — packet identifier, reason codes, user properties | [§3.11](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_decode_unsuback`; a code count other than the UNSUBSCRIBE's filters is AZ_MQTT_ERROR_PROTOCOL | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c), [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | **PINGREQ / PINGRESP ([§3.12](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html)–3.13)** |||||
 | 107 | PINGREQ encoded (2-byte packet, no payload) | [[MQTT-3.12.1-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `_az_mqtt_encode_pingreq` | [src/core/az_mqtt_codec_common.c](../../src/core/az_mqtt_codec_common.c) |
 | 108 | PINGREQ sent when no packet sent within Keep Alive interval | [§3.1.2.10](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_client_process_loop` checks `last_send_time_ms` vs `keep_alive_seconds` | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
@@ -140,7 +140,7 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | **AUTH ([§3.15](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 117 | AUTH encoded — reason code, Authentication Method, Authentication Data | [§3.15](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_encode_auth` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 118 | AUTH decoded — all properties | [§3.15](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `az_mqtt5_codec_decode_auth` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 119 | Enhanced authentication flow: exchange AUTH packets during CONNECT | [[MQTT-4.12.0-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | AUTH received in `_dispatch_packet` but dispatcher returns AZ_OK without calling a callback or continuing the exchange | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
+| 119 | Enhanced authentication flow: exchange AUTH packets during CONNECT | [[MQTT-4.12.0-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | AUTH received during CONNECT or while connected ends the session with AZ_MQTT_ERROR_PROTOCOL | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 120 | Re-authentication: client sends AUTH(Re-authenticate) while connected | [§4.12.1](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | No API or flow supported for re-authentication after connection | |
 | **Operational Behavior ([§4](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 121 | A client must not send any packet other than CONNECT before CONNACK is received | [[MQTT-3.1.4-5]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | State machine: `AZ_MQTT_CLIENT_STATE_CONNECTING` prevents publish/subscribe | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
@@ -165,9 +165,9 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 115 |
+| Yes | 119 |
 | Partial | 2 |
-| No | 18 |
+| No | 14 |
 
 ### Key gaps (client-facing impact)
 
