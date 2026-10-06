@@ -91,6 +91,10 @@ Service configuration (set by the provisioning config script):
 | `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
+| `IOTHUB_EVENTHUB_CONSUMER_GROUP` | consumer group to read (optional; default `$Default`) |
+
+The telemetry watcher only receives messages enqueued from 5 minutes before it
+starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
@@ -200,9 +204,25 @@ The two `test` legs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a leg fails — or if the run is cancelled — so resources
 are never leaked.
 
+**Shared environment (temporary, opt-in).** When repository variable
+`E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
+long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
+X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1)),
+so there is nothing to clean up. Inputs are repository secrets
+`E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
+(`service` policy only). The hub needs consumer groups `e2e-0`..`e2e-9` and file
+upload with notifications. Push and nightly runs always provision.
+
+[`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
+keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
+(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
+cannot reuse the one above. Each run issues a bootstrap device with
+`e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
+CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+device endpoint.
+
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch
-> until its environment exists). See [Software updates e2e](#software-updates-e2e).
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -248,17 +268,8 @@ Every variable is required; a missing one fails the suite or the scenario that n
 
 `https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
 
-Measured against the service:
-
-- A workflow is offered again after its terminal report.
-- Re-sending the identical terminal report is accepted.
-- A different terminal outcome for the same workflow is rejected with 409000 `REPORT_CONFLICT`.
-  A SKIPPED report after SUCCEEDED was accepted, and a later SUCCEEDED was still accepted.
-
-Placeholders (`E2E-PLACEHOLDER`) mark what is not done: the workflow's environment and
-triggers, test root keys pinned in `e2e_su_test_roots.c` instead of fetched at run time, the job
-status expected for a SKIPPED report, the run lookup for a continuous onboarding job, and
-scenarios for the operational route, multi-step updates and reboot/resume.
+Test root keys are pinned in `e2e_su_test_roots.c`. Not yet covered: the operational route,
+multi-step updates, and reboot/resume.
 
 ---
 

@@ -43,7 +43,7 @@ extern "C"
   AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT
 #define AZ_IOT_SU_CLIENT_AGENT_VERSION AZ_IOT_ADU_CLIENT_AGENT_VERSION
 
-  /* --- Result codes (returned by platform/crypto hooks) -------------------- */
+  /* --- Result codes (returned by platform hooks) --------------------------- */
 
 #define AZ_IOT_SU_RESULT_SUCCESS 0
 #define AZ_IOT_SU_RESULT_IN_PROGRESS 1
@@ -66,6 +66,7 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_INSTALL 0x5u /* install_fn failure */
 #define AZ_IOT_SU_FACILITY_APPLY 0x6u /* apply_fn failure */
 #define AZ_IOT_SU_FACILITY_RESTORE 0x7u /* restore_fn failure (rollback failed) */
+#define AZ_IOT_SU_FACILITY_PERSIST 0x8u /* persist_state_fn kept failing at a reboot boundary */
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -91,35 +92,69 @@ extern "C"
 #define AZ_IOT_SU_REQUEST_BUFFER_SIZE 4096
 #endif
 
+/** @brief Capacity of the packed applied update id (provider, name, version). */
+#define AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE 192
+
+/** @brief Largest opaque channel state (e.g. ETags) carried in the persisted blob. */
+#define AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE 256
+
 /* In-struct scratch used to (de)serialize the persisted workflow state passed to
  * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
- * (40 bytes) and v3 trailer (24 fixed, 16 per step, 4 + 16 per file URL, 4 CRC).
+ * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then
+ * length-prefixed workflow id, applied update id and channel state, 4 CRC).
  * Derived from the upstream step/file limits, so raising them grows it; a
  * compile-time assertion in su_client.c checks the exact serialized size fits.
  * Lives in the caller-allocated client struct, so no static or heap buffer. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                    \
-  (72u                                                \
-   + 16u                                              \
-       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
+  (76u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                    \
+   + 16u                                                                   \
+       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)                      \
           + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
 #endif
 #define AZ_IOT_SU_PERSIST_BLOB_SIZE (AZ_IOT_SU_REQUEST_BUFFER_SIZE + AZ_IOT_SU_PERSIST_OVERHEAD)
 
-/* Capacities for the copied-out workflow `id` (duplicate detection) and
- * `retryTimestamp` (persisted snapshot only). Deployment ids are GUID-shaped (~36 chars) and retry
- * timestamps are ISO-8601 (~28 chars); these include generous headroom. An identity that does not
- * fit simply disables de-duplication for that deployment (it is then reprocessed on redelivery), so
- * correctness never depends on the size. */
+/**
+ * @brief Largest decoded workflow `id` the client accepts, in bytes. It is kept for reporting,
+ * duplicate detection and persistence. A deployment with a longer id is refused: nothing is
+ * processed or reported, and AZ_IOT_SU_EVENT_UPDATE_REFUSED is raised with
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE. Deployment ids are GUID-shaped (~36 chars).
+ */
 #ifndef AZ_IOT_SU_WORKFLOW_ID_SIZE
 #define AZ_IOT_SU_WORKFLOW_ID_SIZE 64
 #endif
+/* Capacity for the copied-out `retryTimestamp` (ISO-8601, ~28 chars; not persisted). */
 #ifndef AZ_IOT_SU_RETRY_TIMESTAMP_SIZE
 #define AZ_IOT_SU_RETRY_TIMESTAMP_SIZE 64
 #endif
 
 #ifndef AZ_IOT_SU_MAX_WORKFLOW_ID_LEN
 #define AZ_IOT_SU_MAX_WORKFLOW_ID_LEN 73 /* software updates service id: GUID-style, plus NUL */
+#endif
+
+/**
+ * @brief Consecutive failed persist_state_fn writes after which the client stops retrying.
+ *
+ * Retries are spaced 1 s, 2 s, 4 s, ... (at most 60 s). On reaching the limit
+ * AZ_IOT_SU_EVENT_PERSIST_FAILED is raised with `persist_retrying` false and:
+ * - a pending reboot checkpoint fails the workflow: restore_fn rolls it back
+ *   and it is reported FAILED with facility AZ_IOT_SU_FACILITY_PERSIST on the
+ *   step. If there is no restore_fn or a restore fails, the overall extended
+ *   result carries AZ_IOT_SU_FACILITY_RESTORE (sub-code 0: no restore_fn);
+ * - an unsent terminal report is no longer stored (it is still sent);
+ * - a new workflow waiting on the previous record's retirement proceeds.
+ * A later write is still attempted once when needed; a tracked success resets
+ * the count (the best-effort erase of a stale record does not).
+ * While a workflow is held at a reboot boundary, a new workflow is ignored (the
+ * service offers it again) and a cancel waits; a cancel of an installed step
+ * not yet applied rolls it back.
+ */
+#ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
+#define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
+#endif
+#if AZ_IOT_SU_PERSIST_MAX_ATTEMPTS < 1 || AZ_IOT_SU_PERSIST_MAX_ATTEMPTS > 0xFFFFFFFF
+#error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
 /** @brief Largest blob passed to persist_state_fn; size storage for this. The format
@@ -161,7 +196,8 @@ extern "C"
      * Download one file (called once per file, once per do_work iteration).
      * Return IN_PROGRESS to continue on the next do_work, SUCCESS when complete.
      * The hook SHOULD check az_iot_su_is_cancelled() periodically.
-     * Hash verification is performed by core via the crypto hooks.
+     * Hash verification is performed by core with the connection client's
+     * crypto backend.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -228,12 +264,16 @@ extern "C"
     /**
      * Persist workflow state for reboot survival. OPTIONAL — REQUIRED only if a
      * reboot is possible mid-update (i.e. install/apply may return
-     * REBOOT_REQUIRED). Consumed by Phase 5 resume logic.
+     * REBOOT_REQUIRED), or for the terminal report to survive a reboot.
+     *
+     * Written at a reboot requested by install/apply, and when a workflow ends
+     * (carrying its unsent terminal report until the service accepts it).
      *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
      * so a later boot does not resume a workflow that has already ended. Return
-     * non-zero to keep it; the client retries from do_work() while Idle, at most
-     * once a second, and at the next terminal transition.
+     * non-zero on failure; the client raises AZ_IOT_SU_EVENT_PERSIST_FAILED and
+     * retries from do_work() with back-off, holding the workflow at a reboot
+     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS.
      */
     int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
 
@@ -250,49 +290,6 @@ extern "C"
 
     void* user_ctx;
   } az_iot_su_platform_hooks;
-
-  /* --- Crypto hooks (REQUIRED, pure primitives) ---------------------------- */
-
-  /**
-   * Pure cryptographic primitives. These hooks MUST NOT parse JWS, decode
-   * base64url, resolve keys, or enforce revocation — all of that orchestration
-   * lives in software updates core. An adapter therefore only wires "RSA verify + SHA-256".
-   * Pre-built implementations are available under adapters/su/.
-   */
-  typedef struct az_iot_su_crypto_hooks
-  {
-    /**
-     * Verify an RSASSA-PKCS1-v1_5 signature over SHA-256 (JWS "alg":"RS256").
-     * The public key is passed as raw big-endian modulus/exponent (already
-     * base64url-decoded by core). MUST return AZ_IOT_SU_RESULT_SUCCESS iff the
-     * signature is valid, AZ_IOT_SU_RESULT_FAILURE otherwise.
-     */
-    int32_t (*verify_rs256_fn)(
-        const uint8_t* modulus,
-        size_t modulus_len,
-        const uint8_t* exponent,
-        size_t exponent_len,
-        const uint8_t* signed_data,
-        size_t signed_data_len,
-        const uint8_t* signature,
-        size_t signature_len,
-        void* user_ctx);
-
-    /** Compute SHA-256 of a buffer. */
-    int32_t (
-        *sha256_fn)(const uint8_t* data, size_t data_len, uint8_t hash_out[32], void* user_ctx);
-
-    /** Initialize an incremental SHA-256 context (opaque, impl-managed). */
-    int32_t (*sha256_init_fn)(void** ctx_out, void* user_ctx);
-
-    /** Feed data into an incremental SHA-256. */
-    int32_t (*sha256_update_fn)(void* ctx, const uint8_t* data, size_t len, void* user_ctx);
-
-    /** Finalize an incremental SHA-256, write 32-byte hash, free ctx. */
-    int32_t (*sha256_final_fn)(void* ctx, uint8_t hash_out[32], void* user_ctx);
-
-    void* user_ctx;
-  } az_iot_su_crypto_hooks;
 
   /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
@@ -428,9 +425,8 @@ extern "C"
    * @brief Terminal and non-terminal outcomes a device reports for a workflow.
    *
    * These are the values the service accepts on the status-report operation.
-   * `SKIPPED` replaces the Device Update for IoT Hub accept/reject acknowledgement: an engine that
-   * declines a deployment reports it rather than answering a protocol-level
-   * "reject".
+   * An engine that declines a deployment reports `SKIPPED`; there is no
+   * protocol-level accept/reject acknowledgement.
    */
   typedef enum az_iot_su_outcome
   {
@@ -484,9 +480,7 @@ extern "C"
   /**
    * @brief The structured result the engine hands a channel.
    *
-   * `workflow_id` alone is the correlation key: reporting is idempotent on it,
-   * and the Device Update for IoT Hub `retryTimestamp` half of the old composite key does not exist
-   * here.
+   * `workflow_id` alone is the correlation key: reporting is idempotent on it.
    *
    * `installed_update_id` means "what is installed on the device *now*", not
    * "what this workflow is about". It is therefore the previously installed
@@ -588,7 +582,31 @@ extern "C"
      * while. That is the intended behaviour, not a gap to work around: do not
      * drive a workflow from the reported state, and treat this event as
      * something to log rather than something to act on. */
-    AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+    AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
+
+    /* persist_state_fn failed. Raised on the first failure of an episode
+     * (`persist_retrying` true) and when AZ_IOT_SU_PERSIST_MAX_ATTEMPTS is
+     * reached (`persist_retrying` false); with a limit of 1, once, with
+     * `persist_retrying` false. See that macro for what giving up does.
+     * Carries `state`, `reason` (AZ_IOT_ERR_INTERNAL) and `persist_attempts`.
+     * Any write may fail: a reboot checkpoint, the terminal record, or the
+     * clear of a superseded record. Until PERSIST_RECOVERED, stored state may
+     * be missing or stale; a workflow at a reboot boundary is held there, so
+     * do not reboot the device. */
+    AZ_IOT_SU_EVENT_PERSIST_FAILED,
+
+    /* A tracked persist_state_fn write succeeded after
+     * AZ_IOT_SU_EVENT_PERSIST_FAILED. Carries `state` and `persist_attempts`
+     * (the failures that preceded it). The best-effort erase of a stale record
+     * after a failed terminal-record write is not tracked and never raises it. */
+    AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
+
+    /* A delivered update was refused before processing, so nothing was
+     * installed or reported for it. Carries `state` (unchanged) and `reason`:
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
+     * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
+     * AZ_IOT_SU_REQUEST_BUFFER_SIZE. Raised again on each redelivery. */
+    AZ_IOT_SU_EVENT_UPDATE_REFUSED
   } az_iot_su_event_kind;
 
   /**
@@ -638,23 +656,21 @@ extern "C"
    * returns; copy anything that must outlive it. */
   typedef struct az_iot_su_event
   {
-    /* Stamped by the SDK with sizeof(az_iot_su_event); callers never set it.
-     * Future SDKs may APPEND fields, so a callback compiled against a newer
-     * header but invoked by an older library must check this before reading
-     * any field added after the version that library was built from --
-     * otherwise it reads past the end of the event the older library put on
-     * the stack. */
-    uint32_t _internal_size;
     az_iot_su_event_kind kind;
 
     /* WORKFLOW_STATE_CHANGED only. */
     az_iot_su_state state;
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. */
+    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED and
+     * UPDATE_REFUSED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
+
+    /* PERSIST_FAILED / PERSIST_RECOVERED only. */
+    uint32_t persist_attempts; /**< Consecutive failed writes. */
+    bool persist_retrying; /**< PERSIST_FAILED: whether the client retries. */
   } az_iot_su_event;
 
   /**
@@ -687,7 +703,7 @@ extern "C"
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;
-      az_iot_su_crypto_hooks crypto;
+      const az_iot_crypto* crypto;
 
       /* Upstream parser/formatter handle. */
       az_iot_adu_client az;
@@ -710,12 +726,27 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Earliest az_iot_time_mono_ms() for retrying a failed clear while Idle. */
-      uint64_t checkpoint_clear_retry_ms;
+      /** Failed persist_state_fn writes since the last success, and when to retry. */
+      az_iot_retry_state persist_retry;
+      /** AZ_IOT_SU_PERSIST_MAX_ATTEMPTS, copied at initialization. */
+      uint32_t persist_max_attempts;
+      /** Return value of the last failed persist_state_fn write. */
+      int32_t persist_last_error;
+      /** The terminal record's write failed; further attempts wait for persist_retry. */
+      bool terminal_write_failed;
+      /** The stored checkpoint is the terminal-report record, not a workflow position. */
+      bool checkpoint_terminal;
+      /** The active workflow's terminal report is not yet accepted; kept durable until it is. */
+      bool report_owed;
+      /** The report last handed to the channel carries a terminal outcome. */
+      bool terminal_report_in_flight;
+      /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
+       */
+      bool checkpoint_superseded;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are
-       * kept only for the persisted snapshot. */
+       * not persisted and are otherwise unused. */
       bool active_workflow_valid;
       uint8_t active_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE];
       size_t active_workflow_id_len;
@@ -733,7 +764,7 @@ extern "C"
        * never run concurrently, so one buffer serves both directions. */
       uint8_t persist_scratch[AZ_IOT_SU_PERSIST_BLOB_SIZE];
 
-      /* The unescaped manifest text within request_buffer (parse_manifest
+      /* The unescaped manifest text within request_buffer (decode_manifest
        * sets this; persistence/resume re-parses it). */
       az_span manifest_text;
 
@@ -798,7 +829,7 @@ extern "C"
        * Idle clears the manifest. A successful report carries this, because
        * installedUpdateId means "what is installed now" — not "what this
        * workflow was about". Strings are packed into applied_update_id_buf. */
-      char applied_update_id_buf[192];
+      char applied_update_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       az_iot_su_report_update_id applied_update_id;
       bool applied_update_id_valid;
 
@@ -813,6 +844,16 @@ extern "C"
         void* user_ctx;
       } observers[AZ_IOT_MAX_SU_OBSERVERS];
       bool dispatching;
+
+      /** Backoff after retryable verdicts with no service delay; reset by any accepted operation.
+       */
+      az_iot_retry_state retry;
+      /** Jitter PRNG state for retry and persist_retry. */
+      uint64_t retry_rng;
+      /** pending_fetch was re-armed by a verdict that armed retry. */
+      bool pending_fetch_paced;
+      /** The pending report was re-armed by a verdict that armed retry. */
+      bool report_paced;
     } _internal;
   } az_iot_su_client;
 
@@ -827,8 +868,6 @@ extern "C"
   {
     /** Required. Platform operations (download, install, apply, ...). */
     const az_iot_su_platform_hooks* hooks;
-    /** Required. Crypto primitives (RSA verify, SHA-256). */
-    const az_iot_su_crypto_hooks* crypto;
     /** RSA root keys that anchor manifest trust. The descriptors are copied; the
      * key bytes are referenced and must outlive the client. For Microsoft-signed
      * updates pass az_iot_su_microsoft_root_keys(). */
@@ -845,7 +884,7 @@ extern "C"
   /**
    * @brief Returns zero-initialized options.
    *
-   * Set hooks, crypto, root_keys, root_key_count, device_properties,
+   * Set hooks, root_keys, root_key_count, device_properties,
    * device_properties_buffer and device_properties_buffer_size before
    * az_iot_su_client_init().
    *
@@ -860,11 +899,14 @@ extern "C"
    * @param[in] connection Connection client the device-update channel is built
    *   on. Need not be connected, but its DPS ID scope, registration ID and
    *   credential must be set: an application-requested onboarding check can
-   *   run before registration. Initialization sends nothing.
-   * @param[in] options Hooks, crypto, trust store, device properties and cache.
+   *   run before registration. Initialization sends nothing. Its crypto
+   *   backend (az_iot_connection_client_options::crypto) verifies updates.
+   * @param[in] options Hooks, trust store, device properties and cache.
    * @return AZ_IOT_OK on success.
-   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, or the device
-   *   properties are malformed (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
+   *   client has no crypto backend, or the device properties are malformed
+   *   (including zero compatibility properties).
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
@@ -885,12 +927,14 @@ extern "C"
 
   /**
    * Resume a workflow after device reboot. The application SHOULD call this during
-   * startup. If no persisted state exists, this is a no-op. (Phase 5.)
+   * startup, before requesting an update check. If no persisted state exists,
+   * this is a no-op. A record holding an unsent terminal report restores it
+   * (the client stays Idle) and re-sends it from do_work().
    *
-   * @return AZ_IOT_OK if resumed or nothing usable was persisted;
-   *   AZ_IOT_ERR_NOT_SUPPORTED for a record left by an older version that lacks
-   *   download URLs still needed, or any record when persist_state_fn is NULL
-   *   (it could never be cleared); AZ_IOT_ERR_INVALID_ARG for a NULL client or
+   * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
+   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for a valid
+   *   record of this format when persist_state_fn is NULL (it could never be cleared);
+   *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
    *   AZ_IOT_ERR_DETACHED if the client is detached.
    */
@@ -1005,6 +1049,11 @@ extern "C"
    * abandoned AT ONCE rather than at the deadline, and the event carries
    * `service_error.retry_after_ms` so the caller can decide when to ask again.
    *
+   * A retryable failure that names no delay is retried by the client after a
+   * jittered exponential backoff (1 s doubling to 60 s, +/-20%), reset by any
+   * accepted operation; status reports are paced the same way. The backoff
+   * counts against @p timeout_ms. A new request is not held by it.
+   *
    * Pass AZ_IOT_SU_REQUEST_NO_TIMEOUT for no bound: the request is then
    * retried indefinitely and the only abandonment is a channel verdict.
    * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no
@@ -1070,7 +1119,7 @@ extern "C"
    * hidden allocation, and (where they verify) are fail-closed. The managed
    * az_iot_su_client is implemented in terms of the same internal cores, so both
    * modes share one copy of the security-critical path. See
-   * docs/eng/su-client-design.md §5.3.
+   * docs/eng/software-updates.md §5.3.
    */
 
   /**
@@ -1092,7 +1141,7 @@ extern "C"
    *
    * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
    * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * outputs stay zeroed on any error.
+   * non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The
@@ -1101,18 +1150,19 @@ extern "C"
    *                       values (also on failure), so the buffer must be
    *                       writable and outlive both outputs, whose spans point
    *                       into it.
-   * @param crypto         RSA-verify and SHA-256 hooks.
+   * @param crypto         Backend; needs verify_rs256.
    * @param root_keys      Trusted root keys, e.g. az_iot_su_microsoft_root_keys().
    * @param root_key_count Entries in @p root_keys.
    * @param out_request    Workflow id and file URLs.
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
    * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
    * AZ_IOT_ERR_AUTH when verification fails.
    */
   AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
       az_span request_json,
-      const az_iot_su_crypto_hooks* crypto,
+      const az_iot_crypto* crypto,
       const az_iot_su_root_key* root_keys,
       size_t root_key_count,
       az_iot_su_client_update_request* out_request,
@@ -1122,16 +1172,16 @@ extern "C"
    * Verify one downloaded file's SHA-256 against the signed manifest, streaming
    * the file back through @p read_chunk. Standalone (no client/state machine) so a
    * bring-your-own-state-machine agent performs the same integrity check the
-   * managed client does after each download. Requires the incremental SHA-256
-   * crypto hooks (sha256_init/update/final).
+   * managed client does after each download. Needs only the SHA-256 functions
+   * of @p crypto, not verify_rs256.
    *
    * Returns AZ_IOT_OK when the hash matches, AZ_IOT_ERR_INVALID_ARG on bad
-   * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a hook/read error,
-   * or a hash mismatch.
+   * arguments, or AZ_IOT_ERR_AUTH on a missing sha256 entry, a backend or read
+   * error, or a hash mismatch.
    */
   AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
       const az_iot_su_client_update_manifest_file* file,
-      const az_iot_su_crypto_hooks* crypto,
+      const az_iot_crypto* crypto,
       az_iot_su_read_chunk_callback read_chunk,
       void* read_ctx);
 

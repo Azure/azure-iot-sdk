@@ -39,10 +39,6 @@
 /** @brief Duration of one do_work() tick. */
 #define SAMPLE_TICK_MS 50u
 
-/** @brief True when the SDK-stamped @p ev is long enough to carry @p field. */
-#define SAMPLE_EVENT_HAS(ev, field) \
-  ((ev)->_internal_size >= offsetof(az_iot_connection_state_event, field) + sizeof((ev)->field))
-
 /** @brief State shared with the client callbacks. */
 typedef struct
 {
@@ -71,8 +67,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       az_iot_result_to_string(event->reason));
 
   /* Service verdicts only; transport codes are adapter-defined. */
-  const az_iot_connection_error_detail* error
-      = SAMPLE_EVENT_HAS(event, error) ? event->error : NULL;
+  const az_iot_connection_error_detail* error = event->error;
   if (error != NULL
       && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT))
   {
@@ -104,7 +99,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   /* The default policy retries forever, including failures that retrying
    * cannot fix (e.g. no issued certificate, a rejected bootstrap identity);
    * those end the wait instead of running into the timeout. */
-  bool permanent = SAMPLE_EVENT_HAS(event, is_retriable) && !event->is_retriable;
+  bool permanent = !event->is_retriable;
   if (!ctx->failed && (event->state == AZ_IOT_CONN_STATE_FAULTED || permanent))
   {
     ctx->failed = true;
@@ -165,7 +160,7 @@ static void pump(az_iot_connection_client* client)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };

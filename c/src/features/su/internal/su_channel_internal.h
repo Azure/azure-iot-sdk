@@ -182,6 +182,23 @@ extern "C"
      */
     void (*cancel_update)(void* ctx, az_iot_su_operation operation);
 
+    /**
+     * @brief OPTIONAL. Serialize channel state that should survive a reboot
+     *        (e.g. ETags) into the engine's persisted blob. May be NULL.
+     *
+     * @param buf      Destination; opaque to the engine.
+     * @param cap      Capacity of @p buf; at most AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE.
+     * @param out_len  Bytes written; 0 when there is nothing to keep.
+     * @return AZ_IOT_OK, or an error to persist no channel state.
+     */
+    az_iot_result (*save_state)(void* ctx, uint8_t* buf, size_t cap, size_t* out_len);
+
+    /**
+     * @brief OPTIONAL. Restore what save_state() wrote, from az_iot_su_client_resume().
+     *        May be NULL. Invalid input MUST leave the channel state unchanged.
+     */
+    az_iot_result (*restore_state)(void* ctx, const uint8_t* buf, size_t len);
+
   } az_iot_su_channel_vtable;
 
   /** @brief A channel instance: its vtable plus its own context. */

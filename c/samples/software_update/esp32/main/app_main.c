@@ -43,7 +43,7 @@
 #include "wifi_connect.h"
 #include "az_iot_mqtt_esp.h"
 #include "az_iot_cert_embedded.h"
-#include "az_iot_su_crypto_mbedtls.h"
+#include "az_iot_crypto_mbedtls.h"
 #include "su_esp32_ota.h"
 
 static const char* TAG = "su_esp32";
@@ -187,18 +187,14 @@ static az_iot_result app_request_check(az_iot_su_client* su, bool registered, ui
 
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
+/* persist_state_fn is failing: the checkpoint a reboot needs is not stored. */
+static bool g_persist_failing;
 
-/** @brief Logs an abandoned operation; the poll loop asks again later. */
+/** @brief Logs abandoned operations (the poll loop asks again later) and tracks persist failures.
+ */
 static void on_su_event(const az_iot_su_event* event, void* ctx)
 {
   (void)ctx;
-  /* `service_error` is the last field read; an older library's shorter event
-   * is ignored rather than read past its end. */
-  if (event->_internal_size
-      < offsetof(az_iot_su_event, service_error) + sizeof(event->service_error))
-  {
-    return;
-  }
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
     ESP_LOGW(
@@ -213,6 +209,19 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
     {
       g_retry_after_ms = event->service_error.retry_after_ms;
     }
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED)
+  {
+    ESP_LOGE(TAG, "NVS write failing; update reboot deferred");
+    g_persist_failing = true;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_RECOVERED)
+  {
+    g_persist_failing = false;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
   }
 }
 
@@ -246,11 +255,12 @@ void app_main(void)
   az_iot_cert_embedded_init(
       &certs, trusted_ca_pem_start, device_cert_pem_start, device_key_pem_start);
 
-  /* Connection client: DPS provisioning + X.509. */
+  /* Connection client: DPS provisioning + X.509, mbedTLS crypto. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
+  copts.crypto = az_iot_crypto_mbedtls();
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -269,11 +279,10 @@ void app_main(void)
     esp_restart();
   }
 
-  /* Real OTA platform hooks + mbedTLS crypto + Microsoft root keys. */
+  /* Real OTA platform hooks + Microsoft root keys. */
   su_ota_ctx ota = { 0 };
   ota.installed_version = SU_UPDATE_VERSION;
   az_iot_su_platform_hooks hooks = su_esp32_ota_hooks(&ota);
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_mbedtls_hooks();
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -290,7 +299,6 @@ void app_main(void)
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
@@ -456,10 +464,10 @@ void app_main(void)
       }
     }
 
-    /* install_fn asked for a reboot to boot the freshly flashed image. The
-     * Software updates core has already persisted the workflow blob to NVS, so resume()
-     * picks it up after the restart. */
-    if (ota.reboot_pending)
+    /* install_fn asked for a reboot to boot the freshly flashed image. Wait
+     * while the NVS write is failing: resume() needs that record. If the client
+     * gives up, the rollback clears reboot_pending. */
+    if (ota.reboot_pending && !g_persist_failing)
     {
       ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
       vTaskDelay(pdMS_TO_TICKS(500));

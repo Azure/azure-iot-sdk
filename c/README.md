@@ -1,253 +1,122 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# azure-iot-sdk
+# Azure IoT C SDK
 
-C99 client SDK for the Azure MQTTv3 hub and the MQTTv5 hub.
+[![ci-c](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml)
 
-> Status: **early bootstrap**. See [docs/design.md](docs/design.md) for the architecture and [docs/devnotes.md](docs/devnotes.md) for original design discussion notes.
+A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
+built for constrained and embedded devices.
 
-## Highlights
+> **Preview** (1.0.0-preview). APIs may change before the first stable release. See the
+> [changelog](CHANGELOG.md).
 
-- **C99-strict**, no submodules. Dependencies via vcpkg manifest (primary) or CPM.cmake (fallback).
-- **Single public API**: low-level, single-threaded `do_work()` pump; all callbacks fire on the caller's thread.
-- **Pluggable MQTT** with version + role tagging:
-  - DPS + MQTTv3 hub require **MQTT v3.1.1**.
-  - MQTTv5 hub requires **MQTT v5**.
-  - Adapters register factories via `az_iot_connection_client_register_mqtt_factory()`. The core picks the right `(version, role)` per session and instantiates a fresh adapter for each.
-- **Default adapter**: Paho-C (v3.1.1 + v5).
-- **Built on [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c)** (pinned via `FetchContent`):
-  - `az::core` for spans, JSON, logging, contexts, result codes.
-  - `az::iot::hub` for MQTTv3 hub MQTT topic build/parse.
-  - `az::iot::provisioning` for Azure DPS MQTT topic build/parse.
-  - MQTTv5 hub protocol logic lives in this repo (no upstream library yet).
+## Table of Contents
 
-## Build (Phase 0)
+- [Features](#features)
+- [Getting Started](#getting-started)
+  - [Getting the SDK](#getting-the-sdk)
+  - [Quickstart](#quickstart)
+  - [Samples](#samples)
+- [Documentation](#documentation)
+- [Platforms and Porting](#platforms-and-porting)
+- [Getting Help](#getting-help)
+- [Contributing](#contributing)
+  - [Reporting Security Issues](#reporting-security-issues)
+  - [License](#license)
 
-Configure and build with one of the provided presets:
+## Features
+
+- **Both IoT Hub generations:** mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5). DPS tells the device which
+  one it was assigned to, and the SDK picks the protocol.
+- **X.509 authentication:** certificates from files, certificates issued by DPS from a CSR,
+  renewal over IoT Hub (mqttv3 only), and private keys held in a PKCS#11 token or TPM.
+- **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
+  proxy support.
+- **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
+  connection and feature clients do no dynamic allocation.
+- **Pluggable MQTT:** Eclipse Paho C by default; bring your own MQTT client through a small
+  adapter interface.
+
+Device features by IoT Hub generation:
+
+| Feature | mqttv3 | mqttv5 |
+| --- | --- | --- |
+| Telemetry | Yes | Yes |
+| Device twin | Yes | Yes |
+| Direct methods | Yes | Yes |
+| Cloud-to-device messages | Yes | No |
+| File upload | Yes | No |
+| Certificate renewal over IoT Hub | Yes | No |
+| Software updates | Yes, over DPS | Yes, over DPS |
+
+## Getting Started
+
+### Getting the SDK
+
+Build it from source. Add `c/` to your CMake project with `add_subdirectory()` or `FetchContent`,
+or install it and use `find_package(azure-iot-sdk)`. See
+[Building and installing](docs/eng/building.md#install-and-consume).
+
+### Quickstart
+
+On Linux, with the [build tools](samples/README.md#build-tools) installed (a C compiler, CMake
+3.21+, Ninja, OpenSSL 3 development files), from this directory:
 
 ```sh
 cmake --preset linux-gcc-debug
-cmake --build --preset linux-gcc-debug
-ctest --preset linux-gcc-debug
-```
-
-```pwsh
-cmake --preset windows-msvc-debug
-cmake --build --preset windows-msvc-debug --config Debug
-ctest --preset windows-msvc-debug -C Debug
-```
-
-Run a sample binary:
-
-```sh
+cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_telemetry
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
-## Install and consume
+The sample needs a DPS enrollment for the device and five environment variables. The
+[telemetry sample](samples/unified/telemetry/README.md) explains both.
 
-A top-level build installs static libraries, headers and the `azure-iot-sdk`
-CMake package (`-DAZ_IOT_INSTALL=OFF` disables it):
+### Samples
 
-```sh
-cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<prefix>
-cmake --build build/release
-cmake --install build/release
-```
+The [samples overview](samples/README.md) lists every sample, with Windows build steps. Each
+sample has its own README.
 
-```cmake
-find_package(azure-iot-sdk CONFIG REQUIRED COMPONENTS mqttv3 adapter_paho)
-target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
-```
+## Documentation
 
-- Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_rust_mqtt`, `su_crypto_openssl`, `su_crypto_mbedtls`,
-  `certificate_provider_managed`).
-- azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
-  Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
-- OpenSSL, and mbedTLS for `su_crypto_mbedtls`, must be findable by the consumer.
-- MSVC: the libraries use the static CRT; set
-  `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
+| I want to... | Read |
+| --- | --- |
+| Understand how the SDK fits together | [Architecture](docs/architecture.md) |
+| Connect a device: states, provisioning, reconnection, proxies, certificates | [Connecting a device](docs/connecting.md) |
+| Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
+| Collect logs for troubleshooting or support | [Logging](docs/logging.md) |
+| Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |
+| Know what stays compatible between releases | [Struct versioning](docs/struct_versioning.md) |
+| Install the SDK, consume it from CMake or pkg-config, or harden builds | [Building and installing](docs/eng/building.md) |
+| Read the design and engineering notes | [docs/eng](docs/eng/) |
 
-[tests/install](tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package.
+API reference: the public headers in [inc/azure/iot](inc/azure/iot/); each function is documented
+in its header.
 
-## Project layout
+## Platforms and Porting
 
-```
-inc/azure/iot/        public headers
-src/{core,features}/ implementation
-adapters/{paho,rust_mqtt}/ MQTT adapters
-samples/                  examples (unified/, mqttv5/, authentication/, su/)
-tests/                    ctest suites
-tests/conformance/        reusable MQTT iface conformance suite
-docs/                     design + dev notes
-cmake/                    helpers (warnings, options, CPM placeholder)
-```
+- CI builds and tests the SDK on Linux (GCC, Clang) and Windows (MSVC), and builds it in strict
+  C99, C11, C17 and C23 modes.
+- A [Yocto layer](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap) builds the libraries,
+  headers, CMake package and pkg-config files.
+- To port to another platform, supply an MQTT adapter
+  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, a
+  crypto backend and the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md)).
 
-## MQTT adapter conformance suite
+## Getting Help
 
-`tests/conformance/` ships a reusable cmocka-based test suite that operates strictly through the public `az_iot_mqtt_iface` vtable. It is the contract any MQTT client+adapter must satisfy to be usable with `azure-iot-sdk`. Two CMake targets ship today:
+To get help, or to post a suggestion or comment, please file a
+[GitHub issue](https://github.com/Azure/azure-iot-sdk/issues/new).
 
-- `az_iot_conformance_paho_v3` — validates the bundled Paho adapter as MQTTv3.1.1.
-- `az_iot_conformance_paho_v5` — validates the bundled Paho adapter as MQTTv5.
+## Contributing
 
-To validate your own adapter, link against `az_iot_conformance` and call `az_iot_conformance_run(suite, factory)` from a small harness exe (see [tests/conformance/paho_v3_main.c](tests/conformance/paho_v3_main.c)). A full walk-through is in [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
+See [Contributing](../README.md#contributing).
 
-The suite needs a reachable MQTT broker; configure via:
+### Reporting Security Issues
 
-```sh
-export AZ_IOT_MQTT_BROKER_HOST=localhost
-export AZ_IOT_MQTT_BROKER_PORT=1883
-ctest --preset linux-gcc-debug --output-on-failure -R conformance
-```
+Please do not report security vulnerabilities through public GitHub issues. See
+[SECURITY.md](../SECURITY.md).
 
-Those env vars are required once the conformance tests are registered: configure with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` (the Linux presets do it for you) and an unset `AZ_IOT_MQTT_BROKER_HOST` is then a **failure**, not a skip. Without the option the tests are simply not registered, so a build with no broker to hand stays green by not pretending to run them. CI runs an `eclipse-mosquitto:2` service container automatically.
+### License
 
-## Quickstart — send telemetry
-
-The SDK is a single-threaded pump: the application drives `do_work()` and every
-callback fires on that thread. Provisioning through DPS is internal to the
-connection client — leave `host` unset and fill in the `dps` fields.
-
-`open()` is **non-blocking**: it starts provisioning and connecting, and the
-application must pump until the state callback reports `CONNECTED` before
-sending. Every call below returns `az_iot_result` and is declared `AZ_NODISCARD`,
-so ignoring one is a compile warning (an error under this project's default
-`AZ_IOT_WARNINGS_AS_ERRORS`).
-
-```c
-#include <stdbool.h>
-#include <stdlib.h>
-
-#include "azure/iot/az_iot.h"
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-
-typedef struct
-{
-  az_iot_connection_state conn_state;
-  az_iot_connection_profile connection_profile;
-  bool profile_valid;
-  bool send_done;
-  az_iot_result send_status;
-} app_ctx;
-
-static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
-{
-  (void)event->reason;
-  app_ctx* ctx = (app_ctx*)user_ctx;
-  ctx->conn_state = event->state;
-  if (event->state == AZ_IOT_CONN_STATE_CONNECTED && event->profile != NULL)
-  {
-    ctx->connection_profile = event->profile->connection_profile;
-    ctx->profile_valid = true;
-  }
-}
-
-static void on_send_done(az_iot_result status, void* user_ctx)
-{
-  app_ctx* ctx = (app_ctx*)user_ctx;
-  ctx->send_status = status;
-  ctx->send_done = true;
-}
-
-int main(void)
-{
-  app_ctx ctx = { 0 };
-
-  /* Certificate provider (X.509) */
-  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
-  pem.trusted_ca_pem_path  = getenv("AZ_IOT_TRUSTED_CA");  /* optional */
-  pem.client_cert_pem_path = getenv("AZ_IOT_CLIENT_CERT");
-  pem.client_key_pem_path  = getenv("AZ_IOT_CLIENT_KEY");
-
-  az_iot_certificate_provider_pem certs;
-  if (az_iot_certificate_provider_pem_init(&certs, &pem) != AZ_IOT_OK)
-  {
-    return 1;
-  }
-
-  /* Connection client — DPS runs internally */
-  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.dps.id_scope         = getenv("AZ_IOT_ID_SCOPE");
-  copts.dps.registration_id  = getenv("AZ_IOT_REGISTRATION_ID");
-  copts.certificate_provider = &certs.base;
-
-  az_iot_connection_client conn;
-  az_iot_mqttv3_telemetry_client mqttv3_tel = { 0 };
-  az_iot_mqttv5_telemetry_client mqttv5_tel = { 0 };
-  if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK
-      /* Register both MQTT versions: v3.1.1 for DPS + MQTTv3, v5 for MQTTv5. */
-      || az_iot_connection_client_register_mqtt_factory(
-             &conn, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
-  {
-    return 1;
-  }
-  az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
-
-  if (az_iot_connection_client_open(&conn) != AZ_IOT_OK)
-  {
-    return 1;
-  }
-
-  /* Pump until connected. open() is non-blocking, so sending before this
-   * completes would fail with AZ_IOT_ERR_NOT_CONNECTED. Bounded so a hub that
-   * never answers cannot spin forever. */
-  for (int i = 0; i < 1200 && ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
-  {
-    (void)az_iot_connection_client_do_work(&conn, 50);
-    if (ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
-    {
-      break;
-    }
-  }
-
-  int rc = 1;
-  if (ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && ctx.profile_valid)
-  {
-    az_iot_result init_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-        ? az_iot_mqttv5_telemetry_client_init(&mqttv5_tel, &conn)
-        : az_iot_mqttv3_telemetry_client_init(&mqttv3_tel, &conn);
-    static const uint8_t body[] = "{\"hello\":\"world\"}";
-    az_iot_telemetry_message msg = { 0 };
-    msg.payload = body;
-    msg.payload_len = sizeof(body) - 1;
-
-    az_iot_result send_result = init_result;
-    if (init_result == AZ_IOT_OK)
-    {
-      send_result = ctx.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-        ? az_iot_mqttv5_telemetry_client_send(&mqttv5_tel, &msg, on_send_done, &ctx)
-        : az_iot_mqttv3_telemetry_client_send(&mqttv3_tel, &msg, on_send_done, &ctx);
-    }
-    if (init_result == AZ_IOT_OK && send_result == AZ_IOT_OK)
-    {
-      for (int i = 0; i < 600 && !ctx.send_done; ++i)
-      {
-        (void)az_iot_connection_client_do_work(&conn, 50);
-      }
-      rc = (ctx.send_done && ctx.send_status == AZ_IOT_OK) ? 0 : 1;
-    }
-  }
-
-  az_iot_connection_client_close(&conn);
-  az_iot_mqttv3_telemetry_client_deinit(&mqttv3_tel);
-  az_iot_mqttv5_telemetry_client_deinit(&mqttv5_tel);
-  az_iot_connection_client_deinit(&conn);
-  az_iot_certificate_provider_pem_deinit(&certs);
-  return rc;
-}
-```
-
-A fuller version is [samples/unified/connect_first/main.c](samples/unified/connect_first/main.c); [samples/unified/telemetry/main.c](samples/unified/telemetry/main.c) builds before `open()` and also handles a device moved to the other hub generation.
-
-## Samples
-
-Samples are grouped like the .NET SDK's: [samples/unified](samples/unified/) serve
-whichever hub generation DPS assigns, [samples/mqttv5](samples/mqttv5/) serve MQTTv5 hubs
-only. There is no MQTTv3-only group; the MQTTv3-only samples
-(`unified/file_upload`, `authentication/dps_csr_managed`,
-`authentication/hub_renew`) exit non-zero on an MQTT v5 hub. Layout,
-configuration and the full list are in [samples/README.md](samples/README.md).
+Licensed under the [MIT](../LICENSE) license.

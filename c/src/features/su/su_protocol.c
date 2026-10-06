@@ -912,7 +912,39 @@ az_iot_result az_iot_su__parse_fetch_response(
 /* errors                                                                    */
 /* ------------------------------------------------------------------------- */
 
+static az_iot_result parse_error_signals(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code);
+
 az_iot_result az_iot_su__parse_error_code(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code)
+{
+  az_iot_result r
+      = parse_error_signals(payload, payload_len, out_code, out_code_size, out_numeric_code);
+  /* A rejected body may have been read partway; what it yielded must not
+   * classify. */
+  if (r != AZ_IOT_OK)
+  {
+    if (out_code != NULL && out_code_size > 0)
+    {
+      out_code[0] = '\0';
+    }
+    if (out_numeric_code != NULL)
+    {
+      *out_numeric_code = 0;
+    }
+  }
+  return r;
+}
+
+static az_iot_result parse_error_signals(
     const uint8_t* payload,
     size_t payload_len,
     char* out_code,
@@ -1032,14 +1064,15 @@ az_iot_result az_iot_su__parse_error_code(
         }
         if (is_su_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
         {
+          /* Oversized: dropped like an oversized `message`; errorCode still
+           * classifies. */
           int32_t n = az_span_size(jr.token.slice);
-          if (n < 0 || (size_t)n + 1 > out_code_size)
+          if (n >= 0 && (size_t)n + 1 <= out_code_size)
           {
-            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+            memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+            out_code[n] = '\0';
+            found_string_code = true;
           }
-          memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-          out_code[n] = '\0';
-          found_string_code = true;
           continue;
         }
         if (az_result_failed(az_json_reader_skip_children(&jr)))

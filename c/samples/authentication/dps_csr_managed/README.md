@@ -1,7 +1,7 @@
 <!-- Copyright (c) Microsoft. All rights reserved.
      Licensed under the MIT license. See LICENSE file in the project root for full license information. -->
 
-# DPS certificate issuance from a CSR (`dps_csr_managed`)
+# DPS-issued certificate, CSR built by the SDK
 
 The device proves itself to DPS with a **bootstrap** X.509 certificate, sends a
 certificate signing request (CSR) with its registration, and connects to IoT Hub
@@ -100,7 +100,7 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_csr_manag
 ```
 
 On Windows, use the `windows-msvc-debug` preset and make OpenSSL 3 visible to CMake
-(for example through vcpkg; see [`c/CMakePresets.json`](../../../CMakePresets.json)).
+(see [Build tools](../../README.md#build-tools)).
 
 The target exists only when OpenSSL 3.0+ is found and the Paho adapter is enabled
 (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`). Otherwise `--target`
@@ -164,8 +164,8 @@ The chain length depends on the credential policy.
   process umask (world-readable under the common `022`). Run with `umask 077` or
   keep the files in a directory only the device user can read.
 - For keys that must not exist as files, see
-  [`hsm_pkcs11`](../README.md#hsm_pkcs11) and
-  [`custom_certificate_provider`](../README.md#custom_certificate_provider).
+  [`hsm_pkcs11`](../hsm_pkcs11/README.md) and
+  [`custom_certificate_provider`](../custom_certificate_provider/README.md).
 - The step 1 certificates are for testing only.
 
 ## Troubleshooting

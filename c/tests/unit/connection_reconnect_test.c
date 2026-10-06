@@ -8,7 +8,7 @@
  * and what the core does with persistent subscriptions and in-flight QoS-1
  * acknowledgements when a session is replaced.
  *
- * The backoff MATH lives in reconnect_policy_test.c; this suite is about the
+ * The backoff MATH lives in retry_policy_test.c; this suite is about the
  * state machine that consumes it. */
 #include <stdarg.h>
 #include <stddef.h>
@@ -22,6 +22,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/test_provider.h"
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
@@ -51,7 +52,7 @@ static int setup_with_policy(void** state, uint32_t max_attempts)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = reconnect_options(max_attempts);
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
@@ -89,7 +90,7 @@ static int setup_no_reconnect(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
@@ -405,10 +406,12 @@ typedef struct log_capture
 static void capture_error(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   log_capture* c = (log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -428,6 +431,60 @@ static void install_error_capture(log_capture* c)
   sink.user_ctx = c;
   sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
   az_iot_log_set_global_sink(&sink);
+}
+
+/* Every line at INFO and above as "<component>: <msg>", newline-separated. */
+typedef struct line_capture
+{
+  char text[4096];
+  size_t len;
+} line_capture;
+
+static void capture_lines(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  line_capture* c = (line_capture*)user_ctx;
+  (void)level;
+  (void)file;
+  (void)line;
+  int n = snprintf(c->text + c->len, sizeof(c->text) - c->len, "%s: %s\n", component, msg);
+  if (n > 0 && (size_t)n < sizeof(c->text) - c->len)
+  {
+    c->len += (size_t)n;
+  }
+}
+
+/* What support reads first: the configuration on open(), every state change,
+ * and each scheduled retry. */
+static void lifecycle_is_logged_at_info(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  line_capture cap;
+  az_iot_log_sink sink;
+  memset(&cap, 0, sizeof(cap));
+  sink.sink = capture_lines;
+  sink.user_ctx = &cap;
+  sink.min_level = AZ_IOT_LOG_LEVEL_INFO;
+  az_iot_log_set_global_sink(&sink);
+
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_error(m, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_non_null(strstr(cap.text, "connection: open: sdk="));
+  assert_non_null(strstr(cap.text, " route=hub "));
+  assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTING\n"));
+  assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTED\n"));
+  assert_non_null(strstr(
+      cap.text, "connection: hub state=AZ_IOT_CONN_STATE_RECONNECTING reason=AZ_IOT_ERR_MQTT"));
+  assert_non_null(strstr(cap.text, "connection: hub retry 1 in "));
 }
 
 static void persistent_subscription_registry_full_is_rejected(void** state)
@@ -1118,7 +1175,7 @@ static uint16_t publish_qos1(az_iot_test_conn* fx, az_iot_mock_mqtt_client* m, p
   msg.payload_len = 1;
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, on_puback, probe), AZ_IOT_OK);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, on_puback, probe), AZ_IOT_OK);
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
@@ -1150,6 +1207,36 @@ static void unmatched_puback_is_ignored(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_puback(m, (uint16_t)(pid + 1), AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(probe.calls, 0);
+}
+
+/* Without a callback nobody else can report a rejected publish, so it is
+ * logged; an accepted one stays quiet. */
+static void untracked_publish_failure_is_logged(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL), AZ_IOT_OK);
+  uint16_t ok_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  assert_int_equal(
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL), AZ_IOT_OK);
+  uint16_t bad_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+
+  log_capture cap;
+  install_error_capture(&cap);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, ok_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(cap.count, 0);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, bad_pid, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "no completion callback"));
 }
 
 /* A publish that was in flight when the session died can never be
@@ -1205,6 +1292,286 @@ static void all_pending_pubacks_are_completed_on_disconnect(void** state)
   assert_int_equal(c.last_status, AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+static az_iot_result try_publish(az_iot_test_conn* fx, az_iot_mqtt_qos qos, puback_probe* probe)
+{
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.payload = (const uint8_t*)"x";
+  msg.payload_len = 1;
+  msg.qos = qos;
+  return az_iot_connection_client__publish(fx->client, NULL, &msg, probe ? on_puback : NULL, probe);
+}
+
+/* A full ack table must refuse before anything reaches the wire, so a caller
+ * that retries on the error does not send a duplicate. */
+static void full_puback_table_publishes_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  uint16_t first_pid = 0;
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    uint16_t pid = publish_qos1(fx, m, &probes[i]);
+    if (i == 0)
+    {
+      first_pid = pid;
+    }
+  }
+
+  size_t published = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), published);
+  assert_int_equal(overflow.calls, 0);
+
+  /* Publishes that need no slot are unaffected. */
+  puback_probe qos0 = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_0, &qos0), AZ_IOT_OK);
+  assert_int_equal(qos0.calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, NULL), AZ_IOT_OK);
+
+  /* An ack frees a slot and the retry goes through. */
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, first_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(probes[0].calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_OK);
+  assert_int_equal(overflow.calls, 0);
+}
+
+/* A publish the adapter refuses must give back the slot it reserved. */
+static void failed_publish_releases_its_slot(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  for (size_t i = 0; i + 1 < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    (void)publish_qos1(fx, m, &probes[i]);
+  }
+
+  puback_probe failed = { 0 };
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &failed), AZ_IOT_ERR_MQTT);
+  uint16_t failed_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+
+  /* The last slot is still free, and an ack for the refused publish's packet
+   * id reaches nobody. */
+  (void)publish_qos1(fx, m, &probes[AZ_IOT_MAX_PENDING_PUBACKS - 1]);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, failed_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(failed.calls, 0);
+
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+}
+
+static az_iot_result try_publish_as(az_iot_test_conn* fx, const void* owner, puback_probe* probe)
+{
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  return az_iot_connection_client__publish(fx->client, owner, &msg, on_puback, probe);
+}
+
+/* A reservation is a separate pool: neither side can use the other's slots,
+ * and an ack frees a slot only in the pool it was taken from. */
+static void reserved_and_shared_pools_do_not_borrow(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  static const int owner = 0;
+  static const int no_reservation = 0;
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 4), AZ_IOT_OK);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  size_t shared = 0;
+  while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 4);
+  assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
+  /* An owner with no reservation draws from the shared pool. */
+  assert_int_equal(try_publish_as(fx, &no_reservation, &probes[0]), AZ_IOT_ERR_BUSY);
+
+  puback_probe reserved[4] = { 0 };
+  uint16_t first_reserved_pid = 0;
+  for (size_t i = 0; i < 4; ++i)
+  {
+    assert_true(az_iot_connection_client__can_track_publish(fx->client, &owner));
+    assert_int_equal(try_publish_as(fx, &owner, &reserved[i]), AZ_IOT_OK);
+    if (i == 0)
+    {
+      first_reserved_pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+    }
+  }
+  size_t published = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  puback_probe overflow = { 0 };
+  assert_int_equal(try_publish_as(fx, &owner, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), published);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, first_reserved_pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(reserved[0].calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &overflow), AZ_IOT_ERR_BUSY);
+  assert_int_equal(try_publish_as(fx, &owner, &overflow), AZ_IOT_OK);
+}
+
+static void reservations_cannot_exceed_the_table(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const int a = 0;
+  static const int b = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, NULL, 1), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS + 1)),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+      AZ_IOT_OK);
+  assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &b, 1), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* Re-reserving replaces the owner's count rather than adding to it. */
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &b, 1), AZ_IOT_OK);
+
+  /* 0 withdraws. */
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &a, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+      AZ_IOT_OK);
+}
+
+static void reservation_holders_are_bounded(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const char owners[AZ_IOT_MAX_PUBACK_RESERVATIONS + 1] = { 0 };
+  for (size_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client__reserve_pubacks(fx->client, &owners[i], 1), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &owners[AZ_IOT_MAX_PUBACK_RESERVATIONS], 1),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client__release_pubacks(fx->client, &owners[0]);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          fx->client, &owners[AZ_IOT_MAX_PUBACK_RESERVATIONS], 1),
+      AZ_IOT_OK);
+}
+
+/* A reservation is granted only when it is usable at once: shared publishes in
+ * flight that occupy its slots make it AZ_IOT_ERR_BUSY until acknowledged. */
+static void reservation_waits_for_shared_publishes_in_flight(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  uint16_t pids[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    pids[i] = publish_qos1(fx, m, &probes[i]);
+  }
+
+  static const int owner = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_ERR_BUSY);
+  assert_false(az_iot_connection_client__can_track_publish(fx->client, &owner));
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pids[0], AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_ERR_BUSY);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pids[1], AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_OK);
+
+  puback_probe reserved[2] = { 0 };
+  assert_int_equal(try_publish_as(fx, &owner, &reserved[0]), AZ_IOT_OK);
+  assert_int_equal(try_publish_as(fx, &owner, &reserved[1]), AZ_IOT_OK);
+}
+
+/* An owner cannot shrink its reservation below what it has in flight. */
+static void reservation_cannot_shrink_below_its_publishes_in_flight(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const int owner = 0;
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 4), AZ_IOT_OK);
+  puback_probe reserved[3] = { 0 };
+  for (size_t i = 0; i < 3; ++i)
+  {
+    assert_int_equal(try_publish_as(fx, &owner, &reserved[i]), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 3), AZ_IOT_OK);
+  assert_int_equal(try_publish_as(fx, &owner, &reserved[0]), AZ_IOT_ERR_BUSY);
+}
+
+/* Counts are checked before they are stored, so one that would not fit a
+ * uint16_t is refused rather than wrapped. */
+static void an_oversized_reservation_is_refused_not_wrapped(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)open_to_connected(fx);
+
+  static const int owner = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(fx->client, &owner, (size_t)UINT16_MAX + 1),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_true(az_iot_connection_client__can_track_publish(fx->client, NULL));
+}
+
+/* Releasing does not drop in-flight publishes: they finish normally and count
+ * against the shared pool until they do. */
+static void released_reservation_in_flight_publishes_complete_from_the_shared_pool(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+
+  static const int owner = 0;
+  assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 2), AZ_IOT_OK);
+  puback_probe reserved = { 0 };
+  assert_int_equal(try_publish_as(fx, &owner, &reserved), AZ_IOT_OK);
+  uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+  az_iot_connection_client__release_pubacks(fx->client, &owner);
+
+  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  size_t shared = 0;
+  while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 1);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(reserved.calls, 1);
+  assert_int_equal(try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[0]), AZ_IOT_OK);
+}
+
 /* Destroying inside the backoff window is the awkward case: there is no
  * adapter to tear down (it was destroyed when the retry was scheduled) but a
  * deadline is still armed. Nothing must be left pointing at freed memory, and
@@ -1254,6 +1621,7 @@ int main(void)
     /* what schedules a retry */
     cmocka_unit_test_setup_teardown(
         adapter_error_event_schedules_a_retry, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(lifecycle_is_logged_at_info, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         adapter_error_event_faults_without_a_policy, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
@@ -1323,6 +1691,26 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         matching_puback_invokes_the_callback, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(unmatched_puback_is_ignored, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        untracked_publish_failure_is_logged, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        full_puback_table_publishes_nothing, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(failed_publish_releases_its_slot, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reserved_and_shared_pools_do_not_borrow, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reservations_cannot_exceed_the_table, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(reservation_holders_are_bounded, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reservation_waits_for_shared_publishes_in_flight, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        reservation_cannot_shrink_below_its_publishes_in_flight, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_reservation_is_refused_not_wrapped, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        released_reservation_in_flight_publishes_complete_from_the_shared_pool,
+        setup_two_attempts,
+        teardown),
     cmocka_unit_test_setup_teardown(
         pending_pubacks_are_completed_with_an_error_on_disconnect, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

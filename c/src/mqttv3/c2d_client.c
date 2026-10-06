@@ -119,14 +119,17 @@ static void c2d_parse_property_bag(c2d_property_scratch* s, const char* bag, siz
     /* Either the text did not fit or an escape was malformed. Whatever was
      * decoded before the failure may be incomplete, so surface none of it
      * rather than a truncated key or value. */
-    AZ_IOT_LOG_WARN("c2d: dropping the properties of a message -- the bag did not decode into "
-                    "AZ_IOT_C2D_PROPERTY_BUFFER bytes, or it carried a malformed percent-escape");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_C2D,
+        "dropping the properties of a message -- the bag did not decode into "
+        "AZ_IOT_C2D_PROPERTY_BUFFER bytes, or it carried a malformed percent-escape");
     s->count = 0;
   }
   else if (truncated)
   {
     AZ_IOT_LOG_WARNF(
-        "c2d: delivering only the first %d properties of a message; raise "
+        AZ_IOT_LOG_COMPONENT_C2D,
+        "delivering only the first %d properties of a message; raise "
         "AZ_IOT_C2D_MAX_PROPERTIES to see the rest",
         (int)AZ_IOT_C2D_MAX_PROPERTIES);
   }
@@ -198,9 +201,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
       conn, filter, AZ_IOT_MQTT_QOS_1, client, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL);
 }
 
-az_iot_result az_iot_mqttv3_c2d_client_init(
-    az_iot_mqttv3_c2d_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv3_c2d_client_init(az_iot_mqttv3_c2d_client* client, az_iot_connection_client* conn)
 {
   if (!client || !conn)
   {

@@ -17,6 +17,7 @@
  *   IOTHUB_EVENTHUB_CONNECTION_STRING   Event Hub-compatible endpoint connection string
  *   IOTHUB_EVENTHUB_LISTEN_NAME         Event Hub entity name (optional; else from the CS)
  *   IOTHUB_EVENTHUB_PARTITION_COUNT     partition count to watch (optional; default 4)
+ *   IOTHUB_EVENTHUB_CONSUMER_GROUP      consumer group to read (optional; default $Default)
  */
 #ifndef AZ_IOT_E2E_SERVICE_H
 #define AZ_IOT_E2E_SERVICE_H
@@ -96,6 +97,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Stop watching file-upload notifications. Safe to call when not watching. */

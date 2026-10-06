@@ -33,6 +33,7 @@
 #include "internal/connection_client_internal.h"
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
 #define TWIN_SRV_TOPIC "ih/ut-device/srv/twin"
@@ -195,7 +196,7 @@ static void init_connection_ex(az_iot_connection_client* conn, bool push_desired
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
-  assert_int_equal(az_iot_connection_client_init(conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(conn, &opts), AZ_IOT_OK);
 }
 
 static void init_connection(az_iot_connection_client* conn) { init_connection_ex(conn, false); }
@@ -859,7 +860,7 @@ static void get_before_the_device_id_is_assigned_is_refused(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   az_iot_connection_client conn;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_twin_client twin;
   assert_int_equal(az_iot_mqttv5_twin_client_init(&twin, &conn), AZ_IOT_OK);
@@ -2384,7 +2385,7 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   opts.client_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   az_iot_connection_client conn;
-  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_twin_client twin;
   assert_int_equal(

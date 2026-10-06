@@ -15,13 +15,13 @@
 
 #define AZ_IOT_MQTTV5_TELEMETRY_TOPIC_MAX 512
 
-az_iot_result az_iot_mqttv5_telemetry_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_init(
     az_iot_mqttv5_telemetry_client* client,
     az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
-    AZ_IOT_LOG_ERROR("mqttv5_telemetry_client_init: invalid arguments");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -57,13 +57,14 @@ static az_iot_result build_topic(const char* device_id, char* topic, size_t topi
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
-az_iot_result az_iot_mqttv5_telemetry_client_send(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     az_iot_mqttv5_telemetry_client* client,
     const az_iot_telemetry_message* message,
     az_iot_telemetry_send_callback callback,
     void* user_ctx)
 {
-  if (client == NULL || message == NULL || (message->payload_len > 0 && message->payload == NULL)
+  if (client == NULL || message == NULL || callback == NULL
+      || (message->payload_len > 0 && message->payload == NULL)
       || (message->properties_count > 0 && message->properties == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -124,7 +125,8 @@ az_iot_result az_iot_mqttv5_telemetry_client_send(
     if (property_count >= AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES)
     {
       AZ_IOT_LOG_WARNF(
-          "mqttv5_telemetry: '%s' and any properties after it were not sent; the message needs "
+          AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY,
+          "'%s' and any properties after it were not sent; the message needs "
           "more "
           "than the %d user properties this client can carry, two of which are the type and "
           "content-type it adds. Send fewer, or raise AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES.",
@@ -147,5 +149,5 @@ az_iot_result az_iot_mqttv5_telemetry_client_send(
   mqtt_message.user_properties_count = property_count;
   mqtt_message.content_type = content_type;
   return az_iot_connection_client__publish(
-      client->_internal.conn, &mqtt_message, callback, user_ctx);
+      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }

@@ -7,12 +7,6 @@ namespace Microsoft.Azure.Iot.Device.Models
 {
     public class ConnectionContext
     {
-        // Users should not be constructing this object. It should only be returned to the user.
-        internal ConnectionContext()
-        {
-
-        }
-
         public required string DeviceId { get; init; }
 
         public required string IotHubHostName { get; init; }

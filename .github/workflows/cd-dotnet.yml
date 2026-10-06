@@ -35,13 +35,15 @@ env:
 jobs:
   publish:
     name: pack and publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
@@ -53,8 +55,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_SUFFIX: ${{ inputs.version-suffix }}
         run: |
           set -euo pipefail
 
@@ -86,10 +86,12 @@ jobs:
           fi
 
       - name: Pack
-        run: dotnet pack "$PACKAGE_PROJECT" --configuration Release --output artifacts ${{ steps.version.outputs.pack-args }}
+        env:
+          PACK_ARGS: ${{ steps.version.outputs.pack-args }}
+        run: dotnet pack "$PACKAGE_PROJECT" --configuration Release --output artifacts ${PACK_ARGS:+"$PACK_ARGS"}
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nuget-packages
           path: artifacts/*.nupkg
@@ -105,7 +107,8 @@ jobs:
           FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
           # GITHUB_TOKEN is the api key; it is scoped to this repository and expires with the run.
           NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+        # GitHub Packages has no trusted publishing; GITHUB_TOKEN is already short-lived.
+        run: | # zizmor: ignore[use-trusted-publishing]
           set -euo pipefail
 
           # --skip-duplicate keeps a re-run from failing on a version the registry already has,

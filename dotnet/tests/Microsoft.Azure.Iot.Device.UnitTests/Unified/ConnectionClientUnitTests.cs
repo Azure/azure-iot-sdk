@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -24,6 +24,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
 
+        [Fact]
+        public async Task ProvisionAndConnectUsesSeededConnectionContext()
+        {
+            MockMqttClient mockMqttClient = new(false);
+            ConnectionContext connectionContext = GetMockConnectionContext(false);
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+            }, connectionContext);
+
+            // The seeded assignment connects, so this device connects directly using it rather than provisioning.
+            ConnectionContext result = await connectionClient.ProvisionAndConnectAsync(
+                new ProvisioningSettings("someIdScope"),
+                connectionContext.AuthenticationProvider,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Same(connectionContext, result);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
+        }
+
         [Theory]
         [InlineData(true, true)]
         [InlineData(true, false)]
@@ -39,7 +59,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             TelemetryClient telemetryClient = new(connectionClient);
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -115,7 +135,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -189,7 +209,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
