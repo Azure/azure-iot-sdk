@@ -53,8 +53,9 @@
 # When the repository variable E2E_CSR_SHARED_ID_SCOPE is set, PULL REQUEST runs
 # skip setup/teardown and use a long-lived cert-management environment instead.
 # Each run issues its own bootstrap device from the enrollment group's issuing CA
+# and takes the symmetric-key group's key for the SAS suite
 # (c/eng/e2e-shared-device.ps1 -Csr); the test job never logs in to Azure. Same
-# test. Push and nightly runs always provision. Unset the variable to return to
+# tests. Push and nightly runs always provision. Unset the variable to return to
 # per-run provisioning.
 
 name: ci-c-e2e-csr
@@ -134,7 +135,7 @@ jobs:
 
       - name: Provision cert-management resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@9109e1ce6d9d19bbc750f4715b85db1f5167190e # v1.0.1 + dps-symmkey-group-enrollment-devices (#456)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -154,6 +155,9 @@ jobs:
           # An individual enrollment is also required: the C test-config cmdlet
           # unconditionally reads IndividualX509[0], so provision at least one.
           dps-x509-individual-enrollments: '1'
+          # A symmetric-key enrollment group, also linked to the signing CA, for
+          # SAS onboarding with a DPS-issued certificate (az_iot_tests_e2e_csr_sas).
+          dps-symmkey-group-enrollment-devices: '1'
 
       - name: Upload test config
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -184,7 +188,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_BUILD_E2E_CSR=ON
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'
@@ -200,6 +204,7 @@ jobs:
           E2E_CSR_SHARED_GROUP_CA: ${{ secrets.E2E_CSR_SHARED_GROUP_CA }}
           E2E_CSR_SHARED_ID_SCOPE: ${{ vars.E2E_CSR_SHARED_ID_SCOPE }}
           E2E_CSR_SHARED_DPS_HOST: ${{ vars.E2E_CSR_SHARED_DPS_HOST }}
+          E2E_CSR_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_CSR_SHARED_SAS_GROUP_KEY }}
           E2E_REGISTRATION_ID: ci-csr-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           ./c/eng/e2e-shared-device.ps1 -Csr -RegistrationId $env:E2E_REGISTRATION_ID `
@@ -247,11 +252,19 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+          # SAS suite: the symmetric-key group (provisioned, or the shared one),
+          # linked to the certificate policy.
+          if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
+            throw "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY not found in the test config; the SAS suite needs a DPS symmetric-key enrollment group."
+          }
+          Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
+          $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
+          $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-csr-${{ github.run_id }}-${{ github.run_attempt }}"
           # Verbose SDK logging so a connect/DPS failure surfaces its reason.
           $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
-          # `-R e2e_csr` selects ONLY az_iot_tests_e2e_csr.
+          # `-R e2e_csr` selects az_iot_tests_e2e_csr and az_iot_tests_e2e_csr_sas.
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_csr `
             --verbose --no-tests=error --timeout 900 `
             --output-junit ./test_config/results/e2e-csr.xml
