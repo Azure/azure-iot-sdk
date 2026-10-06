@@ -856,8 +856,10 @@ extern "C"
   typedef enum az_iot_connection_state
   {
     AZ_IOT_CONN_STATE_IDLE = 0,
-    /** @brief The adapter's connect() was issued; the handshake is in flight
-     * (on the hub, until subscriptions or the birth-ack complete). */
+    /** @brief The network connect is starting: announced just before the
+     * adapter's connect(), then held while the handshake is in flight (on the
+     * hub, until subscriptions or the birth-ack complete). close() from this
+     * announcement cancels the attempt before connect() is called. */
     AZ_IOT_CONN_STATE_CONNECTING,
     AZ_IOT_CONN_STATE_CONNECTED,
     /** @brief A retry is scheduled; nothing is in flight. The next attempt
@@ -880,10 +882,12 @@ extern "C"
      * report the fault before trying again, instead of the SDK looping on a
      * failure it has already been told not to retry. */
     AZ_IOT_CONN_STATE_FAULTED,
-    /** @brief An attempt's local steps before the adapter's connect():
+    /** @brief A connection or registration attempt's local steps:
      * feature-client binds, adapter creation, credential load or SAS signing,
      * registration body. Entered by every attempt, including each retry, so a
-     * failure here is reported (error source AZ_IOT_CONN_ERR_SRC_LOCAL). */
+     * failure here is reported (error source AZ_IOT_CONN_ERR_SRC_LOCAL). A
+     * DPS registration on a session that is already up goes straight to
+     * AZ_IOT_CONN_STATE_CONNECTED, with no CONNECTING. */
     AZ_IOT_CONN_STATE_SETTING_UP
   } az_iot_connection_state;
 
