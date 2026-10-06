@@ -1413,6 +1413,7 @@ static az_iot_result apply_sas_key(
     uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
     c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
     c->sas_token_expiry_ms = 0;
+    c->sas_token_expiry_unix_seconds = 0;
     /* Rounded up: a truncated deadline would renew at once, every time. */
     c->sas_token_renewal_due_unix_seconds = now + (delay_ms + 999u) / 1000u;
   }
@@ -2115,6 +2116,9 @@ static void apply_user_token(
       c->sas_token_renewal_due_unix_seconds
           = unix_seconds != 0 ? unix_seconds + (left_ms + 999u) / 1000u : 0;
       c->sas_token_expiry_ms = expiry_ms;
+      /* Rounded down: never later than the token's real expiry. */
+      c->sas_token_expiry_unix_seconds
+          = unix_seconds != 0 ? unix_seconds + (expiry_ms - now_ms) / 1000u : 0;
     }
     /* The transport takes the token; it is wiped after connect(). */
     memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
@@ -4877,10 +4881,13 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   }
   /* The token expired while its replacement is still pending: the session
    * ends, and the reconnect waits for the token. */
-  if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED && c->sas_token_expiry_ms != 0
-      && now >= c->sas_token_expiry_ms)
+  if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED
+      && ((c->sas_token_expiry_ms != 0 && now >= c->sas_token_expiry_ms)
+          || (c->sas_token_expiry_unix_seconds != 0
+              && unix_now(c) >= c->sas_token_expiry_unix_seconds)))
   {
     c->sas_token_expiry_ms = 0;
+    c->sas_token_expiry_unix_seconds = 0;
     start_sas_token_renewal(c, now);
     return;
   }
@@ -5195,13 +5202,21 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       uint64_t left = deadline > now ? deadline - now : 0;
       remaining = left < remaining ? left : remaining;
     }
-    if (!c->sas_token_renewal_in_progress && c->sas_token_renewal_due_unix_seconds != 0)
+    if (!c->sas_token_renewal_in_progress)
     {
       uint64_t unix_seconds = unix_now(c);
-      uint64_t left = c->sas_token_renewal_due_unix_seconds > unix_seconds
-          ? (c->sas_token_renewal_due_unix_seconds - unix_seconds) * 1000u
-          : 0;
-      remaining = left < remaining ? left : remaining;
+      const uint64_t unix_deadlines[]
+          = { c->sas_token_renewal_due_unix_seconds, c->sas_token_expiry_unix_seconds };
+      for (size_t k = 0; k < sizeof(unix_deadlines) / sizeof(unix_deadlines[0]); ++k)
+      {
+        if (unix_deadlines[k] != 0)
+        {
+          uint64_t left = unix_deadlines[k] > unix_seconds
+              ? (unix_deadlines[k] - unix_seconds) * 1000u
+              : 0;
+          remaining = left < remaining ? left : remaining;
+        }
+      }
     }
   }
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;

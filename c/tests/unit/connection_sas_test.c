@@ -2537,6 +2537,32 @@ static void a_renewal_without_retry_after_waits_30_seconds(void** state)
   assert_true(fx->client.sas_token_ask_after_ms >= az_iot_time_mono_ms() + 29000u);
 }
 
+/* A suspended monotonic clock: Unix time passes the token's expiry while the
+ * renewal token is pending, and the session ends. */
+static void a_suspended_clock_ends_an_expired_user_token_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(fx->client.sas_token_expiry_unix_seconds >= NOW + 99u);
+  assert_true(fx->client.sas_token_expiry_unix_seconds <= NOW + 100u);
+  g_fake.mode = FAKE_TOKEN_PENDING;
+  now = NOW + 80u;
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+
+  now = NOW + 100u;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2579,6 +2605,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_token_is_kept_until_its_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_without_retry_after_waits_30_seconds, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_suspended_clock_ends_an_expired_user_token_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(

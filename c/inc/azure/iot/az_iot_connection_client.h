@@ -1789,8 +1789,10 @@ extern "C"
       uint32_t retry_after_seconds;
       uint64_t deadline_ms; /* PENDING bound (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
-    /* When the hub's user-provided token expires (monotonic ms); 0: none. */
+    /* When the hub's user-provided token expires: monotonic ms, and Unix
+     * seconds for a monotonic clock that stops in suspend; 0: none. */
     uint64_t sas_token_expiry_ms;
+    uint64_t sas_token_expiry_unix_seconds;
     /* The hub's next token request is not asked before this (monotonic ms):
      * an UNAVAILABLE renewal's retry_after_seconds. 0: none. */
     uint64_t sas_token_ask_after_ms;
@@ -1944,8 +1946,9 @@ extern "C"
   /**
    * @brief Delivers a SAS token the callback answered PENDING.
    *
-   * Call from the thread that calls do_work(), or from the callback itself;
-   * the attempt proceeds on the next do_work(). The token is copied.
+   * Call from the thread that calls do_work(), or from the callback itself.
+   * The attempt proceeds on the next do_work(); from inside the callback, as
+   * soon as the callback returns. The token is copied.
    *
    * @param[in] client     Client.
    * @param[in] request_id az_iot_sas_token_request::request_id.
