@@ -1158,6 +1158,55 @@ static void a_close_during_the_dps_rejection_stops_the_fallback(void** state)
   }
 }
 
+/* close() and open() from the DISCONNECTING callback of a rejected
+ * registration: the old attempt's finalizer leaves the new one alone. */
+static int reopens;
+static void reopen_on_dps_disconnecting(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING
+      && event->reason != AZ_IOT_OK && reopens++ == 0)
+  {
+    (void)az_iot_connection_client_close(&fx->client);
+    assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  }
+}
+
+static void a_reopen_during_the_dps_finalizer_keeps_the_new_attempt(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  reopens = 0;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, reopen_on_dps_disconnecting, fx),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(reopens, 1);
+  assert_non_null(fx->client.dps_mqtt);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_not_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_DONE);
+  size_t last = fx->log_count;
+  while (last > 0 && fx->log[last - 1].scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    --last;
+  }
+  assert_true(last > 0);
+  assert_int_equal(fx->log[last - 1].state, AZ_IOT_CONN_STATE_CONNECTING);
+  /* A fresh open() starts at the primary key; the old attempt's fallback is not applied. */
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  assert_int_equal(fx->client.reconnect_due_ms, 0);
+}
+
 /* Released and re-acquired from the IDLE callback that reports the rejection:
  * the new demand starts at the first source, without the old session's pacing. */
 static void release_and_reacquire_on_idle(
@@ -1431,6 +1480,8 @@ int main(void)
         a_retry_from_the_first_source_starts_a_new_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reopen_during_the_dps_finalizer_keeps_the_new_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_a_session_rejection_leaves_no_pacing, setup, teardown),
     cmocka_unit_test_setup_teardown(

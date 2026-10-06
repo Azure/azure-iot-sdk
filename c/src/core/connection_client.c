@@ -3043,6 +3043,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The transitions below run state callbacks, which may close() the client. */
   uint32_t closes = c->close_count;
   uint32_t demand_epoch = c->dps_demand_epoch;
+  /* A close() and open() from those callbacks starts a new attempt, which this
+   * finalizer must not touch. */
+  uint32_t seq = c->open_seq;
   if (device_provisioned)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -3064,7 +3067,15 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * overwrites this with RETRY_PENDING or FAULTED, which is right: "closed,
      * then failed" is two facts. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, status);
+    if (c->open_seq != seq)
+    {
+      return;
+    }
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, status);
+    if (c->open_seq != seq)
+    {
+      return;
+    }
   }
   c->dps_phase = DPS_PHASE_DONE;
 
