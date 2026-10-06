@@ -1095,6 +1095,46 @@ static void a_close_during_the_dps_rejection_stops_the_fallback(void** state)
   }
 }
 
+/* Released and re-acquired from the IDLE callback that reports the rejection:
+ * the new demand starts at the first source, without the old session's pacing. */
+static void release_and_reacquire_on_idle(
+    const az_iot_connection_state_event* event,
+    void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_IDLE
+      && event->reason != AZ_IOT_OK && fx->client.dps_user_count > 0)
+  {
+    az_iot_connection_client__dps_user_release(&fx->client);
+    assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  }
+}
+
+static void replaced_demand_starts_a_fresh_pass(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, release_and_reacquire_on_idle, fx),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+
+  assert_int_equal(fx->client.dps_user_count, 1);
+  assert_false(fx->client.dps_user_retry_blocked);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
+  /* Not paced: the next ensure() opens at once, with the primary key. */
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1224,6 +1264,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_feature_held_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_released_session_starts_a_new_pass, setup, teardown),
+    cmocka_unit_test_setup_teardown(replaced_demand_starts_a_fresh_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(

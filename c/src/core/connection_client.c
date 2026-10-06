@@ -2866,6 +2866,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   bool credential_rejected = !device_provisioned && dps_rejected_credential(c, status);
   /* The transitions below run state callbacks, which may close() the client. */
   uint32_t closes = c->close_count;
+  uint32_t demand_epoch = c->dps_demand_epoch;
   if (device_provisioned)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -2899,6 +2900,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   {
     /* A rejected credential: the next ensure() reopens at once with the next
      * source, policy or not; no pacing, as for a registration. */
+    /* Demand released (and maybe re-acquired) in the callbacks above is new
+     * demand: it starts at the first source, unpaced. */
+    if (c->dps_demand_epoch != demand_epoch)
+    {
+      return;
+    }
     /* Demand is checked again: the IDLE callback above may have released it. */
     if (credential_rejected && !c->user_close && c->close_count == closes && dps_session_demanded(c)
         && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
@@ -6105,6 +6112,7 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
      * backoff, a latched refusal, or a credential fallback pass, earned by
      * whoever came before it. A registration owns its own pass. */
     dps_user_retry_reset(client);
+    client->dps_demand_epoch++;
     if (!client->dps_registration_ref && !client->dps_standing_ref)
     {
       client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
