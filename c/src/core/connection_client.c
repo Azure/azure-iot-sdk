@@ -4445,12 +4445,13 @@ static void sas_renewal_pump(az_iot_connection_client* c)
   }
 }
 
-/** @brief @p timeout_ms, capped so the hub's process_loop() returns by the
+/** @brief @p timeout_ms, capped so a process_loop() wait ends by the hub's
  * next SAS renewal deadline. */
 static uint32_t sas_renewal_wait_ms(const az_iot_connection_client* c, uint32_t timeout_ms)
 {
   az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
-  if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
+  if (c->active_client == NULL || c->user_close
+      || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
       || (source != AZ_IOT_AUTH_SOURCE_PRIMARY_KEY && source != AZ_IOT_AUTH_SOURCE_SECONDARY_KEY))
   {
     return timeout_ms;
@@ -5933,6 +5934,8 @@ az_iot_result az_iot_connection_client_do_work(
           wait_ms = (uint32_t)remaining;
         }
       }
+      /* A hub session beside it is pumped only after this wait. */
+      wait_ms = sas_renewal_wait_ms(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 

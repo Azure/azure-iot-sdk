@@ -1715,6 +1715,35 @@ static void the_hub_wait_is_capped_by_the_renewal(void** state)
       az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 5000u);
 }
 
+/* A provisioning session a feature client holds beside the hub: its wait,
+ * which comes first, also ends by the renewal time. */
+static void a_held_dps_wait_is_capped_by_the_hub_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  assert_non_null(fx->client.dps_mqtt);
+
+  fx->client.sas_renew_due_ms = az_iot_time_mono_ms() + 1000u;
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 1000u);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /* A renewal reconnect that is refused is a failure: no renewal flag, and the
  * credential fallback applies. */
 static void a_refused_renewal_falls_back(void** state)
@@ -1802,6 +1831,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_close_from_a_renewal_teardown_callback_stops_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_wait_is_capped_by_the_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
