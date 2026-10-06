@@ -486,8 +486,9 @@ extern "C"
      * dps.max_hub_connect_attempts_before_reprovision, which counts consecutive
      * automatic attempts.
      *
-     * A hub that refuses every credential of a pass is retried on
-     * identity_recovery.
+     * A hub refusal is retried on identity_recovery: a CONNACK refusal once
+     * every source of the pass is refused, an MQTT 5 DISCONNECT refusal at
+     * once.
      *
      * az_iot_connection_client_options_default() fills this with
      * az_iot_connection_client_get_default_retry_policy(). Use
@@ -778,8 +779,8 @@ extern "C"
      * and close(). Recovery stops at AZ_IOT_CONN_STATE_FAULTED, with the
      * refusal as the reason, when the ladder's max_attempts or
      * max_duration_seconds is reached first. A disabled reconnection_policy
-     * faults on the first refusal of a whole credential pass (see
-     * az_iot_auth).
+     * faults on the first MQTT 5 DISCONNECT refusal, or on the CONNACK refusal
+     * that ends a credential pass (see az_iot_auth).
      *
      * Zeroed, it keeps the earlier behaviour: re-provision after a CONNACK
      * refusal, paced by reconnection_policy.

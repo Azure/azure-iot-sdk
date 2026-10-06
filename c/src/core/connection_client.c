@@ -2988,6 +2988,11 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
     c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
+  /* The registration's pass starts from the source the session connected with. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+  }
   az_iot_result r = dps_do_register_publish(c);
   if (r == AZ_IOT_OK)
   {

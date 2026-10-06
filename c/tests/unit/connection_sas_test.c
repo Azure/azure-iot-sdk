@@ -1455,6 +1455,50 @@ static void dps_registration_error_401000_falls_back_to_the_secondary_key(void**
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
 }
 
+/* A registration on a session a feature client already holds starts a pass
+ * from that session's source, so 401000 still falls back to the secondary key. */
+static void a_registration_on_a_held_session_falls_back(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
+
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  static const char k_body[] = "{\"errorCode\":401000,\"message\":\"Unauthorized\"}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$dps/registrations/res/401/?$rid=1",
+      (const uint8_t*)k_body,
+      strlen(k_body),
+      AZ_IOT_MQTT_QOS_1));
+  pump(fx, 4);
+
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_non_null(e);
+  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+  assert_int_equal(e->delay_ms, 0);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /* Only a rejected credential falls back; another registration error does not. */
 static void other_dps_registration_errors_do_not_fall_back(void** state)
 {
@@ -1537,6 +1581,7 @@ int main(void)
         dps_x509_rejected_falls_back_to_the_primary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_registration_error_401000_falls_back_to_the_secondary_key, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_registration_on_a_held_session_falls_back, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(

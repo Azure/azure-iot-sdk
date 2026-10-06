@@ -127,7 +127,8 @@ build the common shapes.
 When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an mqttv5
 `Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
 disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
-happens next. With more than one credential source, this applies once every source of a pass is refused (see Fallback).
+happens next. For a CONNACK refusal with more than one credential source, this applies once every
+source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies at once.
 
 | Field | `options_default()` | Zeroed | Meaning |
 | --- | --- | --- | --- |
@@ -146,7 +147,8 @@ happens next. With more than one credential source, this applies once every sour
   still back off and stop at the policy's `max_attempts`.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
-- With `reconnection_policy` disabled, the first refusal faults.
+- With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
+  CONNACK refusal that ends a credential pass.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
