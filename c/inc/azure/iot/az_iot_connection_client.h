@@ -471,12 +471,14 @@ extern "C"
      * policy (max_attempts included) applies to each independently.
      *
      * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
-     * options struct has) nothing is retried, and where the client settles
-     * depends on how the session ended:
+     * options struct has) nothing is retried, except that a rejected credential
+     * still falls back at once to the role's next source (see az_iot_auth);
+     * where the client settles depends on how the session ended:
      *   - a peer DISCONNECT is a clean end of session, so the client goes to
      *     AZ_IOT_CONN_STATE_IDLE and is ready for another open();
-     *   - a failure -- refused CONNACK, transport error, stalled handshake,
-     *     failed registration -- goes to AZ_IOT_CONN_STATE_FAULTED, which
+     *   - a failure -- refused CONNACK with no source left in the pass,
+     *     transport error, stalled handshake, failed registration -- goes to
+     *     AZ_IOT_CONN_STATE_FAULTED, which
      *     carries the reason and waits until the application calls
      *     az_iot_connection_client_close() and opens again.
      *
@@ -484,7 +486,8 @@ extern "C"
      * dps.max_hub_connect_attempts_before_reprovision, which counts consecutive
      * automatic attempts.
      *
-     * A hub that refuses the identity is retried on identity_recovery.
+     * A hub that refuses every credential of a pass is retried on
+     * identity_recovery.
      *
      * az_iot_connection_client_options_default() fills this with
      * az_iot_connection_client_get_default_retry_policy(). Use

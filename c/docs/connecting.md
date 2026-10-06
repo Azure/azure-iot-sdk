@@ -127,7 +127,7 @@ build the common shapes.
 When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an mqttv5
 `Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
 disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
-happens next:
+happens next. With more than one credential source, this applies once every source of a pass is refused (see Fallback).
 
 | Field | `options_default()` | Zeroed | Meaning |
 | --- | --- | --- | --- |
