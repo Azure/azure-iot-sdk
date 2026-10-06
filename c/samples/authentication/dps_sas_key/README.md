@@ -34,6 +34,6 @@ A DPS symmetric-key enrollment (individual or group) linked to an IoT Hub.
 | `AZ_IOT_DPS_SYMMETRIC_KEY` | Individual enrollment key (base64). Set this or the next one. |
 | `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY` | Enrollment-group key (base64) |
 | `AZ_IOT_DPS_SECONDARY_KEY` | Secondary key of the same enrollment (base64, optional) |
-| `AZ_IOT_SAS_RENEWAL_PERCENT` | Renewal point, 1-99 (optional; default 80) |
+| `AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT` | Renewal point, 1-99 (optional; default 80) |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA PEM path (optional; default trust store otherwise) |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | Provisioning endpoint (optional) |

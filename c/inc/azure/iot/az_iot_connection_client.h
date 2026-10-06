@@ -1759,10 +1759,12 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
-    /* Hub SAS token renewal: when the current token is due (monotonic ms; 0:
-     * none), the bound on the wait for the renewal disconnect (0: not
-     * waiting), and whether a renewal is in progress. */
+    /* Hub SAS token renewal: when the current token is due (monotonic ms, and
+     * Unix seconds for a monotonic clock that stops in suspend; 0: none), the
+     * bound on the wait for the renewal disconnect (0: not waiting), and
+     * whether a renewal is in progress. */
     uint64_t sas_token_renewal_due_ms;
+    uint64_t sas_token_renewal_due_unix_seconds;
     uint64_t sas_token_renewal_disconnect_deadline_ms;
     bool sas_token_renewal_in_progress;
 

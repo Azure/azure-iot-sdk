@@ -275,7 +275,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `az_iot_connection_client_complete_sas_token()`, within `connect_timeout_seconds`), or
   `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
-  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`.
+  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
+  by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
   disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason

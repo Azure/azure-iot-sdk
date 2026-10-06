@@ -1744,6 +1744,51 @@ static void a_held_dps_wait_is_capped_by_the_hub_renewal(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* A monotonic clock that stopped in suspend: the renewal starts when Unix time
+ * reaches it. */
+static void a_suspended_monotonic_clock_still_renews(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + 50u);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+
+  now = NOW + 50u;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(fx->client.sas_token_renewal_in_progress);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, 0);
+}
+
+/* Defaults: 80% of one hour. */
+static void the_default_renewal_time_is_80_percent_of_an_hour(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  uint64_t before = az_iot_time_mono_ms();
+  init_and_open(fx, &opts);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + 2880u);
+  assert_true(fx->client.sas_token_renewal_due_ms >= before + 2880000u);
+  assert_true(fx->client.sas_token_renewal_due_ms <= az_iot_time_mono_ms() + 2880000u);
+}
+
+/* The largest lifetime at 99% does not overflow. */
+static void the_largest_renewal_time_does_not_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.token_lifetime_seconds = UINT32_MAX;
+  opts.hub_auth.sas.renewal_percent = 99;
+  uint64_t before = az_iot_time_mono_ms();
+  init_and_open(fx, &opts);
+  uint64_t delay_ms = (uint64_t)UINT32_MAX * 990u;
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, NOW + delay_ms / 1000u);
+  assert_true(fx->client.sas_token_renewal_due_ms >= before + delay_ms);
+}
+
 /* A renewal reconnect that is refused is a failure: no renewal flag, and the
  * credential fallback applies. */
 static void a_refused_renewal_falls_back(void** state)
@@ -1832,6 +1877,10 @@ int main(void)
         a_close_from_a_renewal_teardown_callback_stops_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_wait_is_capped_by_the_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_largest_renewal_time_does_not_overflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(

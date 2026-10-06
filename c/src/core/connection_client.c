@@ -1272,6 +1272,18 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
 }
 
 /**
+ * @brief Milliseconds from signing to renewing a token valid for
+ * @p lifetime_seconds: az_iot_auth::sas::renewal_percent of it.
+ */
+static uint64_t get_sas_token_renewal_delay_ms(const az_iot_auth* auth, uint32_t lifetime_seconds)
+{
+  uint32_t percent = auth->sas.renewal_percent != 0u ? auth->sas.renewal_percent
+                                                     : (uint32_t)AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT;
+  /* At most UINT32_MAX * 99 * 10: no overflow. */
+  return (uint64_t)lifetime_seconds * percent * 10u;
+}
+
+/**
  * @brief Signs a SAS token with @p scope's @p key (primary or secondary) and sets it as the
  * CONNECT password, over server-authenticated TLS. The token format comes
  * from azure-sdk-for-c (c->dps_prov / c->hub_client); every buffer is in
@@ -1282,18 +1294,6 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
  * AZ_IOT_ERR_INVALID_ARG when the hub host or client ID is missing; the
  * crypto backend's error otherwise.
  */
-/**
- * @brief Monotonic time at which a token signed now, valid for
- * @p lifetime_seconds, is renewed: at az_iot_auth::sas::renewal_percent of it.
- */
-static uint64_t get_sas_token_renewal_time_ms(const az_iot_auth* auth, uint32_t lifetime_seconds)
-{
-  uint32_t percent = auth->sas.renewal_percent != 0u ? auth->sas.renewal_percent
-                                                     : (uint32_t)AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT;
-  /* At most UINT32_MAX * 99 * 10: no overflow. */
-  return az_iot_time_mono_ms() + (uint64_t)lifetime_seconds * percent * 10u;
-}
-
 static az_iot_result apply_sas_key(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -1387,7 +1387,10 @@ static az_iot_result apply_sas_key(
       = secondary ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
   if (!is_dps)
   {
-    c->sas_token_renewal_due_ms = get_sas_token_renewal_time_ms(auth, lifetime);
+    /* Both clocks: the monotonic one may stop while the device is suspended. */
+    uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
+    c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
+    c->sas_token_renewal_due_unix_seconds = now + delay_ms / 1000u;
   }
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
@@ -4438,6 +4441,7 @@ static void start_sas_token_renewal(az_iot_connection_client* c, uint64_t now)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
   c->sas_token_renewal_due_ms = 0;
+  c->sas_token_renewal_due_unix_seconds = 0;
   c->sas_token_renewal_in_progress = true;
   c->sas_token_renewal_disconnect_deadline_ms = now + SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS;
   if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
@@ -4471,7 +4475,9 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     }
     return;
   }
-  if (c->sas_token_renewal_due_ms != 0 && now >= c->sas_token_renewal_due_ms)
+  if ((c->sas_token_renewal_due_ms != 0 && now >= c->sas_token_renewal_due_ms)
+      || (c->sas_token_renewal_due_unix_seconds != 0
+          && unix_now(c) >= c->sas_token_renewal_due_unix_seconds))
   {
     start_sas_token_renewal(c, now);
   }
