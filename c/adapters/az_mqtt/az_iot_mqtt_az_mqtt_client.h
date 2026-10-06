@@ -50,8 +50,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 65535
-#error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 65535"
+// MQTT 5 uses twice as many entries, and az_mqtt uses at most 65,535.
+#if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 32767
+#error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 32767"
 #endif
 #if AZ_IOT_AZ_MQTT_V == 5
 /** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */

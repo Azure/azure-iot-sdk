@@ -165,7 +165,8 @@ elseif(AZ_MQTT_TLS_BACKEND STREQUAL "mbedtls")
   else()
     find_library(MBEDTLS_SSL_LIB    NAMES mbedtls    REQUIRED)
     find_library(MBEDTLS_X509_LIB   NAMES mbedx509   REQUIRED)
-    find_library(MBEDTLS_CRYPTO_LIB NAMES mbedcrypto REQUIRED)
+    # Per directory, so the crypto library of the same install wins over another one's.
+    find_library(MBEDTLS_CRYPTO_LIB NAMES tfpsacrypto mbedcrypto NAMES_PER_DIR REQUIRED)
     find_path(MBEDTLS_INCLUDE_DIR NAMES mbedtls/ssl.h REQUIRED)
     # Third-party headers: our warning set must not apply to them.
     target_include_directories(az_mqtt_core SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIR})

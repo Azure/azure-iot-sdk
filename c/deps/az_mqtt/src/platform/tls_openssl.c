@@ -262,7 +262,11 @@ static az_result _load_key_uri(SSL_CTX* ctx, az_span uri)
   while (store != NULL && key == NULL && !OSSL_STORE_eof(store))
   {
     OSSL_STORE_INFO* info = OSSL_STORE_load(store);
-    if (info != NULL && OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
+    if (info == NULL)
+    {
+      break; // A loader error does not set eof: retrying would not end.
+    }
+    if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
     {
       key = OSSL_STORE_INFO_get1_PKEY(info);
     }
