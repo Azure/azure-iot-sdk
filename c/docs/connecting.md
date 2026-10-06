@@ -127,7 +127,8 @@ build the common shapes.
 When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an mqttv5
 `Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
 disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
-happens next:
+happens next. For a CONNACK refusal with more than one credential source, this applies once every
+source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies at once.
 
 | Field | `options_default()` | Zeroed | Meaning |
 | --- | --- | --- | --- |
@@ -146,7 +147,8 @@ happens next:
   still back off and stop at the policy's `max_attempts`.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
-- With `reconnection_policy` disabled, the first refusal faults.
+- With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
+  CONNACK refusal that ends a credential pass.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
@@ -222,12 +224,12 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 
 ## Authentication
 
-> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then a SAS token signed
-> with the primary key; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; `auth_source` in
-> state events. Proposed, not implemented yet: fallback to further certificates and to the
-> secondary key on rejection, `user_provided_token` (`init()` returns
-> `AZ_IOT_ERR_NOT_SUPPORTED`), and planned renewal (`renewal_percent`). Until renewal lands, the
-> hub ends the session when the token expires and the client reconnects with a new one.
+> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
+> with the primary and secondary keys, with fallback on rejection; `trusted_ca`; `unix_time`;
+> `token_lifetime_seconds`; `auth_source` in state events. Proposed, not implemented yet: further
+> provider certificates, `user_provided_token` (`init()` returns `AZ_IOT_ERR_NOT_SUPPORTED`), and
+> planned renewal (`renewal_percent`). Until renewal lands, the hub ends the session when the
+> token expires and the client reconnects with a new one.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -251,13 +253,15 @@ copts.sas_buffer.size = sizeof(sas_buf);
 copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 ```
 
-- **Fallback.** When the service rejects a credential (`AZ_IOT_ERR_IDENTITY_REJECTED`), the next
-  source is tried at once, without a `reconnection_policy` delay. Other failures retry the same
-  source under the policy. One pass over all sources counts as one policy attempt; with the
-  policy disabled, `open()` still makes one full pass. The source that connects is kept until
-  rejected; `open()` starts again at the first. `identity_recovery` applies only after a pass in
-  which all of the hub's credentials are rejected. State events report the credential in
-  `auth_source` (and `x509_index`).
+- **Fallback.** When the service rejects a credential -- a CONNACK refusal, or for DPS
+  registration error `401000` -- the next source is tried at once, without a
+  `reconnection_policy` delay, even with the policy disabled. The `RETRY_PENDING` event carries the
+  rejected credential in `auth_source`, classification `AZ_IOT_CONN_FAILURE_IDENTITY`, attempt 0
+  and no delay. Other failures retry the same source under the policy; with the policy disabled, they fault, including one starting a fallback attempt. A fallback to a certificate that is gone by then ends the pass as a local failure, so rejected keys are not retried unpaced. A pass tries each source
+  once, from the one it began with, wrapping; it counts as one policy attempt. The source a
+  fallback selected is kept until rejected; otherwise each attempt starts at the first available
+  source, so a certificate that becomes available (such as one DPS issued) is used next. `open()`
+  starts again at the first. `identity_recovery` applies only after a pass in which all of the hub's credentials are rejected. Provisioning sessions without a registration (`provision_only`, or held by a feature client) fall back the same way, but report no `RETRY_PENDING`: `DISCONNECTING` and `IDLE` carry the rejected `auth_source` and reason, then `CONNECTING` the next source. A fully rejected pass is paced by the policy.
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
