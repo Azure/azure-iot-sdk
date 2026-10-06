@@ -395,9 +395,9 @@ az_mqtt3_codec_decode_publish(az_span body, uint8_t flags, az_mqtt3_publish_data
 
   out->dup = (flags & 0x08) != 0;
   out->qos = (az_mqtt_qos)((flags >> 1) & 0x03);
-  if (out->qos > AZ_MQTT_QOS_EXACTLY_ONCE)
+  if (out->qos > AZ_MQTT_QOS_EXACTLY_ONCE || (out->dup && out->qos == AZ_MQTT_QOS_AT_MOST_ONCE))
   {
-    return AZ_MQTT_ERROR_MALFORMED_PACKET; // QoS 3 is reserved.
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // QoS 3 is reserved; DUP is 0 for QoS 0.
   }
   out->retain = (flags & 0x01) != 0;
   out->packet_id = 0;

@@ -969,6 +969,19 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_auth(
 // ============================================================================
 
 
+/** @brief Whether @p reason is one of the @p count codes in @p allowed. */
+static bool _reason_in(uint8_t reason, uint8_t const* allowed, size_t count)
+{
+  for (size_t i = 0; i < count; i++)
+  {
+    if (allowed[i] == reason)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * @brief Protocol error if property @p id was already seen in this packet (MQTT 5.0 2.2.2.2);
  * marks it seen. User Property and Subscription Identifier may repeat.
@@ -1174,6 +1187,14 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_connack(az_span body, az_mqtt5_conn
   {
     return AZ_MQTT_ERROR_MALFORMED_PACKET;
   }
+  // 3.2.2.2.
+  static uint8_t const allowed[] = { 0x00, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+                                     0x89, 0x8A, 0x8C, 0x90, 0x95, 0x97, 0x99, 0x9A, 0x9B, 0x9C,
+                                     0x9D, 0x9F };
+  if (!_reason_in(reason, allowed, sizeof(allowed)))
+  {
+    return AZ_MQTT_ERROR_PROTOCOL;
+  }
 
   // Properties: always present (3.2.2.3.1), and nothing follows them.
   rc = _decode_connack_props(&body, out);
@@ -1319,9 +1340,9 @@ az_mqtt5_codec_decode_publish(az_span body, uint8_t flags, az_mqtt5_publish_data
 
   out->dup = (flags & 0x08) != 0;
   out->qos = (az_mqtt_qos)((flags >> 1) & 0x03);
-  if (out->qos > AZ_MQTT_QOS_EXACTLY_ONCE)
+  if (out->qos > AZ_MQTT_QOS_EXACTLY_ONCE || (out->dup && out->qos == AZ_MQTT_QOS_AT_MOST_ONCE))
   {
-    return AZ_MQTT_ERROR_MALFORMED_PACKET; // QoS 3 is reserved.
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // QoS 3 is reserved; DUP is 0 for QoS 0.
   }
   out->retain = (flags & 0x01) != 0;
 
@@ -1572,19 +1593,6 @@ static az_result _decode_suback_props(az_span* src, az_mqtt5_suback_data* out)
   }
 
   return AZ_OK;
-}
-
-/** @brief Whether @p reason is one of the @p count codes in @p allowed. */
-static bool _reason_in(uint8_t reason, uint8_t const* allowed, size_t count)
-{
-  for (size_t i = 0; i < count; i++)
-  {
-    if (allowed[i] == reason)
-    {
-      return true;
-    }
-  }
-  return false;
 }
 
 /** @brief SUBACK or UNSUBACK; reason codes outside @p allowed (@p count) are a protocol error. */
