@@ -72,13 +72,17 @@ extends:
                     cmake ninja-build libssl-dev libcurl4-openssl-dev
                 displayName: Install toolchain
               # Warnings are gated on GitHub Actions; this image's compiler may differ.
-              - bash: >
-                  cmake -S c -B c/build -G Ninja
-                  -DCMAKE_BUILD_TYPE=RelWithDebInfo
-                  -DBUILD_SHARED_LIBS=ON
-                  -DAZ_IOT_BUILD_TESTS=ON
-                  -DAZ_IOT_WITH_PAHO=ON
-                  -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
+              - bash: |
+                  set -euo pipefail
+                  cmake -S c -B c/build -G Ninja \
+                    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                    -DBUILD_SHARED_LIBS=ON \
+                    -DAZ_IOT_BUILD_TESTS=ON \
+                    -DAZ_IOT_WITH_PAHO=ON \
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF | tee "$AGENT_TEMPDIRECTORY/configure.log"
+                  # Without OpenSSL, Paho and the OpenSSL adapters build TLS-less and go unscanned.
+                  grep -q 'enabling Paho TLS' "$AGENT_TEMPDIRECTORY/configure.log" \
+                    || { echo "##vso[task.logissue type=error]OpenSSL not found: Paho TLS disabled"; exit 1; }
                 displayName: Configure
               - bash: cmake --build c/build
                 displayName: Build
@@ -119,14 +123,36 @@ extends:
                   Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
                   Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
                 displayName: Locate CMake
+              # OpenSSL comes from the `paho` feature of c/vcpkg.json; static triplet to match /MT.
               - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $root = $env:VCPKG_INSTALLATION_ROOT
+                  if (-not $root -or -not (Test-Path "$root/scripts/buildsystems/vcpkg.cmake")) {
+                    $root = Join-Path $env:AGENT_TEMPDIRECTORY 'vcpkg'
+                    git clone --depth 1 https://github.com/microsoft/vcpkg $root
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                    & "$root/bootstrap-vcpkg.bat" -disableMetrics
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  }
+                  Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
+                displayName: Locate vcpkg
+              - powershell: |
+                  $log = Join-Path $env:AGENT_TEMPDIRECTORY 'configure.log'
                   & "$(CMAKE)" -S c -B c/build -G "Visual Studio 17 2022" -A x64 `
+                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                    -DVCPKG_MANIFEST_FEATURES=paho `
                     -DBUILD_SHARED_LIBS=ON `
                     -DAZ_IOT_BUILD_SAMPLES=OFF `
                     -DAZ_IOT_BUILD_TESTS=ON `
                     -DAZ_IOT_WITH_PAHO=ON `
-                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
-                  exit $LASTEXITCODE
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF 2>&1 | Tee-Object -FilePath $log
+                  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  # Without OpenSSL, Paho and the OpenSSL adapters build TLS-less and go unscanned.
+                  if (-not (Select-String -Path $log -SimpleMatch 'enabling Paho TLS' -Quiet)) {
+                    Write-Host '##vso[task.logissue type=error]OpenSSL not found: Paho TLS disabled'
+                    exit 1
+                  }
                 displayName: Configure
               - powershell: |
                   & "$(CMAKE)" --build c/build --config RelWithDebInfo
