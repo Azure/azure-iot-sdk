@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* SAS end-to-end: a device in a DPS symmetric-key enrollment group registers
  * and connects to the assigned mqttv3 hub with SAS tokens the SDK signs from
- * the group key, then sends telemetry.
+ * the group key, then sends telemetry; and renews the hub token.
  *
  * Environment: AZ_IOT_DPS_ID_SCOPE,
  * AZ_IOT_DPS_SAS_GROUP_KEY, AZ_IOT_DPS_SAS_REGISTRATION_ID, AZ_IOT_TRUSTED_CA;
@@ -40,11 +40,33 @@ static void test_dps_and_hub_with_a_group_sas_key(void** state)
   e2e_sas_config_free(&cfg);
 }
 
+/* A 20 s hub token renewed at 50%: the session reconnects with a new token,
+ * then sends telemetry. */
+static void test_the_hub_sas_token_is_renewed(void** state)
+{
+  (void)state;
+  e2e_sas_config cfg;
+  e2e_sas_config_load(&cfg);
+
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  e2e_sas_apply_dps(&cfg, &copts);
+  copts.hub_auth = copts.dps_auth;
+  copts.hub_auth.sas.token_lifetime_seconds = 20;
+  copts.hub_auth.sas.renewal_percent = 50;
+
+  e2e_sas_run run;
+  e2e_sas_connect_renew_and_send(&run, &copts, "e2e_sas_renewal", 1);
+  assert_int_equal(run.hub_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+
+  e2e_sas_config_free(&cfg);
+}
+
 int main(void)
 {
   e2e_install_log_sink();
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_dps_and_hub_with_a_group_sas_key),
+    cmocka_unit_test(test_the_hub_sas_token_is_renewed),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

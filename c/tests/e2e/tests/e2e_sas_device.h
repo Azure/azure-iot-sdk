@@ -26,6 +26,7 @@ typedef struct
 {
   az_iot_auth_source dps_source;
   az_iot_auth_source hub_source;
+  int hub_renewals; /**< Hub CONNECTED events flagged is_credential_renewal. */
 } e2e_sas_run;
 
 /** @brief Loads @p cfg; fails the test when a required variable is unset. */
@@ -44,5 +45,13 @@ void e2e_sas_connect_and_send(
     e2e_sas_run* run,
     const az_iot_connection_client_options* copts,
     const char* label);
+
+/** @brief As e2e_sas_connect_and_send(), but first waits until the hub token
+ * has been renewed @p renewals times. */
+void e2e_sas_connect_renew_and_send(
+    e2e_sas_run* run,
+    const az_iot_connection_client_options* copts,
+    const char* label,
+    int renewals);
 
 #endif /* E2E_SAS_DEVICE_H */

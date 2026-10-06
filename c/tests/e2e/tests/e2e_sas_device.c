@@ -22,6 +22,7 @@
 #define E2E_SAS_CONNECT_TIMEOUT_S 120
 #define E2E_SAS_SEND_TIMEOUT_S 30
 #define E2E_SAS_CLOSE_TIMEOUT_S 30
+#define E2E_SAS_RENEWAL_TIMEOUT_S 90
 
 /* One key (DPS and hub share it), IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
@@ -68,14 +69,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
   fprintf(
       stderr,
-      "[e2e-sas] %s state %s (0x%x) reason %s (0x%x) source %s (%d)\n",
+      "[e2e-sas] %s state %s (0x%x) reason %s (0x%x) source %s (%d)%s\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
       az_iot_connection_state_to_string(event->state),
       (unsigned)event->state,
       az_iot_result_to_string(event->reason),
       (unsigned)event->reason,
       auth_source_name(event->auth_source),
-      (int)event->auth_source);
+      (int)event->auth_source,
+      event->is_credential_renewal ? " renewal" : "");
   if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
@@ -85,6 +87,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     else
     {
       c->run->hub_source = event->auth_source;
+      if (event->is_credential_renewal)
+      {
+        c->run->hub_renewals++;
+      }
     }
   }
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
@@ -143,8 +149,18 @@ void e2e_sas_connect_and_send(
     const az_iot_connection_client_options* copts,
     const char* label)
 {
+  e2e_sas_connect_renew_and_send(run, copts, label, 0);
+}
+
+void e2e_sas_connect_renew_and_send(
+    e2e_sas_run* run,
+    const az_iot_connection_client_options* copts,
+    const char* label,
+    int renewals)
+{
   run->dps_source = AZ_IOT_AUTH_SOURCE_NONE;
   run->hub_source = AZ_IOT_AUTH_SOURCE_NONE;
+  run->hub_renewals = 0;
   sas_ctx ctx = { .hub_state = AZ_IOT_CONN_STATE_IDLE, .run = run };
   az_iot_connection_client conn = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
@@ -164,6 +180,15 @@ void e2e_sas_connect_and_send(
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
+  assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_CONNECTED);
+
+  start = time(NULL);
+  while (run->hub_renewals < renewals && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED
+         && (time(NULL) - start) < E2E_SAS_RENEWAL_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_true(run->hub_renewals >= renewals);
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_CONNECTED);
 
   char payload[64];

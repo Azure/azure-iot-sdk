@@ -21,3 +21,6 @@
   small) produces a state event on each retry. Such failures carry the new error source
   `AZ_IOT_CONN_ERR_SRC_LOCAL`. `AZ_IOT_CONN_STATE_RECONNECTING` is renamed
   `AZ_IOT_CONN_STATE_RETRY_PENDING`. See [docs/connecting.md](docs/connecting.md#connection-states).
+- SAS token renewal: at `hub_auth.sas.renewal_percent` of a key-signed token's lifetime, the hub
+  session reconnects with a new token; those state events carry `is_credential_renewal`. See
+  [docs/connecting.md](docs/connecting.md#authentication).

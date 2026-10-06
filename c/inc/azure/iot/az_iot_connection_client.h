@@ -373,18 +373,19 @@ extern "C"
        * 0 selects AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS. */
       uint32_t token_lifetime_seconds;
       /**
-       * @brief When to renew the token of a session held open, as a percent
-       * of token_lifetime_seconds for key-signed tokens, or of
+       * @brief When to renew the hub session's token, as a percent of
+       * token_lifetime_seconds for key-signed tokens, or of
        * az_iot_sas_token_response::valid_seconds for user-provided ones. 0
        * selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects values
-       * above 99.
+       * above 99. A provisioning session is not renewed.
        *
-       * Not implemented yet: validated only. Until it is, the service ends
-       * the session when the token expires and the reconnect signs a new
-       * one. When implemented: MQTT 3.1.1 cannot re-authenticate a live session, so renewal
-       * reconnects: RETRY_PENDING, then CONNECTED, both with
-       * az_iot_connection_state_event::is_credential_renewal set and reason
-       * AZ_IOT_OK; a hub session resumes per session_continuity. With a
+       * MQTT 3.1.1 cannot re-authenticate a live session, so renewal
+       * disconnects and reconnects at once, with or without a
+       * reconnection_policy: RETRY_PENDING, SETTING_UP, CONNECTING, then
+       * CONNECTED, all with az_iot_connection_state_event::is_credential_renewal
+       * set and reason AZ_IOT_OK. The session resumes per session_continuity;
+       * publishes awaiting a PUBACK complete with AZ_IOT_ERR_NOT_CONNECTED. A
+       * failed reconnect is reported and retried as any other failure. With a
        * PENDING user-provided token, the session continues until the token
        * arrives or the current one expires.
        */
@@ -1018,10 +1019,11 @@ extern "C"
      * FAULTED with AZ_IOT_CONN_FAILURE_IDENTITY means no further automatic
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
-    /** @brief The transition is a planned SAS token renewal, not a failure.
-     * Only where renewal needs a reconnect (MQTT); a transport that
-     * re-authenticates in session has no transition to flag. Always false
-     * until renewal is implemented. */
+    /** @brief The transition is a planned SAS token renewal, not a failure:
+     * the hub's RETRY_PENDING through CONNECTED (see
+     * az_iot_auth::sas::renewal_percent). Only where renewal needs a reconnect
+     * (MQTT); a transport that re-authenticates in session has no transition
+     * to flag. */
     bool is_credential_renewal;
     /** @brief The credential this event is about: the one that connected on
      * CONNECTED, the one rejected on a rejection. AZ_IOT_AUTH_SOURCE_NONE from
@@ -1323,7 +1325,8 @@ extern "C"
     AZ_IOT_CONN_DEFER_FAULT,
     AZ_IOT_CONN_DEFER_RECONNECT,
     AZ_IOT_CONN_DEFER_IDLE,
-    AZ_IOT_CONN_DEFER_FALLBACK
+    AZ_IOT_CONN_DEFER_FALLBACK,
+    AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
   };
   enum
   {
@@ -1756,6 +1759,14 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
+    /* Hub SAS token renewal: when the current token is due (monotonic ms, and
+     * Unix seconds for a monotonic clock that stops in suspend; 0: none), the
+     * bound on the wait for the renewal disconnect (0: not waiting), and
+     * whether a renewal is in progress. */
+    uint64_t sas_token_renewal_due_ms;
+    uint64_t sas_token_renewal_due_unix_seconds;
+    uint64_t sas_token_renewal_disconnect_deadline_ms;
+    bool sas_token_renewal_in_progress;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct
