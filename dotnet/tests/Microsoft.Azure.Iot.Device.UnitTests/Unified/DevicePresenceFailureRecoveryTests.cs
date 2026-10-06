@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }

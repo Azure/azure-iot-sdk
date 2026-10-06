@@ -202,7 +202,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (connectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (connectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 // The other handler covers this scenario
                 return;

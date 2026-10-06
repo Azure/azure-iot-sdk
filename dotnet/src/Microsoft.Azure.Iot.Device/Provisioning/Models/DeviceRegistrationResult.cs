@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Azure.Iot.Device.Models;
 
 namespace Microsoft.Azure.Iot.Device.Provisioning.Models
 {
@@ -87,9 +88,10 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
         public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 
         /// <summary>
-        /// The connection profile capability of the assigned IoT Hub, forwarded verbatim from the hub. Indicates the MQTT protocol version the device should use to connect. An absent or null value resolves to 'classic'.
+        /// The connection profile capability of the assigned IoT Hub, forwarded verbatim from the hub. Indicates the MQTT protocol version the device should use to connect. An absent or null value resolves to 'Mqttv3'.
         /// </summary>
         [JsonPropertyName("connectionProfile")]
-        public ConnectionProfile? ConnectionProfile { get; set; } = Models.ConnectionProfile.Classic;
+        [JsonConverter(typeof(IotHubConnectionTypeJsonConverter))]
+        public IotHubConnectionType? ConnectionProfile { get; set; } = IotHubConnectionType.Mqttv3;
     }
 }

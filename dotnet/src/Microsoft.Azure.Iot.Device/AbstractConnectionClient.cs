@@ -415,7 +415,7 @@ namespace Microsoft.Azure.Iot.Device
 
             // An absent connection profile resolves to the documented default ("classic"); an unknown profile string
             // never reaches here because the registration response deserializer rejects values outside this enum.
-            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile ?? ConnectionProfile.Classic;
+            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile?.ToConnectionProfile() ?? ConnectionProfile.Classic;
 
             // Even a registration that reports "assigned" must actually carry the information this device needs to
             // connect: a hub hostname, a device id, and a connection profile this SDK can speak. Mirror the C
@@ -451,7 +451,7 @@ namespace Microsoft.Azure.Iot.Device
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                ConnectionProfile = connectionProfile,
+                ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
             // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
