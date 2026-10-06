@@ -2563,6 +2563,33 @@ static void a_suspended_clock_ends_an_expired_user_token_session(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
 }
 
+/* A suspend between delivery and use: Unix time ages the delivered token
+ * though the monotonic clock did not move. */
+static void a_delivered_token_ages_by_unix_time(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
+  now = NOW + 100u;
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  assert_true(no_connect_pending(fx));
+
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
+  now += 50u;
+  uint64_t mono = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+  assert_true(fx->client.sas_token_renewal_due_ms <= mono + 31000u);
+  assert_true(fx->client.sas_token_expiry_ms <= mono + 51000u);
+  assert_true(fx->client.sas_token_expiry_unix_seconds <= now + 50u);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2607,6 +2634,7 @@ int main(void)
         a_renewal_without_retry_after_waits_30_seconds, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_suspended_clock_ends_an_expired_user_token_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delivered_token_ages_by_unix_time, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -1786,6 +1786,7 @@ extern "C"
       size_t token_len;
       uint32_t valid_seconds;
       uint64_t delivered_ms; /* when READY arrived (monotonic); valid_seconds counts from it */
+      uint64_t delivered_unix_seconds; /* the same in Unix time; 0: unknown */
       uint32_t retry_after_seconds;
       uint64_t deadline_ms; /* PENDING bound (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
