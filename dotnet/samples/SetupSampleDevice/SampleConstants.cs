@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Models;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
@@ -47,7 +47,7 @@ namespace SetupSampleDevice
             File.WriteAllText(outputPath + "iothubhostname.txt", iotHubHostName);
         }
 
-        public static void SaveConnectionProfile(ConnectionProfile connectionProfile)
+        public static void SaveConnectionProfile(IotHubConnectionType connectionProfile)
         {
             File.WriteAllText(outputPath + "connectionprofile.txt", connectionProfile.ToString());
         }
@@ -106,7 +106,7 @@ namespace SetupSampleDevice
             return File.ReadAllText(outputPath + "iothubhostname.txt");
         }
 
-        public static ConnectionProfile LoadConnectionProfile()
+        public static IotHubConnectionType LoadConnectionProfile()
         {
             string? connectionProfile = System.Environment.GetEnvironmentVariable("IOT_HUB_CONNECTION_PROFILE");
             if (string.IsNullOrEmpty(connectionProfile) && File.Exists(outputPath + "connectionprofile.txt"))
@@ -114,13 +114,13 @@ namespace SetupSampleDevice
                 connectionProfile = File.ReadAllText(outputPath + "connectionprofile.txt");
             }
 
-            // Default to the classic profile when no profile was persisted, matching the enum's default.
+            // Default to the MQTT 3.x profile when no profile was persisted, matching the enum's default.
             if (string.IsNullOrEmpty(connectionProfile))
             {
-                return ConnectionProfile.Classic;
+                return IotHubConnectionType.Mqttv3;
             }
 
-            return Enum.Parse<ConnectionProfile>(connectionProfile, ignoreCase: true);
+            return Enum.Parse<IotHubConnectionType>(connectionProfile, ignoreCase: true);
         }
 
         public static byte[] LoadPfx()

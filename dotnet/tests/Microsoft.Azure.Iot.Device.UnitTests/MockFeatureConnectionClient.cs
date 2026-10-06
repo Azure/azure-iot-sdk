@@ -79,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Build a connection context for the given hub generation.</summary>
         public static ConnectionContext CreateConnectionContext(
-            ConnectionProfile connectionProfile,
+            IotHubConnectionType connectionProfile,
             string deviceId = "someDeviceId",
             string iotHubHostName = "someHostName")
         {

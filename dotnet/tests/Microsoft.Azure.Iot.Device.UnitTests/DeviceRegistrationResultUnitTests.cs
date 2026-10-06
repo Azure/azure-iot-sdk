@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using System.Text.Json;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Xunit;
 
@@ -18,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 JsonSerializer.Deserialize<DeviceRegistrationResult>(json, JsonSerializationSettings.Options);
 
             Assert.NotNull(result);
-            Assert.Equal(ConnectionProfile.MqttV5, result.ConnectionProfile);
+            Assert.Equal(IotHubConnectionType.Mqttv5, result.ConnectionProfile);
         }
 
         [Fact]
@@ -30,7 +31,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 JsonSerializer.Deserialize<DeviceRegistrationResult>(json, JsonSerializationSettings.Options);
 
             Assert.NotNull(result);
-            Assert.Equal(ConnectionProfile.Classic, result.ConnectionProfile);
+            Assert.Equal(IotHubConnectionType.Mqttv3, result.ConnectionProfile);
         }
     }
 }
