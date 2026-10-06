@@ -4391,7 +4391,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 static void sas_renew_reconnect(az_iot_connection_client* c)
 {
   c->sas_renew_deadline_ms = 0;
+  uint32_t closes = c->close_count;
+  uint32_t seq = c->open_seq;
   teardown_active(c);
+  /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+  if (c->close_count != closes || c->open_seq != seq)
+  {
+    c->sas_renewing = false;
+    return;
+  }
   uint64_t now = az_iot_time_mono_ms();
   c->reconnect_due_ms = now != 0 ? now : 1u;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_OK);
@@ -4435,6 +4443,26 @@ static void sas_renewal_pump(az_iot_connection_client* c)
   {
     sas_renew_reconnect(c);
   }
+}
+
+/** @brief @p timeout_ms, capped so the hub's process_loop() returns by the
+ * next SAS renewal deadline. */
+static uint32_t sas_renewal_wait_ms(const az_iot_connection_client* c, uint32_t timeout_ms)
+{
+  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
+      || (source != AZ_IOT_AUTH_SOURCE_PRIMARY_KEY && source != AZ_IOT_AUTH_SOURCE_SECONDARY_KEY))
+  {
+    return timeout_ms;
+  }
+  uint64_t deadline = c->sas_renewing ? c->sas_renew_deadline_ms : c->sas_renew_due_ms;
+  if (deadline == 0)
+  {
+    return timeout_ms;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t remaining = deadline > now ? deadline - now : 0;
+  return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
 static void apply_deferred(az_iot_connection_client* c)
@@ -5949,7 +5977,8 @@ az_iot_result az_iot_connection_client_do_work(
   az_iot_result r = AZ_IOT_OK;
   if (client->active_client)
   {
-    r = client->active_client->iface->process_loop(client->active_client, timeout_ms);
+    r = client->active_client->iface->process_loop(
+        client->active_client, sas_renewal_wait_ms(client, timeout_ms));
   }
 
   apply_deferred(client);

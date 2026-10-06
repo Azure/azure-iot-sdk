@@ -1666,6 +1666,55 @@ static void a_close_during_a_renewal_settles_idle(void** state)
   }
 }
 
+/* A PUBACK callback run by the renewal's teardown closes the client: the
+ * renewal does not reconnect. */
+static void close_on_puback(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
+}
+
+static void a_close_from_a_renewal_teardown_callback_stops_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.payload = (const uint8_t*)"x";
+  msg.payload_len = 1;
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->client, NULL, &msg, close_on_puback, &fx->client),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = start_renewal(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 2);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
+  assert_true(no_connect_pending(fx));
+  assert_int_equal(fx->client.reconnect_due_ms, 0);
+  assert_false(fx->client.sas_renewing);
+}
+
+/* The hub's process_loop() wait ends by the renewal time, then by the
+ * disconnect bound. */
+static void the_hub_wait_is_capped_by_the_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->client.sas_renew_due_ms = az_iot_time_mono_ms() + 1000u;
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 1000u);
+
+  (void)start_renewal(fx);
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 5000u);
+}
+
 /* A renewal reconnect that is refused is a failure: no renewal flag, and the
  * credential fallback applies. */
 static void a_refused_renewal_falls_back(void** state)
@@ -1750,6 +1799,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_x509_session_is_not_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_during_a_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_renewal_falls_back, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_from_a_renewal_teardown_callback_stops_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_hub_wait_is_capped_by_the_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provision_only_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(

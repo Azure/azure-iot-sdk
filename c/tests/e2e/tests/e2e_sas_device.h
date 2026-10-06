@@ -46,8 +46,8 @@ void e2e_sas_connect_and_send(
     const az_iot_connection_client_options* copts,
     const char* label);
 
-/** @brief As e2e_sas_connect_and_send(), but waits for @p renewals hub token
- * renewals before sending. */
+/** @brief As e2e_sas_connect_and_send(), but first waits until the hub token
+ * has been renewed @p renewals times. */
 void e2e_sas_connect_renew_and_send(
     e2e_sas_run* run,
     const az_iot_connection_client_options* copts,
