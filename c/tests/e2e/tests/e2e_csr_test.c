@@ -88,7 +88,13 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   csr_ctx* c = (csr_ctx*)user_ctx;
   c->conn_state = s;
   c->last_reason = reason;
-  fprintf(stderr, "[e2e-csr] conn state -> 0x%x (reason 0x%x)\n", (unsigned)s, (unsigned)reason);
+  fprintf(
+      stderr,
+      "[e2e-csr] conn state -> %s (0x%x) reason %s (0x%x)\n",
+      az_iot_connection_state_to_string(s),
+      (unsigned)s,
+      az_iot_result_to_string(reason),
+      (unsigned)reason);
 }
 
 static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)

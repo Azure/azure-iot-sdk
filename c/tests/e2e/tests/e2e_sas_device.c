@@ -34,6 +34,25 @@ typedef struct
   az_iot_result send_status;
 } sas_ctx;
 
+static const char* auth_source_name(az_iot_auth_source source)
+{
+  switch (source)
+  {
+    case AZ_IOT_AUTH_SOURCE_NONE:
+      return "AZ_IOT_AUTH_SOURCE_NONE";
+    case AZ_IOT_AUTH_SOURCE_X509:
+      return "AZ_IOT_AUTH_SOURCE_X509";
+    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
+      return "AZ_IOT_AUTH_SOURCE_PRIMARY_KEY";
+    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
+      return "AZ_IOT_AUTH_SOURCE_SECONDARY_KEY";
+    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
+      return "AZ_IOT_AUTH_SOURCE_USER_PROVIDED";
+    default:
+      return "?";
+  }
+}
+
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   sas_ctx* c = (sas_ctx*)user_ctx;
@@ -49,10 +68,13 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
   fprintf(
       stderr,
-      "[e2e-sas] %s state 0x%x reason 0x%x source %d\n",
+      "[e2e-sas] %s state %s (0x%x) reason %s (0x%x) source %s (%d)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
+      az_iot_connection_state_to_string(event->state),
       (unsigned)event->state,
+      az_iot_result_to_string(event->reason),
       (unsigned)event->reason,
+      auth_source_name(event->auth_source),
       (int)event->auth_source);
   if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
