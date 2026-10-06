@@ -61,6 +61,11 @@
 #define DEFER_RECONNECT AZ_IOT_CONN_DEFER_RECONNECT
 #define DEFER_IDLE AZ_IOT_CONN_DEFER_IDLE
 #define DEFER_FALLBACK AZ_IOT_CONN_DEFER_FALLBACK
+#define DEFER_RENEW AZ_IOT_CONN_DEFER_RENEW
+
+/** @brief How long a SAS renewal waits for its disconnect to complete before
+ * reconnecting anyway. */
+#define SAS_RENEWAL_DISCONNECT_TIMEOUT_MS 5000u
 
 #define DPS_PHASE_NONE AZ_IOT_DPS_PHASE_NONE
 #define DPS_PHASE_CONNECTING AZ_IOT_DPS_PHASE_CONNECTING
@@ -647,6 +652,16 @@ static void set_state_to(
   }
   c->state[scope] = next;
   log_state_transition(c, scope, next, reason);
+  /* A renewal runs from its RETRY_PENDING to CONNECTED; any other transition
+   * of the hub, or a failure, ends it. */
+  bool renewal = scope == AZ_IOT_CONN_SCOPE_HUB && c->sas_renewing && reason == AZ_IOT_OK
+      && (next == AZ_IOT_CONN_STATE_RETRY_PENDING || next == AZ_IOT_CONN_STATE_SETTING_UP
+          || next == AZ_IOT_CONN_STATE_CONNECTING || next == AZ_IOT_CONN_STATE_CONNECTED);
+  if (scope == AZ_IOT_CONN_SCOPE_HUB && (!renewal || next == AZ_IOT_CONN_STATE_CONNECTED))
+  {
+    c->sas_renewing = false;
+    c->sas_renew_deadline_ms = 0;
+  }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. */
   if (scope == AZ_IOT_CONN_SCOPE_HUB && next == AZ_IOT_CONN_STATE_CONNECTED)
@@ -677,7 +692,7 @@ static void set_state_to(
     .is_retriable = (reason != AZ_IOT_OK) && reason_is_retriable(reason),
     .error = NULL,
     .recovery = NULL,
-    .is_credential_renewal = false,
+    .is_credential_renewal = renewal,
     .auth_source = c->auth[scope].source,
     .x509_index = c->auth[scope].x509_index,
   };
@@ -1344,6 +1359,14 @@ static az_iot_result apply_sas_key(
   copts->password = token;
   c->auth[scope].source
       = secondary ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+  if (!is_dps)
+  {
+    uint32_t percent = auth->sas.renewal_percent != 0u
+        ? auth->sas.renewal_percent
+        : (uint32_t)AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT;
+    /* At most UINT32_MAX * 99 * 10: no overflow. */
+    c->sas_renew_due_ms = az_iot_time_mono_ms() + (uint64_t)lifetime * percent * 10u;
+  }
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
 }
@@ -3984,6 +4007,14 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
+      else if (
+          c->sas_renewing && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+          && !reason_is_identity_refusal(evt->status))
+      {
+        /* The disconnect a token renewal asked for. */
+        c->deferred = DEFER_RENEW;
+        c->deferred_reason = AZ_IOT_OK;
+      }
       else if (!az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
       {
         /* A refusal is a failure, not a clean end of session. */
@@ -4354,6 +4385,58 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   return AZ_IOT_OK;
 }
 
+/** @brief Ends the session a SAS renewal disconnected and reconnects at once
+ * with a new token: RETRY_PENDING with reason AZ_IOT_OK, no policy delay or
+ * attempt. */
+static void sas_renew_reconnect(az_iot_connection_client* c)
+{
+  c->sas_renew_deadline_ms = 0;
+  teardown_active(c);
+  uint64_t now = az_iot_time_mono_ms();
+  c->reconnect_due_ms = now != 0 ? now : 1u;
+  set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_OK);
+}
+
+/**
+ * @brief Renews the hub's SAS token when due. MQTT 3.1.1 cannot
+ * re-authenticate a live session, so the session is disconnected, then
+ * reconnected by sas_renew_reconnect() when the adapter reports the
+ * disconnect, or after SAS_RENEWAL_DISCONNECT_TIMEOUT_MS.
+ */
+static void sas_renewal_pump(az_iot_connection_client* c)
+{
+  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  if (c->active_client == NULL || c->user_close
+      || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
+      || (source != AZ_IOT_AUTH_SOURCE_PRIMARY_KEY && source != AZ_IOT_AUTH_SOURCE_SECONDARY_KEY))
+  {
+    return;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  if (c->sas_renewing)
+  {
+    if (c->sas_renew_deadline_ms != 0 && now >= c->sas_renew_deadline_ms)
+    {
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_CONNECTION, "SAS renewal: no disconnect event; reconnecting");
+      sas_renew_reconnect(c);
+    }
+    return;
+  }
+  if (c->sas_renew_due_ms == 0 || now < c->sas_renew_due_ms)
+  {
+    return;
+  }
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
+  c->sas_renew_due_ms = 0;
+  c->sas_renewing = true;
+  c->sas_renew_deadline_ms = now + SAS_RENEWAL_DISCONNECT_TIMEOUT_MS;
+  if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
+  {
+    sas_renew_reconnect(c);
+  }
+}
+
 static void apply_deferred(az_iot_connection_client* c)
 {
   if (c->deferred == DEFER_NONE)
@@ -4378,6 +4461,9 @@ static void apply_deferred(az_iot_connection_client* c)
     case DEFER_FALLBACK:
       teardown_active(c);
       retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+      break;
+    case DEFER_RENEW:
+      sas_renew_reconnect(c);
       break;
     case DEFER_IDLE:
       teardown_active(c);
@@ -5944,6 +6030,8 @@ az_iot_result az_iot_connection_client_do_work(
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
     }
   }
+
+  sas_renewal_pump(client);
 
   /* If we are waiting to reconnect and the deadline has passed, attempt it.
    *

@@ -3,9 +3,6 @@
 
 # SAS keys to DPS and to the hub
 
-> `renewal_percent` is accepted but not used yet: planned renewal is not implemented. Until then
-> the hub ends the session at token expiry and the client reconnects with a new token.
-
 Registers with DPS and connects to the assigned hub with SAS tokens the SDK signs from symmetric
 keys, then sends one telemetry message on whichever hub generation DPS assigned. See
 [`main.c`](main.c).
@@ -18,9 +15,9 @@ keys, then sends one telemetry message on whichever hub generation DPS assigned.
   callback prints which credential connected.
 - Enrollment-group keys are accepted; the SDK derives the device keys from them.
 - `crypto = az_iot_crypto_openssl()` provides HMAC-SHA256. No `certificate_provider`.
-- Tokens last `sas.token_lifetime_seconds` (default one hour). At expiry the service ends the
-  session and the client reconnects with a new token; `sas.renewal_percent` is accepted, not
-  used yet.
+- Tokens last `sas.token_lifetime_seconds` (default one hour). At `sas.renewal_percent` of it
+  (default 80) the client reconnects to the hub with a new token; the state callback prints
+  `(token renewal)` for those events.
 - A hub that does not accept SAS (the mqttv5 hub, until it does) fails the connect with
   `AZ_IOT_ERR_IDENTITY_REJECTED`.
 

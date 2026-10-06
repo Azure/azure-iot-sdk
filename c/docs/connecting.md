@@ -226,10 +226,9 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 
 > **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
 > with the primary and secondary keys, with fallback on rejection; `trusted_ca`; `unix_time`;
-> `token_lifetime_seconds`; `auth_source` in state events. Proposed, not implemented yet: further
-> provider certificates, `user_provided_token` (`init()` returns `AZ_IOT_ERR_NOT_SUPPORTED`), and
-> planned renewal (`renewal_percent`). Until renewal lands, the hub ends the session when the
-> token expires and the client reconnects with a new one.
+> `token_lifetime_seconds`; renewal of the hub's key-signed token (`renewal_percent`);
+> `auth_source` in state events. Proposed, not implemented yet: further provider certificates and
+> `user_provided_token` (`init()` returns `AZ_IOT_ERR_NOT_SUPPORTED`).
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -277,8 +276,13 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
 - **Renewal.** Per role, in `sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`.
-  Applies to any session held open. MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
-  reconnects; those state events carry `is_credential_renewal` and reason `AZ_IOT_OK`.
+  Applies to the hub session. MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
+  disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
+  `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
+  `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
+  reconnect is an ordinary failure (fallback, policy). A provisioning session is not renewed: a
+  registration is short, and a session a feature client holds is reopened with a new token when
+  the service ends it.
 - **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
   `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued

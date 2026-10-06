@@ -9,9 +9,8 @@
  *
  * The SDK signs a SAS token with the primary key for each DPS attempt and for
  * the hub, and with the secondary key when the primary is rejected.
- * AZ_IOT_SAS_RENEWAL_PERCENT is accepted but not used yet: planned renewal is
- * not implemented, so at token expiry the service ends the session and the
- * reconnect signs a new token.
+ * At AZ_IOT_SAS_RENEWAL_PERCENT of the token lifetime the client reconnects to
+ * the hub with a new token.
  * Takes individual enrollment keys, or enrollment-group keys from which the
  * device keys are derived. Sends one telemetry message on
  * whichever hub generation DPS assigned; a hub that does not accept SAS fails
