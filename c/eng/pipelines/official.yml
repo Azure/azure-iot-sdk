@@ -1,6 +1,6 @@
 # Official build of the C SDK on Azure Pipelines, with the SDL analysis injected by the
 # 1ES Pipeline Templates: source scans (CodeQL, PoliCheck, secret scanning) and binary scans
-# (BinSkim, antimalware, SBOM) of the libraries published by the build jobs. Results go to
+# (BinSkim, antimalware, SBOM) of the libraries and samples published by the build jobs. Results go to
 # TSA (c/.config/tsaoptions.json); third-party sources fetched by CMake are declared in
 # c/cgmanifest.json for Component Governance.
 #
@@ -93,9 +93,11 @@ extends:
                   out="$BUILD_ARTIFACTSTAGINGDIRECTORY/linux"
                   mkdir -p "$out"
                   find c/build/src -type f -name 'libaz_iot*.so*' -exec cp {} "$out/" \;
-                  ls -l "$out"
-                  [ -n "$(ls -A "$out")" ] || { echo "##vso[task.logissue type=error]no libraries staged"; exit 1; }
-                displayName: Stage libraries
+                  # Samples are the only binaries linking the static adapters (Paho, OpenSSL crypto, managed certificates).
+                  (cd c/build && find samples -type f -perm -u+x -exec cp --parents {} "$out/" \;)
+                  ls -lR "$out"
+                  [ -n "$(ls -A "$out/samples")" ] || { echo "##vso[task.logissue type=error]no samples staged"; exit 1; }
+                displayName: Stage binaries
 
           - job: windows
             displayName: Windows (MSVC x64, shared, RelWithDebInfo)
@@ -162,6 +164,22 @@ extends:
                   & "$(CTEST)" --test-dir c/build -C RelWithDebInfo --output-on-failure
                   exit $LASTEXITCODE
                 displayName: Unit tests
+              # Static build with samples: the only binaries linking the static adapters
+              # (Paho, OpenSSL crypto, managed certificates). Separate tree: shared builds skip samples.
+              - powershell: |
+                  & "$(CMAKE)" -S c -B c/build-static -G "Visual Studio 17 2022" -A x64 `
+                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                    -DVCPKG_MANIFEST_FEATURES=paho `
+                    -DBUILD_SHARED_LIBS=OFF `
+                    -DAZ_IOT_BUILD_SAMPLES=ON `
+                    -DAZ_IOT_BUILD_TESTS=OFF `
+                    -DAZ_IOT_WITH_PAHO=ON `
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
+                  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  & "$(CMAKE)" --build c/build-static --config RelWithDebInfo
+                  exit $LASTEXITCODE
+                displayName: Build samples (static)
               - powershell: |
                   $ErrorActionPreference = 'Stop'
                   $out = Join-Path $env:BUILD_ARTIFACTSTAGINGDIRECTORY 'windows'
@@ -169,6 +187,18 @@ extends:
                   Get-ChildItem c/build -Recurse -File -Include 'az_iot*.dll', 'az_iot*.pdb' |
                     Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
                     Copy-Item -Destination $out
-                  Get-ChildItem $out | Format-Table Name, Length
+                  $samples = Join-Path $out 'samples'
+                  New-Item -ItemType Directory -Force $samples | Out-Null
+                  # Keep the directory layout: sample names repeat across groups.
+                  $src = (Resolve-Path c/build-static/samples).Path
+                  Get-ChildItem $src -Recurse -File -Include '*.exe', '*.pdb' |
+                    Where-Object { $_.FullName -notmatch '[\\/]CMakeFiles[\\/]' } |
+                    ForEach-Object {
+                      $dest = Join-Path $samples $_.DirectoryName.Substring($src.Length)
+                      New-Item -ItemType Directory -Force $dest | Out-Null
+                      Copy-Item $_.FullName -Destination $dest
+                    }
+                  Get-ChildItem $out -Recurse -File | Format-Table FullName, Length
                   if (-not (Get-ChildItem $out -Filter '*.dll')) { throw 'no DLLs staged' }
-                displayName: Stage libraries
+                  if (-not (Get-ChildItem $samples -Recurse -Filter '*.exe')) { throw 'no samples staged' }
+                displayName: Stage binaries
