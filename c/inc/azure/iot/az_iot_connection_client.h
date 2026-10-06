@@ -109,7 +109,9 @@ extern "C"
    * az_iot_connection_client_open(). A failure (refused CONNACK, transport
    * error, stalled handshake, failed registration) settles in
    * AZ_IOT_CONN_STATE_FAULTED until the application calls close() and opens
-   * again. Same as a zeroed policy, but states the intent.
+   * again; a rejected credential with another source configured is first
+   * retried at once with that source (see az_iot_auth). Same as a zeroed
+   * policy, but states the intent.
    */
   az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void);
 
@@ -217,11 +219,11 @@ extern "C"
    * Per role (DPS, hub), the sources configured are tried in this order,
    * skipping any not set: the X.509 certificate from
    * az_iot_connection_client_options::certificate_provider, then the primary
-   * key of az_iot_auth::sas. Setting only one of X.509 or SAS selects it alone.
+   * and secondary keys of az_iot_auth::sas. Setting only one of X.509 or SAS
+   * selects it alone. See az_iot_auth for fallback on rejection.
    *
    * Not implemented yet: further provider certificates (a load() index, see
-   * docs/eng/certificate-management.md), the secondary key and
-   * user_provided_token as fallbacks.
+   * docs/eng/certificate-management.md) and user_provided_token.
    */
   typedef enum az_iot_auth_source
   {
@@ -320,21 +322,26 @@ extern "C"
    * @brief SAS credentials for one role, tried after any X.509 certificate
    * (see az_iot_auth_source). Zeroed: no SAS.
    *
-   * Implemented: the primary key is used when the provider has no
-   * certificate for the role, or there is no provider.
+   * The primary key is used when the provider has no certificate for the
+   * role, or there is no provider.
    *
-   * Not implemented yet: fallback on rejection. When it is, a rejected
-   * credential (hub: AZ_IOT_ERR_IDENTITY_REJECTED; DPS: AZ_IOT_ERR_DPS with
-   * error code 401000, as DPS accepts the CONNECT and rejects the
-   * registration) moves to the next source at
-   * once, without a reconnection_policy delay; other failures retry the same
-   * source under the policy; one pass over all sources counts as one policy
-   * attempt; with the policy disabled, open() still makes one full pass; the
-   * source that connects is kept until rejected; when every source is
-   * rejected, the pass fails with AZ_IOT_ERR_IDENTITY_REJECTED and
-   * identity_recovery applies to the pass, not to each source. Today the
-   * secondary key is
-   * decoded and kept but not used.
+   * Fallback: a rejected credential (a CONNACK refusal; for DPS also
+   * registration error 401000, as DPS accepts the CONNECT and rejects the
+   * registration) moves to the next source at once, without a
+   * reconnection_policy delay, even with the policy disabled. Other failures
+   * retry the same source under the policy, or fault with it disabled, also
+   * when starting a fallback attempt. A fallback to a certificate gone by then
+   * ends the pass as a local failure. A pass tries each source once,
+   * from the one it began with, wrapping; it counts as one policy attempt. The
+   * source a fallback selected is kept until rejected; otherwise each attempt
+   * starts at the first available source, so a certificate that becomes
+   * available (e.g. one DPS issued) is used next. open() starts again at the
+   * first. When a whole pass is rejected, the failure is handled as without
+   * fallback: for the hub, identity_recovery applies to the pass, not to each
+   * source. A provisioning session without a registration (provision_only, or
+   * held by a feature client) falls back too, but reports only DISCONNECTING
+   * and IDLE with the rejected auth_source and reason, then CONNECTING with the
+   * next source; no RETRY_PENDING, as for its other failures.
    *
    * Keys are copied and decoded by init(); later changes to the strings have
    * no effect. To change keys, re-initialize the client (and its feature
@@ -352,7 +359,7 @@ extern "C"
       /** @brief Base64 primary key, or NULL. */
       const char* primary_key_base64;
       /** @brief Base64 secondary key, or NULL. Requires primary_key_base64.
-       * Not used yet (fallback is not implemented). */
+       * Tried when the primary key is rejected. */
       const char* secondary_key_base64;
       /** @brief The keys are enrollment-group keys. The device key is then
        * HMAC-SHA256(group key, id), with id the DPS registration ID, or
@@ -464,12 +471,14 @@ extern "C"
      * policy (max_attempts included) applies to each independently.
      *
      * With retrying disabled (initial_delay_ms == 0, which is what a zeroed
-     * options struct has) nothing is retried, and where the client settles
-     * depends on how the session ended:
+     * options struct has) nothing is retried, except that a rejected credential
+     * still falls back at once to the role's next source (see az_iot_auth);
+     * where the client settles depends on how the session ended:
      *   - a peer DISCONNECT is a clean end of session, so the client goes to
      *     AZ_IOT_CONN_STATE_IDLE and is ready for another open();
-     *   - a failure -- refused CONNACK, transport error, stalled handshake,
-     *     failed registration -- goes to AZ_IOT_CONN_STATE_FAULTED, which
+     *   - a failure -- refused CONNACK with no source left in the pass,
+     *     transport error, stalled handshake, failed registration -- goes to
+     *     AZ_IOT_CONN_STATE_FAULTED, which
      *     carries the reason and waits until the application calls
      *     az_iot_connection_client_close() and opens again.
      *
@@ -477,7 +486,9 @@ extern "C"
      * dps.max_hub_connect_attempts_before_reprovision, which counts consecutive
      * automatic attempts.
      *
-     * A hub that refuses the identity is retried on identity_recovery.
+     * A hub refusal is retried on identity_recovery: a CONNACK refusal once
+     * every source of the pass is refused, an MQTT 5 DISCONNECT refusal at
+     * once.
      *
      * az_iot_connection_client_options_default() fills this with
      * az_iot_connection_client_get_default_retry_policy(). Use
@@ -768,7 +779,8 @@ extern "C"
      * and close(). Recovery stops at AZ_IOT_CONN_STATE_FAULTED, with the
      * refusal as the reason, when the ladder's max_attempts or
      * max_duration_seconds is reached first. A disabled reconnection_policy
-     * faults on the first refusal.
+     * faults on the first MQTT 5 DISCONNECT refusal, or on the CONNACK refusal
+     * that ends a credential pass (see az_iot_auth).
      *
      * Zeroed, it keeps the earlier behaviour: re-provision after a CONNACK
      * refusal, paced by reconnection_policy.
@@ -958,8 +970,10 @@ extern "C"
     /** @brief The cause may clear on its own (is_retriable). Retries, when
      * enabled, follow reconnection_policy. */
     AZ_IOT_CONN_FAILURE_TRANSIENT,
-    /** @brief The hub refused the identity. Retries, when enabled, follow
-     * opts.identity_recovery. */
+    /** @brief The service refused the identity or credential. Also reported,
+     * on either scope, for the immediate retry with the next credential
+     * source (attempt 0, no delay). Otherwise hub only: retries, when enabled,
+     * follow opts.identity_recovery. */
     AZ_IOT_CONN_FAILURE_IDENTITY,
     /** @brief Retrying unchanged inputs cannot fix the cause (not
      * is_retriable). Any retry follows reconnection_policy. */
@@ -1308,7 +1322,8 @@ extern "C"
     AZ_IOT_CONN_DEFER_NONE = 0,
     AZ_IOT_CONN_DEFER_FAULT,
     AZ_IOT_CONN_DEFER_RECONNECT,
-    AZ_IOT_CONN_DEFER_IDLE
+    AZ_IOT_CONN_DEFER_IDLE,
+    AZ_IOT_CONN_DEFER_FALLBACK
   };
   enum
   {
@@ -1724,10 +1739,23 @@ extern "C"
       size_t secondary_key_len;
       az_iot_auth_source source;
       uint8_t x509_index;
+      /* Fallback: where the next attempt starts (NONE: the first source),
+       * where the current pass began (NONE: no pass), and whether the last
+       * load() returned a certificate. */
+      az_iot_auth_source first;
+      az_iot_auth_source pass_from;
+      bool x509_available;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
     size_t sas_token_size;
+    /* close() calls, counted even when it has nothing to do: lets a path that
+     * ran state callbacks tell that one of them closed the client. */
+    uint32_t close_count;
+    /* Times the provisioning session lost its last holder (no user,
+     * registration or standing ref left): lets a path that ran state callbacks
+     * tell that its demand was replaced. */
+    uint32_t dps_demand_epoch;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct

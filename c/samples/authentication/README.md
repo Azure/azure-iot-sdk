@@ -22,8 +22,8 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 ## Choosing how each role authenticates
 
-Credential fallback, the secondary key, renewal and `user_provided_token` are proposed and not
-implemented yet; see [connecting.md](../../docs/connecting.md#authentication).
+Further provider certificates, renewal and `user_provided_token` are proposed and not implemented
+yet; see [connecting.md](../../docs/connecting.md#authentication).
 `user_provided_sas_token` shows the proposed callback API and is not built.
 
 Each role (DPS, hub) uses whichever of these sources are configured, tried in this order:
@@ -34,8 +34,9 @@ Each role (DPS, hub) uses whichever of these sources are configured, tried in th
 | Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, `sas_buffer`, and a Unix time (`time()` unless `unix_time` is set) |
 | User-provided token | A `user_provided_token` callback | — |
 
-The SDK moves on only when the service rejects a credential, without a retry delay, and keeps
-using the one that worked. Configuring only X.509, or only SAS, uses that alone.
+The SDK moves on only when the service rejects a credential, without a retry delay. A source it
+moved to is kept until rejected; otherwise each attempt starts at the first available source, so a
+certificate DPS issues is used next. Configuring only X.509, or only SAS, uses that alone.
 
 `trusted_ca` sets server trust for every connection, whatever the kind.
 

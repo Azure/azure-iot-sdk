@@ -60,6 +60,7 @@
 #define DEFER_FAULT AZ_IOT_CONN_DEFER_FAULT
 #define DEFER_RECONNECT AZ_IOT_CONN_DEFER_RECONNECT
 #define DEFER_IDLE AZ_IOT_CONN_DEFER_IDLE
+#define DEFER_FALLBACK AZ_IOT_CONN_DEFER_FALLBACK
 
 #define DPS_PHASE_NONE AZ_IOT_DPS_PHASE_NONE
 #define DPS_PHASE_CONNECTING AZ_IOT_DPS_PHASE_CONNECTING
@@ -1131,20 +1132,16 @@ static az_iot_result apply_certificate_material(
 }
 
 /**
- * @brief For a role falling back to SAS: keeps the trust anchors a provider
- * reported alongside AZ_IOT_ERR_NOT_FOUND (it has a CA but no certificate for
- * the role). opts.trusted_ca, applied later, still overrides them.
+ * @brief For a role using SAS: keeps the provider's trust anchors from
+ * @p mat (its certificate, if any, is not used). opts.trusted_ca, applied
+ * later, still overrides them.
  */
 static void keep_provider_trust(
     az_iot_mqtt_connect_options* copts,
-    az_iot_result load_result,
     const az_iot_certificate_material* mat)
 {
-  if (load_result == AZ_IOT_ERR_NOT_FOUND)
-  {
-    copts->tls.trusted_ca_pem = mat->trusted_ca_pem;
-    copts->tls.trusted_ca_path = mat->trusted_ca_path;
-  }
+  copts->tls.trusted_ca_pem = mat->trusted_ca_pem;
+  copts->tls.trusted_ca_path = mat->trusted_ca_path;
 }
 
 /** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
@@ -1246,7 +1243,7 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
 }
 
 /**
- * @brief Signs a SAS token with @p scope's primary key and sets it as the
+ * @brief Signs a SAS token with @p scope's @p key (primary or secondary) and sets it as the
  * CONNECT password, over server-authenticated TLS. The token format comes
  * from azure-sdk-for-c (c->dps_prov / c->hub_client); every buffer is in
  * opts.sas_buffer.
@@ -1259,8 +1256,10 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
 static az_iot_result apply_sas_key(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
+    az_iot_auth_source key,
     az_iot_mqtt_connect_options* copts)
 {
+  bool secondary = key == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
   const az_iot_auth* auth = is_dps ? &c->opts.dps_auth : &c->opts.hub_auth;
   uint64_t now = unix_now(c);
@@ -1305,8 +1304,8 @@ static az_iot_result apply_sas_key(
   {
     r = az_iot_crypto__hmac_sha256(
         c->opts.crypto,
-        c->auth[scope].primary_key,
-        c->auth[scope].primary_key_len,
+        secondary ? c->auth[scope].secondary_key : c->auth[scope].primary_key,
+        secondary ? c->auth[scope].secondary_key_len : c->auth[scope].primary_key_len,
         az_span_ptr(to_sign),
         (size_t)az_span_size(to_sign),
         mac);
@@ -1343,7 +1342,8 @@ static az_iot_result apply_sas_key(
     return r;
   }
   copts->password = token;
-  c->auth[scope].source = AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+  c->auth[scope].source
+      = secondary ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
 }
@@ -1435,8 +1435,11 @@ static void schedule_reconnect(
   /* Per ladder, so a long hub outage cannot spend the budget a registration
    * that has not been tried yet would need. */
   uint32_t delay = 0;
-  bool retry = az_iot_retry_policy__next(
-      &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
+  /* A disabled policy faults: an immediate credential fallback can reach here
+   * without one, and its zero delay would retry at once forever. */
+  bool retry = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
+      && az_iot_retry_policy__next(
+                   &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
   c->recovery_report.classification = classify_failure(failure_scope, reason);
   c->recovery_report.attempt = c->retry_attempt[scope];
   /* An identity recovery episode bounds every retry until HUB:CONNECTED: one
@@ -1587,6 +1590,109 @@ static void note_identity_refusal(az_iot_connection_client* c, az_iot_result sta
   {
     c->needs_reprovision = true;
   }
+}
+
+/** @brief Source after @p s in the order X.509, primary key, secondary key,
+ * wrapping to X.509. */
+static az_iot_auth_source auth_source_after(az_iot_auth_source s)
+{
+  if (s == AZ_IOT_AUTH_SOURCE_X509)
+  {
+    return AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+  }
+  return s == AZ_IOT_AUTH_SOURCE_PRIMARY_KEY ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+                                             : AZ_IOT_AUTH_SOURCE_X509;
+}
+
+/** @brief Whether @p s can be tried for @p scope: X.509 when the last load()
+ * returned a certificate, a key when it is set. */
+static bool auth_source_available(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_auth_source s)
+{
+  if (s == AZ_IOT_AUTH_SOURCE_X509)
+  {
+    return c->opts.certificate_provider != NULL && c->auth[scope].x509_available;
+  }
+  if (s == AZ_IOT_AUTH_SOURCE_PRIMARY_KEY)
+  {
+    return c->auth[scope].primary_key_len > 0;
+  }
+  return s == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY && c->auth[scope].secondary_key_len > 0;
+}
+
+/**
+ * @brief After the service rejected the credential of the last attempt on
+ * @p scope: selects the next source of the pass and returns true, or ends the
+ * pass and returns false.
+ *
+ * A pass tries each available source once, from the one it began with, in the
+ * order X.509, primary key, secondary key, wrapping. After a full pass the
+ * next attempt starts at the first source.
+ */
+static bool auth_next_source(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  az_iot_auth_source s = c->auth[scope].source;
+  az_iot_auth_source from = c->auth[scope].pass_from;
+  for (int i = 0; s != AZ_IOT_AUTH_SOURCE_NONE && from != AZ_IOT_AUTH_SOURCE_NONE && i < 2; ++i)
+  {
+    s = auth_source_after(s);
+    if (s == from)
+    {
+      break;
+    }
+    if (auth_source_available(c, scope, s))
+    {
+      c->auth[scope].first = s;
+      return true;
+    }
+  }
+  c->auth[scope].first = AZ_IOT_AUTH_SOURCE_NONE;
+  c->auth[scope].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+  return false;
+}
+
+/** @brief Retries @p scope at once with the source auth_next_source()
+ * selected: no reconnection_policy delay, no policy attempt. */
+static void retry_with_next_source(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_result reason)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "%s rejected the credential (%s); trying the next one",
+      scope_name(scope),
+      az_iot_result_to_string(reason));
+  if (scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    c->needs_reprovision = true;
+  }
+  else
+  {
+    c->consecutive_hub_connect_failures = 0; /* the hub answered */
+  }
+  c->reconnect_due_ms = now != 0 ? now : 1u;
+  c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
+  c->recovery_report.attempt = 0;
+  c->recovery_report.delay_ms = 0;
+  c->recovery_report.reprovisions = scope == AZ_IOT_CONN_SCOPE_DPS;
+  c->recovery_report.staged = true;
+  set_state_to(c, scope, AZ_IOT_CONN_STATE_RETRY_PENDING, reason);
+}
+
+/** @brief DPS registration error code for a rejected credential. */
+#define DPS_ERROR_UNAUTHORIZED 401000
+
+/** @brief Whether a failed registration is DPS rejecting the credential: a
+ * CONNACK refusal, or registration error DPS_ERROR_UNAUTHORIZED. */
+static bool dps_rejected_credential(const az_iot_connection_client* c, az_iot_result status)
+{
+  return reason_is_identity_refusal(status)
+      || (status == AZ_IOT_ERR_DPS && c->error_scope == AZ_IOT_CONN_SCOPE_DPS
+          && c->error_source == AZ_IOT_CONN_ERR_SRC_DPS && c->error_code == DPS_ERROR_UNAUTHORIZED);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2266,6 +2372,12 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         dps_finalize(c, evt->status, false);
         return;
       }
+      /* Without a registration, CONNACK is the service's verdict: the source
+       * is kept and a later rejection starts a new pass. */
+      if (!c->dps_registration_ref)
+      {
+        c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      }
       {
         uint16_t pid = 0;
         az_iot_result r = c->dps_mqtt->iface->subscribe(
@@ -2657,9 +2769,11 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   copts.username = dps_username;
   AZ_IOT_LOG_DEBUGF(AZ_IOT_LOG_COMPONENT_DPS, "connecting with username %s", dps_username);
 
-  /* Credential: the provider's bootstrap X.509 identity first (the
-   * operational cert, if any, is issued during this exchange), else a SAS
-   * token from dps_auth. Neither fails the attempt; it never goes plaintext. */
+  /* Credential, from c->auth[DPS].first (see auth_next_source()): the
+   * provider's bootstrap X.509 identity (the operational cert, if any, is
+   * issued during this exchange), then the primary, then the secondary key of
+   * dps_auth. It never goes plaintext. */
+  az_iot_auth_source first = c->auth[AZ_IOT_CONN_SCOPE_DPS].first;
   bool dps_has_sas = c->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len > 0;
   if (!c->opts.certificate_provider && !dps_has_sas)
   {
@@ -2678,11 +2792,30 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     az_iot_certificate_material mat = { 0 };
     az_iot_result lr = c->opts.certificate_provider->vtable->load(
         c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* The pass reached X.509 after its keys were rejected, and the
+       * certificate is gone: the pass ends, failing this attempt, rather than
+       * trying those keys again unpaced. */
+      AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "the certificate selected for fallback is gone");
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      mc->iface->destroy(mc);
+      stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, lr, "certificate selected for fallback is gone");
+      return lr;
+    }
     if (lr == AZ_IOT_ERR_NOT_FOUND && dps_has_sas)
     {
       AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_DPS, "no bootstrap certificate; using SAS");
-      keep_provider_trust(&copts, lr, &mat);
+      keep_provider_trust(&copts, &mat);
+    }
+    else if (lr == AZ_IOT_OK && first > AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
+      keep_provider_trust(&copts, &mat);
+      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
     }
     else if (lr == AZ_IOT_OK)
     {
@@ -2723,13 +2856,24 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   }
   if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source == AZ_IOT_AUTH_SOURCE_NONE)
   {
-    az_iot_result sr = apply_sas_key(c, AZ_IOT_CONN_SCOPE_DPS, &copts);
+    az_iot_result sr = apply_sas_key(
+        c,
+        AZ_IOT_CONN_SCOPE_DPS,
+        first == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY ? first : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY,
+        &copts);
     if (sr != AZ_IOT_OK)
     {
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
     }
+  }
+  /* An attempt from the start of the order begins the pass, even after a
+   * failure that was not a rejection: the available sources may have changed. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE
+      || first == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
   }
 
   c->dps_mqtt = mc;
@@ -2844,6 +2988,11 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
     c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
+  /* The registration's pass starts from the source the session connected with. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+  }
   az_iot_result r = dps_do_register_publish(c);
   if (r == AZ_IOT_OK)
   {
@@ -2911,6 +3060,18 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * other than a successful assignment arrives here because the session died,
    * and a ref cannot resurrect a dead socket. */
   bool device_provisioned = (status == AZ_IOT_OK) && have_assignment;
+  /* Read before the transitions below run callbacks. */
+  bool credential_rejected = !device_provisioned && dps_rejected_credential(c, status);
+  /* The transitions below run state callbacks, which may close() the client. */
+  uint32_t closes = c->close_count;
+  uint32_t demand_epoch = c->dps_demand_epoch;
+  /* A close() and open() from those callbacks starts a new attempt, which this
+   * finalizer must not touch. */
+  uint32_t seq = c->open_seq;
+  if (device_provisioned)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+  }
   if (dps_refs_held(c) && device_provisioned)
   {
     AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_DPS, "keeping the provisioning session for its users");
@@ -2928,7 +3089,15 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * overwrites this with RETRY_PENDING or FAULTED, which is right: "closed,
      * then failed" is two facts. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, status);
+    if (c->open_seq != seq)
+    {
+      return;
+    }
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, status);
+    if (c->open_seq != seq)
+    {
+      return;
+    }
   }
   c->dps_phase = DPS_PHASE_DONE;
 
@@ -2938,6 +3107,25 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * wrong. Its users ask again through dps_session_ensure(). */
   if (!was_registering)
   {
+    /* A rejected credential: the next ensure() reopens at once with the next
+     * source, policy or not; no pacing, as for a registration. */
+    /* Demand released (and maybe re-acquired) in the callbacks above is new
+     * demand: it starts at the first source, unpaced. A close() there cancels
+     * both fallback and pacing. */
+    if (c->dps_demand_epoch != demand_epoch || c->close_count != closes)
+    {
+      return;
+    }
+    /* Demand is checked again: the IDLE callback above may have released it. */
+    if (credential_rejected && !c->user_close && dps_session_demanded(c)
+        && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_DPS,
+          "the provisioning session's credential was rejected (%s); trying the next one",
+          az_iot_result_to_string(status));
+      return;
+    }
     if (status != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERRORF(
@@ -2958,6 +3146,17 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
+    /* A state callback closed the client: no retry of any kind follows. */
+    if (c->close_count != closes)
+    {
+      return;
+    }
+    /* A rejected credential moves to the next source at once, policy or not. */
+    if (credential_rejected && !c->user_close && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
+    {
+      retry_with_next_source(c, AZ_IOT_CONN_SCOPE_DPS, status);
+      return;
+    }
     /* A registration that failed, or that completed with no assignment, is the
      * most transient failure a device meets: the enrollment may not have been
      * created yet, the DPS may not have a linked IoT Hub yet, or the service
@@ -3725,6 +3924,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * hub this device was already assigned to answers. */
         c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
         c->reconnect_due_ms = 0;
+        /* The credential was accepted: kept; a later rejection starts a new pass. */
+        c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
 
         /* MQTTv5 (MQTT v5): the connection is not usable until
          * presence is established. Kick off the birth handshake and
@@ -3755,7 +3956,17 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * REPROVISION mode the retry is a DPS registration.
          *
          * That is recorded here rather than in the scheduler so that, with
-         * retries disabled, the next open() still honours it. */
+         * retries disabled, the next open() still honours it.
+         *
+         * First, a rejected credential moves to the next source at once,
+         * policy or not; only a pass with every source rejected gets here. */
+        if (reason_is_identity_refusal(evt->status) && !c->user_close
+            && auth_next_source(c, AZ_IOT_CONN_SCOPE_HUB))
+        {
+          c->deferred = DEFER_FALLBACK;
+          c->deferred_reason = evt->status;
+          break;
+        }
         note_identity_refusal(c, evt->status);
         c->deferred
             = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
@@ -4017,10 +4228,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     copts.username = c->hub_username;
   }
 
-  /* Credential: the provider's X.509 identity first -- the issued OPERATIONAL
-   * one (from this DPS session, persisted by the provider on a prior run, or
-   * supplied for a direct hub connection), else BOOTSTRAP -- then a SAS token
-   * from hub_auth. Neither fails the attempt; it never goes plaintext. */
+  /* Credential, from c->auth[HUB].first (see auth_next_source()): the
+   * provider's X.509 identity -- the issued OPERATIONAL one (from this DPS
+   * session, persisted by the provider on a prior run, or supplied for a direct
+   * hub connection), else BOOTSTRAP -- then the primary, then the secondary key
+   * of hub_auth. It never goes plaintext. */
+  az_iot_auth_source first = c->auth[AZ_IOT_CONN_SCOPE_HUB].first;
   bool hub_has_sas = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len > 0;
   if (!c->opts.certificate_provider && !hub_has_sas)
   {
@@ -4050,11 +4263,25 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         lr = op_lr;
       }
     }
+    c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* The pass reached X.509 after its keys were rejected, and the
+       * certificate is gone: the pass ends, failing this attempt, rather than
+       * trying those keys again unpaced. */
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_CONNECTION, "the certificate selected for fallback is gone");
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      mc->iface->destroy(mc);
+      stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, lr, "certificate selected for fallback is gone");
+      return lr;
+    }
     if (lr == AZ_IOT_ERR_NOT_FOUND && hub_has_sas)
     {
       AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_CONNECTION, "no certificate; using SAS");
-      keep_provider_trust(&copts, lr, &mat);
+      keep_provider_trust(&copts, &mat);
     }
     else if (lr != AZ_IOT_OK)
     {
@@ -4063,6 +4290,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, lr, "certificate provider load() failed");
       return lr;
+    }
+    else if (first > AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
+      keep_provider_trust(&copts, &mat);
+      prov->vtable->release(prov, &mat);
     }
     else
     {
@@ -4080,13 +4313,24 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   }
   if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_NONE)
   {
-    az_iot_result sr = apply_sas_key(c, AZ_IOT_CONN_SCOPE_HUB, &copts);
+    az_iot_result sr = apply_sas_key(
+        c,
+        AZ_IOT_CONN_SCOPE_HUB,
+        first == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY ? first : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY,
+        &copts);
     if (sr != AZ_IOT_OK)
     {
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
     }
+  }
+  /* An attempt from the start of the order begins the pass, even after a
+   * failure that was not a rejection: the available sources may have changed. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from == AZ_IOT_AUTH_SOURCE_NONE
+      || first == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   }
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
@@ -4130,6 +4374,10 @@ static void apply_deferred(az_iot_connection_client* c)
     case DEFER_RECONNECT:
       /* Reached from on_mqtt_event, which serves the HUB session only. */
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+      break;
+    case DEFER_FALLBACK:
+      teardown_active(c);
+      retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
       break;
     case DEFER_IDLE:
       teardown_active(c);
@@ -5097,6 +5345,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   client->reconnect_due_ms = 0;
   reset_identity_recovery(client);
   dps_user_retry_reset(client);
+  /* open() starts again at the first credential source. */
+  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    client->auth[i].first = AZ_IOT_AUTH_SOURCE_NONE;
+    client->auth[i].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+  }
   /* needs_reprovision is deliberately NOT cleared here. It is pending recovery
    * intent -- "the cached assignment is no good, ask DPS again" -- set by an
    * identity rejection in REPROVISION mode, by the unreachable-hub
@@ -5269,6 +5523,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  client->close_count++;
 
   /* Before the idempotency check below, not after it. close() is the
    * documented exit from a settled refusal, and on a DPS-only device both
@@ -5464,6 +5719,9 @@ az_iot_result az_iot_connection_client_do_work(
     }
     dps_teardown_mqtt(client);
     client->dps_phase = DPS_PHASE_DONE;
+    /* Nobody holds it: the next demand starts a new credential pass. */
+    client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+    client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
     /* The session is gone, so its lifecycle settles -- the same rule as any
      * other provisioning-session teardown. The HUB scope is untouched. */
     set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
@@ -6257,8 +6515,20 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
   if (client->dps_user_count == 0)
   {
     /* The demand is gone. A later holder is NEW demand and must not inherit a
-     * backoff, or a latched refusal, earned by whoever came before it. */
+     * backoff, a latched refusal, or a credential fallback pass, earned by
+     * whoever came before it. A registration owns its own pass. */
     dps_user_retry_reset(client);
+    if (!client->dps_registration_ref && !client->dps_standing_ref)
+    {
+      client->dps_demand_epoch++;
+      /* A session still up keeps its pass: a holder may re-acquire it before
+       * the pump closes it. The pump clears the pass when it does. */
+      if (client->dps_mqtt == NULL)
+      {
+        client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+        client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      }
+    }
   }
   /* The session is NOT torn down here even if this was the last ref. Release
    * is reachable from inside a message callback, and freeing the adapter there
