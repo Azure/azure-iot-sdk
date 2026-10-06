@@ -65,7 +65,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
         currentTwin = await twinClient.GetTwinAsync(cts.Token);

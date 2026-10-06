@@ -15,6 +15,7 @@ internal class Program
 {
     public static string DpsConnectionString = ""; // The connection string of your DPS
     public static string DpsIdScope = ""; // The Id scope of your DPS
+    public static string IotHubHostName = ""; // The host name of the IoT hub linked to your DPS
 
     // Run this to register a test device on your IoT hub using the v1 IoT hub service client. It also locally saves the device credentials such that the other project
     // can be run using those credentials
@@ -22,6 +23,7 @@ internal class Program
     {
         ArgumentException.ThrowIfNullOrEmpty(DpsConnectionString);
         ArgumentException.ThrowIfNullOrEmpty(DpsIdScope);
+        ArgumentException.ThrowIfNullOrEmpty(IotHubHostName);
 
         await RegisterSampleDeviceAndSaveCredentialsAsync();
     }
@@ -45,6 +47,7 @@ internal class Program
 
         SampleConstants.SaveDeviceId(deviceId);
         SampleConstants.SaveIdScope(DpsIdScope);
+        SampleConstants.SaveIotHubHostName(IotHubHostName);
 
         Console.WriteLine($"Device with Id {deviceId} has been registered with DPS. That device's credentials saved in root of the samples directory");
     }

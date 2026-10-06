@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
@@ -52,6 +53,47 @@ namespace Microsoft.Azure.Iot.Device
         private readonly IRetryPolicy _connectionRetryPolicy;
 
         private readonly TimeSpan _connectionAttemptTimeout;
+
+        /// <summary>
+        /// Whether the device whose connection this layer maintains was provisioned through Device Provisioning
+        /// Service and therefore has a registration it can renew. This gates whether a
+        /// <see cref="RetryGuidance.Reprovision"/> from the retry policy actually crosses over to
+        /// re-provisioning: a device that holds no provisioning inputs has nothing to re-provision from, so the
+        /// guidance is treated as an ordinary retry and the hub keeps being retried.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client sets this when it connects to an IoT hub. The number of hub attempts after
+        /// which re-provisioning is advised lives in the retry policy (for example
+        /// <see cref="ExponentialBackoffRetryPolicy"/>), not here.
+        /// </remarks>
+        public bool CanReprovision { get; set; }
+
+        /// <summary>
+        /// The endpoint the current connection targets, surfaced to the retry policy so it can tell whether it is being
+        /// asked to retry connecting to an IoT hub or to Device Provisioning Service.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client sets this to <see cref="ConnectionEndpoint.IotHub"/> for hub connections and
+        /// <see cref="ConnectionEndpoint.DeviceProvisioningService"/> for provisioning connections, alongside
+        /// <see cref="CanReprovision"/>.
+        /// </remarks>
+        public ConnectionEndpoint ConnectionEndpoint { get; set; } = ConnectionEndpoint.None;
+
+        /// <summary>
+        /// Whether this layer is in a connection lifecycle that could still release an operation waiting for the
+        /// connection to come back: it is maintaining or (re-)establishing a connection, or it is delivering a terminal
+        /// fault that unblocks such waiters. This is <c>false</c> only when the layer is deliberately idle -- it has
+        /// never connected, or it was deliberately disconnected (via <see cref="DisconnectAsync"/>) or disposed -- so no
+        /// reconnection and no fault notification is coming.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client uses this to decide whether a feature operation that finds the connection gone
+        /// should keep waiting for a reconnection or fail fast. Unlike <see cref="_isDesiredConnected"/> alone, this
+        /// stays true across the brief window in which a terminal fault has stopped the connection but has not yet been
+        /// delivered to the owning client, so such a waiter is released by the real terminal fault rather than being
+        /// failed with a bare not-connected error.
+        /// </remarks>
+        public bool IsConnectionLifecycleActive => _isDesiredConnected || (!_isClosing && _mostRecentConnect != null);
 
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
@@ -325,6 +367,12 @@ namespace Microsoft.Azure.Iot.Device
                         ?? new OperationCanceledException("This operation was canceled because the MQTT client was closed.");
                 }
 
+                // A hub that simply will not answer is otherwise retried under the policy forever, which for a device
+                // provisioned through DPS would never fall back to asking DPS for a fresh assignment. The retry policy
+                // (see ExponentialBackoffRetryPolicy) decides when enough consecutive hub attempts have failed and
+                // returns RetryGuidance.Reprovision, which the consultation below turns into a
+                // re-provisioning crossover.
+
                 DeviceException? deviceException = Classify(lastException, cancellationToken.IsCancellationRequested);
 
                 if (deviceException != null)
@@ -351,28 +399,70 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
-                if ((isReconnection || attemptCount > 1)
-                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException, out retryDelay))
+                if (isReconnection || attemptCount > 1)
                 {
-                    // Should not occur with the default policy as it's indefinite retry
-                    Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
-                    var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException!);
+                    RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
 
-                    // An exhausted policy is terminal by construction: there are no attempts left to make.
-                    var exhaustedException = new DeviceException("Retry policy has been exhausted while maintaining the connection.", retryException)
+                    // The policy wants this device to stop retrying the hub and re-provision through DPS instead. This is
+                    // only meaningful for a hub connection on a device that holds provisioning inputs to re-provision
+                    // from; otherwise (a DPS connection, or a device connected with directly supplied credentials) it is
+                    // treated the same as Retry, per the RetryGuidance documentation. End maintenance with a fault the
+                    // owning client turns into a re-provisioning attempt.
+                    if (guidance == RetryGuidance.Reprovision
+                        && ConnectionEndpoint == ConnectionEndpoint.IotHub
+                        && CanReprovision)
                     {
-                        Retryability = ErrorRetryability.Terminal,
-                        IsContained = false,
-                    };
+                        Trace.TraceWarning("Retry policy asked to abandon hub reconnection and re-provision through DPS. {0}", lastException);
 
-                    await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+                        var policyReprovisionFault = new DeviceException(
+                            "The retry policy asked this device to abandon reconnecting to the IoT hub and re-provision through Device Provisioning Service.",
+                            lastException!)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
 
-                    if (isReconnection)
-                    {
-                        return null;
+                        await EndConnectionMaintenanceAsync(policyReprovisionFault, lastDisconnect, reprovisionRequired: true);
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        // Called directly from the initial ConnectAsync, which cannot use a null ack and would otherwise
+                        // await a presence flow that never arrives. The reprovisionRequired fault raised above has
+                        // already asked the owning client to re-provision; surface the crossover to the caller too, the
+                        // same way the terminal branches below do on an initial connect.
+                        throw policyReprovisionFault;
                     }
 
-                    throw exhaustedException;
+                    // The policy wants this device to stop retrying altogether, which puts it in a terminal state.
+                    if (guidance == RetryGuidance.AbandonRetry)
+                    {
+                        // Should not occur with the default policy as it's indefinite retry
+                        Trace.TraceError("Retry policy asked to abandon retrying while maintaining a connection {0}", lastException);
+                        var retryException = new RetryExpiredException("Retry policy asked to abandon retrying. See inner exception for the latest exception encountered while retrying.", lastException!);
+
+                        // Abandoning retries is terminal by construction: there are no attempts left to make.
+                        var exhaustedException = new DeviceException("Retry policy asked to abandon retrying while maintaining the connection.", retryException)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
+
+                        await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        throw exhaustedException;
+                    }
+
+                    // Otherwise the policy allows another attempt (RetryGuidance.Retry, or RetryGuidance.Reprovision on a
+                    // DPS connection or on a device that cannot re-provision), so fall through and retry after the delay
+                    // the policy provided.
                 }
 
                 // With all the above conditions checked, the client should attempt to connect again after a delay
@@ -414,7 +504,13 @@ namespace Microsoft.Azure.Iot.Device
                     Trace.TraceWarning("Encountered an exception while connecting. May attempt to reconnect. {0}", e);
                 }
 
-                attemptCount++;
+                // Saturate rather than wrap: under the default indefinite policy this reconnection loop can run without
+                // bound, and a uint that wrapped back to 0 would make the retry policy see this as a first attempt again
+                // and reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
+                if (attemptCount < uint.MaxValue)
+                {
+                    attemptCount++;
+                }
             }
         }
 
@@ -442,7 +538,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
         /// and never reach here.
         /// </remarks>
-        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect)
+        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
         {
             Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
 
@@ -459,6 +555,7 @@ namespace Microsoft.Azure.Iot.Device
             {
                 Exception = fault,
                 LastDisconnect = lastDisconnect,
+                ReprovisionRequired = reprovisionRequired,
             };
 
             try
