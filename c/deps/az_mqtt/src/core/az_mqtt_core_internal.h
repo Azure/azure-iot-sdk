@@ -157,6 +157,13 @@ AZ_NODISCARD az_result _az_mqtt_core_inflight_reserve_entry(
     uint16_t publish_limit,
     az_mqtt_inflight_entry** out_entry);
 
+/**
+ * @brief Keep in-flight entries for @p receive_maximum inbound QoS 2 PUBLISH: outgoing requests
+ * fail with AZ_MQTT_ERROR_FLOW_CONTROL rather than take them. Only if @p receive_maximum is below
+ * the entry count; otherwise nothing is kept.
+ */
+void _az_mqtt_core_inflight_reserve_inbound(az_mqtt_core* core, uint16_t receive_maximum);
+
 /** @brief The entry of @p kind holding @p packet_id, or NULL. */
 AZ_NODISCARD az_mqtt_inflight_entry* _az_mqtt_core_inflight_find_entry(
     az_mqtt_core* core,

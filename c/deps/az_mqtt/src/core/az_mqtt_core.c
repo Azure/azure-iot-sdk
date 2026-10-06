@@ -428,6 +428,13 @@ static uint16_t _publishes_in_flight(az_mqtt_core* core)
   return publishes;
 }
 
+void _az_mqtt_core_inflight_reserve_inbound(az_mqtt_core* core, uint16_t receive_maximum)
+{
+  int32_t count;
+  (void)_get_inflight_entries(core, &count);
+  _S(core).inbound_reserve = (int32_t)receive_maximum < count ? receive_maximum : 0;
+}
+
 az_result _az_mqtt_core_inflight_reserve_entry(
     az_mqtt_core* core,
     _az_mqtt_inflight_kind kind,
@@ -437,12 +444,28 @@ az_result _az_mqtt_core_inflight_reserve_entry(
   int32_t count;
   az_mqtt_inflight_entry* entries = _get_inflight_entries(core, &count);
   az_mqtt_inflight_entry* entry = NULL;
-  for (int32_t i = 0; i < count && entry == NULL; i++)
+  int32_t free_entries = 0;
+  int32_t inbound = 0;
+  for (int32_t i = 0; i < count; i++)
   {
     if (entries[i]._internal.kind == _AZ_MQTT_INFLIGHT_FREE)
     {
-      entry = &entries[i]; // After every entry in use: the newest.
+      free_entries++;
+      if (entry == NULL)
+      {
+        entry = &entries[i]; // After every entry in use: the newest.
+      }
     }
+    else if (entries[i]._internal.kind == _AZ_MQTT_INFLIGHT_INBOUND_QOS2)
+    {
+      inbound++;
+    }
+  }
+  // Entries the server may still fill with inbound QoS 2 within its Receive Maximum.
+  int32_t const kept = _S(core).inbound_reserve > inbound ? _S(core).inbound_reserve - inbound : 0;
+  if (free_entries <= kept)
+  {
+    entry = NULL;
   }
   bool resend_pending = false;
   for (int32_t i = 0; i < count && kind <= _AZ_MQTT_INFLIGHT_PUBLISH_QOS2; i++)

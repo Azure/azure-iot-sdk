@@ -82,6 +82,8 @@ struct az_mqtt_core
     az_mqtt_client_state state;
     uint16_t port;
     uint16_t next_packet_id;
+    /** @brief In-flight entries outgoing requests leave for inbound QoS 2 (mqttv5); 0: none. */
+    uint16_t inbound_reserve;
     /** @brief Keep-alive in force (the server's, if it sent one). */
     uint16_t keep_alive_seconds;
     /** @brief A PINGREQ is awaiting its PINGRESP (or any other packet). */

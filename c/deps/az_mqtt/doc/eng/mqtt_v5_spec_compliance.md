@@ -48,7 +48,7 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 35 | Assigned Client Identifier decoded from CONNACK | [§3.2.2.3.7](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `connack_data.assigned_client_identifier` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | **CONNACK ([§3.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html))** |||||
 | 36 | Session Present flag decoded | [[MQTT-3.2.2-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `connack_data.session_present` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
-| 37 | Non-zero reason code with Session Present=1 must cause disconnect | [[MQTT-3.2.2-4]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | No | Reason code checked but session_present not cross-validated | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
+| 37 | Non-zero reason code with Session Present=1 must cause disconnect | [[MQTT-3.2.2-4]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Session Present with a reason ≥ 0x80, or reserved acknowledge-flag bits set, is a malformed packet | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 38 | Session Expiry Interval property (CONNACK) decoded | [§3.2.2.3.2](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `connack_data.session_expiry_interval` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 39 | Receive Maximum property (CONNACK) decoded | [§3.2.2.3.3](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `connack_data.receive_maximum` | [src/mqtt5/az_mqtt5_codec.c](../../src/mqtt5/az_mqtt5_codec.c) |
 | 40 | Receive Maximum from CONNACK must be honoured (flow control) | [[MQTT-3.3.4-7]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Outgoing QoS > 0 PUBLISH (and PUBREL awaiting PUBCOMP) are counted against the CONNACK Receive Maximum; past it, `az_mqtt5_client_publish` fails with `AZ_MQTT_ERROR_FLOW_CONTROL` | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
@@ -165,9 +165,9 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 114 |
+| Yes | 115 |
 | Partial | 2 |
-| No | 19 |
+| No | 18 |
 
 ### Key gaps (client-facing impact)
 

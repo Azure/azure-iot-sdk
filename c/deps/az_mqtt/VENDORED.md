@@ -2,10 +2,10 @@
 
 MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/az_mqtt`).
 
-- Source: az_mqtt commit `41369a1` (main).
+- Source: az_mqtt commit `de7d21e` (main).
 - Patched (`src/`, `inc/`), pending merge upstream:
-  - CONNACK, packet identifier 0 and MQTT 5 property value checks (ewertons/az_mqtt#32, `de7e89c`);
-  - thread-safe one-time WSAStartup (ewertons/az_mqtt#33, `39f742f`).
+  - repeated single-use MQTT 5 properties rejected (ewertons/az_mqtt#34, `eaac0c5`);
+  - in-flight entries kept for the advertised Receive Maximum (ewertons/az_mqtt#35, `dab59e3`).
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`.
 - Not imported: samples, tests, CI, and the `deps/azure-sdk-for-c` submodule. The SDK's
   azure-sdk-for-c is used instead, and samples and tests are off when built from here.

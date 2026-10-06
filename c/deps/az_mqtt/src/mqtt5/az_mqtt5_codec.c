@@ -969,6 +969,26 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_auth(
 // ============================================================================
 
 
+/**
+ * @brief Protocol error if property @p id was already seen in this packet (MQTT 5.0 2.2.2.2);
+ * marks it seen. User Property and Subscription Identifier may repeat.
+ */
+static az_result _property_once(uint64_t* seen, uint8_t id)
+{
+  if (id == AZ_MQTT5_PROPERTY_USER_PROPERTY || id == AZ_MQTT5_PROPERTY_SUBSCRIPTION_IDENTIFIER
+      || id >= 64)
+  {
+    return AZ_OK;
+  }
+  uint64_t const bit = (uint64_t)1 << id;
+  if ((*seen & bit) != 0)
+  {
+    return AZ_MQTT_ERROR_PROTOCOL;
+  }
+  *seen |= bit;
+  return AZ_OK;
+}
+
 /** @brief Read a one-byte property that must be 0 or 1 (MQTT 5.0 3.2.2.3, 3.3.2.3.2). */
 static az_result _read_flag_byte(az_span* props, uint8_t* out)
 {
@@ -990,10 +1010,14 @@ static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
   az_span props = az_span_slice(*src, 0, prop_len);
   *src = az_span_slice_to_end(*src, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 
@@ -1181,10 +1205,14 @@ static az_result _decode_publish_props(az_span* src, az_mqtt5_publish_data* out)
   az_span props = az_span_slice(*src, 0, prop_len);
   *src = az_span_slice_to_end(*src, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 
@@ -1346,10 +1374,14 @@ static az_result _decode_ack_props(az_span* src, az_mqtt5_ack_data* out)
   az_span props = az_span_slice(*src, 0, prop_len);
   *src = az_span_slice_to_end(*src, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 
@@ -1472,10 +1504,14 @@ static az_result _decode_suback_props(az_span* src, az_mqtt5_suback_data* out)
   az_span props = az_span_slice(*src, 0, prop_len);
   *src = az_span_slice_to_end(*src, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 
@@ -1644,10 +1680,14 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_disconnect(az_span body, az_mqtt5_d
 
   az_span props = az_span_slice(body, 0, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 
@@ -1758,10 +1798,14 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_auth(az_span body, az_mqtt5_auth_da
 
   az_span props = az_span_slice(body, 0, prop_len);
 
+  uint64_t seen = 0;
   while (az_span_size(props) > 0)
   {
     uint8_t prop_id;
     rc = _az_mqtt_read_byte(&props, &prop_id);
+    if (az_result_failed(rc))
+      return rc;
+    rc = _property_once(&seen, prop_id);
     if (az_result_failed(rc))
       return rc;
 

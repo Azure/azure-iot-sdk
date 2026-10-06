@@ -50,6 +50,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 65535
+#error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 65535"
+#endif
+#if AZ_IOT_AZ_MQTT_V == 5
+/** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
+#define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
+/** @brief In-flight entries: AZ_IOT_AZ_MQTT_INFLIGHT_MAX requests, plus those kept for inbound. */
+#define _AZM_INFLIGHT_ENTRIES (2 * AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
+#else
+#define _AZM_INFLIGHT_ENTRIES AZ_IOT_AZ_MQTT_INFLIGHT_MAX
+#endif
+
 /** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
@@ -92,7 +104,7 @@ typedef struct
   uint8_t* receive_buffer;
   char* strings;
   uint8_t* message_storage; /* Allocated on the first connect whose session outlives it. */
-  az_mqtt_inflight_entry inflight[AZ_IOT_AZ_MQTT_INFLIGHT_MAX];
+  az_mqtt_inflight_entry inflight[_AZM_INFLIGHT_ENTRIES];
 #if AZ_IOT_AZ_MQTT_V == 5
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   az_mqtt5_user_property publish_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
@@ -658,10 +670,8 @@ static bool _azm_copy_options(
 #if AZ_IOT_AZ_MQTT_V == 5
   c->clean_start = o->clean_start;
   c->session_expiry_interval = o->session_expiry_seconds;
-  // Inbound QoS 2 PUBLISH take in-flight entries; past them az_mqtt ends the session.
-  c->receive_maximum = AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 65535 ? 65535
-      : AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1                    ? 1
-                                                           : (uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX;
+  // Below the entry count, so az_mqtt keeps this many entries for inbound QoS 2.
+  c->receive_maximum = _AZM_RECEIVE_MAXIMUM;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {

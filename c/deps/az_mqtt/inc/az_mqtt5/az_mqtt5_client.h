@@ -156,7 +156,9 @@ typedef struct
    * inbound QoS 2 PUBLISH until its PUBREL. A request with no free entry fails with
    * AZ_MQTT_ERROR_FLOW_CONTROL; an inbound QoS 2 PUBLISH with none is not delivered, and the
    * session ends with AZ_MQTT_ERROR_FLOW_CONTROL (after a best-effort DISCONNECT with Quota
-   * exceeded). May be empty if only QoS 0 is published and nothing is subscribed.
+   * exceeded). With connect_options.receive_maximum below the entry count, requests leave that
+   * many entries for inbound QoS 2, so a server within it never ends the session this way.
+   * May be empty if only QoS 0 is published and nothing is subscribed.
    * Acknowledgements for packet identifiers not in flight are ignored.
    *
    * When a connection ends, SUBSCRIBE and UNSUBSCRIBE in flight are abandoned; PUBLISH exchanges

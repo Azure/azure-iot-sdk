@@ -476,12 +476,15 @@ az_mqtt5_client_init(az_mqtt5_client* client, az_mqtt5_client_options const* opt
   client->_internal.on_transport_error = options->on_transport_error;
   client->_internal.user_context = options->user_context;
   // A session outliving the connection resends QoS 1/2 PUBLISH: they must be stored.
-  return _az_mqtt_core_inflight_init(
+  az_result const rc = _az_mqtt_core_inflight_init(
       &client->_internal.core,
       options->inflight_control_buffer,
       options->inflight_message_buffer,
       !options->connect_options.clean_start
           && options->connect_options.session_expiry_interval > 0);
+  _az_mqtt_core_inflight_reserve_inbound(
+      &client->_internal.core, options->connect_options.receive_maximum);
+  return rc;
 }
 
 AZ_NODISCARD az_result az_mqtt5_client_connect_start(az_mqtt5_client* client, int32_t timeout_ms)

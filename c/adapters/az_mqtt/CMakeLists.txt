@@ -8,7 +8,7 @@
 set(AZ_IOT_AZ_MQTT_BUFFER_SIZE "270336" CACHE STRING
     "az_mqtt adapter: send and receive buffer size, each (the largest packet)")
 set(AZ_IOT_AZ_MQTT_INFLIGHT_MAX "64" CACHE STRING
-    "az_mqtt adapter: QoS 1/2 exchanges in flight at once")
+    "az_mqtt adapter: requests in flight at once (MQTT 5: also the Receive Maximum advertised)")
 set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "16" CACHE STRING
     "az_mqtt adapter: MQTT 5 user properties per packet")
 
