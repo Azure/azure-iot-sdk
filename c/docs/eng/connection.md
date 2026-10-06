@@ -56,6 +56,7 @@ stateDiagram-v2
     [*] --> IDLE
     IDLE --> SETTING_UP: open()
     SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> CONNECTED: registration published on an existing DPS session
     SETTING_UP --> RETRY_PENDING: local step failed
     SETTING_UP --> FAULTED: local step failed, reconnect disabled
     SETTING_UP --> IDLE: open() step failed
