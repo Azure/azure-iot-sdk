@@ -255,7 +255,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   registration error `401000` -- the next source is tried at once, without a
   `reconnection_policy` delay, even with the policy disabled. The `RETRY_PENDING` event carries the
   rejected credential in `auth_source`, classification `AZ_IOT_CONN_FAILURE_IDENTITY`, attempt 0
-  and no delay. Other failures retry the same source under the policy. A pass tries each source
+  and no delay. Other failures retry the same source under the policy; with the policy disabled, they fault, including one starting a fallback attempt. A fallback to a certificate that is gone by then ends the pass as a local failure, so rejected keys are not retried unpaced. A pass tries each source
   once, from the one it began with, wrapping; it counts as one policy attempt. The source a
   fallback selected is kept until rejected; otherwise each attempt starts at the first available
   source, so a certificate that becomes available (such as one DPS issued) is used next. `open()`

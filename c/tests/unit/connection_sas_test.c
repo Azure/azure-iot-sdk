@@ -1317,6 +1317,76 @@ static void a_retry_from_the_first_source_starts_a_new_pass(void** state)
   g_late_cert_ready = false;
 }
 
+/* A provider whose load() returns g_cert_load_result for every role. */
+static az_iot_result g_cert_load_result;
+
+static az_iot_result scripted_cert_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  (void)self;
+  (void)role;
+  memset(out, 0, sizeof(*out));
+  return g_cert_load_result;
+}
+
+static const az_iot_certificate_provider_vtable k_scripted_cert_vtable = {
+  .version = 1u,
+  .load = scripted_cert_load,
+  .release = ca_only_release,
+  .deinit = ca_only_deinit,
+};
+
+/* With the policy disabled, a fallback attempt that fails to start faults
+ * instead of retrying with no delay. */
+static void a_failed_fallback_start_without_a_policy_faults(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_cert_load_result = AZ_IOT_OK;
+  az_iot_certificate_provider provider = { .vtable = &k_scripted_cert_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, "");
+
+  g_cert_load_result = AZ_IOT_ERR_NOT_INITIALIZED;
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  pump(fx, 3);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->client.reconnect_due_ms, 0);
+  assert_true(no_connect_pending(fx));
+  g_cert_load_result = AZ_IOT_OK;
+}
+
+/* Both keys rejected, then the certificate that made X.509 next is gone: the
+ * pass ends with a paced retry, and the next pass starts at the primary key. */
+static void a_vanished_fallback_certificate_ends_the_pass(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_late_cert_ready = false;
+  az_iot_certificate_provider provider = { .vtable = &k_late_cert_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+
+  g_late_cert_ready = true;
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
+
+  g_late_cert_ready = false;
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(no_connect_pending(fx));
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_true(fx->client.reconnect_due_ms > az_iot_time_mono_ms());
+
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+}
+
 /* The last holder releases while the CONNECT is in flight and a new one
  * acquires before the pump: the session and its pass are kept, so the
  * rejection still falls back at once. */
@@ -1482,6 +1552,9 @@ int main(void)
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_reopen_during_the_dps_finalizer_keeps_the_new_attempt, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_fallback_start_without_a_policy_faults, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_vanished_fallback_certificate_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_a_session_rejection_leaves_no_pacing, setup, teardown),
     cmocka_unit_test_setup_teardown(

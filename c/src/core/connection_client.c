@@ -1435,8 +1435,11 @@ static void schedule_reconnect(
   /* Per ladder, so a long hub outage cannot spend the budget a registration
    * that has not been tried yet would need. */
   uint32_t delay = 0;
-  bool retry = az_iot_retry_policy__next(
-      &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
+  /* A disabled policy faults: an immediate credential fallback can reach here
+   * without one, and its zero delay would retry at once forever. */
+  bool retry = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
+      && az_iot_retry_policy__next(
+                   &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
   c->recovery_report.classification = classify_failure(failure_scope, reason);
   c->recovery_report.attempt = c->retry_attempt[scope];
   /* An identity recovery episode bounds every retry until HUB:CONNECTED: one
@@ -2791,6 +2794,18 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
     c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* The pass reached X.509 after its keys were rejected, and the
+       * certificate is gone: the pass ends, failing this attempt, rather than
+       * trying those keys again unpaced. */
+      AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "the certificate selected for fallback is gone");
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      mc->iface->destroy(mc);
+      stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, lr, "certificate selected for fallback is gone");
+      return lr;
+    }
     if (lr == AZ_IOT_ERR_NOT_FOUND && dps_has_sas)
     {
       AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_DPS, "no bootstrap certificate; using SAS");
@@ -4245,6 +4260,19 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
     c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
+    {
+      /* The pass reached X.509 after its keys were rejected, and the
+       * certificate is gone: the pass ends, failing this attempt, rather than
+       * trying those keys again unpaced. */
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_CONNECTION, "the certificate selected for fallback is gone");
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      mc->iface->destroy(mc);
+      stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, lr, "certificate selected for fallback is gone");
+      return lr;
+    }
     if (lr == AZ_IOT_ERR_NOT_FOUND && hub_has_sas)
     {
       AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_CONNECTION, "no certificate; using SAS");

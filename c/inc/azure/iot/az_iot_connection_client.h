@@ -329,7 +329,9 @@ extern "C"
    * registration error 401000, as DPS accepts the CONNECT and rejects the
    * registration) moves to the next source at once, without a
    * reconnection_policy delay, even with the policy disabled. Other failures
-   * retry the same source under the policy. A pass tries each source once,
+   * retry the same source under the policy, or fault with it disabled, also
+   * when starting a fallback attempt. A fallback to a certificate gone by then
+   * ends the pass as a local failure. A pass tries each source once,
    * from the one it began with, wrapping; it counts as one policy attempt. The
    * source a fallback selected is kept until rejected; otherwise each attempt
    * starts at the first available source, so a certificate that becomes
