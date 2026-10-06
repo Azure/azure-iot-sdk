@@ -1175,15 +1175,11 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_connack(az_span body, az_mqtt5_conn
     return AZ_MQTT_ERROR_MALFORMED_PACKET;
   }
 
-  // Properties
-  if (az_span_size(body) > 0)
-  {
-    rc = _decode_connack_props(&body, out);
-    if (az_result_failed(rc))
-      return rc;
-  }
-
-  return AZ_OK;
+  // Properties: always present (3.2.2.3.1), and nothing follows them.
+  rc = _decode_connack_props(&body, out);
+  if (az_result_failed(rc))
+    return rc;
+  return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
 }
 
 // ============================================================================
@@ -1475,6 +1471,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_ack(az_span body, az_mqtt5_ack_data
     return rc;
   out->reason_code = (az_mqtt5_reason_code)reason;
 
+  // Properties may be omitted after the reason code (3.4.2.2); nothing follows them.
   if (az_span_size(body) > 0)
   {
     rc = _decode_ack_props(&body, out);
@@ -1482,7 +1479,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_ack(az_span body, az_mqtt5_ack_data
       return rc;
   }
 
-  return AZ_OK;
+  return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
 }
 
 // ============================================================================
@@ -1698,9 +1695,9 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_disconnect(az_span body, az_mqtt5_d
   if (az_result_failed(rc))
     return rc;
 
-  if (prop_len > az_span_size(body))
+  if (prop_len != az_span_size(body))
   {
-    return AZ_MQTT_ERROR_MALFORMED_PACKET;
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Nothing follows the properties.
   }
 
   az_span props = az_span_slice(body, 0, prop_len);
@@ -1816,9 +1813,9 @@ AZ_NODISCARD az_result az_mqtt5_codec_decode_auth(az_span body, az_mqtt5_auth_da
   if (az_result_failed(rc))
     return rc;
 
-  if (prop_len > az_span_size(body))
+  if (prop_len != az_span_size(body))
   {
-    return AZ_MQTT_ERROR_MALFORMED_PACKET;
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // Nothing follows the properties.
   }
 
   az_span props = az_span_slice(body, 0, prop_len);

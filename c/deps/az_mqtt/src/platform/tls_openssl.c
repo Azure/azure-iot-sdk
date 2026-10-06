@@ -264,7 +264,7 @@ static az_result _load_key_uri(SSL_CTX* ctx, az_span uri)
     OSSL_STORE_INFO* info = OSSL_STORE_load(store);
     if (info == NULL)
     {
-      break; // A loader error does not set eof: retrying would not end.
+      break; // End of the store, or a loader error (which may not set eof): do not retry.
     }
     if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY)
     {
