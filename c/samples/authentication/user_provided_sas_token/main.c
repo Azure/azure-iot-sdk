@@ -16,8 +16,6 @@
  * stay runnable; replace sign_token() with your key store (TPM, HSM, secure
  * element) or a call to a token service. Needs no crypto backend and no clock
  * in the SDK.
- *
- * Proposed API: not built yet.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -309,6 +307,7 @@ int main(void)
   char* reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL);
   char* key_b64 = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL);
   char* ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL);
+  char* endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
@@ -337,6 +336,7 @@ int main(void)
   opts.client_id = reg_id;
   opts.dps.id_scope = id_scope;
   opts.dps.registration_id = reg_id;
+  opts.dps.global_endpoint = endpoint;
   opts.dps_auth = tokens;
   opts.hub_auth = tokens;
   static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))]; /* no keys */
@@ -385,5 +385,6 @@ cleanup:
   free(reg_id);
   free(key_b64);
   free(ca);
+  free(endpoint);
   return rc;
 }

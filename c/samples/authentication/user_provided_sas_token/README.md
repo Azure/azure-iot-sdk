@@ -3,8 +3,6 @@
 
 # SAS tokens from the application
 
-> **Proposed API, not implemented.** This sample is not built.
-
 The SDK asks the application for a SAS token before each connect that needs one, and again at
 `sas.renewal_percent` of its validity. The SDK never sees a key. See [`main.c`](main.c).
 
@@ -24,7 +22,8 @@ The SDK asks the application for a SAS token before each connect that needs one,
 
 ## Service requirements
 
-A DPS symmetric-key individual enrollment linked to an IoT Hub.
+A DPS symmetric-key enrollment linked to an IoT Hub. For an enrollment group, set the device key
+derived from the group key.
 
 ## Environment variables
 
@@ -34,3 +33,4 @@ A DPS symmetric-key individual enrollment linked to an IoT Hub.
 | `AZ_IOT_DPS_REGISTRATION_ID` | Registration ID; also the device ID |
 | `AZ_IOT_DPS_SYMMETRIC_KEY` | Enrollment key (base64), held by the stand-in key store |
 | `AZ_IOT_TRUSTED_CA` | Trusted CA PEM path (optional) |
+| `AZ_IOT_DPS_GLOBAL_ENDPOINT` | DPS global endpoint (optional) |

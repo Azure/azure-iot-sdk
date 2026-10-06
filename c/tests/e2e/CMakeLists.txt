@@ -134,8 +134,9 @@ if(NOT TARGET az_iot_crypto_openssl)
         "for the SAS e2e suites.")
 endif()
 az_iot_add_cmocka_test(az_iot_tests_e2e_sas tests/e2e_sas_test.c tests/e2e_sas_device.c)
+# OpenSSL::Crypto: the user-provided token test signs its own tokens.
 target_link_libraries(az_iot_tests_e2e_sas PRIVATE
-    az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl)
+    az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl OpenSSL::Crypto)
 if(AZ_IOT_BUILD_E2E_CSR)
     az_iot_add_cmocka_test(az_iot_tests_e2e_csr_sas
         tests/e2e_csr_sas_test.c tests/e2e_sas_device.c)

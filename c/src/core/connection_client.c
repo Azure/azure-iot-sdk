@@ -67,6 +67,10 @@
  * reconnecting anyway. */
 #define SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS 5000u
 
+/** @brief When to ask again for a renewal token the callback had none for,
+ * absent its retry_after_seconds. */
+#define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
+
 #define DPS_PHASE_NONE AZ_IOT_DPS_PHASE_NONE
 #define DPS_PHASE_CONNECTING AZ_IOT_DPS_PHASE_CONNECTING
 #define DPS_PHASE_SUBSCRIBING AZ_IOT_DPS_PHASE_SUBSCRIBING
@@ -593,6 +597,8 @@ static void reset_identity_recovery(az_iot_connection_client* c)
   c->identity_recovery_active = false;
 }
 
+static void clear_sas_token_request(az_iot_connection_client* c, az_iot_connection_scope scope);
+
 /**
  * @brief Whether the transition of @p scope to @p new_state with @p reason is
  * part of a SAS token renewal in progress: the hub's RETRY_PENDING through
@@ -677,7 +683,12 @@ static void set_state_to(
     c->sas_token_renewal_disconnect_deadline_ms = 0;
   }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
-   * it runs whether or not anyone is watching. */
+   * it runs whether or not anyone is watching. A settled scope has no attempt
+   * left to take a user-provided token. */
+  if (new_state == AZ_IOT_CONN_STATE_IDLE || new_state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    clear_sas_token_request(c, scope);
+  }
   if (scope == AZ_IOT_CONN_SCOPE_HUB && new_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->consecutive_hub_connect_failures = 0;
@@ -1208,7 +1219,8 @@ static uint64_t unix_now(const az_iot_connection_client* c)
 /** @brief Wipes the token once the adapter has the CONNECT. */
 static void sas_wipe_token(az_iot_connection_client* c)
 {
-  if (c->sas_token != NULL)
+  /* A delivered user-provided token waits for its attempt. */
+  if (c->sas_token != NULL && c->sas_token_holder == 0)
   {
     az_iot_crypto__wipe(c->sas_token, c->sas_token_size);
   }
@@ -1271,6 +1283,8 @@ static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_
   return AZ_IOT_SAS_TOKEN_SIZE(ids) <= c->sas_token_size;
 }
 
+static void claim_sas_token_area(az_iot_connection_client* c, az_iot_connection_scope scope);
+
 /**
  * @brief Milliseconds from signing to renewing a token valid for
  * @p lifetime_seconds: az_iot_auth::sas::renewal_percent of it.
@@ -1303,6 +1317,7 @@ static az_iot_result apply_sas_key(
   bool secondary = key == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
   const az_iot_auth* auth = is_dps ? &c->opts.dps_auth : &c->opts.hub_auth;
+  claim_sas_token_area(c, scope);
   uint64_t now = unix_now(c);
   if (now == 0)
   {
@@ -1452,7 +1467,8 @@ static void schedule_reconnect(
    * while the ladder counts backoff position and is reset by a successful
    * connect or by open()/close(). Folding them together would make either
    * reset silently move the other. */
-  if (failure_scope == AZ_IOT_CONN_SCOPE_HUB)
+  /* A missing user-provided token says nothing about the hub. */
+  if (failure_scope == AZ_IOT_CONN_SCOPE_HUB && !c->sas_token_attempt_failed)
   {
     c->consecutive_hub_connect_failures++;
   }
@@ -1489,6 +1505,13 @@ static void schedule_reconnect(
   bool retry = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
       && az_iot_retry_policy__next(
                    &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
+  /* A user-provided token's retry_after_seconds is a floor over the policy. */
+  uint64_t token_floor_ms = (uint64_t)c->sas_token_retry_after_seconds * 1000u;
+  c->sas_token_retry_after_seconds = 0;
+  if (retry && token_floor_ms > delay)
+  {
+    delay = token_floor_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)token_floor_ms;
+  }
   c->recovery_report.classification = classify_failure(failure_scope, reason);
   c->recovery_report.attempt = c->retry_attempt[scope];
   /* An identity recovery episode bounds every retry until HUB:CONNECTED: one
@@ -1642,19 +1665,32 @@ static void note_identity_refusal(az_iot_connection_client* c, az_iot_result sta
 }
 
 /** @brief Source after @p s in the order X.509, primary key, secondary key,
- * wrapping to X.509. */
+ * user-provided token, wrapping to X.509. */
 static az_iot_auth_source auth_source_after(az_iot_auth_source s)
 {
-  if (s == AZ_IOT_AUTH_SOURCE_X509)
+  switch (s)
   {
-    return AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+    case AZ_IOT_AUTH_SOURCE_X509:
+      return AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
+      return AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
+    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
+      return AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+    case AZ_IOT_AUTH_SOURCE_NONE:
+    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
+    default:
+      return AZ_IOT_AUTH_SOURCE_X509;
   }
-  return s == AZ_IOT_AUTH_SOURCE_PRIMARY_KEY ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
-                                             : AZ_IOT_AUTH_SOURCE_X509;
+}
+
+/** @brief az_iot_auth of @p scope. */
+static const az_iot_auth* auth_of(const az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  return scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
 }
 
 /** @brief Whether @p s can be tried for @p scope: X.509 when the last load()
- * returned a certificate, a key when it is set. */
+ * returned a certificate, a key or token callback when it is set. */
 static bool auth_source_available(
     const az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -1668,6 +1704,10 @@ static bool auth_source_available(
   {
     return c->auth[scope].primary_key_len > 0;
   }
+  if (s == AZ_IOT_AUTH_SOURCE_USER_PROVIDED)
+  {
+    return auth_of(c, scope)->sas.user_provided_token != NULL;
+  }
   return s == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY && c->auth[scope].secondary_key_len > 0;
 }
 
@@ -1677,14 +1717,14 @@ static bool auth_source_available(
  * pass and returns false.
  *
  * A pass tries each available source once, from the one it began with, in the
- * order X.509, primary key, secondary key, wrapping. After a full pass the
+ * order X.509, primary key, secondary key, user-provided token, wrapping. After a full pass the
  * next attempt starts at the first source.
  */
 static bool auth_next_source(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   az_iot_auth_source s = c->auth[scope].source;
   az_iot_auth_source from = c->auth[scope].pass_from;
-  for (int i = 0; s != AZ_IOT_AUTH_SOURCE_NONE && from != AZ_IOT_AUTH_SOURCE_NONE && i < 2; ++i)
+  for (int i = 0; s != AZ_IOT_AUTH_SOURCE_NONE && from != AZ_IOT_AUTH_SOURCE_NONE && i < 3; ++i)
   {
     s = auth_source_after(s);
     if (s == from)
@@ -1821,6 +1861,256 @@ static bool dps_refs_held(const az_iot_connection_client* c)
 static bool dps_session_demanded(const az_iot_connection_client* c)
 {
   return c->dps_user_count > 0 || c->dps_standing_ref;
+}
+
+/** @brief Outcome of calling the user_provided_token callback. */
+typedef enum
+{
+  USER_TOKEN_READY, /**< Held in the token area. */
+  USER_TOKEN_PENDING, /**< Awaiting az_iot_connection_client_complete_sas_token(). */
+  USER_TOKEN_UNAVAILABLE, /**< No token now; see retry_after_seconds. */
+  USER_TOKEN_ABANDONED, /**< close() from the callback ended the request. */
+  USER_TOKEN_FAILED /**< See the returned error. */
+} user_token_outcome;
+
+/** @brief Ends @p scope's user-provided token request, and drops its token. */
+static void clear_sas_token_request(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
+  if (c->sas_token_holder == (uint8_t)(scope + 1))
+  {
+    c->sas_token_holder = 0;
+    sas_wipe_token(c);
+  }
+}
+
+/**
+ * @brief Makes the token area free for @p scope. A delivered token held for
+ * the other scope is dropped, and its request asks again; one held for @p scope
+ * itself is dropped with its request, as the attempt uses another source.
+ */
+static void claim_sas_token_area(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  if (c->sas_token_holder == 0)
+  {
+    return;
+  }
+  az_iot_connection_scope holder
+      = c->sas_token_holder == 1u ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  if (holder == scope)
+  {
+    clear_sas_token_request(c, scope);
+    return;
+  }
+  c->sas_token_request[holder].asked = false;
+  c->sas_token_request[holder].status = AZ_IOT_SAS_TOKEN_PENDING;
+  c->sas_token_holder = 0;
+  sas_wipe_token(c);
+}
+
+/**
+ * @brief Places @p scope's token resource URI (`sr`), NUL-terminated, at the
+ * end of the token area; the token goes before it.
+ *
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when the hub host or client ID is
+ * missing; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the URI leaves no room for a token.
+ */
+static az_iot_result place_sas_resource_uri(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const char** uri,
+    size_t* uri_len)
+{
+  bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
+  if (!is_dps && !ensure_hub_client(c))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!sas_token_fits(c, scope))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* `<resource URI>\n<expiry>` from azure-sdk-for-c, which encodes the URI.
+   * Only the URI is kept; any expiry above 0 passes its precondition. */
+  az_span area = az_span_create((uint8_t*)c->sas_token, (int32_t)c->sas_token_size);
+  az_span signed_text = AZ_SPAN_EMPTY;
+  az_result ar = is_dps
+      ? az_iot_provisioning_client_sas_get_signature(&c->dps_prov, 1, area, &signed_text)
+      : az_iot_hub_client_sas_get_signature(&c->hub_client, 1, area, &signed_text);
+  int32_t len = az_result_succeeded(ar) ? az_span_find(signed_text, AZ_SPAN_FROM_STR("\n")) : -1;
+  /* Room for the URI, its terminator, and a token of at least one byte plus its own. */
+  if (len <= 0 || (size_t)len + 3u > c->sas_token_size)
+  {
+    sas_wipe_token(c);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  char* tail = c->sas_token + c->sas_token_size - (size_t)len - 1u;
+  memmove(tail, c->sas_token, (size_t)len);
+  tail[len] = '\0';
+  memset(c->sas_token, 0, c->sas_token_size - (size_t)len - 1u);
+  *uri = tail;
+  *uri_len = (size_t)len;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Calls @p scope's user_provided_token callback for its request. From
+ * do_work() only. The request is PENDING during the call, so the callback may
+ * complete it at once.
+ *
+ * @param[out] error For USER_TOKEN_FAILED: AZ_IOT_ERR_INVALID_ARG for an
+ * invalid response, or place_sas_resource_uri()'s error.
+ */
+static user_token_outcome ask_user_token(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_result* error)
+{
+  const az_iot_auth* auth = auth_of(c, scope);
+  uint32_t id = c->sas_token_request[scope].request_id;
+  claim_sas_token_area(c, scope);
+  const char* uri = NULL;
+  size_t uri_len = 0;
+  *error = place_sas_resource_uri(c, scope, &uri, &uri_len);
+  if (*error != AZ_IOT_OK)
+  {
+    return USER_TOKEN_FAILED;
+  }
+  c->sas_token_request[scope].asked = true;
+  c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_PENDING;
+  az_iot_sas_token_request request = {
+    .request_id = id,
+    .scope = scope,
+    .profile
+    = scope == AZ_IOT_CONN_SCOPE_HUB ? c->connection_profile : AZ_IOT_CONNECTION_PROFILE_MQTT_V3,
+    .resource_uri = uri,
+    .key_name = scope == AZ_IOT_CONN_SCOPE_DPS ? DPS_SAS_KEY_NAME : "",
+  };
+  az_iot_sas_token_response response;
+  memset(&response, 0, sizeof(response));
+  uint32_t closes = c->close_count;
+  uint32_t seq = c->open_seq;
+  /* The token goes before the URI: its own terminator and the URI's. */
+  c->sas_token_capacity = c->sas_token_size - uri_len - 2u;
+  c->sas_token_asking = (uint8_t)(scope + 1);
+  auth->sas.user_provided_token(
+      &request, c->sas_token, c->sas_token_capacity, &response, auth->sas.user_ctx);
+  c->sas_token_asking = 0;
+  memset((char*)(uintptr_t)uri, 0, uri_len + 1u);
+  size_t capacity = c->sas_token_capacity;
+  c->sas_token_capacity = c->sas_token_size - 1u;
+  if (c->close_count != closes || c->open_seq != seq
+      || c->sas_token_request[scope].request_id != id)
+  {
+    return USER_TOKEN_ABANDONED;
+  }
+  if (response.status == AZ_IOT_SAS_TOKEN_PENDING
+      && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY)
+  {
+    return USER_TOKEN_READY; /* completed from inside the callback */
+  }
+  if (response.status == AZ_IOT_SAS_TOKEN_PENDING
+      && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_UNAVAILABLE)
+  {
+    return USER_TOKEN_UNAVAILABLE;
+  }
+  switch (response.status)
+  {
+    case AZ_IOT_SAS_TOKEN_READY:
+      if (response.token_len == 0 || response.token_len > capacity || response.valid_seconds == 0)
+      {
+        break;
+      }
+      c->sas_token[response.token_len] = '\0';
+      c->sas_token_holder = (uint8_t)(scope + 1);
+      c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_READY;
+      c->sas_token_request[scope].token_len = response.token_len;
+      c->sas_token_request[scope].valid_seconds = response.valid_seconds;
+      return USER_TOKEN_READY;
+    case AZ_IOT_SAS_TOKEN_PENDING:
+      return USER_TOKEN_PENDING;
+    case AZ_IOT_SAS_TOKEN_UNAVAILABLE:
+      c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_UNAVAILABLE;
+      c->sas_token_request[scope].retry_after_seconds = response.retry_after_seconds;
+      return USER_TOKEN_UNAVAILABLE;
+    default:
+      break;
+  }
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "invalid SAS token response");
+  sas_wipe_token(c);
+  *error = AZ_IOT_ERR_INVALID_ARG;
+  return USER_TOKEN_FAILED;
+}
+
+/** @brief Opens a user-provided token request for @p scope; do_work() asks. */
+static void open_sas_token_request(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    bool for_renewal,
+    uint64_t deadline_ms)
+{
+  if (++c->sas_token_last_request_id == 0)
+  {
+    c->sas_token_last_request_id = 1;
+  }
+  memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
+  c->sas_token_request[scope].request_id = c->sas_token_last_request_id;
+  c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_PENDING;
+  c->sas_token_request[scope].for_renewal = for_renewal;
+  c->sas_token_request[scope].deadline_ms = deadline_ms;
+}
+
+/**
+ * @brief Selects a user-provided token for @p scope's attempt: the one
+ * delivered for its request, or a wait for one. The callback is not called
+ * here but from do_work().
+ *
+ * @param[out] pending The attempt waits; nothing connects yet.
+ */
+static void apply_user_token(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_mqtt_connect_options* copts,
+    bool* pending)
+{
+  *pending = false;
+  if (c->sas_token_request[scope].request_id != 0
+      && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY
+      && c->sas_token_holder == (uint8_t)(scope + 1))
+  {
+    copts->password = c->sas_token;
+    c->auth[scope].source = AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+    if (scope == AZ_IOT_CONN_SCOPE_HUB)
+    {
+      uint64_t delay_ms = get_sas_token_renewal_delay_ms(
+          auth_of(c, scope), c->sas_token_request[scope].valid_seconds);
+      uint64_t now = unix_now(c);
+      c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
+      c->sas_token_renewal_due_unix_seconds = now != 0 ? now + (delay_ms + 999u) / 1000u : 0;
+    }
+    /* The transport takes the token; it is wiped after connect(). */
+    memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
+    c->sas_token_holder = 0;
+    apply_trusted_ca(c, copts);
+    return;
+  }
+  az_iot_mqtt_connect_options timings = { 0 };
+  resolve_connect_timings(c, &timings);
+  uint64_t deadline_ms = az_iot_time_mono_ms() + (uint64_t)timings.connect_timeout_seconds * 1000u;
+  if (c->sas_token_request[scope].request_id != 0)
+  {
+    /* A renewal request becomes this attempt's. */
+    c->sas_token_request[scope].for_renewal = false;
+    if (c->sas_token_request[scope].deadline_ms == 0)
+    {
+      c->sas_token_request[scope].deadline_ms = deadline_ms;
+    }
+  }
+  else
+  {
+    open_sas_token_request(c, scope, false, deadline_ms);
+  }
+  *pending = true;
 }
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
@@ -2820,14 +3110,17 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
 
   /* Credential, from c->auth[DPS].first (see auth_next_source()): the
    * provider's bootstrap X.509 identity (the operational cert, if any, is
-   * issued during this exchange), then the primary, then the secondary key of
-   * dps_auth. It never goes plaintext. */
+   * issued during this exchange), then the primary and the secondary key of
+   * dps_auth, then its user_provided_token. It never goes plaintext. */
   az_iot_auth_source first = c->auth[AZ_IOT_CONN_SCOPE_DPS].first;
-  bool dps_has_sas = c->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len > 0;
+  bool dps_has_key = c->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len > 0;
+  bool dps_has_sas
+      = dps_has_key || auth_of(c, AZ_IOT_CONN_SCOPE_DPS)->sas.user_provided_token != NULL;
   if (!c->opts.certificate_provider && !dps_has_sas)
   {
     AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_DPS, "no certificate provider and no SAS key; refusing to connect");
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "no certificate provider and no SAS key or token callback; refusing to connect");
     mc->iface->destroy(mc);
     stage_local_error(
         c,
@@ -2903,7 +3196,19 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       return lr;
     }
   }
-  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source == AZ_IOT_AUTH_SOURCE_NONE)
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source == AZ_IOT_AUTH_SOURCE_NONE
+      && (first == AZ_IOT_AUTH_SOURCE_USER_PROVIDED || !dps_has_key))
+  {
+    bool pending = false;
+    apply_user_token(c, AZ_IOT_CONN_SCOPE_DPS, &copts, &pending);
+    if (pending)
+    {
+      /* Waiting for the token: the attempt stays in SETTING_UP. */
+      mc->iface->destroy(mc);
+      return AZ_IOT_OK;
+    }
+  }
+  else if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source == AZ_IOT_AUTH_SOURCE_NONE)
   {
     az_iot_result sr = apply_sas_key(
         c,
@@ -2916,6 +3221,12 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
     }
+  }
+  /* Another source was selected: a token request for this scope is moot. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].source != AZ_IOT_AUTH_SOURCE_USER_PROVIDED
+      && c->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id != 0)
+  {
+    clear_sas_token_request(c, AZ_IOT_CONN_SCOPE_DPS);
   }
   /* An attempt from the start of the order begins the pass, even after a
    * failure that was not a rejection: the available sources may have changed. */
@@ -3011,6 +3322,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_DPS, "start closed from the state callback; abandoned");
     c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  /* An attempt already waiting for its user-provided token continues. */
+  if (c->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id != 0)
+  {
+    return AZ_IOT_OK;
   }
   return dps_connect_session(c);
 }
@@ -4289,15 +4605,17 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   /* Credential, from c->auth[HUB].first (see auth_next_source()): the
    * provider's X.509 identity -- the issued OPERATIONAL one (from this DPS
    * session, persisted by the provider on a prior run, or supplied for a direct
-   * hub connection), else BOOTSTRAP -- then the primary, then the secondary key
-   * of hub_auth. It never goes plaintext. */
+   * hub connection), else BOOTSTRAP -- then the primary and the secondary key
+   * of hub_auth, then its user_provided_token. It never goes plaintext. */
   az_iot_auth_source first = c->auth[AZ_IOT_CONN_SCOPE_HUB].first;
-  bool hub_has_sas = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len > 0;
+  bool hub_has_key = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len > 0;
+  bool hub_has_sas
+      = hub_has_key || auth_of(c, AZ_IOT_CONN_SCOPE_HUB)->sas.user_provided_token != NULL;
   if (!c->opts.certificate_provider && !hub_has_sas)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "no certificate provider and no SAS key; refusing to connect");
+        "no certificate provider and no SAS key or token callback; refusing to connect");
     mc->iface->destroy(mc);
     stage_local_error(
         c,
@@ -4369,7 +4687,19 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       apply_trusted_ca(c, &copts);
     }
   }
-  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_NONE)
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_NONE
+      && (first == AZ_IOT_AUTH_SOURCE_USER_PROVIDED || !hub_has_key))
+  {
+    bool pending = false;
+    apply_user_token(c, AZ_IOT_CONN_SCOPE_HUB, &copts, &pending);
+    if (pending)
+    {
+      /* Waiting for the token: the attempt stays in SETTING_UP. */
+      mc->iface->destroy(mc);
+      return AZ_IOT_OK;
+    }
+  }
+  else if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_NONE)
   {
     az_iot_result sr = apply_sas_key(
         c,
@@ -4382,6 +4712,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
     }
+  }
+  /* Another source was selected: a token request for this scope is moot. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source != AZ_IOT_AUTH_SOURCE_USER_PROVIDED
+      && c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id != 0)
+  {
+    clear_sas_token_request(c, AZ_IOT_CONN_SCOPE_HUB);
   }
   /* An attempt from the start of the order begins the pass, even after a
    * failure that was not a rejection: the available sources may have changed. */
@@ -4451,6 +4787,35 @@ static void start_sas_token_renewal(az_iot_connection_client* c, uint64_t now)
   }
 }
 
+/** @brief Whether @p source authenticates with a SAS token. */
+static bool is_sas_token_source(az_iot_auth_source source)
+{
+  return source == AZ_IOT_AUTH_SOURCE_PRIMARY_KEY || source == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+      || source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+}
+
+/** @brief Asks again for a hub renewal token after @p retry_after_seconds, or
+ * SAS_TOKEN_RENEWAL_RETRY_MS when 0. The session stays up meanwhile. */
+static void retry_sas_token_renewal_later(az_iot_connection_client* c, uint32_t retry_after_seconds)
+{
+  c->sas_token_renewal_due_ms = az_iot_time_mono_ms()
+      + (retry_after_seconds != 0 ? (uint64_t)retry_after_seconds * 1000u
+                                  : (uint64_t)SAS_TOKEN_RENEWAL_RETRY_MS);
+  c->sas_token_renewal_due_unix_seconds = 0;
+}
+
+/** @brief Opens a request for the hub's renewal token; do_work() asks for it
+ * while the session stays up, and the renewal starts once it is READY. */
+static void request_sas_token_for_renewal(az_iot_connection_client* c)
+{
+  c->sas_token_renewal_due_ms = 0;
+  c->sas_token_renewal_due_unix_seconds = 0;
+  if (c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id == 0)
+  {
+    open_sas_token_request(c, AZ_IOT_CONN_SCOPE_HUB, true, 0);
+  }
+}
+
 /**
  * @brief Called from do_work(): starts a SAS token renewal of the connected
  * hub when due, and reconnects one whose disconnect was not reported in time.
@@ -4460,7 +4825,7 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   if (c->active_client == NULL || c->user_close
       || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
-      || (source != AZ_IOT_AUTH_SOURCE_PRIMARY_KEY && source != AZ_IOT_AUTH_SOURCE_SECONDARY_KEY))
+      || !is_sas_token_source(source))
   {
     return;
   }
@@ -4480,8 +4845,231 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
       || (c->sas_token_renewal_due_unix_seconds != 0
           && unix_now(c) >= c->sas_token_renewal_due_unix_seconds))
   {
-    start_sas_token_renewal(c, now);
+    if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED)
+    {
+      request_sas_token_for_renewal(c);
+    }
+    else
+    {
+      start_sas_token_renewal(c, now);
+    }
   }
+}
+
+/**
+ * @brief Fails @p scope's attempt that waited for a user-provided token, as a
+ * start failure: retried under reconnection_policy, no sooner than
+ * @p retry_after_seconds.
+ */
+static void fail_sas_token_attempt(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_result reason,
+    uint32_t retry_after_seconds)
+{
+  if (scope == AZ_IOT_CONN_SCOPE_HUB)
+  {
+    if (c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_SETTING_UP && c->active_client == NULL)
+    {
+      c->sas_token_retry_after_seconds = retry_after_seconds;
+      c->sas_token_attempt_failed = true;
+      schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+      c->sas_token_attempt_failed = false;
+    }
+  }
+  else if (c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_SETTING_UP && c->dps_mqtt == NULL)
+  {
+    if (c->dps_registration_ref)
+    {
+      /* As any registration that failed to start: re-registered, or the
+       * cached hub tried; see do_work(). */
+      c->dps_registration_ref = false;
+      c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+      c->sas_token_retry_after_seconds = retry_after_seconds;
+      schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, reason);
+    }
+    else
+    {
+      if (dps_session_demanded(c))
+      {
+        dps_user_retry_schedule(c, retry_after_seconds);
+      }
+      set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, reason);
+    }
+  }
+  c->sas_token_retry_after_seconds = 0;
+}
+
+/**
+ * @brief Resumes @p scope's attempt with its delivered user-provided token. A
+ * failure to start is retried as in do_work(); one caused by close() or
+ * close() + open() from a state callback is not this attempt's to report.
+ */
+static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  uint32_t closes = c->close_count;
+  uint32_t seq = c->open_seq;
+  az_iot_result r;
+  if (scope == AZ_IOT_CONN_SCOPE_HUB)
+  {
+    if (c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_SETTING_UP || c->active_client != NULL)
+    {
+      clear_sas_token_request(c, scope);
+      return;
+    }
+    if (identity_recovery_expired(c))
+    {
+      clear_sas_token_request(c, scope);
+      stop_identity_recovery(c, scope);
+      return;
+    }
+    r = start_connect_attempt(c);
+    if (r != AZ_IOT_OK && c->close_count == closes && c->open_seq == seq)
+    {
+      schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, r);
+    }
+    return;
+  }
+  if (c->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_SETTING_UP || c->dps_mqtt != NULL)
+  {
+    clear_sas_token_request(c, scope);
+    return;
+  }
+  if (c->dps_registration_ref && identity_recovery_expired(c))
+  {
+    clear_sas_token_request(c, scope);
+    c->dps_registration_ref = false;
+    stop_identity_recovery(c, scope);
+    return;
+  }
+  c->dps_start_cancelled = false;
+  r = dps_connect_session(c);
+  if (r == AZ_IOT_OK)
+  {
+    if (c->dps_mqtt != NULL && c->dps_registration_ref)
+    {
+      /* Provisioning is under way now; see open(). */
+      c->needs_reprovision = false;
+    }
+    return;
+  }
+  if (c->dps_start_cancelled || c->close_count != closes || c->open_seq != seq)
+  {
+    return;
+  }
+  if (c->dps_registration_ref)
+  {
+    c->dps_registration_ref = false;
+    c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+    schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, r);
+    return;
+  }
+  if (dps_session_demanded(c))
+  {
+    dps_user_retry_schedule(c, 0);
+  }
+  if (c->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_IDLE)
+  {
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
+  }
+}
+
+/**
+ * @brief Moves @p scope's user-provided token request on: calls the callback
+ * for a new one, then applies its outcome. A token resumes the attempt waiting
+ * for it, or starts the hub renewal it was asked for. UNAVAILABLE, or no token
+ * within connect_timeout_seconds, fails the attempt; for a renewal, asks again
+ * later while the session stays up.
+ */
+static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  if (c->sas_token_request[scope].request_id == 0)
+  {
+    return;
+  }
+  bool for_renewal = c->sas_token_request[scope].for_renewal;
+  if (c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY
+      && c->sas_token_holder != (uint8_t)(scope + 1))
+  {
+    /* Its token was replaced: ask again. */
+    c->sas_token_request[scope].asked = false;
+    c->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_PENDING;
+  }
+  if (!for_renewal && scope == AZ_IOT_CONN_SCOPE_DPS && !dps_refs_held(c))
+  {
+    /* Nobody wants the provisioning session any more. */
+    clear_sas_token_request(c, scope);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    return;
+  }
+  if (!c->sas_token_request[scope].asked)
+  {
+    az_iot_result error = AZ_IOT_OK;
+    user_token_outcome outcome = ask_user_token(c, scope, &error);
+    if (outcome == USER_TOKEN_ABANDONED)
+    {
+      return;
+    }
+    if (outcome == USER_TOKEN_FAILED)
+    {
+      clear_sas_token_request(c, scope);
+      if (for_renewal)
+      {
+        retry_sas_token_renewal_later(c, 0);
+        return;
+      }
+      stage_local_error(c, scope, error, "SAS token request failed");
+      fail_sas_token_attempt(c, scope, error, 0);
+      return;
+    }
+  }
+  switch (c->sas_token_request[scope].status)
+  {
+    case AZ_IOT_SAS_TOKEN_PENDING:
+      if (c->sas_token_request[scope].deadline_ms != 0
+          && az_iot_time_mono_ms() >= c->sas_token_request[scope].deadline_ms)
+      {
+        AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "no SAS token delivered in time");
+        clear_sas_token_request(c, scope);
+        stage_local_error(c, scope, AZ_IOT_ERR_TIMEOUT, "no SAS token delivered in time");
+        fail_sas_token_attempt(c, scope, AZ_IOT_ERR_TIMEOUT, 0);
+      }
+      return;
+    case AZ_IOT_SAS_TOKEN_UNAVAILABLE:
+    {
+      uint32_t retry_after = c->sas_token_request[scope].retry_after_seconds;
+      clear_sas_token_request(c, scope);
+      if (for_renewal)
+      {
+        retry_sas_token_renewal_later(c, retry_after);
+        return;
+      }
+      stage_local_error(c, scope, AZ_IOT_ERR_BUSY, "no SAS token available");
+      fail_sas_token_attempt(c, scope, AZ_IOT_ERR_BUSY, retry_after);
+      return;
+    }
+    case AZ_IOT_SAS_TOKEN_READY:
+    default:
+      break;
+  }
+  if (for_renewal)
+  {
+    /* Otherwise held for the hub's next attempt. */
+    if (c->active_client != NULL && !c->user_close && !c->sas_token_renewal_in_progress
+        && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      start_sas_token_renewal(c, az_iot_time_mono_ms());
+    }
+    return;
+  }
+  resume_sas_token_attempt(c, scope);
+}
+
+/** @brief Called from do_work(): see process_sas_token_request_of(). */
+static void process_sas_token_request(az_iot_connection_client* c)
+{
+  process_sas_token_request_of(c, AZ_IOT_CONN_SCOPE_DPS);
+  process_sas_token_request_of(c, AZ_IOT_CONN_SCOPE_HUB);
 }
 
 /** @brief @p timeout_ms, capped so a process_loop() wait ends by the hub's
@@ -4490,10 +5078,9 @@ static uint32_t limit_wait_to_sas_token_renewal(
     const az_iot_connection_client* c,
     uint32_t timeout_ms)
 {
-  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   if (c->active_client == NULL || c->user_close
       || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
-      || (source != AZ_IOT_AUTH_SOURCE_PRIMARY_KEY && source != AZ_IOT_AUTH_SOURCE_SECONDARY_KEY))
+      || !is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_HUB].source))
   {
     return timeout_ms;
   }
@@ -4712,12 +5299,6 @@ static az_iot_result sas_validate(
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: SAS renewal_percent above 99");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (auth->sas.user_provided_token != NULL)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_CONNECTION, "init: user_provided_token is not supported yet");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
   return AZ_IOT_OK;
 }
 
@@ -4825,7 +5406,9 @@ static az_iot_result sas_load_keys(az_iot_connection_client* c)
 {
   sas_key_ref refs[4];
   size_t count = sas_key_refs(c, refs);
-  if (count == 0)
+  bool user_tokens = c->opts.dps_auth.sas.user_provided_token != NULL
+      || c->opts.hub_auth.sas.user_provided_token != NULL;
+  if (count == 0 && !user_tokens)
   {
     return AZ_IOT_OK;
   }
@@ -4847,7 +5430,7 @@ static az_iot_result sas_load_keys(az_iot_connection_client* c)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "init: SAS keys need opts.sas_buffer of at least "
+        "init: SAS needs opts.sas_buffer of at least "
         "AZ_IOT_SAS_BUFFER_SIZE(keys, AZ_IOT_SAS_KEY_MAX) bytes");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -4894,6 +5477,7 @@ static az_iot_result sas_load_keys(az_iot_connection_client* c)
   }
   c->sas_token = (char*)token_area;
   c->sas_token_size = az_iot_connection_client__sas_token_area(size, distinct);
+  c->sas_token_capacity = c->sas_token_size - 1u;
   return AZ_IOT_OK;
 }
 
@@ -5391,19 +5975,23 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   }
 
   /* A role the client uses needs X.509 from the provider unless it has a SAS
-   * key; CSR enrollment always needs the provider. Checked first, so a missing
-   * provider is reported as such rather than as a missing capability below. */
+   * key or token callback; CSR enrollment always needs the provider. Checked
+   * first, so a missing provider is reported as such rather than as a missing
+   * capability below. */
   bool dps_used = dps_configured(client);
   bool hub_used = !client->opts.dps.provision_only;
+  bool dps_has_sas = client->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len > 0
+      || client->opts.dps_auth.sas.user_provided_token != NULL;
+  bool hub_has_sas = client->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len > 0
+      || client->opts.hub_auth.sas.user_provided_token != NULL;
   if (!client->opts.certificate_provider
-      && (client->opts.dps.request_operational_certificate
-          || (dps_used && client->auth[AZ_IOT_CONN_SCOPE_DPS].primary_key_len == 0)
-          || (hub_used && client->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len == 0)))
+      && (client->opts.dps.request_operational_certificate || (dps_used && !dps_has_sas)
+          || (hub_used && !hub_has_sas)))
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "open: opts.certificate_provider is required for a role without a SAS key, and for "
-        "request_operational_certificate");
+        "open: opts.certificate_provider is required for a role without a SAS key or token "
+        "callback, and for request_operational_certificate");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
 
@@ -5621,8 +6209,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       return r;
     }
     /* Consumed only once provisioning is really under way, so a failed start
-     * still leaves the demand standing for the next open(). */
-    client->needs_reprovision = false;
+     * still leaves the demand standing for the next open(). A start waiting
+     * for its token is not under way yet. */
+    if (client->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id == 0)
+    {
+      client->needs_reprovision = false;
+    }
     return r;
   }
 
@@ -5655,6 +6247,7 @@ static void dps_close_session(az_iot_connection_client* c)
      * what cancels it, since dps_start() re-checks the state. */
     if (c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_SETTING_UP)
     {
+      clear_sas_token_request(c, AZ_IOT_CONN_SCOPE_DPS);
       c->dps_phase = DPS_PHASE_NONE;
       /* The registration goes with it: a session started from the callback
        * registers only if a later open() asks. */
@@ -5689,6 +6282,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   client->close_count++;
+  clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
+  clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
 
   /* Before the idempotency check below, not after it. close() is the
    * documented exit from a settled refusal, and on a DPS-only device both
@@ -5865,6 +6460,8 @@ az_iot_result az_iot_connection_client_do_work(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+
+  process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
   /* Close a session nobody needs any more. Done HERE rather than at release
@@ -6184,7 +6781,8 @@ az_iot_result az_iot_connection_client_do_work(
        * RETRY_PENDING, close() would take the no-session path and leave the
        * hub connected, and request_reprovision() would mistake it for a
        * pending registration. Settle it to what the session really is. */
-      if (client->active_client != NULL)
+      if (client->active_client != NULL
+          || client->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id != 0)
       {
         settle_spent_dps_retry(client);
       }
@@ -7772,11 +8370,65 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
     const char* token,
     const az_iot_sas_token_response* response)
 {
-  (void)client;
-  (void)request_id;
-  (void)token;
-  (void)response;
-  /* user_provided_token is rejected by init() until it is implemented, so no
-   * request can be pending. */
-  return AZ_IOT_ERR_NOT_FOUND;
+  if (client == NULL || response == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  int found = -1;
+  for (int i = 0; i < (int)AZ_IOT_CONN_SCOPE_COUNT && request_id != 0; ++i)
+  {
+    if (client->sas_token_request[i].request_id == request_id && client->sas_token_request[i].asked
+        && client->sas_token_request[i].status == AZ_IOT_SAS_TOKEN_PENDING)
+    {
+      found = i;
+    }
+  }
+  if (found < 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  az_iot_connection_scope scope = found == 0 ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+  /* The token area is the asked request's until its callback returns. */
+  if (client->sas_token_asking != 0 && client->sas_token_asking != (uint8_t)(scope + 1))
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  if (response->status == AZ_IOT_SAS_TOKEN_UNAVAILABLE)
+  {
+    client->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_UNAVAILABLE;
+    client->sas_token_request[scope].retry_after_seconds = response->retry_after_seconds;
+    return AZ_IOT_OK;
+  }
+  if (response->status != AZ_IOT_SAS_TOKEN_READY || token == NULL || response->token_len == 0
+      || response->valid_seconds == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (response->token_len > client->sas_token_capacity)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  /* A token held for the other scope is replaced; its request asks again.
+   * Copied before the rest is wiped: @p token may point into the area. */
+  if (client->sas_token_holder != 0 && client->sas_token_holder != (uint8_t)(scope + 1))
+  {
+    az_iot_connection_scope other
+        = client->sas_token_holder == 1u ? AZ_IOT_CONN_SCOPE_DPS : AZ_IOT_CONN_SCOPE_HUB;
+    client->sas_token_request[other].asked = false;
+    client->sas_token_request[other].status = AZ_IOT_SAS_TOKEN_PENDING;
+  }
+  memmove(client->sas_token, token, response->token_len);
+  client->sas_token[response->token_len] = '\0';
+  if (client->sas_token_asking == 0)
+  {
+    memset(
+        client->sas_token + response->token_len + 1u,
+        0,
+        client->sas_token_size - response->token_len - 1u);
+  }
+  client->sas_token_holder = (uint8_t)(scope + 1);
+  client->sas_token_request[scope].status = AZ_IOT_SAS_TOKEN_READY;
+  client->sas_token_request[scope].token_len = response->token_len;
+  client->sas_token_request[scope].valid_seconds = response->valid_seconds;
+  return AZ_IOT_OK;
 }

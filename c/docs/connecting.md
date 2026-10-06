@@ -225,10 +225,10 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 ## Authentication
 
 > **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
-> with the primary and secondary keys, with fallback on rejection; `trusted_ca`; `unix_time`;
-> `token_lifetime_seconds`; renewal of the hub's key-signed token (`renewal_percent`);
-> `auth_source` in state events. Proposed, not implemented yet: further provider certificates and
-> `user_provided_token` (`init()` returns `AZ_IOT_ERR_NOT_SUPPORTED`).
+> with the primary and secondary keys, then tokens from `user_provided_token`, with fallback on
+> rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the hub's token
+> (`renewal_percent`); `auth_source` in state events. Proposed, not implemented yet: further
+> provider certificates.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -271,9 +271,14 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
   re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
   re-initializing.
-- **Token callback.** It must not block. It answers `READY`, `PENDING` (deliver later with
-  `az_iot_connection_client_complete_sas_token()`, within `connect_timeout_seconds`), or
-  `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
+- **Token callback.** Called from `do_work()`, never from `open()`; the attempt waits in
+  `SETTING_UP` (no `auth_source` yet) until a token is there. It must not block. It answers
+  `READY`, `PENDING` (deliver later with `az_iot_connection_client_complete_sas_token()`, within
+  `connect_timeout_seconds`, or the attempt fails with `AZ_IOT_ERR_TIMEOUT`), or `UNAVAILABLE`:
+  the attempt fails with `AZ_IOT_ERR_BUSY` and is retried under the policy, no sooner than
+  `retry_after_seconds`. During the call the request's resource URI shares the token area, so a
+  `READY` token has `token_buffer_size` bytes; a delivered one has the whole area. One request per
+  role; a hub renewal request is asked while the session stays up.
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).

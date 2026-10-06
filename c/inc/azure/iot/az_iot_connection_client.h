@@ -223,7 +223,7 @@ extern "C"
    * selects it alone. See az_iot_auth for fallback on rejection.
    *
    * Not implemented yet: further provider certificates (a load() index, see
-   * docs/eng/certificate-management.md) and user_provided_token.
+   * docs/eng/certificate-management.md).
    */
   typedef enum az_iot_auth_source
   {
@@ -266,7 +266,8 @@ extern "C"
      * az_iot_connection_client_complete_sas_token(). The callback must return
      * promptly; do slow work (network, HSM) outside it. */
     AZ_IOT_SAS_TOKEN_PENDING,
-    /** @brief No token now. The attempt fails and is retried after
+    /** @brief No token now. The attempt fails with AZ_IOT_ERR_BUSY and is
+     * retried under reconnection_policy, no sooner than
      * az_iot_sas_token_response::retry_after_seconds. */
     AZ_IOT_SAS_TOKEN_UNAVAILABLE
   } az_iot_sas_token_status;
@@ -280,28 +281,28 @@ extern "C"
     /** @brief READY: seconds the token stays valid from now; non-zero. The
      * SDK renews at az_iot_auth::sas::renewal_percent of it. */
     uint32_t valid_seconds;
-    /** @brief UNAVAILABLE: seconds before the next attempt. 0: the
+    /** @brief UNAVAILABLE: least seconds before the next attempt. 0: the
      * reconnection policy decides. */
     uint32_t retry_after_seconds;
   } az_iot_sas_token_response;
 
   /**
-   * @brief Supplies a SAS token. Called from do_work() before each connect
-   * attempt that needs one, and again at az_iot_auth::sas::renewal_percent of
-   * the current token's validity.
+   * @brief Supplies a SAS token. Called from do_work() for each connect
+   * attempt that needs one, which waits in SETTING_UP meanwhile, and again at
+   * az_iot_auth::sas::renewal_percent of the current token's validity.
    *
    * For READY, write the complete token, `SharedAccessSignature
    * sr=...&sig=...&se=...` (plus `&skn=...` when @p request->key_name is not
    * empty), into @p token_buffer. A response of PENDING keeps the attempt
-   * waiting, at most connect_timeout_seconds, for
-   * az_iot_connection_client_complete_sas_token().
+   * waiting for az_iot_connection_client_complete_sas_token(), at most
+   * connect_timeout_seconds; it then fails with AZ_IOT_ERR_TIMEOUT.
    *
    * @param[in] request           What the token must be valid for.
    * @param[out] token_buffer     Destination for READY; no terminator needed.
    * @param[in] token_buffer_size Bytes the token may use: the token area of
    *                              az_iot_connection_client_options::sas_buffer
-   *                              less one, reserved for the terminator the
-   *                              SDK appends.
+   *                              less the resource URI, which shares it during
+   *                              the call, and two terminators.
    * @param[out] response         Outcome; zeroed on entry.
    * @param[in] user_ctx          az_iot_auth::sas::user_ctx.
    */
@@ -366,7 +367,7 @@ extern "C"
        * client_id for a direct hub connection. */
       bool is_enrollment_group_key;
       /** @brief Application-supplied tokens, or NULL. Tried after the keys.
-       * Not implemented yet: init() returns AZ_IOT_ERR_NOT_SUPPORTED. */
+       * Needs sas_buffer; not crypto or a Unix time. */
       az_iot_sas_token_callback user_provided_token;
       void* user_ctx; /**< Passed to user_provided_token. */
       /** @brief Lifetime of each token the SDK signs from a key, in seconds.
@@ -385,9 +386,12 @@ extern "C"
        * CONNECTED, all with az_iot_connection_state_event::is_credential_renewal
        * set and reason AZ_IOT_OK. The session resumes per session_continuity;
        * publishes awaiting a PUBACK complete with AZ_IOT_ERR_NOT_CONNECTED. A
-       * failed reconnect is reported and retried as any other failure. With a
-       * PENDING user-provided token, the session continues until the token
-       * arrives or the current one expires.
+       * failed reconnect is reported and retried as any other failure. A
+       * user-provided token is asked for first, while the session continues:
+       * the renewal starts once it is READY. If it is UNAVAILABLE, it is asked
+       * for again after its retry_after_seconds (0: 30 s); if it is still
+       * PENDING when the current token expires, the hub ends the session and
+       * the reconnect waits for it.
        */
       uint8_t renewal_percent;
     } sas;
@@ -850,7 +854,7 @@ extern "C"
     /**
      * @brief Storage for SAS: signing scratch, the decoded keys and the token
      * of the current attempt. Required when dps_auth or hub_auth sets a key
-     * (or, once implemented, user_provided_token); unused otherwise, so
+     * (or user_provided_token); unused otherwise, so
      * clients without SAS pay nothing. Size it with
      * AZ_IOT_SAS_BUFFER_SIZE(); init() fails with
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is missing or smaller than
@@ -1767,6 +1771,32 @@ extern "C"
     uint64_t sas_token_renewal_due_unix_seconds;
     uint64_t sas_token_renewal_disconnect_deadline_ms;
     bool sas_token_renewal_in_progress;
+    /* User-provided SAS token request per scope; request_id 0: none. The
+     * callback is called from do_work() (asked). PENDING until completed,
+     * then READY (the token in the token area; see sas_token_holder) or
+     * UNAVAILABLE. */
+    struct
+    {
+      uint32_t request_id;
+      bool asked;
+      bool for_renewal; /* a hub renewal: the session stays up meanwhile */
+      az_iot_sas_token_status status;
+      size_t token_len;
+      uint32_t valid_seconds;
+      uint32_t retry_after_seconds;
+      uint64_t deadline_ms; /* PENDING bound (monotonic); 0: none */
+    } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
+    uint32_t sas_token_last_request_id;
+    /* Bytes a delivered token may use now, terminator excluded. */
+    size_t sas_token_capacity;
+    /* Scope + 1 whose delivered token the token area holds; 0: none. */
+    uint8_t sas_token_holder;
+    /* Scope + 1 whose callback is running; 0: none. */
+    uint8_t sas_token_asking;
+    /* retry_after_seconds of an UNAVAILABLE token, for the next retry. */
+    uint32_t sas_token_retry_after_seconds;
+    /* The failure being scheduled is a user-provided token's, not the hub's. */
+    bool sas_token_attempt_failed;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct
@@ -1903,8 +1933,8 @@ extern "C"
   /**
    * @brief Delivers a SAS token the callback answered PENDING.
    *
-   * Call from the thread that calls do_work(); the attempt proceeds on the
-   * next do_work(). The token is copied.
+   * Call from the thread that calls do_work(), or from the callback itself;
+   * the attempt proceeds on the next do_work(). The token is copied.
    *
    * @param[in] client     Client.
    * @param[in] request_id az_iot_sas_token_request::request_id.
@@ -1913,7 +1943,9 @@ extern "C"
    * @param[in] response   READY or UNAVAILABLE, as for the callback.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p request_id is not pending
    * (completed, timed out, or cancelled by close()); AZ_IOT_ERR_NOT_ENOUGH_SPACE
-   * when the token and its terminator exceed the token area of sas_buffer;
+   * when the token and its terminator exceed the token area of sas_buffer
+   * (from inside the callback, token_buffer_size); AZ_IOT_ERR_BUSY from
+   * inside the callback for the other role's request;
    * AZ_IOT_ERR_INVALID_ARG for a
    * PENDING response, a READY response without a token or validity.
    */
