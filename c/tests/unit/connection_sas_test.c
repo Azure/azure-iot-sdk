@@ -2475,6 +2475,68 @@ static void a_renewal_retry_after_holds_across_expiry(void** state)
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
 }
 
+/* A CONNECTING observer completes the other role's request before the
+ * CONNECT has taken this role's token: refused, and the token is intact. */
+static uint32_t g_pending_dps_request;
+static az_iot_result g_complete_from_connecting;
+static void complete_dps_on_hub_connecting(
+    const az_iot_connection_state_event* event,
+    void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    static const char k_other[] = "SharedAccessSignature sr=y&sig=other&se=1";
+    az_iot_sas_token_response done = { 0 };
+    done.status = AZ_IOT_SAS_TOKEN_READY;
+    done.token_len = strlen(k_other);
+    done.valid_seconds = 100;
+    g_complete_from_connecting = az_iot_connection_client_complete_sas_token(
+        &fx->client, g_pending_dps_request, k_other, &done);
+  }
+}
+
+static void a_token_is_kept_until_its_connect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.user_provided_token = fake_token_callback;
+  init_and_open(fx, &opts);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  pump(fx, 1); /* both roles asked; both PENDING */
+  assert_int_equal(g_fake.calls, 2);
+  g_pending_dps_request = fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id;
+  uint32_t hub_request = fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, complete_dps_on_hub_connecting, fx),
+      AZ_IOT_OK);
+  g_complete_from_connecting = AZ_IOT_OK;
+  assert_int_equal(complete_with_user_token(fx, hub_request), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(g_complete_from_connecting, AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
+/* An UNAVAILABLE renewal without a retry-after still waits 30 s to ask. */
+static void a_renewal_without_retry_after_waits_30_seconds(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  g_fake.mode = FAKE_TOKEN_UNAVAILABLE;
+  g_fake.retry_after_seconds = 0;
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  assert_true(fx->client.sas_token_ask_after_ms >= az_iot_time_mono_ms() + 29000u);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2514,6 +2576,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_from_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(a_small_token_area_serves_a_token_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(a_renewal_retry_after_holds_across_expiry, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_token_is_kept_until_its_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_without_retry_after_waits_30_seconds, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(

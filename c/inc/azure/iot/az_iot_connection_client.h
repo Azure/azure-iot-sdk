@@ -1801,6 +1801,9 @@ extern "C"
     uint8_t sas_token_holder;
     /* Scope + 1 whose callback is running; 0: none. */
     uint8_t sas_token_asking;
+    /* Scope + 1 whose CONNECT password is the token area, until connect()
+     * has taken it; 0: none. */
+    uint8_t sas_token_in_use;
     /* retry_after_seconds of an UNAVAILABLE token, for the next retry. */
     uint32_t sas_token_retry_after_seconds;
     /* The failure being scheduled is a user-provided token's, not the hub's. */
@@ -1952,8 +1955,9 @@ extern "C"
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p request_id is not pending
    * (completed, timed out, or cancelled by close()); AZ_IOT_ERR_NOT_ENOUGH_SPACE
    * when the token and its terminator exceed the token area of sas_buffer
-   * (from inside the callback, token_buffer_size); AZ_IOT_ERR_BUSY from
-   * inside the callback for the other role's request;
+   * (from inside the callback, token_buffer_size); AZ_IOT_ERR_BUSY while the
+   * other role's token is being used (from its callback, or its state
+   * callbacks before its CONNECT);
    * AZ_IOT_ERR_INVALID_ARG for a
    * PENDING response, a READY response without a token or validity.
    */

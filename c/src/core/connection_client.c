@@ -1222,6 +1222,7 @@ static void sas_wipe_token(az_iot_connection_client* c)
   /* A delivered user-provided token waits for its attempt. */
   if (c->sas_token != NULL && c->sas_token_holder == 0)
   {
+    c->sas_token_in_use = 0;
     az_iot_crypto__wipe(c->sas_token, c->sas_token_size);
   }
 }
@@ -1317,6 +1318,11 @@ static az_iot_result apply_sas_key(
   bool secondary = key == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
   const az_iot_auth* auth = is_dps ? &c->opts.dps_auth : &c->opts.hub_auth;
+  /* The other role's CONNECT has not taken its token yet. */
+  if (c->sas_token_in_use != 0 && c->sas_token_in_use != (uint8_t)(scope + 1))
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
   claim_sas_token_area(c, scope);
   uint64_t now = unix_now(c);
   if (now == 0)
@@ -1398,6 +1404,7 @@ static az_iot_result apply_sas_key(
     return r;
   }
   copts->password = token;
+  c->sas_token_in_use = (uint8_t)(scope + 1);
   c->auth[scope].source
       = secondary ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
   if (!is_dps)
@@ -2094,6 +2101,7 @@ static void apply_user_token(
       && c->sas_token_holder == (uint8_t)(scope + 1))
   {
     copts->password = c->sas_token;
+    c->sas_token_in_use = (uint8_t)(scope + 1);
     c->auth[scope].source = AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
     if (scope == AZ_IOT_CONN_SCOPE_HUB)
     {
@@ -4827,7 +4835,7 @@ static void retry_sas_token_renewal_later(az_iot_connection_client* c, uint32_t 
                                   : (uint64_t)SAS_TOKEN_RENEWAL_RETRY_MS);
   c->sas_token_renewal_due_unix_seconds = 0;
   /* Held even if the token expires first and the session reconnects. */
-  c->sas_token_ask_after_ms = retry_after_seconds != 0 ? c->sas_token_renewal_due_ms : 0;
+  c->sas_token_ask_after_ms = c->sas_token_renewal_due_ms;
 }
 
 /** @brief Opens a request for the hub's renewal token; do_work() asks for it
@@ -8486,8 +8494,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
-  /* The token area is the asked request's until its callback returns. */
-  if (client->sas_token_asking != 0 && client->sas_token_asking != (uint8_t)(scope + 1))
+  /* The token area is the asked request's until its callback returns, and a
+   * CONNECT's until connect() has taken it. */
+  if ((client->sas_token_asking != 0 && client->sas_token_asking != (uint8_t)(scope + 1))
+      || (client->sas_token_in_use != 0 && client->sas_token_in_use != (uint8_t)(scope + 1)))
   {
     return AZ_IOT_ERR_BUSY;
   }
