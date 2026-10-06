@@ -116,8 +116,10 @@ static az_result _handle_publish(az_mqtt3_client* client, az_span body, uint8_t 
   else if (publish.qos == AZ_MQTT_QOS_EXACTLY_ONCE)
   {
     bool is_duplicate;
-    _az_mqtt_core_inflight_track_inbound_qos2(
+    rc = _az_mqtt_core_inflight_track_inbound_qos2(
         &client->_internal.core, publish.packet_id, &is_duplicate);
+    if (az_result_failed(rc))
+      return rc; // Ends the session; the server resends it on a resumed one.
     rc = _send_ack(client, az_mqtt3_codec_encode_pubrec, publish.packet_id);
     if (is_duplicate)
       return rc; // Delivered already.

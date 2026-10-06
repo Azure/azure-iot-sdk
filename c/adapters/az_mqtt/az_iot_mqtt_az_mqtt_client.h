@@ -658,6 +658,10 @@ static bool _azm_copy_options(
 #if AZ_IOT_AZ_MQTT_V == 5
   c->clean_start = o->clean_start;
   c->session_expiry_interval = o->session_expiry_seconds;
+  // Inbound QoS 2 PUBLISH take in-flight entries; past them az_mqtt ends the session.
+  c->receive_maximum = AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 65535 ? 65535
+      : AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1                    ? 1
+                                                           : (uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {

@@ -761,11 +761,12 @@ bool _az_mqtt_core_inflight_release_entry(
   return entry != NULL;
 }
 
-void _az_mqtt_core_inflight_track_inbound_qos2(
+az_result _az_mqtt_core_inflight_track_inbound_qos2(
     az_mqtt_core* core,
     uint16_t packet_id,
     bool* out_is_duplicate)
 {
+  *out_is_duplicate = false;
   int32_t count;
   az_mqtt_inflight_entry* entries = _get_inflight_entries(core, &count);
   az_mqtt_inflight_entry* free_entry = NULL;
@@ -775,20 +776,21 @@ void _az_mqtt_core_inflight_track_inbound_qos2(
         && entries[i]._internal.packet_id == packet_id)
     {
       *out_is_duplicate = true;
-      return;
+      return AZ_OK;
     }
     if (free_entry == NULL && entries[i]._internal.kind == _AZ_MQTT_INFLIGHT_FREE)
     {
       free_entry = &entries[i];
     }
   }
-  if (free_entry != NULL)
+  if (free_entry == NULL)
   {
-    free_entry->_internal.packet_id = packet_id;
-    free_entry->_internal.kind = _AZ_MQTT_INFLIGHT_INBOUND_QOS2;
-    free_entry->_internal.mark = _AZ_MQTT_INFLIGHT_MARK_NONE;
+    return AZ_MQTT_ERROR_FLOW_CONTROL;
   }
-  *out_is_duplicate = false;
+  free_entry->_internal.packet_id = packet_id;
+  free_entry->_internal.kind = _AZ_MQTT_INFLIGHT_INBOUND_QOS2;
+  free_entry->_internal.mark = _AZ_MQTT_INFLIGHT_MARK_NONE;
+  return AZ_OK;
 }
 
 az_result _az_mqtt_core_send_tracked_request(

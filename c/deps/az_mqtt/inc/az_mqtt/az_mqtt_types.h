@@ -44,6 +44,8 @@ enum az_mqtt_result
   /**
    * @brief No in-flight entry is free, the MQTT 5.0 server's Receive Maximum is reached, or an
    * earlier PUBLISH still awaits its resend. Nothing was sent; retry after an acknowledgement.
+   * As the reason a session ended: an inbound QoS 2 PUBLISH found no free in-flight entry; it was
+   * neither delivered nor acknowledged (MQTT 5.0: DISCONNECT with Quota exceeded was sent).
    */
   AZ_MQTT_ERROR_FLOW_CONTROL = _az_RESULT_MAKE_ERROR(_az_FACILITY_IOT_MQTT, 21),
   /**

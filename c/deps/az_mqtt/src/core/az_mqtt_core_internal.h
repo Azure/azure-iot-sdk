@@ -173,10 +173,11 @@ AZ_NODISCARD bool _az_mqtt_core_inflight_release_entry(
  * @brief Track an inbound QoS 2 PUBLISH until its PUBREL.
  *
  * @param[out] out_is_duplicate Whether @p packet_id already awaits PUBREL (do not
- * deliver it again). Without a free entry nothing is tracked, so a resent
- * duplicate would be delivered again.
+ * deliver it again).
+ * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free entry: untracked, it must not be delivered or
+ * acknowledged (a resend would be delivered again), and the session must end.
  */
-void _az_mqtt_core_inflight_track_inbound_qos2(
+AZ_NODISCARD az_result _az_mqtt_core_inflight_track_inbound_qos2(
     az_mqtt_core* core,
     uint16_t packet_id,
     bool* out_is_duplicate);

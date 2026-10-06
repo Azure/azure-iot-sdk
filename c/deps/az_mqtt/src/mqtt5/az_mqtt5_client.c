@@ -192,8 +192,20 @@ static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t 
   else if (publish.qos == AZ_MQTT_QOS_EXACTLY_ONCE)
   {
     bool is_duplicate;
-    _az_mqtt_core_inflight_track_inbound_qos2(
+    rc = _az_mqtt_core_inflight_track_inbound_qos2(
         &client->_internal.core, publish.packet_id, &is_duplicate);
+    if (az_result_failed(rc))
+    {
+      // Ends the session; the server resends it on a resumed one.
+      az_span disconnect = _SEND_BUFFER(client);
+      if (az_result_succeeded(az_mqtt5_codec_encode_disconnect(
+              &disconnect, AZ_MQTT5_REASON_QUOTA_EXCEEDED, 0)))
+      {
+        az_result const send_rc = _az_mqtt_core_send(&client->_internal.core, disconnect);
+        (void)send_rc; // Best effort.
+      }
+      return rc;
+    }
     az_span send_buf = _SEND_BUFFER(client);
     rc = az_mqtt5_codec_encode_pubrec(&send_buf, publish.packet_id, AZ_MQTT5_REASON_SUCCESS);
     if (az_result_failed(rc))

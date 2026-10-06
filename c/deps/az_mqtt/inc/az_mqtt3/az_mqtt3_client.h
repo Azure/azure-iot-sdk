@@ -114,8 +114,9 @@ typedef struct
    *
    * Each QoS 1/2 PUBLISH, SUBSCRIBE and UNSUBSCRIBE holds an entry until acknowledged, and each
    * inbound QoS 2 PUBLISH until its PUBREL. A request with no free entry fails with
-   * AZ_MQTT_ERROR_FLOW_CONTROL; an inbound QoS 2 PUBLISH with none is delivered without duplicate
-   * detection. May be empty if only QoS 0 is published and nothing is subscribed.
+   * AZ_MQTT_ERROR_FLOW_CONTROL; an inbound QoS 2 PUBLISH with none is not delivered, and the
+   * session ends with AZ_MQTT_ERROR_FLOW_CONTROL. May be empty if only QoS 0 is published and
+   * nothing is subscribed.
    * Acknowledgements for packet identifiers not in flight are ignored.
    *
    * When a connection ends, SUBSCRIBE and UNSUBSCRIBE in flight are abandoned; PUBLISH exchanges
