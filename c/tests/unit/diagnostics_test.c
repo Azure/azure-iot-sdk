@@ -155,8 +155,9 @@ static void connection_state_to_string_covers_every_state(void** state)
     { AZ_IOT_CONN_STATE_CONNECTING, "AZ_IOT_CONN_STATE_CONNECTING" },
     { AZ_IOT_CONN_STATE_CONNECTED, "AZ_IOT_CONN_STATE_CONNECTED" },
     { AZ_IOT_CONN_STATE_DISCONNECTING, "AZ_IOT_CONN_STATE_DISCONNECTING" },
-    { AZ_IOT_CONN_STATE_RECONNECTING, "AZ_IOT_CONN_STATE_RECONNECTING" },
+    { AZ_IOT_CONN_STATE_RETRY_PENDING, "AZ_IOT_CONN_STATE_RETRY_PENDING" },
     { AZ_IOT_CONN_STATE_FAULTED, "AZ_IOT_CONN_STATE_FAULTED" },
+    { AZ_IOT_CONN_STATE_SETTING_UP, "AZ_IOT_CONN_STATE_SETTING_UP" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
