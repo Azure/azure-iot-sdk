@@ -16,13 +16,13 @@
 
 #define AZ_IOT_MQTTV3_TELEMETRY_TOPIC_MAX 512
 
-az_iot_result az_iot_mqttv3_telemetry_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_init(
     az_iot_mqttv3_telemetry_client* client,
     az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
-    AZ_IOT_LOG_ERROR("mqttv3_telemetry_client_init: invalid arguments");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV3_TELEMETRY, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -84,13 +84,14 @@ static az_iot_result build_topic(
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
-az_iot_result az_iot_mqttv3_telemetry_client_send(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
     az_iot_mqttv3_telemetry_client* client,
     const az_iot_telemetry_message* message,
     az_iot_telemetry_send_callback callback,
     void* user_ctx)
 {
-  if (client == NULL || message == NULL || (message->payload_len > 0 && message->payload == NULL)
+  if (client == NULL || message == NULL || callback == NULL
+      || (message->payload_len > 0 && message->payload == NULL)
       || (message->properties_count > 0 && message->properties == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -119,5 +120,5 @@ az_iot_result az_iot_mqttv3_telemetry_client_send(
   mqtt_message.payload_len = message->payload_len;
   mqtt_message.qos = AZ_IOT_MQTT_QOS_1;
   return az_iot_connection_client__publish(
-      client->_internal.conn, &mqtt_message, callback, user_ctx);
+      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }

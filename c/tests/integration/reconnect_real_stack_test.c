@@ -12,9 +12,8 @@
  * reconnects automatically in response to real adapter events, not just
  * injected ones.
  *
- * A v3.1.1 connection client with no certificate_provider connects in
- * plaintext (the adapter only enables TLS when the provider supplies material),
- * so it can talk to a local test broker through the proxy.
+ * A v3.1.1 connection client connects over TLS to the proxy, which terminates
+ * it with a generated CA and forwards plaintext MQTT to a local test broker.
  *
  * Whether this runs is decided at build time by AZ_IOT_BUILD_CONFORMANCE_TESTS,
  * the same option that registers the conformance suites, because it needs the
@@ -36,6 +35,7 @@
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "azure/iot/mqttv3/az_iot_c2d_client.h"
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/test_provider.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -122,27 +122,50 @@ static int pump_until_count(
   return count_state(s, want) >= target;
 }
 
-static void reconnect_after_real_drop(void** state)
-{
-  (void)state;
+/* CA the client trusts: the one the proxy generated when TLS was enabled. */
+#define CA_PATH "az_iot_reconnect_it_ca.pem"
 
-  /* Test proxy passthrough in front of the real broker. */
+static az_iot_test_provider g_provider;
+
+/* Start the proxy in front of the broker, terminating TLS toward the client with
+ * a generated CA and leaf (SAN IP:127.0.0.1), and write that CA to CA_PATH. */
+static az_iot_test_proxy* start_tls_proxy(uint16_t* port)
+{
   az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
   popts.upstream_host = g_host;
   popts.upstream_port = g_port;
   az_iot_test_proxy* proxy = NULL;
+  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, port), 0);
+  assert_int_not_equal(*port, 0);
+
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, NULL), 0);
+  char ca_pem[4096];
+  size_t n = az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem));
+  assert_true(n > 0);
+  FILE* f = fopen(CA_PATH, "wb");
+  assert_non_null(f);
+  assert_int_equal(fwrite(ca_pem, 1, n, f), n);
+  assert_int_equal(fclose(f), 0);
+  return proxy;
+}
+
+static void reconnect_after_real_drop(void** state)
+{
+  (void)state;
+
+  /* Test proxy in front of the real broker. */
   uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
-  assert_int_not_equal(proxy_port, 0);
+  az_iot_test_proxy* proxy = start_tls_proxy(&proxy_port);
 
   az_iot_connection_client* client = (az_iot_connection_client*)calloc(1, sizeof(*client));
   assert_non_null(client);
 
-  /* MQTTv3 v3.1.1, plaintext (no certificate_provider), pointed at the proxy,
-   * with reconnect armed on a short delay. */
+  /* MQTTv3 v3.1.1 over TLS to the proxy, with reconnect armed on a short
+   * delay. */
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.host = "127.0.0.1";
   opts.port = proxy_port;
+  opts.certificate_provider = &g_provider.base;
   opts.client_id = "az-iot-recon-it";
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
@@ -227,6 +250,7 @@ static az_iot_connection_client* start_client_with_c2d(
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.host = "127.0.0.1";
   opts.port = proxy_port;
+  opts.certificate_provider = &g_provider.base;
   opts.client_id = client_id;
   opts.subscription_ack_timeout_seconds = subscription_ack_timeout_seconds;
   opts.reconnection_policy.initial_delay_ms = 200;
@@ -254,12 +278,8 @@ static void refused_subscription_faults_the_real_stack(void** state)
 {
   (void)state;
 
-  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
-  popts.upstream_host = g_host;
-  popts.upstream_port = g_port;
-  az_iot_test_proxy* proxy = NULL;
   uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+  az_iot_test_proxy* proxy = start_tls_proxy(&proxy_port);
 
   suppress_subscribes(proxy);
   az_iot_test_mqtt_packet suback
@@ -297,12 +317,8 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
 {
   (void)state;
 
-  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
-  popts.upstream_host = g_host;
-  popts.upstream_port = g_port;
-  az_iot_test_proxy* proxy = NULL;
   uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
+  az_iot_test_proxy* proxy = start_tls_proxy(&proxy_port);
 
   /* Swallowed and never answered. */
   suppress_subscribes(proxy);
@@ -344,10 +360,22 @@ int main(void)
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
   fprintf(stderr, "reconnect-integration: broker %s:%u\n", g_host, (unsigned)g_port);
 
+  if (!az_iot_test_proxy_tls_supported())
+  {
+    fprintf(
+        stderr,
+        "reconnect-integration: the test proxy was built without TLS support (OpenSSL), "
+        "which this test needs: every connection uses TLS.\n");
+    return 1;
+  }
+  az_iot_test_provider_init(&g_provider, CA_PATH);
+
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(reconnect_after_real_drop),
     cmocka_unit_test(refused_subscription_faults_the_real_stack),
     cmocka_unit_test(an_unanswered_subscribe_times_out_the_real_stack),
   };
-  return cmocka_run_group_tests(tests, NULL, NULL);
+  int failed = cmocka_run_group_tests(tests, NULL, NULL);
+  (void)remove(CA_PATH);
+  return failed;
 }

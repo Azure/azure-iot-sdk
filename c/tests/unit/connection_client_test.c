@@ -18,12 +18,15 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
+#include "azure/iot/az_iot_version.h"
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
+#include "internal/retry_policy.h"
 
 #include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -68,7 +71,7 @@ static int setup(void** state)
   opts.port = 8883;
   opts.client_id = "ut-device";
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
@@ -118,7 +121,7 @@ static int setup_with_reconnect(void** state)
   opts.reconnection_policy.max_delay_ms = 20;
   opts.reconnection_policy.max_attempts = 2;
   opts.reconnection_policy.jitter_pct = 0;
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
@@ -553,7 +556,7 @@ static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
   opts.twin_push.push_desired = push_desired;
   opts.twin_push.push_reported = push_reported;
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
@@ -707,7 +710,9 @@ static void hub_mqtt_v5_connect_username_carries_correlation_nonce(void** state)
 
   const char* cid = conn->username + strlen("correlationId=");
   assert_memory_equal(cid, expect_hex, 32);
-  assert_int_equal(cid[32], '&');
+  /* SemVer characters are all URL-unreserved, so the encoded version is the
+   * version string itself. */
+  assert_string_equal(cid + 32, "&clientVersion=c%2F" AZ_IOT_VERSION_STRING);
 }
 
 /* A birth-ack whose correlation data doesn't match our nonce is discarded; the
@@ -1324,10 +1329,11 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
 
-  /* Case 1: no certificate_provider at all. */
+  /* Case 1: no certificate_provider at all: refused as missing, before the CSR
+   * capability is considered. */
   az_iot_connection_client c1;
   assert_int_equal(az_iot_connection_client_init(&c1, &opts), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(az_iot_connection_client_open(&c1), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
   az_iot_connection_client_deinit(&c1);
 
   /* Case 2: a v2 provider that does not implement get_csr (all hooks NULL;
@@ -1339,7 +1345,7 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   opts.certificate_provider = &prov;
 
   az_iot_connection_client c2;
-  assert_int_equal(az_iot_connection_client_init(&c2, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c2, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c2), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c2);
 }
@@ -1448,7 +1454,7 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   opts.dps.request_operational_certificate = true;
   opts.certificate_provider = &prov.base;
   opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
 
   g_dps_op_cert_count = 0;
   g_dps_op_cert_chain = 0;
@@ -1602,7 +1608,7 @@ static void open_rejects_operational_cert_without_payload_buffer(void** state)
   opts.dps.request_operational_certificate = true;
   opts.certificate_provider = &prov.base;
   /* csr_payload_buffer intentionally left empty (AZ_SPAN_EMPTY). */
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   az_iot_connection_client_deinit(&client);
@@ -1731,7 +1737,7 @@ static void hub_mqtt_v5_without_v5_factory_is_not_supported(void** state)
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_mqtt_factory* v3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, v3), AZ_IOT_OK);
 
@@ -1804,7 +1810,7 @@ static int setup_mqtt_v5_with_reconnect(void** state)
   opts.reconnection_policy.max_delay_ms = 20;
   opts.reconnection_policy.max_attempts = 3;
   opts.reconnection_policy.jitter_pct = 0;
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
@@ -2153,6 +2159,161 @@ static void cert_util_generates_a_distinct_request_id(void** state)
   assert_string_not_equal(a, b);
 }
 
+/* ---- TLS is required: no plaintext fallback ---- */
+
+/* load() answers with a configurable result per role. */
+typedef struct tls_provider
+{
+  az_iot_certificate_provider base;
+  az_iot_result bootstrap_rc;
+  az_iot_result operational_rc;
+  int load_calls;
+} tls_provider;
+
+static az_iot_result tls_load(
+    az_iot_certificate_provider* s,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  tls_provider* p = (tls_provider*)s;
+  p->load_calls++;
+  memset(out, 0, sizeof(*out));
+  az_iot_result rc = (role == AZ_IOT_CRED_OPERATIONAL) ? p->operational_rc : p->bootstrap_rc;
+  if (rc == AZ_IOT_OK)
+  {
+    out->client_cert_path = "cert.pem";
+    out->client_key_path = "key.pem";
+  }
+  return rc;
+}
+
+static const az_iot_certificate_provider_vtable k_tls_vtable = {
+  .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+  .load = tls_load,
+  .release = fake_csr_release,
+  .deinit = fake_csr_destroy,
+};
+
+/* Real init (no plaintext hook), over the mock v3.1.1 adapter. */
+static az_iot_mqtt_factory* tls_client_init(
+    az_iot_connection_client* client,
+    tls_provider* prov,
+    bool dps,
+    bool reconnect)
+{
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  if (!reconnect)
+  {
+    opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
+  }
+  else
+  {
+    opts.reconnection_policy.initial_delay_ms = 20;
+    opts.reconnection_policy.max_delay_ms = 20;
+    opts.reconnection_policy.jitter_pct = 0;
+  }
+  if (dps)
+  {
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+  }
+  else
+  {
+    opts.host = "broker.example";
+  }
+  opts.client_id = "ut-device";
+  opts.certificate_provider = prov ? &prov->base : NULL;
+  assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
+  return factory;
+}
+
+static void open_without_a_certificate_provider_is_refused(void** state)
+{
+  (void)state;
+  for (int dps = 0; dps < 2; ++dps)
+  {
+    az_iot_connection_client client;
+    az_iot_mqtt_factory* factory = tls_client_init(&client, NULL, dps != 0, false);
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
+    assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+    assert_int_equal(
+        az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+    az_iot_connection_client_deinit(&client);
+  }
+}
+
+/* A provisioning session a feature client opens, without open(), is refused
+ * too rather than connecting in plaintext. */
+static void a_dps_session_without_a_certificate_provider_is_refused(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory = tls_client_init(&client, NULL, true, false);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&client), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__dps_session_ensure(&client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
+  assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+  az_iot_connection_client__dps_user_release(&client);
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A provider that cannot load an identity fails the attempt: previously the
+ * client connected without TLS. */
+static void a_failed_load_fails_the_connect_instead_of_going_plaintext(void** state)
+{
+  (void)state;
+  for (int dps = 0; dps < 2; ++dps)
+  {
+    tls_provider prov = { .base.vtable = &k_tls_vtable,
+                          .bootstrap_rc = AZ_IOT_ERR_INTERNAL,
+                          .operational_rc = AZ_IOT_ERR_NOT_FOUND };
+    az_iot_connection_client client;
+    az_iot_mqtt_factory* factory = tls_client_init(&client, &prov, dps != 0, false);
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_INTERNAL);
+    assert_true(prov.load_calls > 0);
+    assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+    az_iot_connection_client_deinit(&client);
+  }
+}
+
+/* A provider that stops loading between attempts fails the reconnect, which
+ * is retried under the policy -- it never reconnects in plaintext. */
+static void a_provider_that_stops_loading_fails_the_reconnect(void** state)
+{
+  (void)state;
+  tls_provider prov = { .base.vtable = &k_tls_vtable, .operational_rc = AZ_IOT_ERR_NOT_FOUND };
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory = tls_client_init(&client, &prov, false, true);
+  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(m);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_true(connect->connect.use_tls);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&client, 0);
+
+  prov.bootstrap_rc = AZ_IOT_ERR_INTERNAL;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+
+  client.reconnect_due_ms = az_iot_time_mono_ms();
+  int loads_before = prov.load_calls;
+  (void)az_iot_connection_client_do_work(&client, 0);
+  assert_true(prov.load_calls > loads_before);
+  assert_null(az_iot_mock_mqtt_factory_last_client(factory));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RECONNECTING);
+  az_iot_connection_client_deinit(&client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2259,6 +2420,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_while_disconnected_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_csr_larger_than_the_service_cap_is_refused, setup, teardown),
     cmocka_unit_test(cert_util_generates_a_distinct_request_id),
+    cmocka_unit_test(open_without_a_certificate_provider_is_refused),
+    cmocka_unit_test(a_dps_session_without_a_certificate_provider_is_refused),
+    cmocka_unit_test(a_failed_load_fails_the_connect_instead_of_going_plaintext),
+    cmocka_unit_test(a_provider_that_stops_loading_fails_the_reconnect),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

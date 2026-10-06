@@ -10,8 +10,8 @@ option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             O
 # either way and refuses a key reference with AZ_IOT_ERR_NOT_SUPPORTED when the
 # support is absent, rather than connecting without a client key.
 option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Paho adapter (needs OpenSSL 3.0+)" ON)
-option(AZ_IOT_WITH_SU_CRYPTO_OPENSSL "Build the OpenSSL software updates crypto adapter"   ON)
-option(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS "Build the mbedTLS software updates crypto adapter when mbedTLS 3.6 LTS or 4.1+ is found" ON)
+option(AZ_IOT_WITH_CRYPTO_OPENSSL "Build the OpenSSL crypto backend"                    ON)
+option(AZ_IOT_WITH_CRYPTO_MBEDTLS "Build the mbedTLS crypto backend when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
@@ -68,9 +68,12 @@ option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a toke
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
 option(AZ_IOT_INSTALL          "Generate install rules and the azure-iot-sdk CMake package" ${PROJECT_IS_TOP_LEVEL})
-option(AZ_IOT_USE_SYSTEM_DEPS  "Prefer find_package() over fetched deps"       OFF)
-option(AZ_IOT_USE_CPM          "Use CPM.cmake to fetch deps from source"       OFF)
 option(AZ_IOT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"           ON)
+# Compiler and linker hardening; see cmake/az_iot_hardening.cmake.
+option(AZ_IOT_ENABLE_HARDENING "Harden builds: GCC/Clang (stack protector, FORTIFY, PIE, RELRO), MSVC (/guard:cf, /CETCOMPAT, /sdl)" ON)
+# MSVC code analysis (/analyze) on first-party targets; findings are errors under
+# AZ_IOT_WARNINGS_AS_ERRORS. Off by default: it multiplies build time.
+option(AZ_IOT_ENABLE_MSVC_ANALYZE "Run the MSVC code analyzer (/analyze) on first-party targets" OFF)
 # Code coverage (gcov/gcovr) for first-party targets. Off by default: it forces
 # -O0-style instrumentation and roughly doubles test wall time, so it gets its
 # own build tree (the linux-gcc-coverage preset) rather than riding along with

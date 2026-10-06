@@ -211,7 +211,7 @@ static void managed_init_rejects_bad_args(void** state)
   assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(NULL, NULL));
 
   az_iot_certificate_provider_managed_options opts = {
-    .bootstrap_cert_pem_path = NULL, /* required, missing */
+    .bootstrap_cert_pem_path = NULL, /* key without certificate */
     .bootstrap_key_pem_path = BOOT_KEY,
     .operational_key_pem_path = OP_KEY,
     .operational_cert_pem_path = OP_CERT,
@@ -271,6 +271,32 @@ static void managed_operational_load_without_a_stored_chain_is_not_found(void** 
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
       AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+
+  az_iot_certificate_provider_managed_deinit(&prov);
+  remove_test_files();
+}
+
+/* SAS onboarding: no bootstrap identity. The connect path treats NOT_FOUND as
+ * "no certificate for this role" and moves on to SAS. */
+static void managed_without_a_bootstrap_identity_has_no_bootstrap_certificate(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.bootstrap_cert_pem_path = NULL;
+  opts.bootstrap_key_pem_path = NULL;
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+
+  az_iot_certificate_signing_request csr = { 0 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->get_csr(&prov.base, "dev", &csr));
+  assert_non_null(csr.csr_base64);
+  prov.base.vtable->release_csr(&prov.base, &csr);
 
   az_iot_certificate_provider_managed_deinit(&prov);
   remove_test_files();
@@ -466,6 +492,7 @@ int main(void)
     cmocka_unit_test(managed_init_rejects_bad_args),
     cmocka_unit_test(managed_load_rejects_null_arguments),
     cmocka_unit_test(managed_operational_load_without_a_stored_chain_is_not_found),
+    cmocka_unit_test(managed_without_a_bootstrap_identity_has_no_bootstrap_certificate),
     cmocka_unit_test(managed_release_leaves_the_material_usable),
     cmocka_unit_test(managed_get_csr_rejects_null_arguments),
     cmocka_unit_test(managed_store_rejects_null_arguments),

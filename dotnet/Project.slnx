@@ -11,6 +11,7 @@
     <Project Path="samples/Unified/CertificateManagementSample/CertificateManagementSample.csproj" Id="9cbac237-d923-4a86-a44f-1b5547a69752" />
     <Project Path="samples/Unified/CustomMqttClientSample/CustomMqttClientSample.csproj" Id="d9e54799-f86c-440a-b7a7-63f4fc150000" />
     <Project Path="samples/Unified/DirectMethodsSample/DirectMethodsClientSample.csproj" />
+    <Project Path="samples/Unified/PersistProvisioningSample/PersistProvisioningSample.csproj" Id="5929b6d0-ef58-4122-a29c-d239d2d5f48c" />
     <Project Path="samples/Unified/TelemetryClientSample/TelemetryClientSample.csproj" Id="648020f8-cf99-467d-9196-258cbc909fd4" />
     <Project Path="samples/Unified/TwinClientSample/TwinClientSample.csproj" Id="879a8071-71e3-4c19-b220-2d337c3b54ed" />
   </Folder>

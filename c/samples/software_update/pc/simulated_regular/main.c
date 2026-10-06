@@ -9,7 +9,7 @@
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
- * See the companion README.md and docs/eng/su-client-design.md.
+ * See the companion README.md and docs/eng/software-updates.md.
  *
  * REGULAR ROUTE: a device that has registered, and so has a device record,
  * asks with az_iot_su_client_request_update(), which sends installedUpdateId.
@@ -75,7 +75,7 @@
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "az_iot_su_crypto_openssl.h"
+#include "az_iot_crypto_openssl.h"
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -155,9 +155,8 @@ static void on_connection_state_event_received(
 {
   sample_state* state = (sample_state*)user_ctx;
 
-  /* `reason` is the last field read here, and `scope` indexes an array. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
-      || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  /* `scope` indexes an array: ignore one this build does not know. */
+  if ((unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
   }
@@ -190,12 +189,6 @@ static void on_connection_state_event_received(
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
-
-  /* `service_error` is the last field read here. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
-  {
-    return;
-  }
 
   switch (event->kind)
   {
@@ -239,6 +232,22 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       break;
+    case AZ_IOT_SU_EVENT_PERSIST_FAILED:
+    case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
+      /* While a write is failing the workflow is held: do not reboot. */
+      fprintf(
+          stderr,
+          "Update state storage %s after %u failed write(s)%s\n",
+          event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED ? "failing" : "recovered",
+          (unsigned)event->persist_attempts,
+          (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED && !event->persist_retrying)
+              ? "; giving up"
+              : "");
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
+      /* Nothing was installed or reported; raise the limit named in the log. */
+      fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
+      break;
   }
 }
 
@@ -270,6 +279,8 @@ static int initialize_connection_client(sample_state* state)
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state->config);
   copts.certificate_provider = &state->certs.base;
+  /* Verifies update manifests and hashes downloaded files. */
+  copts.crypto = az_iot_crypto_openssl();
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -300,10 +311,10 @@ static int initialize_connection_client(sample_state* state)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
+  az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
 
   sample_state state = { 0 };
 
@@ -407,13 +418,11 @@ int main(void)
   hooks.persist_state_fn = su_persist_state;
   hooks.load_state_fn = su_load_state;
   hooks.user_ctx = &state.simulation_control;
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
@@ -485,7 +494,7 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      remove(state.simulation_control.state_file); /* clear the resume blob */
+      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
 
       /* Report the applied update as installed. Without this the next check
        * still sends the previous id, and is offered the same update again. */
@@ -526,18 +535,11 @@ int main(void)
       printf("Deployment workflow complete.\n");
     }
 
-    /* A (simulated) reboot was requested: state is persisted; exit so the
-     * operator can "reboot" and re-run to resume. */
-    if (state.simulation_control.reboot_signalled && state.simulation_control.persist_failed)
-    {
-      fprintf(
-          stderr,
-          "Reboot required, but the workflow state could not be persisted to %s.\n",
-          state.simulation_control.state_file);
-      rc = 1;
-      break;
-    }
-    if (state.simulation_control.reboot_signalled)
+    /* A (simulated) reboot was requested. Exit so the operator can "reboot"
+     * and re-run to resume, but only once the state is persisted: while the
+     * write fails the client retries it, and if it gives up it rolls the
+     * update back (clearing reboot_pending) and reports the failure. */
+    if (state.simulation_control.reboot_pending && !state.simulation_control.persist_failed)
     {
       printf(
           "Reboot required. Workflow state persisted to %s.\n"

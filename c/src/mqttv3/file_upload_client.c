@@ -270,7 +270,8 @@ static az_iot_result build_request_url(
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*url), NULL, parts, 5) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(
-        "mqttv3_file_upload: the request URL did not fit AZ_IOT_FILE_UPLOAD_URL_MAX bytes");
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the request URL did not fit AZ_IOT_FILE_UPLOAD_URL_MAX bytes");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   return AZ_IOT_OK;
@@ -280,7 +281,7 @@ static az_iot_result build_request_url(
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv3_file_upload_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_init(
     az_iot_mqttv3_file_upload_client* client,
     az_iot_connection_client* conn,
     const az_iot_file_upload_http_transport* http_transport)
@@ -294,7 +295,8 @@ az_iot_result az_iot_mqttv3_file_upload_client_init(
    * perform either operation. Refuse at init rather than at the first upload. */
   if (!http_transport || !http_transport->send)
   {
-    AZ_IOT_LOG_ERROR("mqttv3_file_upload: init requires an HTTP transport hook");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD, "init requires an HTTP transport hook");
     memset(client, 0, sizeof(*client));
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -339,7 +341,7 @@ void az_iot_mqttv3_file_upload_client_deinit(az_iot_mqttv3_file_upload_client* c
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
     az_iot_mqttv3_file_upload_client* client,
     const char* blob_name,
     az_iot_file_upload_sas_callback cb,
@@ -374,7 +376,9 @@ az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
   az_iot_result br = build_sas_request_body(body, sizeof(body), blob_name, &body_len);
   if (br != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARN("mqttv3_file_upload: the blob name does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the blob name does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
     return br;
   }
 
@@ -396,7 +400,8 @@ az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
   if (tr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_file_upload: the SAS-URI request failed in the transport hook (%s)",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the SAS-URI request failed in the transport hook (%s)",
         az_iot_result_to_string(tr));
     cb(tr, NULL, NULL, user_ctx);
     return AZ_IOT_OK;
@@ -417,7 +422,9 @@ az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
     size_t json_len = (resp.body_len > sizeof(rbuf)) ? sizeof(rbuf) : resp.body_len;
     if (resp.body != rbuf || json_len == 0)
     {
-      AZ_IOT_LOG_WARN("mqttv3_file_upload: the hook returned success with no readable body");
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+          "the hook returned success with no readable body");
       cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
       return AZ_IOT_OK;
     }
@@ -433,20 +440,24 @@ az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
     }
     else
     {
-      AZ_IOT_LOG_WARN("mqttv3_file_upload: the SAS-URI response did not carry the expected fields");
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+          "the SAS-URI response did not carry the expected fields");
       cb(AZ_IOT_ERR_PROTOCOL, NULL, NULL, user_ctx);
     }
   }
   else
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_file_upload: the hub refused the SAS-URI request (HTTP %d)", resp.status_code);
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the hub refused the SAS-URI request (HTTP %d)",
+        resp.status_code);
     cb(r, NULL, NULL, user_ctx);
   }
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
     az_iot_mqttv3_file_upload_client* client,
     const char* correlation_id,
     bool is_success,
@@ -484,7 +495,8 @@ az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
   if (br != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv3_file_upload: the correlation id does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the correlation id does not fit AZ_IOT_FILE_UPLOAD_BODY_MAX");
     return br;
   }
 
@@ -503,7 +515,8 @@ az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
   if (tr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_file_upload: the completion notification failed in the transport hook (%s)",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the completion notification failed in the transport hook (%s)",
         az_iot_result_to_string(tr));
     cb(tr, user_ctx);
     return AZ_IOT_OK;
@@ -513,7 +526,8 @@ az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_file_upload: the hub refused the completion notification (HTTP %d)",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "the hub refused the completion notification (HTTP %d)",
         resp.status_code);
   }
   cb(r, user_ctx);

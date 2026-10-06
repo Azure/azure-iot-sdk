@@ -35,9 +35,9 @@ extern "C"
     AZ_IOT_ERR_NOT_FOUND,
     /* The broker refused the identity itself (rejected client id, credentials or
      * authorization) rather than failing to carry the connection. Distinct from
-     * AZ_IOT_ERR_MQTT because retrying the same identity cannot help: the SDK
-     * re-provisions through DPS on this result, and only on this result, so a
-     * hub outage never turns into a DPS stampede. New values must keep being
+     * AZ_IOT_ERR_MQTT because the refusal is not a transport failure: from the
+     * hub, the SDK retries it on opts.identity_recovery rather than on the
+     * reconnection policy. New values must keep being
      * appended here so existing numeric values do not shift. */
     AZ_IOT_ERR_IDENTITY_REJECTED,
     /* The service reported a connectionProfile this SDK does not recognise, so
@@ -53,9 +53,10 @@ extern "C"
      * was briefly unwell. What the connection does with that distinction is
      * the subscription gate's decision, not this code's. */
     AZ_IOT_ERR_SUBSCRIPTION_REFUSED,
-    /* The credential set cannot complete a TLS handshake: a client certificate
-     * is present but no private key comes with it in ANY form -- no PEM, no
-     * file, no non-extractable key reference, no sign() hook. Distinct from
+    /* The credential set cannot complete a TLS handshake: there is no
+     * certificate provider, or a client certificate is present but no private
+     * key comes with it in ANY form -- no PEM, no file, no non-extractable key
+     * reference, no sign() hook. Distinct from
      * AZ_IOT_ERR_AUTH, which is the service refusing a credential that was at
      * least complete, and from AZ_IOT_ERR_NOT_SUPPORTED, which is an adapter
      * declining a key form it cannot use. This one never reaches the network:

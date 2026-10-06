@@ -46,7 +46,7 @@ permissions:
 jobs:
   e2e-su:
     name: software updates e2e (linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Above the sum of the step budgets (215 min), so the always() cleanup runs.
     timeout-minutes: 240
     env:
@@ -63,7 +63,9 @@ jobs:
       AZ_IOT_E2E_SU_ARM_ENDPOINT: ${{ vars.E2E_SU_ARM_ENDPOINT }}
       SU_OFFERS_STATE: ${{ github.workspace }}/su-offers.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -84,7 +86,8 @@ jobs:
           KEY_B64: ${{ secrets.E2E_SU_DEVICE_KEY_PEM_B64 }}
         run: |
           dir="$RUNNER_TEMP/su-device"
-          mkdir -m 700 -p "$dir"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
           printf '%s' "$CERT_B64" | base64 -d > "$dir/cert.pem"
           printf '%s' "$KEY_B64" | base64 -d > "$dir/key.pem"
           chmod 600 "$dir"/*.pem
@@ -95,7 +98,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Azure Login via OIDC
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -133,7 +136,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-su-results
           path: results/*.xml
@@ -148,7 +151,7 @@ jobs:
 
       - name: Upload coverage tracefile
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e-adu
           path: c/coverage/e2e-adu.json

@@ -8,9 +8,9 @@
  * Issue a twin GET and a reported-properties PATCH on every connect, for ~60
  * seconds, on whichever hub DPS assigns: MQTTv3 or MQTTv5,
  * including after the device is moved to a hub of the other generation. The
- * MQTTv5-only route is mqttv5/twin_get_patch. See unified/telemetry for the shape
- * every unified sample shares: build for an assumed generation before open(),
- * rebuild when DPS assigns the other one.
+ * MQTTv5-only route is mqttv5/twin_get_patch. Same shape as unified/telemetry:
+ * build for an assumed generation before open(), rebuild when DPS assigns the
+ * other one.
  *
  * The two twin clients differ in protocol, not only in type, so each has its
  * own callbacks:
@@ -311,7 +311,7 @@ static void start_round(sample_state* s, user_context* ctx)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -335,7 +335,7 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
-   * policy is what re-provisions a device its hub no longer accepts. */
+   * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;

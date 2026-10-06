@@ -162,6 +162,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     /* `topic` keeps carrying the host so older assertions still work. */
     copy_str(c->topic, sizeof(c->topic), opts->host);
     copy_str(c->username, sizeof(c->username), opts->username);
+    copy_str(c->password, sizeof(c->password), opts->password);
     copy_str(c->connect.host, sizeof(c->connect.host), opts->host);
     copy_str(c->connect.client_id, sizeof(c->connect.client_id), opts->client_id);
     c->connect.port = opts->port;

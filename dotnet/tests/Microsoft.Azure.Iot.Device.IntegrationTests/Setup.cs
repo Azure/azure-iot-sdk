@@ -211,10 +211,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. The object built here is cached
+            // (rather than the one the service returns from the create call) because the service response carries only
+            // the certificate's metadata (thumbprint/subject), not the certificate body. Re-creating an enrollment from
+            // that metadata-only object would register an enrollment that rejects this device's certificate with a 401
+            // "Invalid certificate", so a test that deletes and restores the enrollment must restore this full-certificate
+            // copy instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
@@ -230,6 +235,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
         }
 
@@ -256,10 +262,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificate(certificateBytes);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12(pfxBytes, null);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. See the note in
+            // CreateConnectedUnifiedConnectionClientAsync: the cached enrollment must hold the full certificate body,
+            // which the object the create call returns does not, so the client-side object is cached instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
@@ -281,6 +289,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
         }
 

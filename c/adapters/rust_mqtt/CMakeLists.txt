@@ -17,7 +17,7 @@ add_library(azure::iot::adapter_rust_mqtt ALIAS az_iot_adapter_rust_mqtt)
 # it is public.
 target_include_directories(az_iot_adapter_rust_mqtt
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 target_link_libraries(az_iot_adapter_rust_mqtt

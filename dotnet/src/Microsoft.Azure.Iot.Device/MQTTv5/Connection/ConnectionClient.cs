@@ -10,6 +10,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
@@ -21,7 +22,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         private Guid? CurrentConnectionNonce { get; set; }
 
-        public ConnectionClient(ConnectionClientOptions? options = null, TwinPushOptions? twinPushOptions = null) : base(options)
+        public ConnectionClient(ConnectionClientOptions? options = null, TwinPushOptions? twinPushOptions = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
             _twinPushOptions = twinPushOptions ?? new TwinPushOptions();
         }
@@ -227,6 +228,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         private static string GetPackageVersion()
         {
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.MqttV5;
         }
     }
 }

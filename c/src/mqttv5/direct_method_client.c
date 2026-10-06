@@ -33,7 +33,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/direct_method_codec.h"
 #include "internal/log_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define DI(d) ((d)->_internal)
@@ -50,6 +50,10 @@
  * second of budget left has already missed that window, so it is dropped rather
  * than published into a request the service has given up on. */
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
+
+/* Pending-PUBACK slots reserved at init: per invocation, a probe-ack plus a
+ * result or abandon may await their PUBACKs at once. */
+#define DM_PUBACK_RESERVATION (2u * (size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
 
 /* Budgets travel in whole seconds; the monotonic clock counts milliseconds. */
 #define MS_PER_SECOND 1000u
@@ -237,7 +241,8 @@ static bool request_acquire(
     }
   }
   AZ_IOT_LOG_WARNF(
-      "mqttv5_direct_method: dropping an invocation, all %d concurrent slots are taken by requests "
+      AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+      "dropping an invocation, all %d concurrent slots are taken by requests "
       "still inside their response budget. Raise AZ_IOT_MQTTV5_DM_MAX_CONCURRENT to hold more at "
       "once.",
       (int)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
@@ -316,7 +321,8 @@ static void on_publish_ack(az_iot_result status, void* user_ctx)
   if (status != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: the broker rejected a '%s' message (%s); the service will not see "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "the broker rejected a '%s' message (%s); the service will not see "
         "it",
         (const char*)user_ctx,
         az_iot_result_to_string(status));
@@ -355,23 +361,26 @@ static az_iot_result publish_typed(
   out.content_type = DM_CONTENT_TYPE;
   out.message_expiry_seconds = expiry_seconds;
 
-  az_iot_result result
-      = az_iot_connection_client__publish(DI(dm).conn, &out, on_publish_ack, (void*)type_value);
-  if (result == AZ_IOT_ERR_NOT_SUPPORTED)
+  /* The ack only feeds a log line, so an exhausted reservation must not cost
+   * the message: send it untracked instead. Refused probes, and invocations
+   * answered faster than their PUBACKs arrive, can push past
+   * DM_PUBACK_RESERVATION. */
+  az_iot_publish_ack_callback ack_cb = on_publish_ack;
+  if (!az_iot_connection_client__can_track_publish(DI(dm).conn, dm))
   {
-    /* The message went out; only the pending-ack table was full, so the PUBACK
-     * will be absorbed silently. Losing that observability is not a send
-     * failure, and reporting one would have the caller treat a delivered
-     * result as lost. */
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: sent '%s' without ack tracking, the pending-ack table is full",
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "sending '%s' without ack tracking, its pending-ack slots are all in use",
         type_value);
-    return AZ_IOT_OK;
+    ack_cb = NULL;
   }
+  az_iot_result result
+      = az_iot_connection_client__publish(DI(dm).conn, dm, &out, ack_cb, (void*)type_value);
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: could not publish a '%s' message (%s)",
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "could not publish a '%s' message (%s)",
         type_value,
         az_iot_result_to_string(result));
   }
@@ -393,7 +402,8 @@ static void publish_abandon(
   if (encoded != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: could not encode the abandon for '%s' (%s); the service will wait "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "could not encode the abandon for '%s' (%s); the service will wait "
         "out "
         "its response timeout instead",
         RI(slot).method_name,
@@ -427,7 +437,8 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
       continue;
     }
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: no exec arrived for '%s' within its ready wait; abandoning the "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "no exec arrived for '%s' within its ready wait; abandoning the "
         "token",
         RI(slot).method_name);
     /* Committed out of the ready state before the advisory goes out, so the
@@ -472,7 +483,8 @@ static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
       continue;
     }
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: '%s' was never answered and its response budget has run out; "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "'%s' was never answered and its response budget has run out; "
         "reclaiming its slot",
         RI(s).method_name);
     RI(s).in_use = false;
@@ -519,7 +531,9 @@ static void handle_probe(
   az_iot_dm_proto_probe probe;
   if (az_iot_dm_proto_decode_probe(msg->payload, msg->payload_len, &probe) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARN("mqttv5_direct_method: dropping a probe whose payload is not a Probe message");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "dropping a probe whose payload is not a Probe message");
     return;
   }
 
@@ -601,7 +615,8 @@ static void handle_probe(
   if (connect_budget > 0u && remaining < DM_MIN_USEFUL_BUDGET_SECONDS)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: the connect budget for '%s' ran out while the probe was being "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "the connect budget for '%s' ran out while the probe was being "
         "answered; sending no probe-ack",
         method_name);
     if (slot != NULL)
@@ -643,7 +658,8 @@ static void handle_probe(
   if (encoded != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: could not encode the probe-ack for '%s' (%s); the caller will wait "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "could not encode the probe-ack for '%s' (%s); the caller will wait "
         "out its connect timeout instead",
         method_name,
         az_iot_result_to_string(encoded));
@@ -673,7 +689,8 @@ static void handle_exec(
   if (slot == NULL)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv5_direct_method: ignoring an exec with no matching ready token -- it was never "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "ignoring an exec with no matching ready token -- it was never "
         "accepted, it already ran, or its ready wait ran out");
     return;
   }
@@ -682,7 +699,9 @@ static void handle_exec(
   if (az_iot_dm_proto_decode_exec(msg->payload, msg->payload_len, &exec) != AZ_IOT_OK)
   {
     /* The token stays live: a redelivery of the same exec may still decode. */
-    AZ_IOT_LOG_WARN("mqttv5_direct_method: dropping an exec whose payload is not an Exec message");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "dropping an exec whose payload is not an Exec message");
     return;
   }
 
@@ -690,7 +709,8 @@ static void handle_exec(
       || memcmp(exec.ready_id, RI(slot).ready_id, AZ_IOT_MQTTV5_DM_READY_ID_LEN) != 0)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv5_direct_method: ignoring an exec whose ready id does not match the current token");
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "ignoring an exec whose ready id does not match the current token");
     return;
   }
 
@@ -708,7 +728,8 @@ static void handle_exec(
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
     RI(slot).in_use = false;
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: only %u second(s) of budget left for '%s', at or under the %u "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "only %u second(s) of budget left for '%s', at or under the %u "
         "second "
         "admission floor; not starting it",
         (unsigned)exec_budget,
@@ -772,7 +793,8 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   if (type_value == NULL)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv5_direct_method: dropping a method message with no `type` property -- the phase is "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "dropping a method message with no `type` property -- the phase is "
         "what says whether it is a probe or an authorization to run, and neither is a safe guess");
     return;
   }
@@ -781,7 +803,8 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   if (!is_probe && !dm_msg_type_is(type_value, "exec"))
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: ignoring a method message of type '%s', which this client does not "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "ignoring a method message of type '%s', which this client does not "
         "implement",
         type_value);
     return;
@@ -790,7 +813,8 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   if (msg->correlation_data == NULL || msg->correlation_data_len != AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: dropping a '%s' message whose correlation data is not a %u-byte "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "dropping a '%s' message whose correlation data is not a %u-byte "
         "request id",
         type_value,
         (unsigned)AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN);
@@ -819,7 +843,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   if (!device_id)
   {
     AZ_IOT_LOG_ERROR(
-        "mqttv5_direct_method: the connection has no device id to build the method topics from");
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "the connection has no device id to build the method topics from");
     return AZ_IOT_ERR_NOT_INITIALIZED;
   }
 
@@ -836,7 +861,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
           != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: device id '%s' does not fit the %u byte method topic buffers; raise "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "device id '%s' does not fit the %u byte method topic buffers; raise "
         "AZ_IOT_MQTTV5_DM_TOPIC_MAX",
         device_id,
         (unsigned)AZ_IOT_MQTTV5_DM_TOPIC_MAX);
@@ -851,7 +877,7 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
       conn, DI(client).inbound_topic, on_method_message, client);
 }
 
-az_iot_result az_iot_mqttv5_direct_method_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
     az_iot_mqttv5_direct_method_client* client,
     az_iot_connection_client* conn)
 {
@@ -877,6 +903,10 @@ az_iot_result az_iot_mqttv5_direct_method_client_init(
   DI(client).next_seq = (uint32_t)az_iot_time_mono_ms();
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__reserve_pubacks(conn, client, DM_PUBACK_RESERVATION);
+  }
   if (result != AZ_IOT_OK)
   {
     az_iot_connection_client__release_profile(conn);
@@ -896,6 +926,7 @@ void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_clien
     return;
   }
   az_iot_connection_client__unregister_feature_client_bind(DI(client).conn, client);
+  az_iot_connection_client__release_pubacks(DI(client).conn, client);
   az_iot_connection_client__release_profile(DI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(DI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
@@ -932,7 +963,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_register_method(
   if (name_len >= AZ_IOT_DM_METHOD_NAME_MAX)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: method name '%s' does not fit %u bytes; a probe could never match "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "method name '%s' does not fit %u bytes; a probe could never match "
         "it "
         "anyway",
         method_name,
@@ -955,7 +987,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_register_method(
   if (entry == NULL)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: cannot declare '%s', all %d method slots are taken; raise "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "cannot declare '%s', all %d method slots are taken; raise "
         "AZ_IOT_MQTTV5_DM_MAX_METHODS",
         method_name,
         (int)AZ_IOT_MQTTV5_DM_MAX_METHODS);
@@ -997,13 +1030,16 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   if (client == NULL || (payload_len > 0 && payload == NULL))
   {
     AZ_IOT_LOG_ERROR(
-        "mqttv5_direct_method: respond() needs the client that delivered the invocation, and a "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "respond() needs the client that delivered the invocation, and a "
         "payload whenever payload_len is not zero");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (RI(&request).profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
-    AZ_IOT_LOG_ERROR("mqttv5_direct_method: this request was delivered by the mqttv3 client");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "this request was delivered by the mqttv3 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
@@ -1017,7 +1053,8 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   if (slot == NULL)
   {
     AZ_IOT_LOG_ERROR(
-        "mqttv5_direct_method: respond() called on a request that is no longer live -- "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "respond() called on a request that is no longer live -- "
         "it was already "
         "answered, or its slot was reclaimed when the response budget ran out");
     return AZ_IOT_ERR_INVALID_ARG;
@@ -1026,7 +1063,8 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   if (payload_len > AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: a %u byte result body does not fit the framing buffer; send a "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "a %u byte result body does not fit the framing buffer; send a "
         "shorter "
         "one, or raise AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX past %u",
         (unsigned)payload_len,
@@ -1045,7 +1083,8 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   if (exec_budget_is_spent(dm, index))
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_direct_method: '%s' finished after its response timeout had elapsed; sending no "
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "'%s' finished after its response timeout had elapsed; sending no "
         "result",
         RI(slot).method_name);
     RI(slot).in_use = false;
@@ -1063,7 +1102,8 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_direct_method: could not encode the result for '%s' (%s)",
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "could not encode the result for '%s' (%s)",
         RI(slot).method_name,
         az_iot_result_to_string(result));
     RI(slot).in_use = false;

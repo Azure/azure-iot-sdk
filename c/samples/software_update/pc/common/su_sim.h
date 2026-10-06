@@ -26,15 +26,6 @@
  * so any part it accepts fits. */
 #define SU_SIM_ID_PART_SIZE 192
 
-/**
- * @brief True when an event stamped by the SDK is long enough to carry @p field.
- *
- * Events grow by appending, so test against the last field read, not the
- * struct size.
- */
-#define SU_SAMPLE_EVENT_HAS(ev, type, field) \
-  ((ev)->_internal_size >= offsetof(type, field) + sizeof((ev)->field))
-
 /** @brief What the simulated hooks do, and what they report back. */
 typedef struct su_simulation_control
 {
@@ -44,7 +35,8 @@ typedef struct su_simulation_control
   long delay_ms; /**< SU_SIM_DELAY_MS: per-download delay. */
   char* state_file; /**< SU_SIM_STATE_FILE: resume blob path. Owned. */
 
-  int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED. */
+  int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED; cleared by a rollback. */
+  int reboot_pending; /**< The requested reboot is still wanted; cleared by a rollback. */
   int persist_failed; /**< Nonzero when the last checkpoint write failed. */
 
   /** What is installed now. su_is_installed() answers ALREADY_INSTALLED for a

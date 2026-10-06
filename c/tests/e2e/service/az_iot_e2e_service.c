@@ -16,12 +16,16 @@
 
 #define E2E_SAS_TTL_SECONDS 3600
 #define E2E_API_VERSION "2021-04-12"
+/* Telemetry enqueued this long before the watch starts is still delivered, so a
+ * runner clock ahead of the service cannot filter out the message under test. */
+#define E2E_TELEMETRY_CLOCK_SKEW_S 300
 
 struct az_iot_e2e_service
 {
   e2e_conn_info hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
   e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
   char entity[128]; /* Event Hub entity name                       */
+  char consumer_group[64]; /* Event Hub consumer group; empty = $Default */
   int partition_count;
 
   e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
@@ -142,6 +146,11 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
     }
   }
 
+  if (!env_copy("IOTHUB_EVENTHUB_CONSUMER_GROUP", svc->consumer_group, sizeof(svc->consumer_group)))
+  {
+    svc->consumer_group[0] = '\0';
+  }
+
   return svc;
 }
 
@@ -208,8 +217,16 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
   }
 
   const char* err = NULL;
+  int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
   if (!e2e_amqp_telemetry_begin(
-          svc->telemetry, svc->eh_info.host, svc->entity, sas, svc->partition_count, &err))
+          svc->telemetry,
+          svc->eh_info.host,
+          svc->entity,
+          svc->consumer_group,
+          enqueued_after_ms,
+          sas,
+          svc->partition_count,
+          &err))
   {
     set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
     free(svc->telemetry);
@@ -316,12 +333,13 @@ void az_iot_e2e_service_file_notification_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
+    int* out_stale,
     int* out_unparsed)
 {
   if (svc->filenotify != NULL)
   {
     e2e_amqp_filenotify_stats(
-        svc->filenotify, out_delivered, out_captured, out_released, out_unparsed);
+        svc->filenotify, out_delivered, out_captured, out_released, out_stale, out_unparsed);
     return;
   }
   if (out_delivered != NULL)
@@ -335,6 +353,10 @@ void az_iot_e2e_service_file_notification_stats(
   if (out_released != NULL)
   {
     *out_released = 0;
+  }
+  if (out_stale != NULL)
+  {
+    *out_stale = 0;
   }
   if (out_unparsed != NULL)
   {
