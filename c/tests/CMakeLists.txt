@@ -654,6 +654,41 @@ if(AZ_IOT_WITH_PAHO)
     endif()
 endif()
 
+if(AZ_IOT_WITH_AZ_MQTT)
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
+    target_compile_definitions(az_iot_tests_az_mqtt_adapter PRIVATE
+        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
+    # Needs a broker, as the conformance suites: registered under the same option.
+    az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
+        integration/az_mqtt_adapter_broker_test.c NO_CTEST)
+    target_link_libraries(az_iot_az_mqtt_adapter_broker PRIVATE az_iot_adapter_az_mqtt)
+    target_compile_definitions(az_iot_az_mqtt_adapter_broker PRIVATE
+        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
+    endif()
+
+    get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    foreach(_v 3 5)
+        set(_t az_iot_conformance_az_mqtt_v${_v})
+        add_executable(${_t} conformance/az_mqtt_main.c)
+        target_link_libraries(${_t} PRIVATE az_iot_conformance az_iot_adapter_az_mqtt)
+        target_compile_definitions(${_t} PRIVATE AZ_IOT_CONFORMANCE_AZ_MQTT_V=${_v})
+        # The key-reference capability is declared only where the adapter honours it.
+        if("AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _az_mqtt_adapter_defs)
+            target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_OPENSSL)
+        endif()
+        az_iot_apply_warnings(${_t})
+        if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+            add_test(NAME ${_t} COMMAND ${_t})
+        endif()
+    endforeach()
+    unset(_t)
+    unset(_v)
+    unset(_az_mqtt_adapter_defs)
+endif()
+
 # ---------------------------------------------------------------------------
 # Real-stack reconnect integration test.
 #

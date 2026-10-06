@@ -119,7 +119,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
 
@@ -546,6 +546,88 @@ jobs:
           --track-origins=yes --errors-for-leak-kinds=definite,possible
           build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
 
+  # ---------------------------------------------------------------------------
+  # az_mqtt adapter conformance, every capability it implements: proxy (the
+  # suite's own), WebSockets (a Mosquitto WebSocket listener) and, on OpenSSL,
+  # the key-reference custody route (a SoftHSM token, as in coverage-c). The
+  # build job also runs these suites, without WebSockets or a token.
+  # ---------------------------------------------------------------------------
+  az-mqtt:
+    name: az_mqtt adapter / ${{ matrix.tls }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tls: openssl
+            mbedtls: ''
+          - tls: mbedtls
+            mbedtls: '4.1.1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev mosquitto
+          mosquitto-clients softhsm2 opensc meson pkg-config
+      - name: Start Mosquitto (TCP 1883, WebSocket 8080)
+        run: |
+          sudo systemctl stop mosquitto || true
+          printf 'listener 1883 127.0.0.1\nallow_anonymous true\nlistener 8080 127.0.0.1\nprotocol websockets\n' \
+            > "$RUNNER_TEMP/mosquitto.conf"
+          mosquitto -d -c "$RUNNER_TEMP/mosquitto.conf"
+          for _ in $(seq 1 20); do
+            mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok && break
+            sleep 1
+          done
+          mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok
+      - name: Build mbedTLS ${{ matrix.mbedtls }}
+        if: matrix.mbedtls != ''
+        run: |
+          bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$RUNNER_TEMP/mbedtls"
+          echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/mbedtls" >> "$GITHUB_ENV"
+      - name: Provision a PKCS#11 token
+        if: matrix.tls == 'openssl'
+        run: |
+          eval "$(eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          openssl list -providers -provider pkcs11 > /dev/null
+          {
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Configure
+        run: >
+          cmake -S . -B build/az-mqtt -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_BUILD_SAMPLES=OFF -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
+      - name: Build
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
+      - name: Conformance
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_WS_PORT: '8080'
+          AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
+        run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
+
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
   # static and shared: flags are probed per toolchain, and FORTIFY differs
@@ -648,22 +730,22 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -708,6 +790,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
         run: cmake --build build/install
@@ -838,6 +921,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build build/subproject
       - name: Test
