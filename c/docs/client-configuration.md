@@ -156,7 +156,7 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and an invocation ends at `respond()`, before its result is acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. When all are in use, sends without one. |
-| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. A new request waits (`AZ_IOT_ERR_BUSY`) for a cancelled one's acknowledgement. |
+| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel and timeout give it back at once. |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).

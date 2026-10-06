@@ -1930,8 +1930,8 @@ extern "C"
    *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
    *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
    * The request's device id is taken from the connected client_id. Only one CSR
-   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise, and also until
-   * a cancelled request's PUBACK arrives. The request is always tracked: if the
+   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The request is
+   * always tracked: if the
    * broker rejects it, the callback fires at once with AZ_IOT_CSR_FAILED and the
    * PUBACK status. The issued
    * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
@@ -1947,8 +1947,8 @@ extern "C"
       void* user_ctx);
 
   /* Abandon the in-flight CSR renewal (if any) without waiting for the timeout,
-   * freeing the one-operation slot for a new az_iot_connection_client_send_csr()
-   * once the cancelled request's PUBACK arrives. No callback fires. Returns AZ_IOT_ERR_NOT_FOUND
+   * freeing the one-operation slot for a new az_iot_connection_client_send_csr().
+   * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND
    * when no operation is active. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 

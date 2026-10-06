@@ -986,6 +986,8 @@ static void teardown_active(az_iot_connection_client* c)
   }
 }
 
+static void puback_abandon(az_iot_connection_client* c, const void* owner);
+
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
@@ -5616,6 +5618,7 @@ az_iot_result az_iot_connection_client_do_work(
     az_iot_csr_callback cb = client->csr_op.cb;
     void* uc = client->csr_op.user_ctx;
     client->csr_op.in_use = false;
+    puback_abandon(client, &client->csr_op);
     az_iot_csr_event evt;
     memset(&evt, 0, sizeof(evt));
     evt.kind = AZ_IOT_CSR_FAILED;
@@ -6576,6 +6579,28 @@ static size_t puback_free_slot(const az_iot_connection_client* c, uint8_t pool)
   return AZ_IOT_MAX_PENDING_PUBACKS;
 }
 
+/**
+ * @brief Free @p owner's pending-PUBACK slots without calling their callbacks.
+ *
+ * For a request whose operation has ended. Its late PUBACK then matches no slot: the adapter
+ * gives a new publish a different packet id while the old one is in flight.
+ */
+static void puback_abandon(az_iot_connection_client* c, const void* owner)
+{
+  uint8_t pool = puback_pool_of(c, owner);
+  if (pool == PUBACK_POOL_SHARED)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  {
+    if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
+    {
+      memset(&c->pending_pubacks[i], 0, sizeof(c->pending_pubacks[i]));
+    }
+  }
+}
+
 az_iot_result az_iot_connection_client__publish(
     az_iot_connection_client* client,
     const void* owner,
@@ -6968,8 +6993,8 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
  *        CSR_OP_TIMEOUT_MS. A session that ended first does not: the response may still arrive
  *        on the next one, as for a request acknowledged before the drop.
  *
- * The renewal has one reserved slot, so a new request cannot be published before the previous
- * one's PUBACK; an ack seen while an operation is open is always for it.
+ * Cancel and timeout abandon the request's slot, so an ack that still matches one is always for
+ * the open operation.
  */
 static void on_csr_puback(az_iot_result status, void* user_ctx)
 {
@@ -7248,7 +7273,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
-  /* AZ_IOT_ERR_BUSY here: a cancelled request's PUBACK still holds the reserved slot. */
   az_iot_result r
       = az_iot_connection_client__publish(client, &client->csr_op, &msg, on_csr_puback, client);
   if (r != AZ_IOT_OK)
@@ -7273,6 +7297,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection
    * can proceed. No callback fires (the caller already knows). A late hub
    * response for this rid is ignored (in_use is clear). */
   client->csr_op.in_use = false;
+  puback_abandon(client, &client->csr_op);
   return AZ_IOT_OK;
 }
 
