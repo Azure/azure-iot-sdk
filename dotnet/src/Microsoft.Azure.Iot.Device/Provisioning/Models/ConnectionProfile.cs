@@ -33,16 +33,18 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
         public static IotHubConnectionType ToIotHubConnectionType(this ConnectionProfile connectionProfile) =>
             connectionProfile switch
             {
+                ConnectionProfile.Classic => IotHubConnectionType.Mqttv3,
                 ConnectionProfile.MqttV5 => IotHubConnectionType.Mqttv5,
-                _ => IotHubConnectionType.Mqttv3,
+                _ => (IotHubConnectionType)connectionProfile,
             };
 
         /// <summary>Map the public connection type to the internal wire profile.</summary>
         public static ConnectionProfile ToConnectionProfile(this IotHubConnectionType connectionType) =>
             connectionType switch
             {
+                IotHubConnectionType.Mqttv3 => ConnectionProfile.Classic,
                 IotHubConnectionType.Mqttv5 => ConnectionProfile.MqttV5,
-                _ => ConnectionProfile.Classic,
+                _ => (ConnectionProfile)connectionType,
             };
     }
 }
