@@ -733,7 +733,12 @@ static bool client_is_fully_idle(const az_iot_connection_client* c)
 static void settle_all_scopes_to_idle(az_iot_connection_client* c)
 {
   uint32_t seq = c->open_seq;
-  set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  /* Callers have torn the provisioning session down, so one that exists now
+   * was started from a callback (open() or a feature client): not IDLE. */
+  if (c->dps_mqtt == NULL)
+  {
+    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  }
   /* An observer may have reopened the client from that callback. */
   if (c->open_seq != seq)
   {
