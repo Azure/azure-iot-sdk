@@ -14,6 +14,7 @@
 
 include(FetchContent)
 
+# Keep the commit for this tag in c/cgmanifest.json.
 set(PAHO_C_TAG  "v1.3.13" CACHE STRING "Eclipse Paho MQTT C git tag")
 set(PAHO_C_REPO "https://github.com/eclipse/paho.mqtt.c.git" CACHE STRING "Eclipse Paho MQTT C git repository")
 

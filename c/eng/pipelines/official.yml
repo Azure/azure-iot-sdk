@@ -1,0 +1,148 @@
+# Official build of the C SDK on Azure Pipelines, with the SDL analysis injected by the
+# 1ES Pipeline Templates: source scans (CodeQL, PoliCheck, secret scanning) and binary scans
+# (BinSkim, antimalware, SBOM) of the libraries published by the build jobs. Results go to
+# TSA (c/.config/tsaoptions.json); third-party sources fetched by CMake are declared in
+# c/cgmanifest.json for Component Governance.
+#
+# PR validation stays on GitHub Actions; this pipeline runs on main and weekly.
+
+trigger:
+  branches:
+    include: [ main ]
+  paths:
+    include: [ c ]
+
+pr: none
+
+schedules:
+  - cron: '0 9 * * 1'
+    displayName: Weekly
+    branches:
+      include: [ main ]
+    always: true
+
+resources:
+  repositories:
+    - repository: 1ESPipelineTemplates
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
+  parameters:
+    pool:
+      name: sdk-c--ubuntu-22
+      os: linux
+    sdl:
+      sourceAnalysisPool:
+        name: sdk-c--win-vs2022
+        os: windows
+      codeql:
+        language: cpp
+      policheck:
+        enabled: true
+      binskim:
+        enabled: true
+      tsa:
+        enabled: true
+        configFile: $(Build.SourcesDirectory)/c/.config/tsaoptions.json
+    stages:
+      - stage: build
+        displayName: Build
+        jobs:
+          - job: linux
+            displayName: Linux (gcc, shared, RelWithDebInfo)
+            templateContext:
+              # One CodeQL database per language: the Windows job provides it.
+              sdl:
+                codeql:
+                  enabled: false
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/linux
+                  artifactName: c-linux
+            steps:
+              - checkout: self
+                submodules: false
+              - bash: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install -y --no-install-recommends \
+                    cmake ninja-build libssl-dev libcurl4-openssl-dev
+                displayName: Install toolchain
+              # Warnings are gated on GitHub Actions; this image's compiler may differ.
+              - bash: >
+                  cmake -S c -B c/build -G Ninja
+                  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+                  -DBUILD_SHARED_LIBS=ON
+                  -DAZ_IOT_BUILD_TESTS=ON
+                  -DAZ_IOT_WITH_PAHO=ON
+                  -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
+                displayName: Configure
+              - bash: cmake --build c/build
+                displayName: Build
+              - bash: ctest --test-dir c/build --output-on-failure
+                displayName: Unit tests
+              - bash: |
+                  set -euo pipefail
+                  out="$BUILD_ARTIFACTSTAGINGDIRECTORY/linux"
+                  mkdir -p "$out"
+                  find c/build/src -type f -name 'libaz_iot*.so*' -exec cp {} "$out/" \;
+                  ls -l "$out"
+                  [ -n "$(ls -A "$out")" ] || { echo "##vso[task.logissue type=error]no libraries staged"; exit 1; }
+                displayName: Stage libraries
+
+          - job: windows
+            displayName: Windows (MSVC x64, shared, RelWithDebInfo)
+            pool:
+              name: sdk-c--win-vs2022
+              os: windows
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/windows
+                  artifactName: c-windows
+            steps:
+              - checkout: self
+                submodules: false
+              # CMake from PATH, else the copy bundled with Visual Studio.
+              - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $cmd = Get-Command cmake -ErrorAction SilentlyContinue
+                  if ($cmd) { $cmake = $cmd.Source } else {
+                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+                    $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+                  }
+                  if (-not (Test-Path $cmake)) { throw "cmake not found" }
+                  $ctest = Join-Path (Split-Path $cmake) 'ctest.exe'
+                  Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
+                  Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
+                displayName: Locate CMake
+              - powershell: |
+                  & "$(CMAKE)" -S c -B c/build -G "Visual Studio 17 2022" -A x64 `
+                    -DBUILD_SHARED_LIBS=ON `
+                    -DAZ_IOT_BUILD_SAMPLES=OFF `
+                    -DAZ_IOT_BUILD_TESTS=ON `
+                    -DAZ_IOT_WITH_PAHO=ON `
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
+                  exit $LASTEXITCODE
+                displayName: Configure
+              - powershell: |
+                  & "$(CMAKE)" --build c/build --config RelWithDebInfo
+                  exit $LASTEXITCODE
+                displayName: Build
+              - powershell: |
+                  & "$(CTEST)" --test-dir c/build -C RelWithDebInfo --output-on-failure
+                  exit $LASTEXITCODE
+                displayName: Unit tests
+              - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $out = Join-Path $env:BUILD_ARTIFACTSTAGINGDIRECTORY 'windows'
+                  New-Item -ItemType Directory -Force $out | Out-Null
+                  Get-ChildItem c/build -Recurse -File -Include 'az_iot*.dll', 'az_iot*.pdb' |
+                    Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
+                    Copy-Item -Destination $out
+                  Get-ChildItem $out | Format-Table Name, Length
+                  if (-not (Get-ChildItem $out -Filter '*.dll')) { throw 'no DLLs staged' }
+                displayName: Stage libraries

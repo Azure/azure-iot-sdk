@@ -5,6 +5,7 @@
 # FetchContent for the same reason as azure-sdk-for-c (no vcpkg dependency).
 include(FetchContent)
 
+# Keep the commit for this tag in c/cgmanifest.json.
 set(CMOCKA_TAG "cmocka-1.1.7" CACHE STRING "cmocka git tag")
 # cmocka is developed on GitLab; git.cryptomilk.org is the maintainer's older
 # host and is the less reliable of the two. On 2026-08-05 it began answering
