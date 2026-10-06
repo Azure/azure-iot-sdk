@@ -1326,7 +1326,7 @@ extern "C"
     AZ_IOT_CONN_DEFER_RECONNECT,
     AZ_IOT_CONN_DEFER_IDLE,
     AZ_IOT_CONN_DEFER_FALLBACK,
-    AZ_IOT_CONN_DEFER_RENEW
+    AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
   };
   enum
   {
@@ -1762,9 +1762,9 @@ extern "C"
     /* Hub SAS token renewal: when the current token is due (monotonic ms; 0:
      * none), the bound on the wait for the renewal disconnect (0: not
      * waiting), and whether a renewal is in progress. */
-    uint64_t sas_renew_due_ms;
-    uint64_t sas_renew_deadline_ms;
-    bool sas_renewing;
+    uint64_t sas_token_renewal_due_ms;
+    uint64_t sas_token_renewal_disconnect_deadline_ms;
+    bool sas_token_renewal_in_progress;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct
