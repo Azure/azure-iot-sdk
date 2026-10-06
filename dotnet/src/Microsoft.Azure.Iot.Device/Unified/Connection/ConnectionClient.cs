@@ -278,7 +278,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
         {
-            return connectionProfile == ConnectionProfile.Classic;
+            return connectionProfile == ConnectionProfile.MqttV5 || connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

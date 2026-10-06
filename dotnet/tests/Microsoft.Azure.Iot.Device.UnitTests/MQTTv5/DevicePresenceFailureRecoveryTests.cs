@@ -126,7 +126,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             });
 
             await Assert.ThrowsAsync<DeviceException>(() =>
-                connectionClient.ConnectAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
         }
 
@@ -199,7 +199,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             // ConnectAsync only completes once the birth flow has successfully announced device presence, which requires
             // recovering from the injected failure on the first attempt. A timeout guards against a regression where the
             // failure is not retried (which would hang forever).
-            await connectionClient.ConnectAsync(GetMockConnectionContext(), cancellationToken: cancellationToken)
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: cancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
 
             // The birth flow's failure handling must have disconnected at least once...
