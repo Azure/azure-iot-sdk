@@ -245,6 +245,25 @@ static az_result _handle_auth(az_span body)
   return az_mqtt5_codec_decode_auth(body, &auth);
 }
 
+/** @brief Whether @p reason may appear in a PUBACK / PUBREC / PUBREL / PUBCOMP (@p type). */
+static bool _ack_reason_allowed(az_mqtt_packet_type type, uint8_t reason)
+{
+  // 3.4.2.1, 3.5.2.1.
+  static uint8_t const publish_acks[] = { 0x00, 0x10, 0x80, 0x83, 0x87, 0x90, 0x91, 0x97, 0x99 };
+  if (type == AZ_MQTT_PACKET_TYPE_PUBACK || type == AZ_MQTT_PACKET_TYPE_PUBREC)
+  {
+    for (size_t i = 0; i < sizeof(publish_acks); i++)
+    {
+      if (publish_acks[i] == reason)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+  return reason == 0x00 || reason == 0x92; // PUBREL, PUBCOMP (3.6.2.1, 3.7.2.1).
+}
+
 /** @brief PUBACK, PUBREC, PUBREL or PUBCOMP. */
 static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, az_span body)
 {
@@ -257,6 +276,8 @@ static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, 
   az_result rc = az_mqtt5_codec_decode_ack(body, &ack);
   if (az_result_failed(rc))
     return rc;
+  if (!_ack_reason_allowed(type, (uint8_t)ack.reason_code))
+    return AZ_MQTT_ERROR_PROTOCOL;
 
   az_mqtt_core* const core = &client->_internal.core;
   az_mqtt5_on_puback_fn callback = client->_internal.on_pubcomp;
@@ -426,7 +447,7 @@ static az_result _dispatch_packet(
     case AZ_MQTT_PACKET_TYPE_UNSUBACK:
       return _handle_unsuback(client, body);
     case AZ_MQTT_PACKET_TYPE_PINGRESP:
-      return AZ_OK; // Nothing to do
+      return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
     case AZ_MQTT_PACKET_TYPE_DISCONNECT:
       return _handle_disconnect(client, body);
     case AZ_MQTT_PACKET_TYPE_AUTH:

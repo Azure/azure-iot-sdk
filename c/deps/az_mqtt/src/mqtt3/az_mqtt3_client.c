@@ -236,7 +236,7 @@ static az_result _dispatch_packet(
     case AZ_MQTT_PACKET_TYPE_SUBACK:
       return _handle_suback(client, body);
     case AZ_MQTT_PACKET_TYPE_PINGRESP:
-      return AZ_OK;
+      return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
     case AZ_MQTT_PACKET_TYPE_CONNECT: // Client to server only.
     case AZ_MQTT_PACKET_TYPE_SUBSCRIBE:
     case AZ_MQTT_PACKET_TYPE_UNSUBSCRIBE:

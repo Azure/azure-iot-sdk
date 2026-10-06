@@ -443,6 +443,12 @@ AZ_NODISCARD az_result az_mqtt3_codec_decode_suback(az_span body, az_mqtt3_subac
   if (out->packet_id == 0)
     return AZ_MQTT_ERROR_MALFORMED_PACKET; // Packet identifiers are non-zero.
   out->return_codes = body;
-  // One return code per topic filter, and a SUBSCRIBE has at least one.
+  // One return code per topic filter, and a SUBSCRIBE has at least one; 0, 1, 2 or 0x80 (3.9.3).
+  for (int32_t i = 0; i < az_span_size(body); i++)
+  {
+    uint8_t const code = az_span_ptr(body)[i];
+    if (code > 2 && code != 0x80)
+      return AZ_MQTT_ERROR_MALFORMED_PACKET;
+  }
   return az_span_size(body) > 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
 }

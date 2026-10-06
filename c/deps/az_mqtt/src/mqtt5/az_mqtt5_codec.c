@@ -1573,7 +1573,25 @@ static az_result _decode_suback_props(az_span* src, az_mqtt5_suback_data* out)
   return AZ_OK;
 }
 
-static az_result _decode_suback_common(az_span body, az_mqtt5_suback_data* out)
+/** @brief Whether @p reason is one of the @p count codes in @p allowed. */
+static bool _reason_in(uint8_t reason, uint8_t const* allowed, size_t count)
+{
+  for (size_t i = 0; i < count; i++)
+  {
+    if (allowed[i] == reason)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief SUBACK or UNSUBACK; reason codes outside @p allowed (@p count) are a protocol error. */
+static az_result _decode_suback_common(
+    az_span body,
+    az_mqtt5_suback_data* out,
+    uint8_t const* allowed,
+    size_t count)
 {
   _az_PRECONDITION_NOT_NULL(out);
 
@@ -1612,6 +1630,8 @@ static az_result _decode_suback_common(az_span body, az_mqtt5_suback_data* out)
     rc = _az_mqtt_read_byte(&body, &reason);
     if (az_result_failed(rc))
       return rc;
+    if (!_reason_in(reason, allowed, count))
+      return AZ_MQTT_ERROR_PROTOCOL;
     // Like user properties: keep what fits, so reason_code_count never exceeds capacity.
     if (out->reason_codes != NULL && out->reason_code_count < out->reason_code_capacity)
     {
@@ -1625,12 +1645,17 @@ static az_result _decode_suback_common(az_span body, az_mqtt5_suback_data* out)
 
 AZ_NODISCARD az_result az_mqtt5_codec_decode_suback(az_span body, az_mqtt5_suback_data* out)
 {
-  return _decode_suback_common(body, out);
+  // MQTT 5.0 3.9.3.
+  static uint8_t const allowed[]
+      = { 0x00, 0x01, 0x02, 0x80, 0x83, 0x87, 0x8F, 0x91, 0x97, 0x9E, 0xA1, 0xA2 };
+  return _decode_suback_common(body, out, allowed, sizeof(allowed));
 }
 
 AZ_NODISCARD az_result az_mqtt5_codec_decode_unsuback(az_span body, az_mqtt5_suback_data* out)
 {
-  return _decode_suback_common(body, out);
+  // MQTT 5.0 3.11.3.
+  static uint8_t const allowed[] = { 0x00, 0x11, 0x80, 0x83, 0x87, 0x8F, 0x91 };
+  return _decode_suback_common(body, out, allowed, sizeof(allowed));
 }
 
 // ============================================================================
