@@ -120,7 +120,7 @@ az_mqtt3_codec_encode_connect(az_span* dest, az_mqtt3_connect_options const* opt
   // Will
   if (opts->will != NULL)
   {
-    rc = _az_mqtt_write_utf8_string(dest, opts->will->topic);
+    rc = _az_mqtt_write_topic_name(dest, opts->will->topic);
     if (az_result_failed(rc))
       return rc;
     rc = _az_mqtt_write_binary_data(dest, opts->will->payload);
@@ -284,7 +284,7 @@ AZ_NODISCARD az_result az_mqtt3_codec_encode_subscribe(
   // Payload
   for (int32_t i = 0; i < sub_count; i++)
   {
-    rc = _az_mqtt_write_utf8_string(dest, subs[i].topic_filter);
+    rc = _az_mqtt_write_topic_filter(dest, subs[i].topic_filter);
     if (az_result_failed(rc))
       return rc;
 
@@ -334,7 +334,7 @@ AZ_NODISCARD az_result az_mqtt3_codec_encode_unsubscribe(
 
   for (int32_t i = 0; i < filter_count; i++)
   {
-    rc = _az_mqtt_write_utf8_string(dest, topic_filters[i]);
+    rc = _az_mqtt_write_topic_filter(dest, topic_filters[i]);
     if (az_result_failed(rc))
       return rc;
   }

@@ -1151,9 +1151,9 @@ az_result _az_mqtt_core_process_loop(
     if (az_result_succeeded(rc))
     {
       _log_packet(AZ_SPAN_FROM_STR("received "), (uint8_t)(type << 4), packet_size);
-      // While connecting, only a CONNACK is valid.
-      rc = connecting && type != AZ_MQTT_PACKET_TYPE_CONNACK ? AZ_MQTT_ERROR_PROTOCOL
-                                                             : dispatch(core, type, flags, body);
+      // While connecting, only a CONNACK is valid; after that, never.
+      rc = connecting != (type == AZ_MQTT_PACKET_TYPE_CONNACK) ? AZ_MQTT_ERROR_PROTOCOL
+                                                               : dispatch(core, type, flags, body);
       if (_S(core).session_generation != generation)
       {
         // A callback ended this session, and may have connected a new one whose

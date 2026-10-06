@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter against a broker (AZ_IOT_MQTT_BROKER_HOST / _PORT): process_loop() returns when
- * an event callback raises more events; a publish too large or to an invalid topic is refused. */
+ * an event callback raises more events; a publish too large or to an invalid topic, an empty filter
+ * and a wildcard in a Will or Response Topic are refused. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -57,6 +58,9 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
       = f->version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
   o.clean_start = true;
   o.connect_timeout_seconds = 10;
+  o.lwt.topic = "will/+";
+  assert_int_equal(r.client->iface->connect(r.client, &o), AZ_IOT_ERR_INVALID_ARG);
+  o.lwt.topic = NULL;
   assert_int_equal(r.client->iface->connect(r.client, &o), AZ_IOT_OK);
   for (int i = 0; i < 200 && r.connected == 0; i++)
   {
@@ -77,7 +81,16 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
     az_iot_mqtt_message bad = { 0 };
     bad.topic = bad_topics[i];
     assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
+    if (f->version == AZ_IOT_MQTT_VERSION_5)
+    {
+      bad.topic = "az-iot/az-mqtt-adapter-test";
+      bad.response_topic = bad_topics[i];
+      assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
+    }
   }
+  assert_int_equal(
+      r.client->iface->subscribe(r.client, "", AZ_IOT_MQTT_QOS_0, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(r.client->iface->unsubscribe(r.client, "", NULL), AZ_IOT_ERR_INVALID_ARG);
   msg.payload = NULL;
   msg.payload_len = 0;
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_OK);

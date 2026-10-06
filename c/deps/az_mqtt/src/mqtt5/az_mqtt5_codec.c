@@ -280,7 +280,7 @@ static az_result _write_will_props(az_span* dest, az_mqtt5_will_options const* w
     rc = _az_mqtt_write_byte(dest, AZ_MQTT5_PROPERTY_RESPONSE_TOPIC);
     if (az_result_failed(rc))
       return rc;
-    rc = _az_mqtt_write_utf8_string(dest, will->response_topic);
+    rc = _az_mqtt_write_topic_name(dest, will->response_topic);
     if (az_result_failed(rc))
       return rc;
   }
@@ -383,7 +383,7 @@ static az_result _write_publish_props(az_span* dest, az_mqtt5_publish_options co
     rc = _az_mqtt_write_byte(dest, AZ_MQTT5_PROPERTY_RESPONSE_TOPIC);
     if (az_result_failed(rc))
       return rc;
-    rc = _az_mqtt_write_utf8_string(dest, opts->response_topic);
+    rc = _az_mqtt_write_topic_name(dest, opts->response_topic);
     if (az_result_failed(rc))
       return rc;
   }
@@ -535,7 +535,7 @@ az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_connect_options const* opt
     rc = _write_will_props(dest, opts->will);
     if (az_result_failed(rc))
       return rc;
-    rc = _az_mqtt_write_utf8_string(dest, opts->will->topic);
+    rc = _az_mqtt_write_topic_name(dest, opts->will->topic);
     if (az_result_failed(rc))
       return rc;
     rc = _az_mqtt_write_binary_data(dest, opts->will->payload);
@@ -757,7 +757,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
   // Payload
   for (int32_t i = 0; i < sub_count; i++)
   {
-    rc = _az_mqtt_write_utf8_string(dest, subs[i].topic_filter);
+    rc = _az_mqtt_write_topic_filter(dest, subs[i].topic_filter);
     if (az_result_failed(rc))
       return rc;
 
@@ -820,7 +820,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_unsubscribe(
 
   for (int32_t i = 0; i < filter_count; i++)
   {
-    rc = _az_mqtt_write_utf8_string(dest, topic_filters[i]);
+    rc = _az_mqtt_write_topic_filter(dest, topic_filters[i]);
     if (az_result_failed(rc))
       return rc;
   }
@@ -1252,6 +1252,10 @@ static az_result _decode_publish_props(az_span* src, az_mqtt5_publish_data* out)
         break;
       case AZ_MQTT5_PROPERTY_RESPONSE_TOPIC:
         rc = _az_mqtt_read_utf8_string(&props, &out->response_topic);
+        if (az_result_succeeded(rc)
+            && (az_span_size(out->response_topic) == 0
+                || _az_mqtt_topic_has_wildcard(out->response_topic)))
+          rc = AZ_MQTT_ERROR_PROTOCOL; // A Topic Name (3.3.2.3.5).
         break;
       case AZ_MQTT5_PROPERTY_CORRELATION_DATA:
         rc = _az_mqtt_read_binary_data(&props, &out->correlation_data);

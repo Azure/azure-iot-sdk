@@ -26,7 +26,8 @@
 #define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 16
 #endif
 
-/** @brief Send and receive buffer size, each: the largest packet either way. */
+/** @brief Send and receive buffer size, each: the largest packet either way (MQTT 5: the
+ * Maximum Packet Size advertised). */
 #ifndef AZ_IOT_AZ_MQTT_BUFFER_SIZE
 #define AZ_IOT_AZ_MQTT_BUFFER_SIZE (264 * 1024)
 #endif

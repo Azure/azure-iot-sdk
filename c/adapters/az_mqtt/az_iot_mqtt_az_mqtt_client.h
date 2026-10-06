@@ -55,6 +55,9 @@
 #error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 32767"
 #endif
 #if AZ_IOT_AZ_MQTT_V == 5
+#if AZ_IOT_AZ_MQTT_BUFFER_SIZE < 1 || AZ_IOT_AZ_MQTT_BUFFER_SIZE > 268435455
+#error "AZ_IOT_AZ_MQTT_BUFFER_SIZE must be 1 to 268435455 (MQTT 5 Maximum Packet Size)"
+#endif
 /** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
 #define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
 /** @brief In-flight entries: AZ_IOT_AZ_MQTT_INFLIGHT_MAX requests, plus those kept for inbound. */
@@ -589,7 +592,9 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (az_iot_az_mqtt_has_text(o->lwt.topic) && !_azm_qos_valid(o->lwt.qos))
+  // A Will Topic is a Topic Name: no wildcards.
+  if (az_iot_az_mqtt_has_text(o->lwt.topic)
+      && (!_azm_qos_valid(o->lwt.qos) || strpbrk(o->lwt.topic, "+#") != NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -674,6 +679,8 @@ static bool _azm_copy_options(
   c->session_expiry_interval = o->session_expiry_seconds;
   // Below the entry count, so az_mqtt keeps this many entries for inbound QoS 2.
   c->receive_maximum = _AZM_RECEIVE_MAXIMUM;
+  // Omitted, it would mean any size; larger packets do not fit the receive buffer.
+  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_BUFFER_SIZE;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {
@@ -866,7 +873,7 @@ static az_iot_result _azm_subscribe(
     az_iot_mqtt_qos qos,
     uint16_t* out_packet_id)
 {
-  if (self == NULL || topic_filter == NULL || !_azm_qos_valid(qos))
+  if (self == NULL || topic_filter == NULL || topic_filter[0] == '\0' || !_azm_qos_valid(qos))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -894,7 +901,7 @@ static az_iot_result _azm_unsubscribe(
     const char* topic_filter,
     uint16_t* out_packet_id)
 {
-  if (self == NULL || topic_filter == NULL)
+  if (self == NULL || topic_filter == NULL || topic_filter[0] == '\0')
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -935,8 +942,11 @@ static az_iot_result _azm_publish(
   publish.qos = (az_mqtt_qos)msg->qos;
   publish.retain = msg->retain;
 #if AZ_IOT_AZ_MQTT_V == 5
+  // A Response Topic is a non-empty Topic Name.
   if ((msg->user_properties == NULL && msg->user_properties_count > 0)
-      || (msg->correlation_data == NULL && msg->correlation_data_len > 0))
+      || (msg->correlation_data == NULL && msg->correlation_data_len > 0)
+      || (msg->response_topic != NULL
+          && (msg->response_topic[0] == '\0' || strpbrk(msg->response_topic, "+#") != NULL)))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

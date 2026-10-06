@@ -36,6 +36,33 @@ AZ_NODISCARD az_result _az_mqtt_write_uint16(az_span* dest, uint16_t val);
  */
 AZ_NODISCARD az_result _az_mqtt_write_utf8_string(az_span* dest, az_span str);
 
+/** @brief Whether @p topic contains a wildcard ('+' or '#'), not allowed in a Topic Name. */
+AZ_NODISCARD AZ_INLINE bool _az_mqtt_topic_has_wildcard(az_span topic)
+{
+  return az_span_find(topic, AZ_SPAN_FROM_STR("+")) >= 0
+      || az_span_find(topic, AZ_SPAN_FROM_STR("#")) >= 0;
+}
+
+/**
+ * @brief Write Topic Name @p topic (Will Topic, Response Topic); advance @p dest.
+ * @retval AZ_ERROR_ARG Empty, with a wildcard ('+', '#'), or as _az_mqtt_write_utf8_string().
+ */
+AZ_NODISCARD AZ_INLINE az_result _az_mqtt_write_topic_name(az_span* dest, az_span topic)
+{
+  return az_span_size(topic) == 0 || _az_mqtt_topic_has_wildcard(topic)
+      ? AZ_ERROR_ARG
+      : _az_mqtt_write_utf8_string(dest, topic);
+}
+
+/**
+ * @brief Write Topic Filter @p filter; advance @p dest.
+ * @retval AZ_ERROR_ARG Empty, or as _az_mqtt_write_utf8_string().
+ */
+AZ_NODISCARD AZ_INLINE az_result _az_mqtt_write_topic_filter(az_span* dest, az_span filter)
+{
+  return az_span_size(filter) == 0 ? AZ_ERROR_ARG : _az_mqtt_write_utf8_string(dest, filter);
+}
+
 /**
  * @brief Write a 2-byte length followed by @p data; advance @p dest.
  * @retval AZ_ERROR_ARG Longer than 65,535 bytes.
@@ -56,13 +83,6 @@ AZ_NODISCARD az_result _az_mqtt_read_uint16(az_span* src, uint16_t* out);
 
 /** @brief Read a Variable Byte Integer; advance @p src. */
 AZ_NODISCARD az_result _az_mqtt_read_vbi(az_span* src, int32_t* out);
-
-/** @brief Whether @p topic contains a wildcard ('+' or '#'), not allowed in a Topic Name. */
-AZ_NODISCARD AZ_INLINE bool _az_mqtt_topic_has_wildcard(az_span topic)
-{
-  return az_span_find(topic, AZ_SPAN_FROM_STR("+")) >= 0
-      || az_span_find(topic, AZ_SPAN_FROM_STR("#")) >= 0;
-}
 
 /**
  * @brief Whether @p text is well-formed UTF-8 without U+0000 (MQTT 3.1.1 1.5.3, 5.0 1.5.4).

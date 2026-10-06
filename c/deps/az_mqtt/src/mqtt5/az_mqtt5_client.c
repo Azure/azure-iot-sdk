@@ -236,14 +236,15 @@ static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t 
 }
 
 /**
- * @brief AUTH: decoded, so a malformed one ends the session, then ignored (enhanced
- * authentication is not implemented).
+ * @brief AUTH: a protocol error once decoded. Enhanced authentication is not implemented, so
+ * no AUTH exchange is ever in progress (one during CONNECT is refused by the core).
  */
 static az_result _handle_auth(az_span body)
 {
   az_mqtt5_auth_data auth;
   memset(&auth, 0, sizeof(auth));
-  return az_mqtt5_codec_decode_auth(body, &auth);
+  az_result const rc = az_mqtt5_codec_decode_auth(body, &auth);
+  return az_result_failed(rc) ? rc : AZ_MQTT_ERROR_PROTOCOL;
 }
 
 /** @brief Whether @p reason may appear in a PUBACK / PUBREC / PUBREL / PUBCOMP (@p type). */
