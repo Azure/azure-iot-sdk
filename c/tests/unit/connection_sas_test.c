@@ -95,6 +95,27 @@ static void ca_only_release(az_iot_certificate_provider* self, az_iot_certificat
 
 static void ca_only_deinit(az_iot_certificate_provider* self) { (void)self; }
 
+/* A provider whose certificate appears once g_late_cert_ready is set. */
+static bool g_late_cert_ready;
+
+static az_iot_result late_cert_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    az_iot_certificate_material* out)
+{
+  (void)self;
+  (void)role;
+  memset(out, 0, sizeof(*out));
+  return g_late_cert_ready ? AZ_IOT_OK : AZ_IOT_ERR_NOT_FOUND;
+}
+
+static const az_iot_certificate_provider_vtable k_late_cert_vtable = {
+  .version = 1u,
+  .load = late_cert_load,
+  .release = ca_only_release,
+  .deinit = ca_only_deinit,
+};
+
 static const az_iot_certificate_provider_vtable k_ca_only_vtable = {
   .version = 1u,
   .load = ca_only_load,
@@ -1180,6 +1201,31 @@ static void a_feature_release_keeps_provision_only_fallback(void** state)
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
 }
 
+/* A pass that began on the primary key and failed without a rejection: when a
+ * certificate has since appeared, the retry starts a new pass at X.509, so its
+ * rejection still falls back to the keys. */
+static void a_retry_from_the_first_source_starts_a_new_pass(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  g_late_cert_ready = false;
+  az_iot_certificate_provider provider = { .vtable = &k_late_cert_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+
+  connack(fx, AZ_IOT_ERR_TIMEOUT);
+  g_late_cert_ready = true;
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->password, "");
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  g_late_cert_ready = false;
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1312,6 +1358,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(replaced_demand_starts_a_fresh_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_feature_release_keeps_provision_only_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_retry_from_the_first_source_starts_a_new_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(

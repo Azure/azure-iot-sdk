@@ -2747,7 +2747,10 @@ static az_iot_result dps_start(az_iot_connection_client* c)
       return sr;
     }
   }
-  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
+  /* An attempt from the start of the order begins the pass, even after a
+   * failure that was not a rejection: the available sources may have changed. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE
+      || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
   }
@@ -4039,7 +4042,10 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       return sr;
     }
   }
-  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
+  /* An attempt from the start of the order begins the pass, even after a
+   * failure that was not a rejection: the available sources may have changed. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from == AZ_IOT_AUTH_SOURCE_NONE
+      || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   }
