@@ -5358,6 +5358,9 @@ az_iot_result az_iot_connection_client_do_work(
     }
     dps_teardown_mqtt(client);
     client->dps_phase = DPS_PHASE_DONE;
+    /* Nobody holds it: the next demand starts a new credential pass. */
+    client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+    client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
     /* The session is gone, so its lifecycle settles -- the same rule as any
      * other provisioning-session teardown. The HUB scope is untouched. */
     set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
@@ -6122,8 +6125,13 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
     if (!client->dps_registration_ref && !client->dps_standing_ref)
     {
       client->dps_demand_epoch++;
-      client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
-      client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      /* A session still up keeps its pass: a holder may re-acquire it before
+       * the pump closes it. The pump clears the pass when it does. */
+      if (client->dps_mqtt == NULL)
+      {
+        client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+        client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+      }
     }
   }
   /* The session is NOT torn down here even if this was the last ref. Release

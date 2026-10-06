@@ -1226,6 +1226,31 @@ static void a_retry_from_the_first_source_starts_a_new_pass(void** state)
   g_late_cert_ready = false;
 }
 
+/* The last holder releases while the CONNECT is in flight and a new one
+ * acquires before the pump: the session and its pass are kept, so the
+ * rejection still falls back at once. */
+static void a_reacquired_in_flight_session_keeps_its_pass(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  az_iot_connection_client__dps_user_release(&fx->client);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_false(fx->client.dps_user_retry_blocked);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1356,6 +1381,7 @@ int main(void)
         a_feature_held_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_released_session_starts_a_new_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(replaced_demand_starts_a_fresh_pass, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_reacquired_in_flight_session_keeps_its_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_feature_release_keeps_provision_only_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(
