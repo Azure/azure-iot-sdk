@@ -651,9 +651,9 @@ AZ_NODISCARD az_result az_mqtt5_client_subscribe(
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
-  if (subscription_count > UINT16_MAX)
+  if (subscription_count <= 0 || subscription_count > UINT16_MAX)
   {
-    return AZ_ERROR_ARG; // Counted in the entry, to match the acknowledgement's codes.
+    return AZ_ERROR_ARG; // At least one; counted in the entry, to match the acknowledgement.
   }
 
   az_mqtt_inflight_entry* entry = NULL;
@@ -685,9 +685,9 @@ AZ_NODISCARD az_result az_mqtt5_client_unsubscribe(
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
-  if (filter_count > UINT16_MAX)
+  if (filter_count <= 0 || filter_count > UINT16_MAX)
   {
-    return AZ_ERROR_ARG; // Counted in the entry, to match the acknowledgement's codes.
+    return AZ_ERROR_ARG; // At least one; counted in the entry, to match the acknowledgement.
   }
 
   az_mqtt_inflight_entry* entry = NULL;
