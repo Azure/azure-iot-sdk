@@ -968,6 +968,13 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_auth(
 // CONNACK decoding
 // ============================================================================
 
+
+/** @brief Read a one-byte property that must be 0 or 1 (MQTT 5.0 3.2.2.3, 3.3.2.3.2). */
+static az_result _read_flag_byte(az_span* props, uint8_t* out)
+{
+  az_result const rc = _az_mqtt_read_byte(props, out);
+  return az_result_succeeded(rc) && *out > 1 ? AZ_MQTT_ERROR_PROTOCOL : rc;
+}
 static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
 {
   int32_t prop_len;
@@ -1003,14 +1010,14 @@ static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
       case AZ_MQTT5_PROPERTY_MAXIMUM_QOS:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->maximum_qos = v;
         break;
       }
       case AZ_MQTT5_PROPERTY_RETAIN_AVAILABLE:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->retain_available = (v != 0);
         break;
       }
@@ -1031,21 +1038,21 @@ static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
       case AZ_MQTT5_PROPERTY_WILDCARD_SUBSCRIPTION_AVAILABLE:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->wildcard_subscription_available = (v != 0);
         break;
       }
       case AZ_MQTT5_PROPERTY_SUBSCRIPTION_IDENTIFIER_AVAILABLE:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->subscription_identifier_available = (v != 0);
         break;
       }
       case AZ_MQTT5_PROPERTY_SHARED_SUBSCRIPTION_AVAILABLE:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->shared_subscription_available = (v != 0);
         break;
       }
@@ -1186,7 +1193,7 @@ static az_result _decode_publish_props(az_span* src, az_mqtt5_publish_data* out)
       case AZ_MQTT5_PROPERTY_PAYLOAD_FORMAT_INDICATOR:
       {
         uint8_t v = 0;
-        rc = _az_mqtt_read_byte(&props, &v);
+        rc = _read_flag_byte(&props, &v);
         out->payload_format_indicator = v;
         break;
       }

@@ -400,18 +400,24 @@ static _az_mqtt_io_layer_ops const _ops = { _send_some };
 
 int32_t _az_mqtt_socket_transport_sizeof(void) { return (int32_t)sizeof(_socket_transport); }
 
+/** @brief InitOnceExecuteOnce() callback: WSAStartup(); a failure is retried on the next call. */
+static BOOL CALLBACK _wsa_startup(PINIT_ONCE once, PVOID parameter, PVOID* context)
+{
+  (void)once;
+  (void)parameter;
+  (void)context;
+  WSADATA wsa_data;
+  return WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0;
+}
+
 az_result _az_mqtt_socket_transport_init(_az_mqtt_io_layer* storage)
 {
   _az_PRECONDITION_NOT_NULL(storage);
-  static bool wsa_started = false;
-  if (!wsa_started)
+  // Once per process, safely from any thread.
+  static INIT_ONCE wsa_once = INIT_ONCE_STATIC_INIT;
+  if (!InitOnceExecuteOnce(&wsa_once, _wsa_startup, NULL, NULL))
   {
-    WSADATA wsa_data;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0)
-    {
-      return AZ_MQTT_ERROR_TRANSPORT;
-    }
-    wsa_started = true;
+    return AZ_MQTT_ERROR_TRANSPORT;
   }
   _socket_transport* const s = (_socket_transport*)storage;
   memset(s, 0, sizeof(*s));
