@@ -5211,9 +5211,8 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       {
         if (unix_deadlines[k] != 0)
         {
-          uint64_t left = unix_deadlines[k] > unix_seconds
-              ? (unix_deadlines[k] - unix_seconds) * 1000u
-              : 0;
+          uint64_t left
+              = unix_deadlines[k] > unix_seconds ? (unix_deadlines[k] - unix_seconds) * 1000u : 0;
           remaining = left < remaining ? left : remaining;
         }
       }
