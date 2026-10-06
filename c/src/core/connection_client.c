@@ -732,7 +732,13 @@ static bool client_is_fully_idle(const az_iot_connection_client* c)
  * is observable, and set_state_to() suppresses the ones that did not move. */
 static void settle_all_scopes_to_idle(az_iot_connection_client* c)
 {
+  uint32_t seq = c->open_seq;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  /* An observer may have reopened the client from that callback. */
+  if (c->open_seq != seq)
+  {
+    return;
+  }
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
 }
 
@@ -2766,7 +2772,10 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
      * Settled at the point the session dies rather than in each caller: this is
      * the only place that knows the announcement happened. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, r);
-    set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
+    if (c->dps_mqtt == NULL)
+    {
+      set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
+    }
     /* Those callbacks may close() + open() and start a newer session: report
      * this start as replaced, so no caller settles or paces over it. */
     if (c->dps_mqtt != NULL)
@@ -5063,6 +5072,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
   }
 
+  client->open_seq++;
   client->user_close = false;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -5227,6 +5237,11 @@ static void dps_close_session(az_iot_connection_client* c)
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  /* A session started from that callback is not this one to settle. */
+  if (c->dps_mqtt != NULL)
+  {
+    return;
+  }
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
 }
 
@@ -5259,12 +5274,19 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_OK; /* idempotent */
   }
 
+  uint32_t seq = client->open_seq;
   /* Before every branch below, because a provisioning session can be live in
    * ALL of them: a session its users hold outlives registration, so a hub
    * retry, a fault, or an ordinary close can each find one still up. Each
    * branch used to return without touching it, and the pump would not collect
    * it either while a ref was held -- so close() left a connection running. */
   dps_close_session(client);
+  /* An observer may have reopened the client from one of those callbacks;
+   * the newer attempt is not this close()'s to settle. */
+  if (client->open_seq != seq)
+  {
+    return AZ_IOT_OK;
+  }
 
   /* close() is the documented exit from a settled refusal, so it clears the
    * user-session ladder too -- including the blocked latch. Here rather than in

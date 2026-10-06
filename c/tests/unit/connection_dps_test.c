@@ -4667,15 +4667,19 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
   (void)state;
   /* Cases 2 and 3 reopen from the IDLE that reports a failed start: in 2 the
    * outer open() has no factory and the callback registers one; in 3 its
-   * adapter connect() fails synchronously. */
+   * adapter connect() fails synchronously. Case 4 is case 3 reopened from the
+   * DISCONNECTING of that failure. */
   const az_iot_connection_state k_on[] = { AZ_IOT_CONN_STATE_SETTING_UP,
                                            AZ_IOT_CONN_STATE_CONNECTING,
                                            AZ_IOT_CONN_STATE_IDLE,
-                                           AZ_IOT_CONN_STATE_IDLE };
-  const az_iot_result k_outer[] = {
-    AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_ERR_NOT_SUPPORTED, AZ_IOT_ERR_TLS
-  };
-  for (size_t k = 0; k < 4; ++k)
+                                           AZ_IOT_CONN_STATE_IDLE,
+                                           AZ_IOT_CONN_STATE_DISCONNECTING };
+  const az_iot_result k_outer[] = { AZ_IOT_ERR_NOT_CONNECTED,
+                                    AZ_IOT_ERR_NOT_CONNECTED,
+                                    AZ_IOT_ERR_NOT_SUPPORTED,
+                                    AZ_IOT_ERR_TLS,
+                                    AZ_IOT_ERR_TLS };
+  for (size_t k = 0; k < 5; ++k)
   {
     az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
     assert_non_null(fx);
@@ -4691,7 +4695,7 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
       assert_int_equal(
           az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
     }
-    if (k == 3)
+    if (k >= 3)
     {
       az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_TLS);
     }
@@ -4714,7 +4718,7 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
     assert_int_equal(
         az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
         AZ_IOT_CONN_STATE_CONNECTING);
-    if (k == 3)
+    if (k >= 3)
     {
       /* close() before the next pump tears the newer session down. */
       assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
@@ -4788,6 +4792,122 @@ static void a_failed_hub_fallback_settles_the_spent_dps_retry(void** state)
   fx->client->reconnect_due_ms = az_iot_time_mono_ms() + 3600000u; /* a long backoff */
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   assert_true(fx->client->reconnect_due_ms <= az_iot_time_mono_ms());
+}
+
+typedef struct close_reopen_ctx
+{
+  az_iot_connection_client* client;
+  int closed;
+  int reopened;
+  az_iot_result reopen;
+} close_reopen_ctx;
+
+/* close() from the first DPS:SETTING_UP; open() from the IDLE that close()
+ * announces. */
+static void close_then_reopen_from_idle(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_reopen_ctx* ctx = (close_reopen_ctx*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return;
+  }
+  if (event->state == AZ_IOT_CONN_STATE_SETTING_UP && ctx->closed == 0)
+  {
+    ctx->closed = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+  }
+  else if (event->state == AZ_IOT_CONN_STATE_IDLE && ctx->closed == 1 && ctx->reopened == 0)
+  {
+    ctx->reopened = 1;
+    ctx->reopen = az_iot_connection_client_open(ctx->client);
+  }
+}
+
+/* A reopen from the IDLE that close() announces belongs to the newer attempt:
+ * the outer close() must not settle over it, and a following close() must
+ * tear it down. */
+static void a_reopen_from_close_idle_survives_the_outer_close(void** state)
+{
+  (void)state;
+  az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+  az_iot_connection_client_options opts = dps_options();
+  opts.dps.provision_only = true;
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(fx->factory);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  close_reopen_ctx ctx = { fx->client, 0, 0, AZ_IOT_ERR_INTERNAL };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, close_then_reopen_from_idle, &ctx),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(ctx.reopened, 1);
+  assert_int_equal(ctx.reopen, AZ_IOT_OK);
+  assert_non_null(fx->client->dps_mqtt);
+  assert_true(fx->client->dps_standing_ref);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTING);
+
+  /* close() before the next pump tears the newer session down. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
+  az_iot_connection_client_deinit(&fx->client_storage);
+  free(fx);
+}
+
+/* open() from the DPS:DISCONNECTING that close() announces for a live session. */
+static void reopen_on_disconnecting(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_reopen_ctx* ctx = (close_reopen_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING
+      && ctx->reopened == 0)
+  {
+    ctx->reopened = 1;
+    ctx->reopen = az_iot_connection_client_open(ctx->client);
+  }
+}
+
+/* Closing a live session announces DISCONNECTING then IDLE; a reopen from the
+ * first must not be settled to IDLE by the second. */
+static void a_reopen_from_close_disconnecting_keeps_the_new_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* old = provision_only_open(fx);
+  assert_non_null(old);
+  close_reopen_ctx ctx = { fx->client, 1, 0, AZ_IOT_ERR_INTERNAL };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, reopen_on_disconnecting, &ctx),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(ctx.reopened, 1);
+  assert_int_equal(ctx.reopen, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), m);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTING);
+
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, reopen_on_disconnecting, &ctx),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_null(fx->client->dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_IDLE);
 }
 
 int main(void)
@@ -5052,6 +5172,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         open_during_a_pending_registration_retry_is_rejected, setup_with_reconnect, teardown),
     cmocka_unit_test(a_provision_only_reopen_from_the_callback_keeps_the_session),
+    cmocka_unit_test(a_reopen_from_close_idle_survives_the_outer_close),
+    cmocka_unit_test_setup_teardown(
+        a_reopen_from_close_disconnecting_keeps_the_new_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_hub_fallback_settles_the_spent_dps_retry, setup_with_reconnect, teardown),
   };

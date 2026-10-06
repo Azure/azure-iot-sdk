@@ -1550,6 +1550,10 @@ extern "C"
      * its CONNECTING announcement: a close() + open() there may reuse the freed
      * adapter's address, so the pointer alone cannot tell the sessions apart. */
     uint32_t dps_start_seq;
+    /* Bumped by every open() that starts an attempt. close() compares it after
+     * each step that runs callbacks, so it does not settle over a client an
+     * observer reopened from one of them. */
+    uint32_t open_seq;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
