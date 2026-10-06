@@ -204,7 +204,7 @@ extern "C"
     /* Last Will and Testament (v3.1.1 + v5). */
     struct
     {
-      const char* topic; /* NULL = no LWT */
+      const char* topic; /* NULL or "" = no LWT */
       const uint8_t* payload;
       size_t payload_len;
       az_iot_mqtt_qos qos;

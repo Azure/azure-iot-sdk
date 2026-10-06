@@ -159,6 +159,10 @@ if(AZ_IOT_WITH_PAHO)
     add_subdirectory(adapters/paho)
 endif()
 
+if(AZ_IOT_WITH_AZ_MQTT)
+    add_subdirectory(adapters/az_mqtt)
+endif()
+
 if(AZ_IOT_WITH_RUST_MQTT)
     add_subdirectory(adapters/rust_mqtt)
 endif()

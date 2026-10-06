@@ -708,7 +708,7 @@ extern "C"
      * every one after it for positional aggregate initializers. */
     struct
     {
-      const char* topic; /* NULL = no Will */
+      const char* topic; /* NULL or "" = no Will */
       const uint8_t* payload;
       size_t payload_len;
       az_iot_mqtt_qos qos;
