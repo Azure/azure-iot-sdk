@@ -109,7 +109,9 @@ extern "C"
    * az_iot_connection_client_open(). A failure (refused CONNACK, transport
    * error, stalled handshake, failed registration) settles in
    * AZ_IOT_CONN_STATE_FAULTED until the application calls close() and opens
-   * again. Same as a zeroed policy, but states the intent.
+   * again; a rejected credential with another source configured is first
+   * retried at once with that source (see az_iot_auth). Same as a zeroed
+   * policy, but states the intent.
    */
   az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void);
 
@@ -770,7 +772,8 @@ extern "C"
      * and close(). Recovery stops at AZ_IOT_CONN_STATE_FAULTED, with the
      * refusal as the reason, when the ladder's max_attempts or
      * max_duration_seconds is reached first. A disabled reconnection_policy
-     * faults on the first refusal.
+     * faults on the first refusal of a whole credential pass (see
+     * az_iot_auth).
      *
      * Zeroed, it keeps the earlier behaviour: re-provision after a CONNACK
      * refusal, paced by reconnection_policy.

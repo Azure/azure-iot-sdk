@@ -2901,13 +2901,14 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     /* A rejected credential: the next ensure() reopens at once with the next
      * source, policy or not; no pacing, as for a registration. */
     /* Demand released (and maybe re-acquired) in the callbacks above is new
-     * demand: it starts at the first source, unpaced. */
-    if (c->dps_demand_epoch != demand_epoch)
+     * demand: it starts at the first source, unpaced. A close() there cancels
+     * both fallback and pacing. */
+    if (c->dps_demand_epoch != demand_epoch || c->close_count != closes)
     {
       return;
     }
     /* Demand is checked again: the IDLE callback above may have released it. */
-    if (credential_rejected && !c->user_close && c->close_count == closes && dps_session_demanded(c)
+    if (credential_rejected && !c->user_close && dps_session_demanded(c)
         && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
     {
       AZ_IOT_LOG_WARNF(

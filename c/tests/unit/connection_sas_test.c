@@ -1135,6 +1135,28 @@ static void replaced_demand_starts_a_fresh_pass(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* close() from the IDLE callback of a feature-held session's rejection: no
+ * fallback and no pacing; with retries disabled nothing latches. */
+static void a_close_during_a_session_rejection_leaves_no_pacing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, close_on_dps_idle, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+
+  assert_false(fx->client.dps_user_retry_blocked);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1267,6 +1289,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(replaced_demand_starts_a_fresh_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_during_a_session_rejection_leaves_no_pacing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_release_during_the_rejection_does_not_advance, setup, teardown),
     cmocka_unit_test_setup_teardown(
