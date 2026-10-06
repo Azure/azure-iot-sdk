@@ -9,6 +9,7 @@
 #include <az_mqtt3/az_mqtt3_client.h>
 #include <az_mqtt3/az_mqtt3_codec.h>
 
+#include "az_mqtt_codec_internal.h"
 #include "az_mqtt_core_internal.h"
 
 #include <azure/core/internal/az_precondition_internal.h>
@@ -332,6 +333,11 @@ AZ_NODISCARD az_result az_mqtt3_client_publish(
   if (_CORE(client).state != AZ_MQTT_CLIENT_STATE_CONNECTED)
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
+  }
+  // 4.7.3: a Topic Name has at least one character and no wildcards.
+  if (az_span_size(options->topic) == 0 || _az_mqtt_topic_has_wildcard(options->topic))
+  {
+    return AZ_ERROR_ARG;
   }
 
   az_mqtt_core* const core = &client->_internal.core;

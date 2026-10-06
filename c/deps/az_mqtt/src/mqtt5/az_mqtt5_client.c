@@ -9,6 +9,7 @@
 #include <az_mqtt5/az_mqtt5_client.h>
 #include <az_mqtt5/az_mqtt5_codec.h>
 
+#include "az_mqtt_codec_internal.h"
 #include "az_mqtt_core_internal.h"
 
 #include <azure/core/internal/az_precondition_internal.h>
@@ -553,6 +554,12 @@ AZ_NODISCARD az_result az_mqtt5_client_publish(
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
 
+  // A Topic Name has no wildcards; it may be empty only with a Topic Alias (3.3.2.1).
+  if (_az_mqtt_topic_has_wildcard(options->topic)
+      || (az_span_size(options->topic) == 0 && options->topic_alias == 0))
+  {
+    return AZ_ERROR_ARG;
+  }
   if ((uint8_t)options->qos > client->_internal.server_maximum_qos
       || (options->retain && !client->_internal.server_retain_available)
       || options->topic_alias > client->_internal.server_topic_alias_maximum)

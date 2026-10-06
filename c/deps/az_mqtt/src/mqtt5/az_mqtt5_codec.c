@@ -1344,6 +1344,10 @@ az_mqtt5_codec_decode_publish(az_span body, uint8_t flags, az_mqtt5_publish_data
   rc = _decode_publish_props(&body, out);
   if (az_result_failed(rc))
     return rc;
+  if (_az_mqtt_topic_has_wildcard(out->topic))
+    return AZ_MQTT_ERROR_MALFORMED_PACKET; // 4.7.1: not in a Topic Name.
+  if (az_span_size(out->topic) == 0 && out->topic_alias == 0)
+    return AZ_MQTT_ERROR_PROTOCOL; // 3.3.2.1: empty only with a Topic Alias.
 
   // The rest is the payload
   out->payload = body;

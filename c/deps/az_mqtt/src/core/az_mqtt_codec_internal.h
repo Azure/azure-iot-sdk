@@ -57,6 +57,13 @@ AZ_NODISCARD az_result _az_mqtt_read_uint16(az_span* src, uint16_t* out);
 /** @brief Read a Variable Byte Integer; advance @p src. */
 AZ_NODISCARD az_result _az_mqtt_read_vbi(az_span* src, int32_t* out);
 
+/** @brief Whether @p topic contains a wildcard ('+' or '#'), not allowed in a Topic Name. */
+AZ_NODISCARD AZ_INLINE bool _az_mqtt_topic_has_wildcard(az_span topic)
+{
+  return az_span_find(topic, AZ_SPAN_FROM_STR("+")) >= 0
+      || az_span_find(topic, AZ_SPAN_FROM_STR("#")) >= 0;
+}
+
 /**
  * @brief Whether @p text is well-formed UTF-8 without U+0000 (MQTT 3.1.1 1.5.3, 5.0 1.5.4).
  */

@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter against a broker (AZ_IOT_MQTT_BROKER_HOST / _PORT): process_loop() returns when
- * an event callback raises more events; a publish larger than the send buffer is refused. */
+ * an event callback raises more events; a publish too large or to an invalid topic is refused. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -70,6 +70,14 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   msg.payload = too_large;
   msg.payload_len = sizeof(too_large);
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  // Not a Topic Name: empty, or with a wildcard.
+  char const* const bad_topics[] = { "", "a/+", "a/#" };
+  for (size_t i = 0; i < sizeof(bad_topics) / sizeof(bad_topics[0]); i++)
+  {
+    az_iot_mqtt_message bad = { 0 };
+    bad.topic = bad_topics[i];
+    assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
+  }
   msg.payload = NULL;
   msg.payload_len = 0;
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_OK);

@@ -405,6 +405,9 @@ az_mqtt3_codec_decode_publish(az_span body, uint8_t flags, az_mqtt3_publish_data
   az_result rc = _az_mqtt_read_utf8_string(&body, &out->topic);
   if (az_result_failed(rc))
     return rc;
+  // 4.7.3: at least one character; no wildcards in a Topic Name.
+  if (az_span_size(out->topic) == 0 || _az_mqtt_topic_has_wildcard(out->topic))
+    return AZ_MQTT_ERROR_MALFORMED_PACKET;
 
   if (out->qos != AZ_MQTT_QOS_AT_MOST_ONCE)
   {
