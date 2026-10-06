@@ -1930,11 +1930,8 @@ static az_iot_result place_sas_resource_uri(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (!sas_token_fits(c, scope))
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  /* `<resource URI>\n<expiry>` from azure-sdk-for-c, which encodes the URI.
+  /* `<resource URI>\n<expiry>` from azure-sdk-for-c, which encodes the URI
+   * and reports, rather than asserts, a buffer too small for it.
    * Only the URI is kept; any expiry above 0 passes its precondition. */
   az_span area = az_span_create((uint8_t*)c->sas_token, (int32_t)c->sas_token_size);
   az_span signed_text = AZ_SPAN_EMPTY;

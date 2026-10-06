@@ -867,7 +867,7 @@ extern "C"
      */
     struct
     {
-      uint8_t* buffer; /**< NULL when no SAS key is set. */
+      uint8_t* buffer; /**< NULL when no SAS key or user_provided_token is set. */
       size_t size; /**< Bytes in buffer. */
     } sas_buffer;
   } az_iot_connection_client_options;

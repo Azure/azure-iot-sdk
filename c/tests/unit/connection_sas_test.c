@@ -2425,6 +2425,23 @@ static void a_delivered_token_ages_from_delivery(void** state)
   assert_true(fx->client.sas_token_expiry_ms <= now + 50000u);
 }
 
+/* A callback-only token area smaller than a key-signed token: the resource
+ * URI fits, so the callback is asked, and a delivered token connects. */
+static void a_small_token_area_serves_a_token_callback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(0, 150);
+  assert_true(150 < AZ_IOT_SAS_TOKEN_SIZE(sizeof("broker.example") + sizeof("ut-device") - 2));
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_string_equal(g_fake.resource_uri, "broker.example%2Fdevices%2Fut-device");
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2462,6 +2479,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_pending_renewal_past_expiry_ends_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_from_delivery, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_small_token_area_serves_a_token_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(
