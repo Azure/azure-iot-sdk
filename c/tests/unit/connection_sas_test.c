@@ -1157,6 +1157,29 @@ static void a_close_during_a_session_rejection_leaves_no_pacing(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* provision_only plus a feature holder that releases in the rejection's IDLE
+ * callback: the standing demand remains, so the fallback still happens. */
+static void a_feature_release_keeps_provision_only_fallback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
+  opts.dps.provision_only = true;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, release_on_idle, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(fx->client.dps_user_count, 0);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
+}
+
 /** @brief DPS options with a primary and a secondary key, CONNACK and SUBACK
  * done, so the next step is the registration response. */
 static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool policies)
@@ -1287,6 +1310,8 @@ int main(void)
         a_feature_held_session_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_released_session_starts_a_new_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(replaced_demand_starts_a_fresh_pass, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_feature_release_keeps_provision_only_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
     cmocka_unit_test_setup_teardown(

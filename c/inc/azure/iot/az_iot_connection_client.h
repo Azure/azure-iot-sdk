@@ -1718,8 +1718,9 @@ extern "C"
     /* close() calls, counted even when it has nothing to do: lets a path that
      * ran state callbacks tell that one of them closed the client. */
     uint32_t close_count;
-    /* Times the last provisioning-session holder released: lets a path that
-     * ran state callbacks tell that its demand was replaced. */
+    /* Times the provisioning session lost its last holder (no user,
+     * registration or standing ref left): lets a path that ran state callbacks
+     * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */

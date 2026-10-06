@@ -6113,9 +6113,9 @@ void az_iot_connection_client__dps_user_release(az_iot_connection_client* client
      * backoff, a latched refusal, or a credential fallback pass, earned by
      * whoever came before it. A registration owns its own pass. */
     dps_user_retry_reset(client);
-    client->dps_demand_epoch++;
     if (!client->dps_registration_ref && !client->dps_standing_ref)
     {
+      client->dps_demand_epoch++;
       client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
       client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
     }
