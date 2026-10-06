@@ -490,6 +490,7 @@ extern "C"
      * The SDK never allocates or declares a payload buffer of its own; provide
      * one here (>= AZ_IOT_CSR_PAYLOAD_BUFFER_MIN to cover the service CSR size
      * limit) when using either CSR feature. Leave AZ_SPAN_EMPTY otherwise.
+     * Setting it reserves one AZ_IOT_MAX_PENDING_PUBACKS slot for renewal requests.
      *
      * AZ_IOT_CSR_PAYLOAD_BUFFER_MIN covers the CSR body alone. When
      * dps.registration_payload is ALSO set, the registration body carries both
@@ -1112,7 +1113,8 @@ extern "C"
 #define AZ_IOT_MAX_PENDING_PUBACKS 16
 #endif
 /* Feature clients that can hold an AZ_IOT_MAX_PENDING_PUBACKS reservation at once. An mqttv5
- * direct method client takes one. At most 254. */
+ * direct method client takes one; hub certificate renewal takes one when opts.csr_payload_buffer
+ * is set. At most 254. */
 #ifndef AZ_IOT_MAX_PUBACK_RESERVATIONS
 #define AZ_IOT_MAX_PUBACK_RESERVATIONS 2
 #endif
@@ -1928,7 +1930,10 @@ extern "C"
    *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
    *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
    * The request's device id is taken from the connected client_id. Only one CSR
-   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The issued
+   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The request is
+   * always tracked: if the
+   * broker rejects it, the callback fires at once with AZ_IOT_CSR_FAILED and the
+   * PUBACK status. The issued
    * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
    * If no terminal (200/error) response arrives within an internal timeout, the
    * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
@@ -1943,7 +1948,8 @@ extern "C"
 
   /* Abandon the in-flight CSR renewal (if any) without waiting for the timeout,
    * freeing the one-operation slot for a new az_iot_connection_client_send_csr().
-   * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND when no operation is active. */
+   * No callback fires. Returns AZ_IOT_ERR_NOT_FOUND
+   * when no operation is active. */
   AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 
   /* Returns the effective IoT Hub address (FQDN) this client is bound to: the
