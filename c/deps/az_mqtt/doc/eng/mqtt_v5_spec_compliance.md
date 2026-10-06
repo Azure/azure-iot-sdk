@@ -94,7 +94,7 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 | 79 | QoS 1: PUBACK contains packet identifier of the PUBLISH | [[MQTT-3.4.2-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `packet_id` from decoded PUBLISH forwarded | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 80 | QoS 2 (receive): client sends PUBREC | [[MQTT-4.3.3-3]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `_handle_publish` sends PUBREC for QoS 2 | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 81 | QoS 2 (receive): client sends PUBCOMP in response to PUBREL | [[MQTT-4.3.3-5]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Every PUBREL gets a PUBCOMP; reason 0x92 (Packet Identifier not found) if its identifier is not tracked | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
-| 82 | QoS 2 (receive): client must not deliver the application message a second time after sending PUBREC | [[MQTT-4.3.3-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Partial | Held in an `inflight_control_buffer` entry until PUBREL; a resent PUBLISH is acknowledged, not delivered. With no free entry it is delivered without duplicate detection | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c), [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
+| 82 | QoS 2 (receive): client must not deliver the application message a second time after sending PUBREC | [[MQTT-4.3.3-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Held in an `inflight_control_buffer` entry until PUBREL; a resent PUBLISH is acknowledged, not delivered. With no free entry it is neither delivered nor acknowledged, and the session ends with `AZ_MQTT_ERROR_FLOW_CONTROL`; MQTT 5: after a best-effort DISCONNECT 0x97 (Quota exceeded) | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c), [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 83 | QoS 2 (send): client sends PUBREL in response to PUBREC | [[MQTT-4.3.3-4]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | `_handle_pubrec` sends PUBREL | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
 | 84 | QoS 1/2 (send): on a resumed session the client resends each unacknowledged PUBLISH (DUP=1) and PUBREL (flags 0010, no DUP) with its original packet identifier | [[MQTT-4.4.0-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | On CONNACK Session Present: PUBREL resent; then PUBLISH, in order, with DUP and its packet identifier from its copy in `inflight_message_buffer` (required for QoS 1/2 on a session that outlives the connection). Only a message given an expiry interval may be dropped instead, once it elapsed (opt-in) | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | 85 | Client must not send new PUBLISH (QoS>0) that would exceed server Receive Maximum | [[MQTT-3.3.4-7]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) | Yes | Outgoing QoS > 0 PUBLISH (and PUBREL awaiting PUBCOMP) are counted against the CONNACK Receive Maximum; past it, `az_mqtt5_client_publish` fails with `AZ_MQTT_ERROR_FLOW_CONTROL` | [src/mqtt5/az_mqtt5_client.c](../../src/mqtt5/az_mqtt5_client.c) |
@@ -165,15 +165,14 @@ to the current implementation status of `az_mqttv5` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 113 |
-| Partial | 3 |
+| Yes | 114 |
+| Partial | 2 |
 | No | 19 |
 
 ### Key gaps (client-facing impact)
 
 | Gap | Spec reference |
 |-----|---------------|
-| QoS 2 receive duplicate detection needs a free `inflight_control_buffer` entry | [[MQTT-4.3.3-2]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
 | A QoS 1/2 PUBLISH given an expiry interval is dropped instead of resent once it elapsed (opt-in; MQTT itself would resend it) | [[MQTT-4.3.3-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
 | Enhanced authentication (AUTH exchange) not implemented | [[MQTT-4.12.0-1]](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |
 | Topic Alias mapping table not maintained | [§3.3.2.3.4](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html) |

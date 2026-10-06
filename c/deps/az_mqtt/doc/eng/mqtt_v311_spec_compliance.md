@@ -48,7 +48,7 @@ to the current implementation status of `az_mqttv3` (on `az_mqtt_core`).
 | 33 | QoS 1: PUBACK contains packet identifier of the PUBLISH | [§3.4](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `packet_id` from decoded PUBLISH forwarded | [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
 | 34 | QoS 2 (receive): client sends PUBREC | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `_handle_publish` sends PUBREC for QoS 2 | [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
 | 35 | QoS 2 (receive): client sends PUBCOMP in response to PUBREL | [§3.7](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `_handle_pubrel` sends PUBCOMP | [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
-| 36 | QoS 2 (receive): client must not deliver the application message a second time after sending PUBREC | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Partial | Held in an `inflight_control_buffer` entry until PUBREL; a resent PUBLISH is acknowledged, not delivered. With no free entry it is delivered without duplicate detection | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c), [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
+| 36 | QoS 2 (receive): client must not deliver the application message a second time after sending PUBREC | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | Held in an `inflight_control_buffer` entry until PUBREL; a resent PUBLISH is acknowledged, not delivered. With no free entry it is neither delivered nor acknowledged, and the session ends with `AZ_MQTT_ERROR_FLOW_CONTROL` | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c), [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
 | 37 | QoS 2 (send): client sends PUBREL in response to PUBREC | [§3.6](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | `_handle_pubrec` sends PUBREL | [src/mqtt3/az_mqtt3_client.c](../../src/mqtt3/az_mqtt3_client.c) |
 | 38 | QoS 1/2 (send): on a resumed session the client resends each unacknowledged PUBLISH (DUP=1) and PUBREL (flags 0010, no DUP) with its original packet identifier | [§4.4](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) | Yes | On CONNACK Session Present: PUBREL resent; then PUBLISH, in order, with DUP and its packet identifier from its copy in `inflight_message_buffer` (required for QoS 1/2 on a session that outlives the connection). Only a message given an expiry interval may be dropped instead, once it elapsed (opt-in) | [src/core/az_mqtt_core.c](../../src/core/az_mqtt_core.c) |
 | **PUBACK ([§3.4](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html))** |||||
@@ -98,15 +98,14 @@ to the current implementation status of `az_mqttv3` (on `az_mqtt_core`).
 
 | Status | Count |
 |--------|-------|
-| Yes | 59 |
-| Partial | 2 |
+| Yes | 60 |
+| Partial | 1 |
 | No | 8 |
 
 ### Key gaps (client-facing impact)
 
 | Gap | Spec reference |
 |-----|---------------|
-| QoS 2 receive duplicate detection needs a free `inflight_control_buffer` entry | [§3.5](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | A QoS 1/2 PUBLISH given an expiry interval is dropped instead of resent once it elapsed (opt-in; MQTT itself would resend it) | [§3.3.1, 3.6](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | Topic wildcards not validated in PUBLISH | [§3.3.2.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |
 | Will flag consistency validation not enforced | [§3.1.2.4](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html) |

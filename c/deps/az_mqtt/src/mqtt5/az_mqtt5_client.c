@@ -162,6 +162,19 @@ static az_result _handle_connack(az_mqtt5_client* client, az_span body)
   return AZ_OK;
 }
 
+/** @brief Send DISCONNECT with @p reason (best effort); return @p result. */
+static az_result
+_disconnect_with(az_mqtt5_client* client, az_mqtt5_reason_code reason, az_result result)
+{
+  az_span disconnect = _SEND_BUFFER(client);
+  if (az_result_succeeded(az_mqtt5_codec_encode_disconnect(&disconnect, reason, 0)))
+  {
+    az_result const send_rc = _az_mqtt_core_send(&client->_internal.core, disconnect);
+    (void)send_rc;
+  }
+  return result;
+}
+
 static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t flags)
 {
   az_mqtt5_publish_data publish;
@@ -177,6 +190,11 @@ static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t 
   az_result rc = az_mqtt5_codec_decode_publish(body, flags, &publish);
   if (az_result_failed(rc))
     return rc;
+  // 3.3.2.3.4: above the Topic Alias Maximum this client sent.
+  if (publish.topic_alias > client->_internal.connect_options.topic_alias_maximum)
+  {
+    return _disconnect_with(client, AZ_MQTT5_REASON_TOPIC_ALIAS_INVALID, AZ_MQTT_ERROR_PROTOCOL);
+  }
 
   // Send acknowledgment for QoS > 0
   if (publish.qos == AZ_MQTT_QOS_AT_LEAST_ONCE)
@@ -197,14 +215,7 @@ static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t 
     if (az_result_failed(rc))
     {
       // Ends the session; the server resends it on a resumed one.
-      az_span disconnect = _SEND_BUFFER(client);
-      if (az_result_succeeded(az_mqtt5_codec_encode_disconnect(
-              &disconnect, AZ_MQTT5_REASON_QUOTA_EXCEEDED, 0)))
-      {
-        az_result const send_rc = _az_mqtt_core_send(&client->_internal.core, disconnect);
-        (void)send_rc; // Best effort.
-      }
-      return rc;
+      return _disconnect_with(client, AZ_MQTT5_REASON_QUOTA_EXCEEDED, rc);
     }
     az_span send_buf = _SEND_BUFFER(client);
     rc = az_mqtt5_codec_encode_pubrec(&send_buf, publish.packet_id, AZ_MQTT5_REASON_SUCCESS);

@@ -997,6 +997,8 @@ static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
         break;
       case AZ_MQTT5_PROPERTY_RECEIVE_MAXIMUM:
         rc = _az_mqtt_read_uint16(&props, &out->receive_maximum);
+        if (az_result_succeeded(rc) && out->receive_maximum == 0)
+          rc = AZ_MQTT_ERROR_PROTOCOL; // 3.2.2.3.3
         break;
       case AZ_MQTT5_PROPERTY_MAXIMUM_QOS:
       {
@@ -1014,6 +1016,8 @@ static az_result _decode_connack_props(az_span* src, az_mqtt5_connack_data* out)
       }
       case AZ_MQTT5_PROPERTY_MAXIMUM_PACKET_SIZE:
         rc = _read_uint32(&props, &out->maximum_packet_size);
+        if (az_result_succeeded(rc) && out->maximum_packet_size == 0)
+          rc = AZ_MQTT_ERROR_PROTOCOL; // 3.2.2.3.6
         break;
       case AZ_MQTT5_PROPERTY_ASSIGNED_CLIENT_IDENTIFIER:
         rc = _az_mqtt_read_utf8_string(&props, &out->assigned_client_identifier);
@@ -1191,6 +1195,8 @@ static az_result _decode_publish_props(az_span* src, az_mqtt5_publish_data* out)
         break;
       case AZ_MQTT5_PROPERTY_TOPIC_ALIAS:
         rc = _az_mqtt_read_uint16(&props, &out->topic_alias);
+        if (az_result_succeeded(rc) && out->topic_alias == 0)
+          rc = AZ_MQTT_ERROR_PROTOCOL; // 3.3.2.3.4
         break;
       case AZ_MQTT5_PROPERTY_RESPONSE_TOPIC:
         rc = _az_mqtt_read_utf8_string(&props, &out->response_topic);
@@ -1207,6 +1213,8 @@ static az_result _decode_publish_props(az_span* src, az_mqtt5_publish_data* out)
         rc = _az_mqtt_read_vbi(&props, &sub_id);
         if (az_result_failed(rc))
           return rc;
+        if (sub_id == 0)
+          return AZ_MQTT_ERROR_PROTOCOL; // 3.3.2.3.8
         if (out->subscription_identifiers != NULL
             && out->subscription_identifier_count < out->subscription_identifier_capacity)
         {
