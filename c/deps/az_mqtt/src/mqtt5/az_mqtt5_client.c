@@ -223,6 +223,17 @@ static az_result _handle_publish(az_mqtt5_client* client, az_span body, uint8_t 
   return AZ_OK;
 }
 
+/**
+ * @brief AUTH: decoded, so a malformed one ends the session, then ignored (enhanced
+ * authentication is not implemented).
+ */
+static az_result _handle_auth(az_span body)
+{
+  az_mqtt5_auth_data auth;
+  memset(&auth, 0, sizeof(auth));
+  return az_mqtt5_codec_decode_auth(body, &auth);
+}
+
 /** @brief PUBACK, PUBREC, PUBREL or PUBCOMP. */
 static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, az_span body)
 {
@@ -408,7 +419,7 @@ static az_result _dispatch_packet(
     case AZ_MQTT_PACKET_TYPE_DISCONNECT:
       return _handle_disconnect(client, body);
     case AZ_MQTT_PACKET_TYPE_AUTH:
-      return AZ_OK; // Enhanced authentication is not implemented.
+      return _handle_auth(body);
     case AZ_MQTT_PACKET_TYPE_CONNECT: // Client to server only.
     case AZ_MQTT_PACKET_TYPE_SUBSCRIBE:
     case AZ_MQTT_PACKET_TYPE_UNSUBSCRIBE:

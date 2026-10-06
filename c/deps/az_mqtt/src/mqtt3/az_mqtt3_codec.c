@@ -379,6 +379,12 @@ AZ_NODISCARD az_result az_mqtt3_codec_decode_connack(az_span body, az_mqtt3_conn
     return rc;
   out->return_code = (az_mqtt3_connack_return_code)return_code;
 
+  // MQTT 3.1.1 3.2.2: reserved flag bits are 0; return codes 6-255 are reserved; a refusal does
+  // not report a session.
+  if ((ack_flags & 0xFE) != 0 || return_code > 5 || (out->session_present && return_code != 0))
+  {
+    return AZ_MQTT_ERROR_MALFORMED_PACKET;
+  }
   return az_span_size(body) == 0 ? AZ_OK : AZ_MQTT_ERROR_MALFORMED_PACKET;
 }
 
@@ -405,6 +411,8 @@ az_mqtt3_codec_decode_publish(az_span body, uint8_t flags, az_mqtt3_publish_data
     rc = _az_mqtt_read_uint16(&body, &out->packet_id);
     if (az_result_failed(rc))
       return rc;
+    if (out->packet_id == 0)
+      return AZ_MQTT_ERROR_MALFORMED_PACKET; // MQTT 3.1.1 2.3.1: non-zero.
   }
 
   out->payload = body;
