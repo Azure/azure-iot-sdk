@@ -88,9 +88,16 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
       assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
     }
   }
-  assert_int_equal(
-      r.client->iface->subscribe(r.client, "", AZ_IOT_MQTT_QOS_0, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(r.client->iface->unsubscribe(r.client, "", NULL), AZ_IOT_ERR_INVALID_ARG);
+  // Not a Topic Filter: empty, or a wildcard not filling a level ('#': the last).
+  char const* const bad_filters[] = { "", "a/+b", "a/#/b" };
+  for (size_t i = 0; i < sizeof(bad_filters) / sizeof(bad_filters[0]); i++)
+  {
+    assert_int_equal(
+        r.client->iface->subscribe(r.client, bad_filters[i], AZ_IOT_MQTT_QOS_0, NULL),
+        AZ_IOT_ERR_INVALID_ARG);
+    assert_int_equal(
+        r.client->iface->unsubscribe(r.client, bad_filters[i], NULL), AZ_IOT_ERR_INVALID_ARG);
+  }
   msg.payload = NULL;
   msg.payload_len = 0;
   assert_int_equal(r.client->iface->publish(r.client, &msg, NULL), AZ_IOT_OK);

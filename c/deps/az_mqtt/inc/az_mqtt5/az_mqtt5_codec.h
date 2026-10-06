@@ -38,6 +38,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_con
  * @param[in,out] dest      Buffer; advanced on success.
  * @param[in]     opts      Publish options.
  * @param[in]     packet_id Packet identifier (must be non-zero for QoS>0).
+ * @retval AZ_ERROR_ARG Topic with a wildcard, or empty without a Topic Alias.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
     az_span* dest,
@@ -81,6 +82,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_pubcomp(
  * @param[in]     subs      Array of subscriptions.
  * @param[in]     sub_count Number of subscriptions.
  * @param[in]     packet_id Packet identifier.
+ * @retval AZ_ERROR_ARG A Topic Filter empty or with a misplaced wildcard.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
     az_span* dest,
@@ -90,6 +92,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
 
 /**
  * @brief Encode an UNSUBSCRIBE packet.
+ * @retval AZ_ERROR_ARG A Topic Filter empty or with a misplaced wildcard.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_unsubscribe(
     az_span* dest,

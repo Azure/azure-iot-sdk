@@ -55,12 +55,34 @@ AZ_NODISCARD AZ_INLINE az_result _az_mqtt_write_topic_name(az_span* dest, az_spa
 }
 
 /**
+ * @brief Whether @p filter is a valid Topic Filter (4.7.1): non-empty; '+' fills a whole level;
+ * '#' fills the last level.
+ */
+AZ_NODISCARD AZ_INLINE bool _az_mqtt_topic_filter_valid(az_span filter)
+{
+  int32_t const size = az_span_size(filter);
+  uint8_t const* const p = az_span_ptr(filter);
+  for (int32_t i = 0; i < size; i++)
+  {
+    bool const level_start = i == 0 || p[i - 1] == '/';
+    if ((p[i] == '+' && !(level_start && (i + 1 == size || p[i + 1] == '/')))
+        || (p[i] == '#' && !(level_start && i + 1 == size)))
+    {
+      return false;
+    }
+  }
+  return size > 0;
+}
+
+/**
  * @brief Write Topic Filter @p filter; advance @p dest.
- * @retval AZ_ERROR_ARG Empty, or as _az_mqtt_write_utf8_string().
+ * @retval AZ_ERROR_ARG Not valid (_az_mqtt_topic_filter_valid()), or as
+ * _az_mqtt_write_utf8_string().
  */
 AZ_NODISCARD AZ_INLINE az_result _az_mqtt_write_topic_filter(az_span* dest, az_span filter)
 {
-  return az_span_size(filter) == 0 ? AZ_ERROR_ARG : _az_mqtt_write_utf8_string(dest, filter);
+  return _az_mqtt_topic_filter_valid(filter) ? _az_mqtt_write_utf8_string(dest, filter)
+                                             : AZ_ERROR_ARG;
 }
 
 /**

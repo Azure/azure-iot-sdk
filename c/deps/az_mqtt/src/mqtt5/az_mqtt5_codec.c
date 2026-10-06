@@ -574,6 +574,13 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
   _az_PRECONDITION_NOT_NULL(dest);
   _az_PRECONDITION_NOT_NULL(opts);
 
+  // A Topic Name has no wildcards; it may be empty only with a Topic Alias (3.3.2.1).
+  if (_az_mqtt_topic_has_wildcard(opts->topic)
+      || (az_span_size(opts->topic) == 0 && opts->topic_alias == 0))
+  {
+    return AZ_ERROR_ARG;
+  }
+
   // Calculate remaining length
   int32_t remaining = 2 + az_span_size(opts->topic); // Topic Name
   if (opts->qos != AZ_MQTT_QOS_AT_MOST_ONCE)
