@@ -1505,11 +1505,14 @@ static void schedule_reconnect(
   bool retry = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
       && az_iot_retry_policy__next(
                    &c->opts.reconnection_policy, &c->retry_attempt[scope], &c->rng_state, &delay);
-  /* A user-provided token's retry_after_seconds is a floor over the policy. */
+  /* A user-provided token's retry_after_seconds is a floor over the policy;
+   * 64-bit, as it may exceed what the reported delay can hold. */
+  uint64_t delay_ms = delay;
   uint64_t token_floor_ms = (uint64_t)c->sas_token_retry_after_seconds * 1000u;
   c->sas_token_retry_after_seconds = 0;
-  if (retry && token_floor_ms > delay)
+  if (retry && token_floor_ms > delay_ms)
   {
+    delay_ms = token_floor_ms;
     delay = token_floor_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)token_floor_ms;
   }
   c->recovery_report.classification = classify_failure(failure_scope, reason);
@@ -1519,7 +1522,7 @@ static void schedule_reconnect(
    * reports the refusal that started the episode. */
   uint64_t now = az_iot_time_mono_ms();
   uint64_t deadline = identity_recovery_deadline_ms(c);
-  if (retry && deadline != 0 && now + delay >= deadline)
+  if (retry && deadline != 0 && now + delay_ms >= deadline)
   {
     AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "identity recovery duration spent; stopping");
     retry = false;
@@ -1534,13 +1537,13 @@ static void schedule_reconnect(
     fault_retry_scopes(c, failure_scope, reason);
     return;
   }
-  c->reconnect_due_ms = now + delay;
+  c->reconnect_due_ms = now + delay_ms;
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "%s retry %u in %u ms",
+      "%s retry %u in %llu ms",
       scope_name(scope),
       (unsigned)c->retry_attempt[scope],
-      (unsigned)delay);
+      (unsigned long long)delay_ms);
   /* Reported against the scope that FAILED, not the ladder the retry climbs:
    * a hub failure retried as a registration is still a HUB session going
    * down. The ladder scope is separate and lives in retry_attempt[] above. */
@@ -5072,33 +5075,50 @@ static void process_sas_token_request(az_iot_connection_client* c)
   process_sas_token_request_of(c, AZ_IOT_CONN_SCOPE_HUB);
 }
 
-/** @brief @p timeout_ms, capped so a process_loop() wait ends by the hub's
- * next SAS renewal deadline. */
-static uint32_t limit_wait_to_sas_token_renewal(
+/**
+ * @brief @p timeout_ms, capped so a process_loop() wait ends by the next SAS
+ * token deadline: a token request's bound (none while one waits to be asked,
+ * as do_work() asks it), the hub's renewal, or its renewal disconnect bound.
+ */
+static uint32_t limit_wait_to_sas_token_deadlines(
     const az_iot_connection_client* c,
     uint32_t timeout_ms)
 {
-  if (c->active_client == NULL || c->user_close
-      || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
-      || !is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_HUB].source))
-  {
-    return timeout_ms;
-  }
+  uint64_t now = az_iot_time_mono_ms();
   uint64_t remaining = UINT64_MAX;
-  uint64_t deadline = c->sas_token_renewal_in_progress ? c->sas_token_renewal_disconnect_deadline_ms
-                                                       : c->sas_token_renewal_due_ms;
-  if (deadline != 0)
+  for (int i = 0; i < (int)AZ_IOT_CONN_SCOPE_COUNT; ++i)
   {
-    uint64_t now = az_iot_time_mono_ms();
-    remaining = deadline > now ? deadline - now : 0;
+    if (c->sas_token_request[i].request_id == 0 || c->sas_token_request[i].for_renewal)
+    {
+      continue;
+    }
+    uint64_t due = c->sas_token_request[i].asked ? c->sas_token_request[i].deadline_ms : now;
+    if (due != 0)
+    {
+      uint64_t left = due > now ? due - now : 0;
+      remaining = left < remaining ? left : remaining;
+    }
   }
-  if (!c->sas_token_renewal_in_progress && c->sas_token_renewal_due_unix_seconds != 0)
+  if (c->active_client != NULL && !c->user_close
+      && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+      && is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_HUB].source))
   {
-    uint64_t unix_seconds = unix_now(c);
-    uint64_t unix_remaining = c->sas_token_renewal_due_unix_seconds > unix_seconds
-        ? (c->sas_token_renewal_due_unix_seconds - unix_seconds) * 1000u
-        : 0;
-    remaining = unix_remaining < remaining ? unix_remaining : remaining;
+    uint64_t deadline = c->sas_token_renewal_in_progress
+        ? c->sas_token_renewal_disconnect_deadline_ms
+        : c->sas_token_renewal_due_ms;
+    if (deadline != 0)
+    {
+      uint64_t left = deadline > now ? deadline - now : 0;
+      remaining = left < remaining ? left : remaining;
+    }
+    if (!c->sas_token_renewal_in_progress && c->sas_token_renewal_due_unix_seconds != 0)
+    {
+      uint64_t unix_seconds = unix_now(c);
+      uint64_t left = c->sas_token_renewal_due_unix_seconds > unix_seconds
+          ? (c->sas_token_renewal_due_unix_seconds - unix_seconds) * 1000u
+          : 0;
+      remaining = left < remaining ? left : remaining;
+    }
   }
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
@@ -6582,7 +6602,7 @@ az_iot_result az_iot_connection_client_do_work(
         }
       }
       /* A hub session beside it is pumped only after this wait. */
-      wait_ms = limit_wait_to_sas_token_renewal(client, wait_ms);
+      wait_ms = limit_wait_to_sas_token_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
@@ -6628,7 +6648,7 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->active_client)
   {
     r = client->active_client->iface->process_loop(
-        client->active_client, limit_wait_to_sas_token_renewal(client, timeout_ms));
+        client->active_client, limit_wait_to_sas_token_deadlines(client, timeout_ms));
   }
 
   apply_deferred(client);

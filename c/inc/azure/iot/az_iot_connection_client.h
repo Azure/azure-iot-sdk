@@ -219,8 +219,9 @@ extern "C"
    * Per role (DPS, hub), the sources configured are tried in this order,
    * skipping any not set: the X.509 certificate from
    * az_iot_connection_client_options::certificate_provider, then the primary
-   * and secondary keys of az_iot_auth::sas. Setting only one of X.509 or SAS
-   * selects it alone. See az_iot_auth for fallback on rejection.
+   * and secondary keys of az_iot_auth::sas, then its user_provided_token.
+   * Setting only one of X.509 or SAS selects it alone. See az_iot_auth for
+   * fallback on rejection.
    *
    * Not implemented yet: further provider certificates (a load() index, see
    * docs/eng/certificate-management.md).

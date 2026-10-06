@@ -2300,6 +2300,47 @@ static void a_faulted_hub_drops_its_held_token(void** state)
   assert_int_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id, 0);
 }
 
+/* A retry_after_seconds past what 32-bit milliseconds hold is kept. */
+static void a_long_retry_after_is_not_cut_short(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_UNAVAILABLE);
+  g_fake.retry_after_seconds = 5000000u;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  uint64_t before = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_true(fx->client.reconnect_due_ms >= before + 5000000000ull);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->delay_ms, UINT32_MAX);
+}
+
+/* The hub waits for its token beside a held provisioning session: that
+ * session's process_loop() wait ends by the token deadline. */
+static void a_token_deadline_caps_the_other_sessions_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  opts.crypto = TEST_CRYPTO();
+  opts.unix_time.get_time = fixed_time;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms = az_iot_time_mono_ms() + 1000u;
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 1000u);
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2330,6 +2371,8 @@ int main(void)
         a_reopen_from_a_resumed_dps_attempt_keeps_the_new_one, setup, teardown),
     cmocka_unit_test_setup_teardown(the_other_roles_token_waits_for_the_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(a_faulted_hub_drops_its_held_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_long_retry_after_is_not_cut_short, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_token_deadline_caps_the_other_sessions_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(
