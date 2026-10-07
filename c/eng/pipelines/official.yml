@@ -43,6 +43,8 @@ extends:
         os: windows
       codeql:
         language: cpp
+        compiled:
+          enabled: true
       policheck:
         enabled: true
       binskim:
@@ -60,7 +62,8 @@ extends:
               # One CodeQL database per language: the Windows job provides it.
               sdl:
                 codeql:
-                  enabled: false
+                  compiled:
+                    enabled: false
               outputs:
                 - output: pipelineArtifact
                   targetPath: $(Build.ArtifactStagingDirectory)/linux
