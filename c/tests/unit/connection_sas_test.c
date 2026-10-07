@@ -2201,6 +2201,65 @@ static void a_loss_queued_before_a_renewal_token_is_a_loss(void** state)
   assert_int_equal(e->reason, AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* A renewal request open when a loss leads to re-provisioning is dropped
+ * when the new assignment is adopted: the hub token is asked for again, for
+ * the assigned hub and device. */
+static void a_new_assignment_asks_for_a_new_hub_token(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  opts.reconnection_policy.initial_delay_ms = RECONNECT_MS;
+  opts.reconnection_policy.max_delay_ms = RECONNECT_MS;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps.max_hub_connect_attempts_before_reprovision = 1;
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  opts.crypto = TEST_CRYPTO();
+  opts.unix_time.get_time = fixed_time;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+
+  g_fake.mode = FAKE_TOKEN_PENDING;
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  uint32_t old_request = g_fake.request_id;
+
+  az_iot_mqtt_event lost;
+  memset(&lost, 0, sizeof(lost));
+  lost.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  lost.status = AZ_IOT_ERR_NOT_CONNECTED;
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &lost));
+  pump(fx, 1);
+  assert_true(fx->client.needs_reprovision);
+  wait_and_fire_retry(fx);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  static const char k_assigned[]
+      = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"otherhub.azure-devices.net\",\"deviceId\":\"other-device\"}}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      dps,
+      "$dps/registrations/res/200/?$rid=1",
+      (const uint8_t*)k_assigned,
+      strlen(k_assigned),
+      AZ_IOT_MQTT_QOS_1));
+  pump(fx, 3);
+
+  assert_int_equal(g_fake.calls, 3);
+  assert_string_equal(g_fake.resource_uri, "otherhub.azure-devices.net%2Fdevices%2Fother-device");
+  assert_int_equal(complete_with_user_token(fx, old_request), AZ_IOT_ERR_NOT_FOUND);
+}
+
 /* No renewal token now: the session stays up and the callback is asked again later. */
 static void an_unavailable_renewal_token_keeps_the_session(void** state)
 {
@@ -2730,6 +2789,7 @@ int main(void)
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_loss_queued_before_a_renewal_token_is_a_loss, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_assignment_asks_for_a_new_hub_token, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unavailable_renewal_token_keeps_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -3727,6 +3727,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       &c->opts.client_id,
       c->dps_assigned_device_id);
   drop_subscriptions_from_other_generations(c);
+  /* A hub token asked for, or held, before this assignment may be for
+   * another hub or device: the next attempt asks again. */
+  clear_sas_token_request(c, AZ_IOT_CONN_SCOPE_HUB);
   c->dps_phase = DPS_PHASE_NONE;
   /* This registration satisfies any re-provision asked for while it ran. */
   c->needs_reprovision = false;

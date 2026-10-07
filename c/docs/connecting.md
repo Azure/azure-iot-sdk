@@ -283,7 +283,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `token_buffer` is wiped for a response other than `READY`, or a `close()` from the callback.
   `valid_seconds` counts from delivery; a token that expired before use is asked for again, and a
   session whose token expires before its replacement arrives is ended, the reconnect waiting for
-  the token.
+  the token. A new DPS assignment drops a hub token asked for or held before it; the next attempt
+  asks again.
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
