@@ -31,12 +31,15 @@ resources:
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
+    # Microsoft-hosted agents, as the other C SDK pipelines in this project use.
     pool:
-      name: sdk-c--ubuntu-22
+      name: Azure Pipelines
+      image: ubuntu-24.04
       os: linux
     sdl:
       sourceAnalysisPool:
-        name: sdk-c--win-vs2022
+        name: Azure Pipelines
+        image: windows-2022
         os: windows
       codeql:
         language: cpp
@@ -102,7 +105,8 @@ extends:
           - job: windows
             displayName: Windows (MSVC x64, shared, RelWithDebInfo)
             pool:
-              name: sdk-c--win-vs2022
+              name: Azure Pipelines
+              image: windows-2022
               os: windows
             templateContext:
               outputs:
