@@ -2096,20 +2096,24 @@ static void apply_user_token(
   uint64_t now_ms = az_iot_time_mono_ms();
   uint64_t unix_seconds = unix_now(c);
   uint32_t valid_seconds = c->sas_token_request[scope].valid_seconds;
-  uint64_t delivered_ms = c->sas_token_request[scope].delivered_ms;
+  uint64_t valid_ms = (uint64_t)valid_seconds * 1000u;
   /* Aged by whichever clock shows more time passed: the monotonic one may
    * stop in suspend. */
+  uint64_t age_ms = now_ms - c->sas_token_request[scope].delivered_ms;
   uint64_t delivered_unix = c->sas_token_request[scope].delivered_unix_seconds;
-  if (delivered_unix != 0 && unix_seconds > delivered_unix
-      && (unix_seconds - delivered_unix) * 1000u > now_ms - delivered_ms)
+  if (delivered_unix != 0 && unix_seconds > delivered_unix)
   {
-    uint64_t aged_ms = (unix_seconds - delivered_unix) * 1000u;
-    delivered_ms = aged_ms < now_ms ? now_ms - aged_ms : 0;
+    uint64_t unix_age_seconds = unix_seconds - delivered_unix;
+    uint64_t unix_age_ms
+        = unix_age_seconds > valid_seconds ? valid_ms + 1000u : unix_age_seconds * 1000u;
+    if (unix_age_ms > age_ms)
+    {
+      age_ms = unix_age_ms;
+    }
   }
-  uint64_t expiry_ms = delivered_ms + (uint64_t)valid_seconds * 1000u;
   if (c->sas_token_request[scope].request_id != 0
       && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_READY
-      && c->sas_token_holder == (uint8_t)(scope + 1) && now_ms >= expiry_ms)
+      && c->sas_token_holder == (uint8_t)(scope + 1) && age_ms >= valid_ms)
   {
     /* Expired before use: ask again. */
     c->sas_token_request[scope].asked = false;
@@ -2127,10 +2131,10 @@ static void apply_user_token(
     if (scope == AZ_IOT_CONN_SCOPE_HUB)
     {
       /* valid_seconds counts from delivery, not from this use. */
-      uint64_t due_ms
-          = delivered_ms + get_sas_token_renewal_delay_ms(auth_of(c, scope), valid_seconds);
-      uint64_t left_ms = due_ms > now_ms ? due_ms - now_ms : 0;
-      c->sas_token_renewal_due_ms = due_ms;
+      uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth_of(c, scope), valid_seconds);
+      uint64_t left_ms = delay_ms > age_ms ? delay_ms - age_ms : 0;
+      uint64_t expiry_ms = now_ms + (valid_ms - age_ms);
+      c->sas_token_renewal_due_ms = now_ms + left_ms;
       c->sas_token_renewal_due_unix_seconds
           = unix_deadline_seconds(unix_seconds, (left_ms + 999u) / 1000u);
       c->sas_token_expiry_ms = expiry_ms;

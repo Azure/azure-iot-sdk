@@ -2590,6 +2590,32 @@ static void a_delivered_token_ages_by_unix_time(void** state)
   assert_true(fx->client.sas_token_expiry_unix_seconds <= now + 50u);
 }
 
+/* Unix time elapsed beyond the monotonic uptime (suspend early in boot): the
+ * token's age is not capped at the uptime, so an expired token is re-asked. */
+static void a_token_aged_beyond_the_uptime_is_re_asked(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  uint32_t uptime_seconds = (uint32_t)(az_iot_time_mono_ms() / 1000u);
+  az_iot_sas_token_response done = { 0 };
+  done.status = AZ_IOT_SAS_TOKEN_READY;
+  done.token_len = strlen(USER_TOKEN);
+  done.valid_seconds = uptime_seconds + 100u;
+  assert_int_equal(
+      az_iot_connection_client_complete_sas_token(
+          &fx->client, g_fake.request_id, USER_TOKEN, &done),
+      AZ_IOT_OK);
+  now = NOW + uptime_seconds + 150u;
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  assert_true(no_connect_pending(fx));
+}
+
 /* A Unix time near its maximum: the Unix deadlines are left unset rather
  * than wrapped into the past, so the session is not renewed at once. */
 static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
@@ -2655,6 +2681,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_suspended_clock_ends_an_expired_user_token_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_by_unix_time, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_token_aged_beyond_the_uptime_is_re_asked, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_unix_time_near_its_maximum_does_not_wrap_deadlines, setup, teardown),
     cmocka_unit_test_setup_teardown(
