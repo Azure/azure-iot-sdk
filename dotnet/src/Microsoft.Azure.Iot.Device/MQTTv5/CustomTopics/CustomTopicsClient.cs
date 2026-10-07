@@ -85,6 +85,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             return await _connection.PublishAsync(publish, cancellationToken);
         }
 
+
+        //TODO currently implementation loses all subscriptions upon losing connection. Fix later.
         public async Task<MqttClientSubscribeReasonCode> SubscribeAsync(string topic, MqttQualityOfServiceLevel qos, CancellationToken cancellationToken = default)
         {
             MqttSubscribe subscribe = new()
