@@ -4883,9 +4883,19 @@ static void request_sas_token_for_renewal(az_iot_connection_client* c)
   }
 }
 
+/** @brief Whether the hub's renewal token was delivered and awaits its renewal. */
+static bool sas_token_renewal_ready(const az_iot_connection_client* c)
+{
+  return c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id != 0
+      && c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].for_renewal
+      && c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].status == AZ_IOT_SAS_TOKEN_READY
+      && c->sas_token_holder == (uint8_t)(AZ_IOT_CONN_SCOPE_HUB + 1);
+}
+
 /**
  * @brief Called from do_work(): starts a SAS token renewal of the connected
- * hub when due, and reconnects one whose disconnect was not reported in time.
+ * hub when due or when its user-provided token is delivered, and reconnects one whose disconnect
+ * was not reported in time.
  */
 static void process_sas_token_renewal(az_iot_connection_client* c)
 {
@@ -4897,6 +4907,11 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
+  if (!c->sas_token_renewal_in_progress && sas_token_renewal_ready(c))
+  {
+    start_sas_token_renewal(c, now);
+    return;
+  }
   if (c->sas_token_renewal_in_progress)
   {
     if (c->sas_token_renewal_disconnect_deadline_ms != 0
@@ -5167,12 +5182,8 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
   }
   if (for_renewal)
   {
-    /* Otherwise held for the hub's next attempt. */
-    if (c->active_client != NULL && !c->user_close && !c->sas_token_renewal_in_progress
-        && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
-    {
-      start_sas_token_renewal(c, az_iot_time_mono_ms());
-    }
+    /* Started by process_sas_token_renewal(), after process_loop() has
+     * drained events already queued; otherwise held for the next attempt. */
     return;
   }
   resume_sas_token_attempt(c, scope);
@@ -5230,6 +5241,10 @@ static uint32_t limit_wait_to_sas_token_deadlines(
     {
       uint64_t left = deadline > now ? deadline - now : 0;
       remaining = left < remaining ? left : remaining;
+    }
+    if (!c->sas_token_renewal_in_progress && sas_token_renewal_ready(c))
+    {
+      remaining = 0;
     }
     if (!c->sas_token_renewal_in_progress)
     {

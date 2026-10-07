@@ -2172,6 +2172,35 @@ static void a_user_token_renewal_waits_for_the_token_connected(void** state)
   assert_int_equal(g_fake.calls, 2);
 }
 
+/* A connection loss queued before the renewal token arrives is reported as a
+ * loss, not as the renewal's disconnect. */
+static void a_loss_queued_before_a_renewal_token_is_a_loss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+
+  g_fake.mode = FAKE_TOKEN_PENDING;
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  az_iot_mqtt_event lost;
+  memset(&lost, 0, sizeof(lost));
+  lost.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  lost.status = AZ_IOT_ERR_NOT_CONNECTED;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &lost));
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  const recorded_event* e = &fx->log[fx->log_count - 1];
+  assert_int_equal(e->state, AZ_IOT_CONN_STATE_IDLE);
+  assert_false(e->renewal);
+  assert_int_equal(e->reason, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
 /* No renewal token now: the session stays up and the callback is asked again later. */
 static void an_unavailable_renewal_token_keeps_the_session(void** state)
 {
@@ -2699,6 +2728,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_loss_queued_before_a_renewal_token_is_a_loss, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unavailable_renewal_token_keeps_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
