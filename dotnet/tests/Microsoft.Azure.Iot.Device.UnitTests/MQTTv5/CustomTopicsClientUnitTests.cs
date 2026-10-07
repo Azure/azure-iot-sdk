@@ -235,5 +235,221 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(iterations, callbackCount);
             Assert.Equal(new[] { "stable/#" }, customTopicsClient.GetSubscribedTopics);
         }
+
+        // An unsubscribe issued while a subscribe for the same topic is in flight must not be sent (or applied to the tracked
+        // topics) until the subscribe completes; otherwise the tracked topics can disagree with the service's view.
+        [Fact]
+        public async Task SubscribeAndUnsubscribeOperationsAreSerialized()
+        {
+            TaskCompletionSource<MqttSubscribeAck> pendingSuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                OnSubscribe = _ => pendingSuback.Task,
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            Task<MqttClientSubscribeReasonCode> subscribeTask = customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            Task<MqttClientUnsubscribeReasonCode> unsubscribeTask = customTopicsClient.UnsubscribeAsync("topic", TestContext.Current.CancellationToken);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(unsubscribeTask.IsCompleted);
+            Assert.Empty(connection.UnsubscribedMessages);
+
+            pendingSuback.SetResult(MqttObjectHelpers.CreateSuccessfulSuback(Assert.Single(connection.SubscribedMessages)));
+
+            Assert.Equal(MqttClientSubscribeReasonCode.GrantedQoS1, await subscribeTask);
+            Assert.Equal(MqttClientUnsubscribeReasonCode.Success, await unsubscribeTask);
+            Assert.Single(connection.UnsubscribedMessages);
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+        }
+
+        // The service may deliver a publish on a newly granted topic before this client processes the SUBACK. That publish
+        // must still be delivered to the user and acknowledged rather than dropped.
+        [Fact]
+        public async Task PublishReceivedBeforeSubackIsProcessedIsDelivered()
+        {
+            MockMqttPublishReceivedEventArgs? earlyArgs = null;
+            MockFeatureConnectionClient connection = null!;
+            connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                OnSubscribe = async subscribe =>
+                {
+                    earlyArgs = await connection.SimulateReceiveAsync(new MqttPublish()
+                    {
+                        Topic = "early/topic",
+                        QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                    });
+
+                    return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                },
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            List<MqttPublish> receivedPublishes = new();
+            customTopicsClient.CustomTopicPublishReceivedAsync += args =>
+            {
+                receivedPublishes.Add(args.Publish);
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync("early/#", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            Assert.Equal("early/topic", Assert.Single(receivedPublishes).Topic);
+            Assert.NotNull(earlyArgs);
+            Assert.Equal(1, earlyArgs.AcknowledgeCount);
+            Assert.Equal(new[] { "early/#" }, customTopicsClient.GetSubscribedTopics);
+        }
+
+        // Topics are tracked optimistically while a subscribe is in flight, so a subscribe that fails must roll them back
+        // without disturbing a pre-existing subscription to the same topic.
+        [Fact]
+        public async Task FailedSubscribeRollsBackOptimisticallyTrackedTopics()
+        {
+            bool failSubscribe = false;
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                OnSubscribe = subscribe => failSubscribe
+                    ? throw new InvalidOperationException("simulated failure")
+                    : Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe)),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await customTopicsClient.SubscribeAsync("existing", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            failSubscribe = true;
+            MqttSubscribe subscribe = new()
+            {
+                TopicFilters = new()
+                {
+                    new MqttTopicFilter("existing", MqttQualityOfServiceLevel.AtLeastOnce),
+                    new MqttTopicFilter("new", MqttQualityOfServiceLevel.AtLeastOnce),
+                },
+            };
+            await Assert.ThrowsAsync<InvalidOperationException>(() => customTopicsClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken));
+
+            Assert.Equal(new[] { "existing" }, customTopicsClient.GetSubscribedTopics);
+        }
+
+        // When multiple handlers are attached to CustomTopicPublishReceivedAsync, all of them must run and complete before
+        // the publish is acknowledged.
+        [Fact]
+        public async Task AllPublishReceivedHandlersCompleteBeforeAcknowledgement()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            TaskCompletionSource firstHandlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MockMqttPublishReceivedEventArgs? deliveredArgs = null;
+            bool secondHandlerRan = false;
+
+            customTopicsClient.CustomTopicPublishReceivedAsync += async args =>
+            {
+                deliveredArgs = (MockMqttPublishReceivedEventArgs)args;
+                await firstHandlerCanFinish.Task;
+            };
+            customTopicsClient.CustomTopicPublishReceivedAsync += _ =>
+            {
+                secondHandlerRan = true;
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            Task receiveTask = connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = "topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            });
+
+            Assert.True(secondHandlerRan);
+            Assert.NotNull(deliveredArgs);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(receiveTask.IsCompleted);
+            Assert.Equal(0, deliveredArgs.AcknowledgeCount);
+
+            firstHandlerCanFinish.SetResult();
+            await receiveTask;
+
+            Assert.Equal(1, deliveredArgs.AcknowledgeCount);
+        }
+
+        // If this client is disposed while the user's handler is still running, the publish must not be acknowledged on the
+        // (now disposed) connection afterwards, and no further publishes should be delivered. Dispose must also be idempotent.
+        [Fact]
+        public async Task DisposeDuringPublishHandlingSkipsAcknowledgementAndStopsDelivery()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+            };
+            CustomTopicsClient customTopicsClient = new(connection);
+
+            TaskCompletionSource handlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int callbackCount = 0;
+            customTopicsClient.CustomTopicPublishReceivedAsync += async _ =>
+            {
+                Interlocked.Increment(ref callbackCount);
+                await handlerCanFinish.Task;
+            };
+
+            await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            Task<MockMqttPublishReceivedEventArgs> inFlightReceive = connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = "topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            });
+
+            customTopicsClient.Dispose();
+            customTopicsClient.Dispose();
+
+            handlerCanFinish.SetResult();
+            MockMqttPublishReceivedEventArgs inFlightArgs = await inFlightReceive;
+
+            Assert.Equal(0, inFlightArgs.AcknowledgeCount);
+            Assert.True(connection.IsDisposed);
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+
+            await connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = "topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            });
+
+            Assert.Equal(1, callbackCount);
+        }
+
+        // A subscribe already in flight when this client is disposed must not repopulate the tracked topics when it completes,
+        // and operations still waiting their turn must fail with ObjectDisposedException instead of using the connection.
+        [Fact]
+        public async Task DisposeDuringSubscriptionOperationsDoesNotTrackTopicsAndFailsQueuedOperations()
+        {
+            TaskCompletionSource<MqttSubscribeAck> pendingSuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                OnSubscribe = _ => pendingSuback.Task,
+            };
+            CustomTopicsClient customTopicsClient = new(connection);
+
+            Task<MqttClientSubscribeReasonCode> subscribeTask = customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            Task<MqttClientUnsubscribeReasonCode> queuedUnsubscribeTask = customTopicsClient.UnsubscribeAsync("other", TestContext.Current.CancellationToken);
+
+            customTopicsClient.Dispose();
+
+            pendingSuback.SetResult(MqttObjectHelpers.CreateSuccessfulSuback(Assert.Single(connection.SubscribedMessages)));
+
+            Assert.Equal(MqttClientSubscribeReasonCode.GrantedQoS1, await subscribeTask);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => queuedUnsubscribeTask);
+
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+            Assert.Empty(connection.UnsubscribedMessages);
+        }
     }
 }

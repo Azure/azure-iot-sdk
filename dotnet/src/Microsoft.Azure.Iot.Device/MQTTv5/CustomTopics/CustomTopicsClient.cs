@@ -14,13 +14,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     // QoS values supported by AEG? Just 1 and 0?
     // Are we just exposing MQTT semantics and types? Probably, but check with Usha
     // Should we allow delayed acks?
-    // Other variables besides {deviceId} ?
-    // Does AEG allow sending publishes to self? Would be useful for testing/samples but users probably wouldn't
+    // Other variables besides {deviceId} ? No. And my assumption was correct that this SDK is expected to pass in the actual deviceId in the topic string, not the placeholder "{deviceId}" string
+    // Does Iot Hub allow sending publishes to self? Would be useful for testing/samples but users probably wouldn't
 
-    // Usha is PM, check for terms I suppose
     public class CustomTopicsClient : IDisposable
     {
-        private bool _isDisposed = false;
+        // Volatile because it is read by the publish received handler and by in-flight operations on other threads. Only set
+        // while holding _subscribedCustomTopicsLock so that no tracked topic update can land after disposal.
+        private volatile bool _isDisposed = false;
 
         private IConnectionClient _connection;
 
@@ -29,6 +30,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         private volatile ImmutableList<string> _subscribedCustomTopics = ImmutableList<string>.Empty;
 
         private readonly object _subscribedCustomTopicsLock = new();
+
+        // Serializes subscribe/unsubscribe operations end-to-end (request through ack processing) so that the tracked topics
+        // are updated in the same order the operations were sent on the wire.
+        private readonly SemaphoreSlim _subscriptionOperationLock = new(1, 1);
 
         public event Func<MqttPublishReceivedEventArgs, Task>? CustomTopicPublishReceivedAsync;
 
@@ -49,6 +54,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// <summary>
         /// A point-in-time snapshot of the custom topics this client is currently subscribed to.
         /// </summary>
+        /// <remarks>
+        /// Topics in a subscribe request that is still in flight are included, since the service may begin delivering
+        /// publishes on them before the SUBACK is processed.
+        /// </remarks>
         public IReadOnlyList<string> GetSubscribedTopics => _subscribedCustomTopics;
 
         //TODO this gets weird if the device loses connection -> reprovisions -> gets assigned a new device Id. Need some kind of hook from connection client that allows for changing the re-subscribes after connecting to the new hub
@@ -97,22 +106,60 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var suback = await _connection.SubscribeAsync(subscribe, cancellationToken);
-            lock (_subscribedCustomTopicsLock)
+            await _subscriptionOperationLock.WaitAsync(cancellationToken);
+            try
             {
-                var builder = _subscribedCustomTopics.ToBuilder();
-                foreach (var subackItem in suback.Items)
+                // This client may have been disposed while waiting for a prior operation to finish
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+                // Track the requested topics before sending the SUBSCRIBE. The service may deliver publishes on a topic as soon
+                // as it grants the subscription, which can be before this client processes the SUBACK. Those publishes must
+                // still be delivered to the user (and acknowledged) rather than dropped.
+                UpdateSubscribedTopics(builder =>
                 {
-                    if (subackItem.ReasonCode == MqttClientSubscribeReasonCode.GrantedQoS0 || subackItem.ReasonCode == MqttClientSubscribeReasonCode.GrantedQoS1 || subackItem.ReasonCode == MqttClientSubscribeReasonCode.GrantedQoS2)
+                    foreach (var topicFilter in subscribe.TopicFilters)
                     {
-                        builder.Add(subackItem.TopicFilter.Topic);
+                        builder.Add(topicFilter.Topic);
                     }
+                });
+
+                MqttSubscribeAck suback;
+                try
+                {
+                    suback = await _connection.SubscribeAsync(subscribe, cancellationToken);
+                }
+                catch
+                {
+                    UpdateSubscribedTopics(builder =>
+                    {
+                        foreach (var topicFilter in subscribe.TopicFilters)
+                        {
+                            builder.Remove(topicFilter.Topic);
+                        }
+                    });
+
+                    throw;
                 }
 
-                _subscribedCustomTopics = builder.ToImmutable();
-            }
+                // Roll back only the topics the service did not grant. Remove a single instance so that a pre-existing
+                // subscription to the same topic stays tracked.
+                UpdateSubscribedTopics(builder =>
+                {
+                    foreach (var subackItem in suback.Items)
+                    {
+                        if (subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS2)
+                        {
+                            builder.Remove(subackItem.TopicFilter.Topic);
+                        }
+                    }
+                });
 
-            return suback;
+                return suback;
+            }
+            finally
+            {
+                _subscriptionOperationLock.Release();
+            }
         }
 
         public async Task<MqttClientUnsubscribeReasonCode> UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
@@ -129,57 +176,104 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
-            lock (_subscribedCustomTopicsLock)
+            await _subscriptionOperationLock.WaitAsync(cancellationToken);
+            try
             {
-                var builder = _subscribedCustomTopics.ToBuilder();
-                foreach (var unsubackItem in unsuback.Items)
+                // This client may have been disposed while waiting for a prior operation to finish
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+                // Keep tracking the topics until the UNSUBACK so publishes the service sends before then are still delivered
+                var unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
+
+                UpdateSubscribedTopics(builder =>
                 {
-                    // NoSubscriptionExisted means the service no longer considers this client subscribed, so stop tracking it too
-                    if (unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.Success || unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.NoSubscriptionExisted)
+                    foreach (var unsubackItem in unsuback.Items)
                     {
-                        builder.RemoveAll(subscribedTopic => subscribedTopic == unsubackItem.TopicFilter);
+                        // NoSubscriptionExisted means the service no longer considers this client subscribed, so stop tracking it too
+                        if (unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.Success || unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.NoSubscriptionExisted)
+                        {
+                            builder.RemoveAll(subscribedTopic => subscribedTopic == unsubackItem.TopicFilter);
+                        }
                     }
-                }
+                });
 
-                _subscribedCustomTopics = builder.ToImmutable();
+                return unsuback;
             }
-
-            return unsuback;
+            finally
+            {
+                _subscriptionOperationLock.Release();
+            }
         }
 
-        //TODO unsubscribe
+        private void UpdateSubscribedTopics(Action<ImmutableList<string>.Builder> update)
+        {
+            lock (_subscribedCustomTopicsLock)
+            {
+                // An operation that was already in flight when this client was disposed must not repopulate the tracked topics
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                var builder = _subscribedCustomTopics.ToBuilder();
+                update(builder);
+                _subscribedCustomTopics = builder.ToImmutable();
+            }
+        }
 
         /// <summary>
         /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
         /// </summary>
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
+        /// <remarks>
+        /// Safe to call multiple times and concurrently with other operations on this client. Once this returns, no new
+        /// <see cref="CustomTopicPublishReceivedAsync"/> invocations will start, but invocations already in progress are not
+        /// waited on. Subscribe/unsubscribe operations already in flight will complete, but will no longer update
+        /// <see cref="GetSubscribedTopics"/>.
+        /// </remarks>
         public void Dispose(bool disposing)
         {
-            if (disposing)
+            lock (_subscribedCustomTopicsLock)
             {
-                _connection.Dispose();
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                // Mark disposed before touching the connection so the publish received handler stops delivering to the user
+                // (and stops acknowledging on a connection that is about to be disposed)
+                _isDisposed = true;
+                _subscribedCustomTopics = ImmutableList<string>.Empty;
             }
 
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
-            _isDisposed = true;
+            if (disposing)
+            {
+                _connection.Dispose();
+            }
         }
 
         /// <summary>
         /// Releases the unmanaged resources and disposes of the managed resources used by this client 
         /// </summary>
+        /// <remarks>
+        /// See <see cref="Dispose(bool)"/> for the guarantees this provides relative to concurrent operations.
+        /// </remarks>
         public void Dispose()
         {
-            _connection.Dispose();
-
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
-
-            _isDisposed = true;
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
+            // The connection may still be mid-dispatch of a publish when this client is disposed
+            if (_isDisposed)
+            {
+                return;
+            }
+
             // Need matching logic since subscribed topics may include wildcard but the actual sent publish will expand from that wildcard
             // Enumerating the immutable snapshot is safe even if a subscribe/unsubscribe replaces the list concurrently
             foreach (string subscribedCustomTopic in _subscribedCustomTopics)
@@ -188,13 +282,27 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 //  This scenario should be fine for ACK'ing since we still only expose the publish to the user once even if they were subscribed to it in two ways
                 if (DoesTopicMatchFilter(args.Publish.Topic, subscribedCustomTopic))
                 {
-                    if (CustomTopicPublishReceivedAsync != null)
+                    // The snapshot above may predate a concurrent Dispose, so check again before calling into user code
+                    if (_isDisposed)
                     {
-                        await CustomTopicPublishReceivedAsync.Invoke(args);
+                        return;
+                    }
+
+                    // Read the event once so a handler being removed concurrently can't null it out between the check and the invoke
+                    var handlers = CustomTopicPublishReceivedAsync;
+                    if (handlers != null)
+                    {
+                        await InvokeAllHandlersAsync(handlers, args);
                     }
                     else
                     {
                         Trace.TraceError("Received a publish on a custom topic, but user did not setup CustomTopicPublishReceivedAsync to receive it. The publish will be acknowledged and will not be re-delivered.");
+                    }
+
+                    // The user's handler may have run long enough for this client (and possibly the connection) to be disposed
+                    if (_isDisposed)
+                    {
+                        return;
                     }
 
                     // For now, just ack for the user (regardless of if they have callback set). Probably needs more thought
@@ -204,6 +312,30 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Invokes every handler attached to a multicast async event and waits for all of them. Invoking the multicast
+        /// delegate directly would only return (and so only await) the last handler's task.
+        /// </summary>
+        private static async Task InvokeAllHandlersAsync(Func<MqttPublishReceivedEventArgs, Task> handlers, MqttPublishReceivedEventArgs args)
+        {
+            Delegate[] invocationList = handlers.GetInvocationList();
+            var tasks = new Task[invocationList.Length];
+            for (int i = 0; i < invocationList.Length; i++)
+            {
+                try
+                {
+                    tasks[i] = ((Func<MqttPublishReceivedEventArgs, Task>)invocationList[i]).Invoke(args);
+                }
+                catch (Exception ex)
+                {
+                    // A handler throwing synchronously shouldn't prevent the remaining handlers from running
+                    tasks[i] = Task.FromException(ex);
+                }
+            }
+
+            await Task.WhenAll(tasks);
         }
 
         /// <summary>
