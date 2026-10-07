@@ -3,6 +3,7 @@
     <Project Path="samples/SetupSampleDevice/SetupSampleDevice.csproj" Id="7bd6b448-6702-4afa-921c-53f0f5ee6aae" />
   </Folder>
   <Folder Name="/samples/MQTTv5/">
+    <Project Path="samples/MQTTv5/CustomTopicSample/CustomTopicSample.csproj" Id="d77b8378-729f-4649-9eb6-c11dadd6b92b" />
     <Project Path="samples/MQTTv5/DirectMethodsSample/DirectMethodsClientSample.csproj" />
     <Project Path="samples/MQTTv5/TelemetryClientSample/TelemetryClientSample.csproj" />
     <Project Path="samples/MQTTv5/TwinClientSample/TwinClientSample.csproj" />

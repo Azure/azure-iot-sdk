@@ -10,11 +10,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 {
     internal class MockMqttPublishReceivedEventArgs : MqttPublishReceivedEventArgs
     {
-        bool IsAcknowledged { get; set; } = false;
+        public bool IsAcknowledged => AcknowledgeCount > 0;
+
+        public int AcknowledgeCount { get; private set; }
 
         public override Task AcknowledgeAsync(CancellationToken cancellationToken)
         {
-            IsAcknowledged = true;
+            AcknowledgeCount++;
             return Task.CompletedTask;
         }
     }
