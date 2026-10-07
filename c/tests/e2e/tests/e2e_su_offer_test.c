@@ -869,8 +869,8 @@ static void real_update_is_downloaded_verified_installed_and_reported(void** sta
   g_real_report = fx->spy.last_terminal;
 }
 
-/* Reporting is idempotent on workflowId, and a different terminal result for
- * the same workflow is a conflict the client reads as "already reported". */
+/* An identical report is accepted. An explicit conflict rejects this payload
+ * permanently; it is not acceptance of a duplicate. */
 static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** state)
 {
   (void)state;
@@ -905,7 +905,7 @@ static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** stat
   r = send_report(fx, saved_report_view(&conflicting));
   assert_int_not_equal(r->result, AZ_IOT_OK);
   assert_int_equal(r->service_code, 409000);
-  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
 /* The service keeps offering a workflow after its terminal report. A client

@@ -23,7 +23,9 @@ otherwise. [MQTTv3 hub protocol conformance](#mqttv3-hub-protocol-conformance)
 maps the service's documented MQTT surface onto what the SDK implements and what is
 pinned by a test — read it first to see which gaps are missing *tests* and which are
 missing *code*. The MQTTv5 hub (MQTT v5) surface is tracked separately, see
-[MQTTv5 hub, deferred](#mqttv5-hub-deferred). Software updates is frozen for this pass.
+[MQTTv5 hub, deferred](#mqttv5-hub-deferred). Software updates has a bounded
+[device-update error-response catalog](#device-update-error-response-catalog); its broader inventory
+remains frozen for this pass.
 
 ## Connection
 
@@ -813,15 +815,108 @@ below stand in for what would otherwise be a second flavor section.
 
 ## Software updates
 
-> **Frozen for this pass.** The software updates feature is expected to change, so the table below
+> **Broader inventory frozen for this pass.** The software updates feature is expected to change, so the table below
 > inventories what exists today — including the `Pending` rows already known — and is not
-> being extended with newly identified gaps the way the other areas are. Revisit once the
-> feature settles.
+> being extended with unrelated gaps. The local error-response catalog below is a targeted exception.
 
 Covers `az_iot_su_client`: the deployment workflow driven by software updates `updateMetadata` offers, the
 status reported through the software updates channel, and the manifest crypto (SHA-256 file hashes,
 RS256 signature verification) through the crypto backends in `c/adapters/crypto_openssl` and
 `c/adapters/crypto_mbedtls`.
+
+### Device-update error-response catalog
+
+The draft ADR Device Update API §5 and ADU device-plane design §4.5/§5.3 define
+11 named codes and body-optional 429. These tests start **after DPS translation**,
+using the SDK's flat MQTT error body and response-topic status. They do not feed
+the nested HTTP `{error:{code,...}}` envelope to a device or verify gateway translation.
+
+[`su_error_cases.h`](../../tests/support/su_error_cases.h) is the executable inventory:
+**213 independently named cases in each of three existing cmocka suites**, not a loop
+that hides later rows after the first failure. Expectations are explicit contract inputs.
+The common inventory keeps parser, channel and engine rows identical without adding a runner.
+
+| Named code / condition | Regular fetch | Onboarding fetch | Report | Expected SDK behavior |
+| --- | --- | --- | --- | --- |
+| `UNSUPPORTED_API_VERSION` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `UNSUPPORTED_AGENT_PROFILE` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `INVALID_COMPATIBILITY_PROPERTIES` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `INVALID_REQUEST` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `UNKNOWN_AGENT_INFO_VERSION` | 5 | 5 | — | Drop both cached ETags, resend full agent info, keep caller deadline. |
+| `OUTDATED_AGENT_INFO` | 5 | 5 | — | Same corrective resend, not replay of an unchanged ETag-only request. |
+| `UPDATE_ACCOUNT_NOT_LINKED` | 5 | 5 | 5 | `PROCEED` compatibility policy; stop retry, expose abandonment, allow provisioning. Not successful no-offer. |
+| `UNKNOWN_WORKFLOW_ID` | — | — | 5 | Fatal; stop reporting this workflow, expose rejection, never claim delivery. |
+| `REPORT_CONFLICT` | — | — | 6 | Fatal when typed; stop conflicting replay, expose rejection; application explicitly re-polls. |
+| `INTERNAL_SERVER_ERROR` | 5 | 5 | 5 | Jittered exponential backoff, then unchanged retry. |
+| `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay; fallback backoff or honor supplied delay. |
+| 429 | 12 | 12 | 12 | Typed and bodyless × supplied, missing, zero, malformed (`3s`), negative, HTTP-date topic values. Valid seconds gate retry; all unusable hints fall back to backoff. |
+| Related numeric/open-code fallback (not additional named ADU codes) | 9 | 9 | 8 | SDK-documented numeric buckets, captured `500001`, unknown string fallback, bodyless 503. |
+| **Total per suite** | **71** | **71** | **71** | **213** |
+
+The five named-code variants are: `info.aduErrorCode` without a numeric code (with
+diagnostic prose); `message` only; `message` with a contradictory numeric bucket;
+`message` with a contradictory topic status; and `info.aduErrorCode` overriding both
+a different `message` and a contradictory numeric bucket. The sixth conflict variant
+uses the documented shared `409000` with explicit `REPORT_CONFLICT`.
+String-only and conflicting-signal fixtures test supported SDK behavior, not captured
+gateway output for every code. No per-name DPS numeric mapping is invented.
+
+Reports have no agent-info fields, so corrective agent-info rows apply only to fetches.
+The report rows for profile/compatibility validation are defensive terminal handling
+of the design's shared error set, not a claim that reports contain those fields.
+Workflow-specific errors apply only to reporting.
+
+The fallback rows, on all routes, are numeric `400000`, `409000`, `429000`, captured
+`500001`, `503000`, unknown `FUTURE_CODE` with `400002` or `503000`, and bodyless 503.
+Fetches additionally exercise numeric `400004` corrective resend. Numeric values come
+from the SDK's existing DPS constants/captured fixtures, **not HTTP status multiplication**.
+The untyped shared `409000` retains legacy `PROCEED` (fetch) / `ALREADY_REPORTED`
+(report); absence of a string prevents reliable discrimination. This compatibility
+interpretation is not proof that the conflicting payload was recorded.
+
+| Suite | Evidence beyond classification |
+| --- | --- |
+| [`az_iot_tests_su_protocol`](../../tests/unit/su_protocol_test.c) | Parsed string/numeric precedence and topic integer-delay parsing for every row. Existing tests retain malformed/truncated/nested-envelope rejection and integer bound/overflow controls. |
+| [`az_iot_tests_su_channel_dps`](../../tests/unit/su_channel_dps_test.c) | Mock-MQTT correlation, exactly one failed verdict, released slot, copied tracking diagnosis, cache/save-state invalidation, full-info bytes on corrective resend, supplied-delay gating of fetch and report, late/future RID isolation, and terminal fetches allowing registration. The existing report-success fixture now uses a zero-byte 200 body. |
+| [`az_iot_tests_su_client`](../../tests/unit/su_client_test.c) | Every row traverses the shipping DPS channel into the actual engine, public observer, mock hooks and storage. Terminal rows stop replay; transient rows block immediate publish then retry, preserving deadlines and identical payload bytes. Owed reports/checkpoints survive until correlated empty-200 settlement, without repeating install/apply or other workflow hooks. A subsequent explicit poll can accept a new workflow; old/future responses cannot settle the current request. |
+
+Engine-only positive/boundary controls add **8 tests**: correlated zero-byte report
+acceptance (the same wire verdict as an accepted duplicate, not a service-deduplication test),
+three failed-report retries with complete diagnostic/step fields (500 backoff, 503 delay,
+429 delay; optional diagnostic spans seeded by the test fixture), and four supplied
+delays exceeding the caller budget (429/503 × regular/onboarding).
+Suite totals after this addition: **369 client + 264 protocol + 297 channel = 930**;
+baseline was 148 + 51 + 84 = 283. Mock deadlines are inspected and expired explicitly;
+these are deterministic scheduler tests, not real-time sleeps or cloud tests.
+
+**Ownership limits.** HTTP `Retry-After` date conversion belongs to the gateway;
+the SDK accepts only topic integer seconds (0/unusable means fallback backoff, maximum
+86400 seconds). The open-code fallbacks do not enumerate future service errors or the
+undefined failure-loop-cap proposal. A typed conflict is a rejected payload: terminal
+record retirement only stops replay. Recovery polling remains application-owned, with
+no new public API or automatic cadence. Crypto, response-size coverage, live enrollments,
+deployment campaigns, service idempotency and gateway mappings are outside this catalog.
+
+From the repository root, run the already-configured offline native build in PowerShell:
+
+```powershell
+$bin = 'C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+$build = 'C:\scratch\iot-sdk-errors\build' # private out-of-tree directory
+& "$bin\cmake.exe" --build $build --config Debug --target `
+  az_iot_tests_su_protocol az_iot_tests_su_channel_dps az_iot_tests_su_client --parallel 4
+& "$bin\ctest.exe" --test-dir $build -C Debug -V --output-on-failure `
+  -R '^az_iot_tests_su_(protocol|channel_dps|client)$'
+```
+
+For a fresh offline configure, use `-S .\c -B $build -G 'Visual Studio 18 2026' -A x64`,
+`AZ_IOT_BUILD_TESTS=ON`, `AZ_IOT_BUILD_SAMPLES=OFF`, `AZ_IOT_WITH_PAHO=OFF`,
+`AZ_IOT_WITH_CRYPTO_OPENSSL=OFF`, `AZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF`,
+`AZ_IOT_BUILD_E2E=OFF`, `AZ_IOT_BUILD_CONFORMANCE_TESTS=OFF`, and
+`FETCHCONTENT_FULLY_DISCONNECTED=ON`. Set `FETCHCONTENT_SOURCE_DIR_AZURE_SDK_FOR_C`
+and `FETCHCONTENT_SOURCE_DIR_CMOCKA` to **private copies** of cached pinned sources
+(azure-sdk-for-c 1.5.0 and cmocka 1.1.7). Never configure against a cache owned by
+active cloud testing: FetchContent/dependency configuration may modify its source.
+No downloads, external runner, service calls or cloud agents are required.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
@@ -899,7 +994,7 @@ RS256 signature verification) through the crypto backends in `c/adapters/crypto_
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1481) |
 | | Verify file hash rejects an unsupported algorithm | — | unit | Done | [verify_file_hash_rejects_an_unsupported_algorithm](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1534) |
 | End-to-end | Real update is downloaded, verified, installed and reported | A real offer through the whole client: real roots, real download and hash, SUCCEEDED acknowledged. Passes live; not yet in CI. | e2e | Pending | [real_update_is_downloaded_verified_installed_and_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
-| | Terminal report is idempotent and a conflict is detected | The identical report is accepted; a conflicting one is 409000 REPORT_CONFLICT, read as already reported. Passes live; not yet in CI. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
+| | Terminal report is idempotent and a conflict is detected | An identical report is accepted (200); typed 409000 REPORT_CONFLICT rejects the payload permanently. Requires live service; not part of the offline error catalog. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Workflow is offered again after its terminal report | The service keeps offering it; a client with no record runs it again and the identical report is accepted. Passes live; not yet in CI. | e2e | Pending | [workflow_is_offered_again_after_its_terminal_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Incompatible device is offered nothing | 200 with no updateMetadata; nothing downloaded or reported. Passes live; not yet in CI. | e2e | Pending | [incompatible_device_is_offered_nothing](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Install failure is rolled back and reported failed | Needs a staged offer; not yet run live. | e2e | Pending | [install_failure_is_rolled_back_and_reported_failed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |

@@ -25,6 +25,7 @@
 
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_protocol_internal.h"
+#include "../support/su_error_cases.h"
 
 /* ------------------------------------------------------------------------- */
 /* topics                                                                    */
@@ -1013,7 +1014,7 @@ static void string_codes_map_to_the_specified_actions(void** state)
       AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG);
   assert_int_equal(
       az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
 /* The documented codes whose action follows from their status are no longer
@@ -1453,10 +1454,35 @@ static void the_tracking_id_is_extracted(void** state)
   assert_string_equal(small, "");
 }
 
+static void catalog_error_signals_and_actions(void** state)
+{
+  const su_error_case* row = (const su_error_case*)*state;
+  char body[512];
+  size_t length = su_error_body_build(row, body, sizeof(body));
+  char code[256];
+  int32_t numeric = -1;
+  assert_int_equal(
+      az_iot_su__parse_error_code((const uint8_t*)body, length, code, sizeof(code), &numeric),
+      row->shape == SU_ERROR_BODYLESS ? AZ_IOT_ERR_NOT_FOUND : AZ_IOT_OK);
+  assert_string_equal(code, row->code);
+  assert_int_equal(numeric, row->numeric);
+  assert_int_equal(
+      az_iot_su__classify_error(code, numeric != 0 ? numeric : row->status, row->operation),
+      row->action);
+  char topic[256];
+  int n = snprintf(
+      topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=su1%s", (int)row->status, row->query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_int_equal(az_iot_su__parse_retry_after_seconds(topic, (size_t)n), row->delay_ms / 1000u);
+}
+
+#define SU_REGISTER_PROTOCOL_CASE(name, op, code, status, numeric, action, shape, query, delay) \
+  { #name, catalog_error_signals_and_actions, NULL, NULL, (void*)&name },
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(topics_match_the_operation_names),
+    SU_ERROR_CASES(SU_REGISTER_PROTOCOL_CASE) cmocka_unit_test(topics_match_the_operation_names),
     cmocka_unit_test(the_declared_topic_bound_is_sufficient),
     cmocka_unit_test(a_short_topic_buffer_is_rejected_not_truncated),
     cmocka_unit_test(an_empty_request_id_is_rejected),

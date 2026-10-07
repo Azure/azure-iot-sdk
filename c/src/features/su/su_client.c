@@ -1617,10 +1617,9 @@ static bool arm_retry_backoff(
  * FATAL is not re-armed: the request is malformed or the device is not
  * entitled, so resending it every tick would spin against the service.
  *
- * ALREADY_REPORTED is not re-armed: a terminal result is already recorded for
- * this workflow, so the report HAS been delivered and reporting is idempotent
- * on workflowId. Re-arming it would retry forever, and during the held
- * bootstrap session that starves the update check until the hold expires.
+ * ALREADY_REPORTED is the legacy untyped conflict verdict, not the explicit
+ * REPORT_CONFLICT rejection (FATAL). It is not re-armed. Re-arming it would retry forever, and
+ * during the held bootstrap session that starves the update check until the hold expires.
  *
  * PROCEED is not re-armed either. It is a terminal answer, not a failure: the
  * service is telling the device there is no update service configured for it,
@@ -1670,8 +1669,8 @@ static void on_channel_result(
      *
      * Not every verdict here is an abandonment:
      *   - AZ_IOT_OK is success, and NONE accompanies it.
-     *   - ALREADY_REPORTED means the service already has a terminal result for
-     *     this workflow, so the report was not lost -- nothing to report.
+     *   - ALREADY_REPORTED preserves the legacy untyped 409000 interpretation.
+     *     An explicit REPORT_CONFLICT is FATAL and reports its rejection.
      * What remains -- FATAL and PROCEED -- are requests that were dropped. Both
      * are reported. PROCEED in particular is UPDATE_ACCOUNT_NOT_LINKED on a
      * fetch: the device asked, was refused permanently, and without this reads

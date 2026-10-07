@@ -40,6 +40,7 @@
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
+#include "support/su_error_cases.h"
 
 /* A registration response the provisioning parser accepts, used to prove the
  * channel's observer does not disturb the provisioning flow. */
@@ -50,6 +51,7 @@ static const char k_assigned_body[]
 
 typedef struct
 {
+  const su_error_case* error_case;
   az_iot_connection_client client;
   az_iot_mqtt_factory* factory;
   az_iot_test_state_log log;
@@ -481,11 +483,13 @@ static void a_report_is_published_and_acknowledged(void** state)
   last_rid(m, rid, sizeof(rid));
   char topic[256];
   snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
-  assert_true(inject(fx, m, topic, "{}"));
+  assert_true(inject(fx, m, topic, ""));
 
   assert_int_equal(fx->result_count, 1);
   assert_int_equal(fx->last_op, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_NONE);
+  assert_false(fx->channel_state.request_pending);
 }
 
 /* Registration no longer costs the channel its request.
@@ -2853,10 +2857,146 @@ static void closing_the_channel_from_a_state_observer_returns_the_seat(void** st
       AZ_IOT_OK);
 }
 
+static int setup_error_case(void** state)
+{
+  const su_error_case* row = (const su_error_case*)*state;
+  int result = setup(state);
+  fixture* fx = (fixture*)*state;
+  fx->error_case = row;
+  fx->client.opts.dps_hold_timeout_ms = 60000;
+  return result;
+}
+
+static void catalog_send(fixture* fx, az_iot_su_operation operation)
+{
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    az_iot_su_report report = { 0 };
+    report.workflow_id = "catalog-workflow";
+    report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_DEVICE;
+    report.result_code = -7;
+    report.extended_result_codes = "0000000A";
+    report.result_details = "catalog failure";
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  }
+  else
+  {
+    assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+  }
+}
+
+static void catalog_channel_error(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const su_error_case* row = fx->error_case;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  memcpy(fx->channel_state.agent_info_etag, "cached-agent", sizeof("cached-agent"));
+  memcpy(fx->channel_state.service_config_etag, "cached-config", sizeof("cached-config"));
+  catalog_send(fx, row->operation);
+
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char body[512];
+  (void)su_error_body_build(row, body, sizeof(body));
+  char topic[256];
+  int n = snprintf(
+      topic,
+      sizeof(topic),
+      "$dps/registrations/res/%d/?$rid=%s%s",
+      (int)row->status,
+      rid,
+      row->query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=su999999", ""));
+  assert_int_equal(fx->result_count, 0);
+  assert_true(fx->channel_state.request_pending);
+  assert_string_equal(fx->channel_state.pending_rid, rid);
+
+  uint64_t before = az_iot_time_mono_ms();
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_op, row->operation);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_action, row->action);
+  assert_int_equal(fx->last_error_code, row->numeric);
+  assert_string_equal(fx->last_error_text, row->code);
+  assert_string_equal(fx->last_tracking_id, row->shape == SU_ERROR_BODYLESS ? "" : "catalog-track");
+  assert_int_equal(fx->last_retry_after_ms, row->delay_ms);
+  assert_true(fx->service_error_strings_were_non_null);
+  assert_false(fx->channel_state.request_pending);
+  assert_int_equal(fx->update_count, 0);
+
+  bool corrective = row->action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
+  assert_string_equal(fx->channel_state.agent_info_etag, corrective ? "" : "cached-agent");
+  assert_string_equal(fx->channel_state.service_config_etag, corrective ? "" : "cached-config");
+  uint8_t saved[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
+  size_t saved_len = 999;
+  assert_int_equal(
+      fx->channel.vtable->save_state(fx->channel.ctx, saved, sizeof(saved), &saved_len), AZ_IOT_OK);
+  assert_true(corrective ? saved_len == 0 : saved_len > 0);
+
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+      || row->action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+  if (terminal && row->operation != AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    assert_int_equal(fx->client.dps_hold_count, 0);
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_do_work(&fx->client, 0), AZ_IOT_OK);
+    assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+    assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+    assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+    return;
+  }
+
+  if (row->delay_ms != 0)
+  {
+    assert_true(fx->channel_state.retry_after_deadline_ms >= before + row->delay_ms);
+    assert_true(fx->channel_state.retry_after_deadline_ms <= az_iot_time_mono_ms() + row->delay_ms);
+    size_t sent = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_int_equal(
+        fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE),
+        AZ_IOT_ERR_BUSY);
+    az_iot_su_report report = { .workflow_id = "other", .extended_result_codes = "00000000" };
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_BUSY);
+    assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), sent);
+    fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms();
+  }
+  else
+  {
+    assert_int_equal(fx->channel_state.retry_after_deadline_ms, 0);
+  }
+  catalog_send(fx, row->operation);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  if (corrective)
+  {
+    assert_non_null(strstr((const char*)pub->payload, "\"agentInfo\":"));
+    assert_non_null(strstr((const char*)pub->payload, "\"agentProfile\":"));
+    assert_non_null(strstr((const char*)pub->payload, "\"manufacturer\":\"Contoso\""));
+    assert_non_null(strstr((const char*)pub->payload, "\"model\":\"Foobar\""));
+    assert_null(strstr((const char*)pub->payload, "Etag"));
+  }
+  char newer_rid[64];
+  last_rid(m, newer_rid, sizeof(newer_rid));
+  assert_string_not_equal(newer_rid, rid);
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, ""));
+  assert_int_equal(fx->result_count, 1);
+  assert_true(fx->channel_state.request_pending);
+  assert_string_equal(fx->channel_state.pending_rid, newer_rid);
+}
+
+#define SU_REGISTER_CHANNEL_CASE(name, op, code, status, numeric, action, shape, query, delay) \
+  { #name, catalog_channel_error, setup_error_case, teardown, (void*)&name },
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test_setup_teardown(
+    SU_ERROR_CASES(SU_REGISTER_CHANNEL_CASE) cmocka_unit_test_setup_teardown(
         the_channel_takes_and_returns_a_state_observer_seat, setup, teardown),
     cmocka_unit_test_setup_teardown(a_full_observer_pool_refuses_the_bind, setup, teardown),
     cmocka_unit_test_setup_teardown(
