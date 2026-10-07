@@ -284,7 +284,7 @@ extern "C"
      * SDK renews at az_iot_auth::sas::renewal_percent of it. */
     uint32_t valid_seconds;
     /** @brief UNAVAILABLE: least seconds before the next attempt. 0: the
-     * reconnection policy decides. */
+     * reconnection policy decides for a connect attempt; 30 for a renewal. */
     uint32_t retry_after_seconds;
   } az_iot_sas_token_response;
 
@@ -300,7 +300,8 @@ extern "C"
    * connect_timeout_seconds; it then fails with AZ_IOT_ERR_TIMEOUT. A renewal
    * keeps the session up meanwhile; if the current token expires first, the
    * session ends and its reconnect waits for the token. Anything written to
-   * @p token_buffer is wiped for a response other than READY.
+   * @p token_buffer is wiped for a response other than READY, or a close()
+   * from the callback.
    *
    * @param[in] request           What the token must be valid for.
    * @param[out] token_buffer     Destination for READY; no terminator needed.

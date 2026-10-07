@@ -1911,6 +1911,7 @@ static void fake_token_callback(
       break;
     }
     case FAKE_TOKEN_CLOSE_INSIDE:
+      memcpy(token_buffer, PARTIAL_TOKEN, strlen(PARTIAL_TOKEN));
       (void)az_iot_connection_client_close(g_fake.client);
       response->status = AZ_IOT_SAS_TOKEN_PENDING;
       break;
@@ -1926,6 +1927,20 @@ static void fake_token_callback(
       response->status = AZ_IOT_SAS_TOKEN_PENDING;
       break;
   }
+}
+
+/** @brief Whether the token area holds the fake's partial token. */
+static bool partial_token_left(const fixture* fx)
+{
+  size_t n = strlen(PARTIAL_TOKEN);
+  for (size_t i = 0; i + n <= fx->client.sas_token_size; i++)
+  {
+    if (memcmp(fx->client.sas_token + i, PARTIAL_TOKEN, n) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** @brief Hub options with the token callback only, in @p mode. */
@@ -2085,7 +2100,8 @@ static void close_cancels_a_pending_user_token(void** state)
   assert_true(no_connect_pending(fx));
 }
 
-/* close() from inside the callback: nothing connects. */
+/* close() from inside the callback: nothing connects, and what the callback
+ * wrote is wiped. */
 static void close_from_the_token_callback_ends_the_attempt(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2095,6 +2111,7 @@ static void close_from_the_token_callback_ends_the_attempt(void** state)
   assert_int_equal(g_fake.calls, 1);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
   assert_true(no_connect_pending(fx));
+  assert_false(partial_token_left(fx));
 }
 
 /* complete_sas_token() from inside the callback connects at once. */
@@ -2593,20 +2610,6 @@ static void a_delivered_token_ages_by_unix_time(void** state)
   assert_true(fx->client.sas_token_renewal_due_ms <= mono + 31000u);
   assert_true(fx->client.sas_token_expiry_ms <= mono + 51000u);
   assert_true(fx->client.sas_token_expiry_unix_seconds <= now + 50u);
-}
-
-/** @brief Whether the token area holds the fake's partial token. */
-static bool partial_token_left(const fixture* fx)
-{
-  size_t n = strlen(PARTIAL_TOKEN);
-  for (size_t i = 0; i + n <= fx->client.sas_token_size; i++)
-  {
-    if (memcmp(fx->client.sas_token + i, PARTIAL_TOKEN, n) == 0)
-    {
-      return true;
-    }
-  }
-  return false;
 }
 
 /* PENDING and UNAVAILABLE responses: what the callback wrote is wiped. */

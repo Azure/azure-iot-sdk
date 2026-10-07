@@ -2011,6 +2011,7 @@ static user_token_outcome ask_user_token(
   if (c->close_count != closes || c->open_seq != seq
       || c->sas_token_request[scope].request_id != id)
   {
+    sas_wipe_token(c);
     return USER_TOKEN_ABANDONED;
   }
   if (response.status == AZ_IOT_SAS_TOKEN_PENDING

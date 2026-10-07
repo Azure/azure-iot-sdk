@@ -280,9 +280,10 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `READY` token has `token_buffer_size` bytes; a delivered one has the whole area. One request per
   role; a hub renewal request is asked while the session stays up, with no timeout for `PENDING`,
   and `UNAVAILABLE` asks again after `retry_after_seconds` (30 when 0). Anything written to
-  `token_buffer` is wiped for a response other than `READY`. `valid_seconds` counts from
-  delivery; a token that expired before use is asked for again, and a session whose token expires
-  before its replacement arrives is ended, the reconnect waiting for the token.
+  `token_buffer` is wiped for a response other than `READY`, or a `close()` from the callback.
+  `valid_seconds` counts from delivery; a token that expired before use is asked for again, and a
+  session whose token expires before its replacement arrives is ended, the reconnect waiting for
+  the token.
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
