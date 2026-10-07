@@ -2194,7 +2194,7 @@ static void a_loss_queued_before_a_renewal_token_is_a_loss(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &lost));
   assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  /* m is freed with the lost session. */
   const recorded_event* e = &fx->log[fx->log_count - 1];
   assert_int_equal(e->state, AZ_IOT_CONN_STATE_IDLE);
   assert_false(e->renewal);
