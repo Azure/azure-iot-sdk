@@ -36,8 +36,8 @@ internal class Program
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
         Console.WriteLine("Press 'Ctrl+C' to end the sample");
 
-        string customPublishingTopic = $"";
-        string customReceivingTopic = $"";
+        string customPublishingTopic = $"foo/{customTopicsClient.GetDeviceId()}";
+        string customReceivingTopic = $"bar/{customTopicsClient.GetDeviceId()}";
 
 
         var subackReasonCode = await customTopicsClient.SubscribeAsync(customReceivingTopic, MqttQualityOfServiceLevel.AtLeastOnce, cts.Token);
