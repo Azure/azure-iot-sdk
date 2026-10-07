@@ -2071,6 +2071,14 @@ static void open_sas_token_request(
   c->sas_token_request[scope].deadline_ms = deadline_ms;
 }
 
+/** @brief @p unix_seconds + @p add_seconds; 0 (none: the monotonic deadline
+ * alone applies) when the time is unknown or the sum would wrap. */
+static uint64_t unix_deadline_seconds(uint64_t unix_seconds, uint64_t add_seconds)
+{
+  return unix_seconds != 0 && unix_seconds <= UINT64_MAX - add_seconds ? unix_seconds + add_seconds
+                                                                       : 0;
+}
+
 /**
  * @brief Selects a user-provided token for @p scope's attempt: the one
  * delivered for its request, or a wait for one. The callback is not called
@@ -2124,11 +2132,11 @@ static void apply_user_token(
       uint64_t left_ms = due_ms > now_ms ? due_ms - now_ms : 0;
       c->sas_token_renewal_due_ms = due_ms;
       c->sas_token_renewal_due_unix_seconds
-          = unix_seconds != 0 ? unix_seconds + (left_ms + 999u) / 1000u : 0;
+          = unix_deadline_seconds(unix_seconds, (left_ms + 999u) / 1000u);
       c->sas_token_expiry_ms = expiry_ms;
       /* Rounded down: never later than the token's real expiry. */
       c->sas_token_expiry_unix_seconds
-          = unix_seconds != 0 ? unix_seconds + (expiry_ms - now_ms) / 1000u : 0;
+          = unix_deadline_seconds(unix_seconds, (expiry_ms - now_ms) / 1000u);
     }
     /* The transport takes the token; it is wiped after connect(). */
     memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));

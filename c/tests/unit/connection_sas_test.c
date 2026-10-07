@@ -2590,6 +2590,26 @@ static void a_delivered_token_ages_by_unix_time(void** state)
   assert_true(fx->client.sas_token_expiry_unix_seconds <= now + 50u);
 }
 
+/* A Unix time near its maximum: the Unix deadlines are left unset rather
+ * than wrapped into the past, so the session is not renewed at once. */
+static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = UINT64_MAX - 10u;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_READY);
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds, 0);
+  assert_int_equal(fx->client.sas_token_expiry_unix_seconds, 0);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2635,6 +2655,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_suspended_clock_ends_an_expired_user_token_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_by_unix_time, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_unix_time_near_its_maximum_does_not_wrap_deadlines, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(
