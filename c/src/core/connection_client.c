@@ -2021,7 +2021,13 @@ static user_token_outcome ask_user_token(
   if (response.status == AZ_IOT_SAS_TOKEN_PENDING
       && c->sas_token_request[scope].status == AZ_IOT_SAS_TOKEN_UNAVAILABLE)
   {
+    sas_wipe_token(c);
     return USER_TOKEN_UNAVAILABLE;
+  }
+  if (response.status != AZ_IOT_SAS_TOKEN_READY)
+  {
+    /* Drops anything the callback wrote before declining. */
+    sas_wipe_token(c);
   }
   switch (response.status)
   {

@@ -1859,6 +1859,8 @@ typedef enum
   FAKE_TOKEN_CLOSE_INSIDE /* close() from the callback */
 } fake_token_mode;
 
+#define PARTIAL_TOKEN "SharedAccessSignature sr=partial"
+
 static struct
 {
   fake_token_mode mode;
@@ -1913,11 +1915,14 @@ static void fake_token_callback(
       response->status = AZ_IOT_SAS_TOKEN_PENDING;
       break;
     case FAKE_TOKEN_UNAVAILABLE:
+      /* A partial token written before declining. */
+      memcpy(token_buffer, PARTIAL_TOKEN, strlen(PARTIAL_TOKEN));
       response->status = AZ_IOT_SAS_TOKEN_UNAVAILABLE;
       response->retry_after_seconds = g_fake.retry_after_seconds;
       break;
     case FAKE_TOKEN_PENDING:
     default:
+      memcpy(token_buffer, PARTIAL_TOKEN, strlen(PARTIAL_TOKEN));
       response->status = AZ_IOT_SAS_TOKEN_PENDING;
       break;
   }
@@ -2590,6 +2595,41 @@ static void a_delivered_token_ages_by_unix_time(void** state)
   assert_true(fx->client.sas_token_expiry_unix_seconds <= now + 50u);
 }
 
+/** @brief Whether the token area holds the fake's partial token. */
+static bool partial_token_left(const fixture* fx)
+{
+  size_t n = strlen(PARTIAL_TOKEN);
+  for (size_t i = 0; i + n <= fx->client.sas_token_size; i++)
+  {
+    if (memcmp(fx->client.sas_token + i, PARTIAL_TOKEN, n) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* PENDING and UNAVAILABLE responses: what the callback wrote is wiped. */
+static void a_declining_callback_leaves_no_token_bytes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_PENDING);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_false(partial_token_left(fx));
+  assert_int_equal(complete_with_user_token(fx, g_fake.request_id), AZ_IOT_OK);
+  (void)az_iot_connection_client_close(&fx->client);
+  pump(fx, 1);
+
+  g_fake.mode = FAKE_TOKEN_UNAVAILABLE;
+  g_fake.calls = 0;
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_false(partial_token_left(fx));
+}
+
 /* Unix time elapsed beyond the monotonic uptime (suspend early in boot): the
  * token's age is not capped at the uptime, so an expired token is re-asked. */
 static void a_token_aged_beyond_the_uptime_is_re_asked(void** state)
@@ -2681,6 +2721,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_suspended_clock_ends_an_expired_user_token_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_by_unix_time, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_declining_callback_leaves_no_token_bytes, setup, teardown),
     cmocka_unit_test_setup_teardown(a_token_aged_beyond_the_uptime_is_re_asked, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_unix_time_near_its_maximum_does_not_wrap_deadlines, setup, teardown),

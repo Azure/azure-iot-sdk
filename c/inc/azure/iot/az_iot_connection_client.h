@@ -267,9 +267,10 @@ extern "C"
      * az_iot_connection_client_complete_sas_token(). The callback must return
      * promptly; do slow work (network, HSM) outside it. */
     AZ_IOT_SAS_TOKEN_PENDING,
-    /** @brief No token now. The attempt fails with AZ_IOT_ERR_BUSY and is
-     * retried under reconnection_policy, no sooner than
-     * az_iot_sas_token_response::retry_after_seconds. */
+    /** @brief No token now. A connect attempt fails with AZ_IOT_ERR_BUSY and
+     * is retried under reconnection_policy, no sooner than
+     * az_iot_sas_token_response::retry_after_seconds. A renewal keeps the
+     * session up and asks again after retry_after_seconds (30 when 0). */
     AZ_IOT_SAS_TOKEN_UNAVAILABLE
   } az_iot_sas_token_status;
 
@@ -294,9 +295,12 @@ extern "C"
    *
    * For READY, write the complete token, `SharedAccessSignature
    * sr=...&sig=...&se=...` (plus `&skn=...` when @p request->key_name is not
-   * empty), into @p token_buffer. A response of PENDING keeps the attempt
-   * waiting for az_iot_connection_client_complete_sas_token(), at most
-   * connect_timeout_seconds; it then fails with AZ_IOT_ERR_TIMEOUT.
+   * empty), into @p token_buffer. A response of PENDING keeps a connect
+   * attempt waiting for az_iot_connection_client_complete_sas_token(), at most
+   * connect_timeout_seconds; it then fails with AZ_IOT_ERR_TIMEOUT. A renewal
+   * keeps the session up meanwhile; if the current token expires first, the
+   * session ends and its reconnect waits for the token. Anything written to
+   * @p token_buffer is wiped for a response other than READY.
    *
    * @param[in] request           What the token must be valid for.
    * @param[out] token_buffer     Destination for READY; no terminator needed.
