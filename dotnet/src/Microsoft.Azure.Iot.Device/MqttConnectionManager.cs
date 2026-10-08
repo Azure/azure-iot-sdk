@@ -107,6 +107,16 @@ namespace Microsoft.Azure.Iot.Device
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
 
+        // While ConnectAsync's own retry loop is running it is the only thing allowed to (re-)establish the connection.
+        // Every failed attempt of that loop also raises the underlying client's "Disconnected" callback, and starting a
+        // reconnection loop from there would run a second, independent retry loop alongside the first one: the retry
+        // policy would be consulted twice per attempt number and the server would see twice the CONNECTs. Instead, a
+        // disconnect seen during that window is only recorded here, and replayed once the initial connect succeeds in
+        // case the connection it just established was lost before ConnectAsync returned. Guarded by _initialConnectGate.
+        private readonly object _initialConnectGate = new();
+        private bool _isInitialConnectInProgress;
+        private MqttClientDisconnectedEventArgs? _disconnectDuringInitialConnect;
+
         private readonly IMqttClient _underlyingMqttClient;
 
         public MqttConnectionManager(IMqttClient underlyingMqttClient, TimeSpan connectionAttemptTimeout, IRetryPolicy retryPolicy)
@@ -135,6 +145,16 @@ namespace Microsoft.Azure.Iot.Device
 
         private Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
+            lock (_initialConnectGate)
+            {
+                if (_isInitialConnectInProgress)
+                {
+                    // Any disconnect recorded so far belongs to an earlier failed attempt of the initial connect, not to
+                    // the connection that was just established, so it must not be replayed once that connect succeeds.
+                    _disconnectDuringInitialConnect = null;
+                }
+            }
+
             if (ConnectedAsync != null)
             {
                 _ = ConnectedAsync.Invoke(args);
@@ -197,11 +217,20 @@ namespace Microsoft.Azure.Iot.Device
 
             // Mark the connection as one this layer should keep alive before the first connect attempt begins. The
             // device presence flow runs fire-and-forget as soon as the broker accepts the CONNECT, so it can fail and
-            // disconnect before this method returns. Setting this here ensures the "Disconnected" callback reconnects
-            // in that case rather than standing down because the initial connect had not yet been marked as desired.
+            // disconnect before this method returns. Setting this here ensures that such a disconnect is reconnected
+            // (see the replay below) rather than ignored because the initial connect had not yet been marked as desired.
             _isDesiredConnected = true;
 
+            // Until the loop below finishes, it alone drives connection attempts; the "Disconnected" callback only
+            // records what it sees so that it does not start a second, competing retry loop.
+            lock (_initialConnectGate)
+            {
+                _isInitialConnectInProgress = true;
+                _disconnectDuringInitialConnect = null;
+            }
+
             MqttConnectAck? connectResult;
+            MqttClientDisconnectedEventArgs? disconnectDuringInitialConnect;
             try
             {
                 connectResult = await MaintainConnectionAsync(connect, null, linkedCancellationToken.Token);
@@ -214,10 +243,41 @@ namespace Microsoft.Azure.Iot.Device
                 _isDesiredConnected = false;
                 throw;
             }
+            finally
+            {
+                lock (_initialConnectGate)
+                {
+                    _isInitialConnectInProgress = false;
+                    disconnectDuringInitialConnect = _disconnectDuringInitialConnect;
+                    _disconnectDuringInitialConnect = null;
+                }
+            }
 
             // By design, MaintainConnectionAsync should only return null when called during reconnection.
             // When called by this method, MaintainConnectionAsync should return a non-null value or throw.
             Debug.Assert(connectResult != null);
+
+            if (disconnectDuringInitialConnect != null)
+            {
+                // The connection this call just established was lost before the call finished (for example, the
+                // device presence flow failed and disconnected), and the "Disconnected" callback deferred to this loop
+                // rather than reconnecting. Now that this loop is done, hand that disconnect to the regular reconnection
+                // path. It re-checks whether the client is still disconnected under the same lock that serializes every
+                // other "Disconnected" callback, so this cannot start a second reconnection alongside one that a later
+                // callback already started. It runs unmonitored, just like a reconnection started by the callback.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await InternalDisconnectedAsync(disconnectDuringInitialConnect);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // This layer was disposed before the deferred reconnection could start, so there is nothing to
+                        // reconnect anymore.
+                    }
+                });
+            }
 
             return connectResult;
         }
@@ -290,6 +350,18 @@ namespace Microsoft.Azure.Iot.Device
                     // Either the user closed the connection deliberately or this layer has already faulted. Either way,
                     // reconnecting is not wanted.
                     return;
+                }
+
+                lock (_initialConnectGate)
+                {
+                    if (_isInitialConnectInProgress)
+                    {
+                        // ConnectAsync's retry loop is still running and owns every connection attempt, including the
+                        // retry after this disconnect. Starting a reconnection loop here as well would race it. Record
+                        // the disconnect so ConnectAsync can replay it if it happened after its connect succeeded.
+                        _disconnectDuringInitialConnect = args;
+                        return;
+                    }
                 }
 
                 if (_underlyingMqttClient.IsConnected())

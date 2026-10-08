@@ -6,6 +6,7 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -1168,6 +1169,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task InitialConnectConsultsTheRetryPolicyOncePerAttemptWhenFailedAttemptsRaiseDisconnected()
+        {
+            const int failedAttempts = 3;
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            FailFirstHubConnectAttempts(mockMqttClient, failedAttempts);
+
+            RecordingRetryPolicy retryPolicy = new(TimeSpan.FromMilliseconds(100));
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = retryPolicy,
+            });
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // Give any competing reconnection loop started by a "Disconnected" callback time to show itself.
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            // Exactly one retry loop drove the initial connect: it consulted the policy once for each retry and sent one
+            // CONNECT per attempt.
+            Assert.Equal(new uint[] { 2, 3, 4 }, retryPolicy.GetConsultedAttempts());
+            Assert.Equal(failedAttempts + 1, mockMqttClient.ConnectAttemptCount);
+            Assert.True(mockMqttClient.IsConnected());
+        }
+
+        [Fact]
+        public async Task InitialConnectAbandonedByTheRetryPolicyDoesNotLeaveASecondRetryLoopRunning()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            FailFirstHubConnectAttempts(mockMqttClient, int.MaxValue);
+
+            RecordingRetryPolicy retryPolicy = new(TimeSpan.FromMilliseconds(100), maxRetries: 3);
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = retryPolicy,
+            });
+
+            await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            int connectAttemptsWhenAbandoned = mockMqttClient.ConnectAttemptCount;
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            // The policy was asked about attempts 2, 3 and 4 once each, abandoning at 4, and nothing kept connecting
+            // after the initial connect gave up.
+            Assert.Equal(new uint[] { 2, 3, 4 }, retryPolicy.GetConsultedAttempts());
+            Assert.Equal(3, connectAttemptsWhenAbandoned);
+            Assert.Equal(connectAttemptsWhenAbandoned, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
         public async Task ProvisionAndConnectUsesSeededConnectionContextAndSkipsProvisioning()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -1288,6 +1344,73 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
             return new X509AuthenticationProvider(certificate);
+        }
+
+        private static ConnectionContext CreateHubConnectionContext()
+        {
+            return new ConnectionContext()
+            {
+                AuthenticationProvider = CreateAuthenticationProvider(),
+                DeviceId = DeviceId,
+                IotHubHostName = FirstAssignedHub,
+                ConnectionProfile = ConnectionProfile.Classic,
+            };
+        }
+
+        /// <summary>
+        /// Make the first <paramref name="failedAttempts"/> CONNECTs to <see cref="FirstAssignedHub"/> fail the way an
+        /// unresolvable host does with MQTTnet: the connect throws a retryable network error, and the client also raises
+        /// its "Disconnected" callback for that failed attempt from a background task.
+        /// </summary>
+        private static void FailFirstHubConnectAttempts(MockConnectionMqttClient mockMqttClient, int failedAttempts)
+        {
+            int hubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == FirstAssignedHub && Interlocked.Increment(ref hubConnects) <= failedAttempts)
+                {
+                    _ = Task.Run(() => mockMqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.UnspecifiedError));
+                    throw new SocketException((int)SocketError.HostNotFound);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+        }
+
+        /// <summary>
+        /// A retry policy that records every attempt number it is consulted about, retries after a fixed delay, and
+        /// optionally abandons retrying once more than <c>maxRetries</c> retries have been requested.
+        /// </summary>
+        private sealed class RecordingRetryPolicy : IRetryPolicy
+        {
+            private readonly TimeSpan _delay;
+            private readonly uint _maxRetries;
+            private readonly List<uint> _consultedAttempts = new();
+
+            public RecordingRetryPolicy(TimeSpan delay, uint maxRetries = uint.MaxValue)
+            {
+                _delay = delay;
+                _maxRetries = maxRetries;
+            }
+
+            public uint[] GetConsultedAttempts()
+            {
+                lock (_consultedAttempts)
+                {
+                    return _consultedAttempts.ToArray();
+                }
+            }
+
+            public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+            {
+                lock (_consultedAttempts)
+                {
+                    _consultedAttempts.Add(currentRetryCount);
+                }
+
+                retryDelay = _delay;
+                return currentRetryCount > _maxRetries ? RetryGuidance.AbandonRetry : RetryGuidance.Retry;
+            }
         }
 
         /// <summary>
