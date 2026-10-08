@@ -10,8 +10,13 @@
 static az_iot_result embedded_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   az_iot_cert_embedded* p = (az_iot_cert_embedded*)self;
   (void)role; /* static-cert provider: same material for bootstrap and operational */
   out->trusted_ca_pem = p->ca_pem;

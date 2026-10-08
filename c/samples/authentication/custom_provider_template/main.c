@@ -56,12 +56,17 @@ static char* dup_cstr(const char* s)
 static az_iot_result my_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
   my_provider* m = (my_provider*)self;
   if (!m || !out)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND; /* one certificate per role */
   }
 
   memset(out, 0, sizeof(*out));
