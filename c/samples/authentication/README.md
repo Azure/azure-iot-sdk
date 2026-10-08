@@ -31,7 +31,7 @@ Each role (DPS, hub) uses whichever of these sources are configured, tried in th
 | --- | --- | --- |
 | X.509 | Certificates and keys, through `certificate_provider` (one or more per role) | — |
 | Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, `sas_buffer`, and a Unix time (`time()` unless `unix_time` is set) |
-| User-provided token | A `user_provided_token` callback | `sas_buffer` |
+| User-provided token | An `on_sas_token_required` callback and `az_iot_connection_client_update_sas_token()` | `sas_buffer` |
 
 The SDK moves on only when the service rejects a credential, without a retry delay. A source it
 moved to is kept until rejected; otherwise each attempt starts at the first available source, so a

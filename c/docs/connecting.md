@@ -225,7 +225,7 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 ## Authentication
 
 > **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
-> with the primary and secondary keys, then tokens from `user_provided_token`, with fallback on
+> with the primary and secondary keys, then tokens from `on_sas_token_required`, with fallback on
 > rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the hub's token
 > (`renewal_percent`); `auth_source` in state events. Proposed, not implemented yet: further
 > provider certificates.
@@ -237,7 +237,7 @@ order, skipping any not set:
 | --- | --- | --- |
 | X.509 certificates | `certificate_provider` | As today. The provider may offer more than one per role (index 0, 1, ...). |
 | Primary, secondary key | `dps_auth` / `hub_auth`: `sas.primary_key_base64` (+ `secondary_key_base64`, `is_enrollment_group_key`) | The SDK signs tokens with the backend in `crypto`, and needs a Unix time: `time()`, or `unix_time.get_time`. |
-| User-provided token | `sas.user_provided_token` | The application supplies tokens; the SDK never sees its key. |
+| User-provided token | `sas.on_sas_token_required` | The application supplies tokens with `az_iot_connection_client_update_sas_token()`; the SDK never sees its key. |
 
 Setting only X.509, or only SAS, uses that alone. A zeroed `az_iot_auth` means no SAS.
 
@@ -264,29 +264,35 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
-  `sas_buffer`, which the app provides only when it uses SAS keys or `user_provided_token`. Size it with
+  `sas_buffer`, which the app provides only when it uses SAS keys or `on_sas_token_required`. Size it with
   `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
   counts once. The token is wiped once the transport has taken it; the whole buffer at
   `deinit()`.
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
-  re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
+  re-initialize the client and its feature clients. Use `on_sas_token_required` to rotate without
   re-initializing.
-- **Token callback.** Called from `do_work()`, never from `open()`; the attempt waits in
-  `SETTING_UP` (no `auth_source` yet) until a token is there. It must not block. It answers
-  `READY`, `PENDING` (deliver later with `az_iot_connection_client_complete_sas_token()`, within
-  `connect_timeout_seconds`, or the attempt fails with `AZ_IOT_ERR_TIMEOUT`), or `UNAVAILABLE`:
-  the attempt fails with `AZ_IOT_ERR_BUSY` and is retried under the policy, no sooner than
-  `retry_after_seconds`. During the call the request's resource URI shares the token area, so a
-  `READY` token has `token_buffer_size` bytes; a delivered one has the whole area. One request per
-  role; a hub renewal request is asked while the session stays up, with no timeout for `PENDING`,
-  and `UNAVAILABLE` asks again after `retry_after_seconds` (30 when 0). Anything written to
-  `token_buffer` is wiped for a response other than `READY`, or a `close()` from the callback.
-  `valid_seconds` counts from delivery; a token that expired before use is asked for again, and a
-  session whose token expires before its replacement arrives is ended, the reconnect waiting for
-  the token. A new DPS assignment drops a hub token asked for or held before it; the next attempt
-  asks again.
+- **Token callback.** `on_sas_token_required` only notifies: it receives the role, hub
+  generation, resource URI, key name and `is_renewal`, and must not block. It is called from
+  `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
+  a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
+  later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
+  retried under the policy, notifying again. To stop waiting, call `close()`. A hub renewal is
+  notified while the session stays up, with no timeout.
+- **Supplying a token.** `update_sas_token()` checks the token's `sr` (decoded) and `skn` against
+  the role's current identity: `AZ_IOT_ERR_INVALID_ARG` on a mismatch, `AZ_IOT_ERR_NOT_FOUND` for
+  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a hub session
+  connected with a user-provided token renews with it at once (disconnect and reconnect, as below);
+  anything else keeps it for the role's next attempt that uses a user-provided token, until the
+  role settles in `IDLE` or `FAULTED`, or `close()`. A token supplied after its attempt timed out
+  is kept for the retry. Call it from the `do_work()` thread or an SDK callback; it returns
+  `AZ_IOT_ERR_BUSY` while a token is being handed to a CONNECT, or from the other role's callback.
+  During a callback the resource URI shares the token area, so the token has less room then.
+  `lifetime_seconds` counts from the call; a token that expired before use is asked for again,
+  and a session whose token expires before its replacement arrives is ended, the reconnect
+  waiting for the token. A new DPS assignment drops a hub token asked for or held before it; the
+  next attempt asks again.
 - **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
-  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`,
+  `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
   disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,

@@ -166,6 +166,7 @@ void e2e_sas_connect_renew_and_send(
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
 
   assert_int_equal(az_iot_connection_client_init(&conn, copts), AZ_IOT_OK);
+  run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
   assert_int_equal(
@@ -217,4 +218,5 @@ void e2e_sas_connect_renew_and_send(
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
+  run->client = NULL;
 }

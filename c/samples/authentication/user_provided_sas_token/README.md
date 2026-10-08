@@ -3,19 +3,18 @@
 
 # SAS tokens from the application
 
-The SDK asks the application for a SAS token before each connect that needs one, and again at
-`sas.renewal_percent` of its validity. The SDK never sees a key. See [`main.c`](main.c).
+The SDK notifies the application when a SAS token is needed: before each connect that needs one,
+and at `sas.renewal_percent` of its lifetime. The SDK never sees a key. See [`main.c`](main.c).
 
 ## Sample features
 
-- `dps_auth` and `hub_auth` set only `user_provided_token`. Certificates and keys can be set too;
-  the callback is then the last fallback.
-- The callback receives the role, hub generation, resource URI and key name the token must carry.
-  It must not block: it answers `READY` (token in the buffer), `PENDING`, or `UNAVAILABLE` with a
-  `retry_after_seconds`.
-- This sample answers `PENDING` and delivers the token with
-  `az_iot_connection_client_complete_sas_token()` from the `do_work()` thread. A pending request
-  times out after `connect_timeout_seconds`; the attempt is then retried.
+- `dps_auth` and `hub_auth` set only `on_sas_token_required`. Certificates and keys can be set
+  too; the callback is then the last fallback.
+- The callback receives the role, hub generation, resource URI and key name the token must carry,
+  and whether it renews a connected session. It must not block.
+- This sample records the request in the callback and supplies the token with
+  `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. A connect attempt
+  waits at most `connect_timeout_seconds`; it is then retried, and the callback notified again.
 - `sign_token()` signs with OpenSSL so the sample runs; replace it with a TPM, HSM or secure
   element, or a call to a token service.
 - No crypto backend and no clock are needed in the SDK.

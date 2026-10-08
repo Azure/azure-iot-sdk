@@ -7,15 +7,14 @@
  * @file main.c
  * @brief SAS tokens supplied by the application, to DPS and to the hub.
  *
- * The SDK asks for a token before each connect that needs one and again at
- * az_iot_auth::sas::renewal_percent of its validity; it never sees the key. The callback
- * must not block, so it records the request and answers PENDING; the token is
+ * The SDK notifies when a token is needed: before each connect that needs one
+ * and at az_iot_auth::sas::renewal_percent of its lifetime; it never sees the
+ * key. The callback must not block, so it records the request; the token is
  * produced outside it and handed over with
- * az_iot_connection_client_complete_sas_token(). With no clock yet it answers
- * UNAVAILABLE with a retry-after. Here the token is signed with OpenSSL to
- * stay runnable; replace sign_token() with your key store (TPM, HSM, secure
- * element) or a call to a token service. Needs no crypto backend and no clock
- * in the SDK.
+ * az_iot_connection_client_update_sas_token(). With no clock yet the request
+ * waits. Here the token is signed with OpenSSL to stay runnable; replace
+ * sign_token() with your key store (TPM, HSM, secure element) or a call to a
+ * token service. Needs no crypto backend and no clock in the SDK.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -49,15 +48,10 @@ typedef struct
   size_t key_len; /**< Bytes used in key. */
 } key_store;
 
-/** @brief Seconds to wait for a clock before asking again. */
-#define SAMPLE_NO_CLOCK_RETRY_S 5u
-
-/** @brief A token request answered PENDING; copied, since the request is not. */
+/** @brief A token request; copied, since the request is valid only during the callback. */
 typedef struct
 {
-  bool in_use; /**< A request awaits completion. */
-  uint32_t request_id; /**< az_iot_sas_token_request::request_id. */
-  az_iot_connection_scope scope; /**< Role the token is for. */
+  bool in_use; /**< A token is to be supplied. */
   char resource_uri[AZ_IOT_SAS_TOKEN_SIZE(256)]; /**< Copy of the `sr` value. */
   char key_name[32]; /**< Copy of the `skn` value. */
 } pending_request;
@@ -66,7 +60,7 @@ typedef struct
 typedef struct
 {
   key_store store; /**< Stand-in key store. */
-  pending_request pending; /**< Request awaiting a token. */
+  pending_request pending[AZ_IOT_CONN_SCOPE_COUNT]; /**< Requests by scope. */
   az_iot_connection_state hub_state; /**< Latest hub-scope state. */
   bool failed; /**< A failure retrying cannot fix. */
   az_iot_result failed_reason; /**< Reason of that failure. */
@@ -183,89 +177,67 @@ static bool clock_now(time_t* now)
 }
 
 /**
- * @brief az_iot_sas_token_callback: records the request and answers PENDING.
- * Must return promptly; the token is produced by issue_pending_token().
+ * @brief az_iot_sas_token_required_callback: records the request. Must return
+ * promptly; the token is produced by issue_pending_tokens().
  */
-static void request_token(
-    const az_iot_sas_token_request* request,
-    char* token_buffer,
-    size_t token_buffer_size,
-    az_iot_sas_token_response* response,
-    void* user_ctx)
+static void request_token(const az_iot_sas_token_request* request, void* user_ctx)
 {
-  (void)token_buffer;
-  (void)token_buffer_size;
   sample_context* ctx = (sample_context*)user_ctx;
-  pending_request* p = &ctx->pending;
-  time_t now;
-  if (!clock_now(&now))
-  {
-    response->status = AZ_IOT_SAS_TOKEN_UNAVAILABLE; /* no clock yet */
-    response->retry_after_seconds = SAMPLE_NO_CLOCK_RETRY_S;
-    return;
-  }
+  pending_request* p = &ctx->pending[request->scope];
   if (strlen(request->resource_uri) >= sizeof(p->resource_uri)
       || strlen(request->key_name) >= sizeof(p->key_name))
   {
-    response->status = AZ_IOT_SAS_TOKEN_UNAVAILABLE; /* 0: reconnection policy */
+    /* Not recorded: the attempt times out and is retried. */
+    fprintf(stderr, "[user_provided_sas_token] resource URI too long for this sample\n");
     return;
   }
-  p->request_id = request->request_id;
-  p->scope = request->scope;
   memcpy(p->resource_uri, request->resource_uri, strlen(request->resource_uri) + 1);
   memcpy(p->key_name, request->key_name, strlen(request->key_name) + 1);
   p->in_use = true;
-  response->status = AZ_IOT_SAS_TOKEN_PENDING;
 }
 
 /**
- * @brief Produces the pending token and hands it to the client. Runs on the
+ * @brief Produces the pending tokens and hands them to the client. Runs on the
  * do_work() thread; a real application would fetch or sign on a worker and
- * call this when the result arrives.
+ * call update_sas_token() on this thread when the result arrives.
  */
-static void issue_pending_token(az_iot_connection_client* client, sample_context* ctx)
+static void issue_pending_tokens(az_iot_connection_client* client, sample_context* ctx)
 {
-  pending_request* p = &ctx->pending;
-  if (!p->in_use)
-  {
-    return;
-  }
-  p->in_use = false;
-
-  char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
-  size_t len = 0;
-  az_iot_sas_token_response response = { 0 };
   time_t now;
-  az_iot_result r = !clock_now(&now) ? AZ_IOT_ERR_BUSY /* UNAVAILABLE below */
-                                     : sign_token(
-                                           &ctx->store,
-                                           p->resource_uri,
-                                           p->key_name,
-                                           (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
-                                           token,
-                                           sizeof(token),
-                                           &len);
-  if (r == AZ_IOT_OK)
+  if (!clock_now(&now))
   {
-    response.status = AZ_IOT_SAS_TOKEN_READY;
-    response.token_len = len;
-    response.valid_seconds = SAMPLE_TOKEN_LIFETIME_S;
+    return; /* no clock yet: the requests wait */
   }
-  else
+  for (int i = 0; i < (int)AZ_IOT_CONN_SCOPE_COUNT; ++i)
   {
-    response.status = AZ_IOT_SAS_TOKEN_UNAVAILABLE;
-    /* No clock: retry soon. Other failures: 0, the reconnection policy decides. */
-    response.retry_after_seconds = r == AZ_IOT_ERR_BUSY ? SAMPLE_NO_CLOCK_RETRY_S : 0u;
-    len = 0;
+    pending_request* p = &ctx->pending[i];
+    if (!p->in_use)
+    {
+      continue;
+    }
+    p->in_use = false;
+    char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
+    size_t len = 0;
+    az_iot_result r = sign_token(
+        &ctx->store,
+        p->resource_uri,
+        p->key_name,
+        (uint64_t)now + SAMPLE_TOKEN_LIFETIME_S,
+        token,
+        sizeof(token),
+        &len);
+    if (r == AZ_IOT_OK)
+    {
+      r = az_iot_connection_client_update_sas_token(
+          client, (az_iot_connection_scope)i, token, len, SAMPLE_TOKEN_LIFETIME_S);
+    }
+    fprintf(
+        stderr,
+        "[user_provided_sas_token] %s token: %s\n",
+        i == (int)AZ_IOT_CONN_SCOPE_DPS ? "DPS" : "hub",
+        az_iot_result_to_string(r));
+    OPENSSL_cleanse(token, sizeof(token)); /* memset may be elided */
   }
-  r = az_iot_connection_client_complete_sas_token(
-      client, p->request_id, response.status == AZ_IOT_SAS_TOKEN_READY ? token : NULL, &response);
-  fprintf(
-      stderr,
-      "[user_provided_sas_token] %s token: %s\n",
-      p->scope == AZ_IOT_CONN_SCOPE_DPS ? "DPS" : "hub",
-      az_iot_result_to_string(r)); /* AZ_IOT_ERR_NOT_FOUND: request timed out */
-  OPENSSL_cleanse(token, sizeof(token)); /* memset may be elided */
 }
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -329,7 +301,7 @@ int main(void)
 
   /* No keys: every token comes from the application. */
   az_iot_auth tokens = { 0 };
-  tokens.sas.user_provided_token = request_token;
+  tokens.sas.on_sas_token_required = request_token;
   tokens.sas.user_ctx = &ctx;
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
@@ -361,7 +333,7 @@ int main(void)
   while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && !ctx.failed && sample_now_ms() < deadline)
   {
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    issue_pending_token(&client, &ctx);
+    issue_pending_tokens(&client, &ctx);
   }
   rc = ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED ? 0 : 1;
   fprintf(
