@@ -135,14 +135,22 @@ static void managed_init_generates_key_and_valid_csr(void** state)
    * OPERATIONAL load reports nothing to serve yet. */
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   assert_string_equal(BOOT_CRT, mat.client_cert_path);
   assert_string_equal(BOOT_KEY, mat.client_key_path);
   assert_string_equal(TRUST_CA, mat.trusted_ca_path);
 
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
+
+  /* One certificate per role: past index 0 NOT_FOUND; arguments are still checked. */
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 1, NULL));
 
   az_iot_certificate_provider_managed_deinit(&prov);
   remove_test_files();
@@ -175,7 +183,7 @@ static void managed_store_persists_and_survives_restart(void** state)
   /* After storing, OPERATIONAL load serves the persisted cert + op key. */
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
   assert_string_equal(OP_CERT, mat.client_cert_path);
   assert_string_equal(OP_KEY, mat.client_key_path);
 
@@ -189,7 +197,8 @@ static void managed_store_persists_and_survives_restart(void** state)
   assert_true(prov2.has_operational);
 
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+  assert_int_equal(
+      AZ_IOT_OK, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
   assert_string_equal(OP_CERT, mat.client_cert_path);
 
   az_iot_certificate_signing_request csr;
@@ -248,9 +257,9 @@ static void managed_load_rejects_null_arguments(void** state)
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, &mat));
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, NULL));
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, NULL));
 
   az_iot_certificate_provider_managed_deinit(&prov);
   remove_test_files();
@@ -270,7 +279,7 @@ static void managed_operational_load_without_a_stored_chain_is_not_found(void** 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
 
   az_iot_certificate_provider_managed_deinit(&prov);
   remove_test_files();
@@ -291,7 +300,7 @@ static void managed_without_a_bootstrap_identity_has_no_bootstrap_certificate(vo
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
 
   az_iot_certificate_signing_request csr = { 0 };
   assert_int_equal(AZ_IOT_OK, prov.base.vtable->get_csr(&prov.base, "dev", &csr));
@@ -314,12 +323,12 @@ static void managed_release_leaves_the_material_usable(void** state)
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   prov.base.vtable->release(&prov.base, &mat);
 
   az_iot_certificate_material mat2;
   memset(&mat2, 0, sizeof(mat2));
-  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat2));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat2));
   assert_string_equal(BOOT_CRT, mat2.client_cert_path);
 
   az_iot_certificate_provider_managed_deinit(&prov);
@@ -393,7 +402,8 @@ static void managed_deinit_through_the_vtable_destroys_the_provider(void** state
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   remove_test_files();
 }
 
@@ -461,7 +471,7 @@ static void managed_a_stored_chain_that_is_not_a_certificate_is_rejected_on_rest
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, &mat));
+      AZ_IOT_ERR_NOT_FOUND, prov2.base.vtable->load(&prov2.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
 
   az_iot_certificate_provider_managed_deinit(&prov2);
   remove_test_files();
