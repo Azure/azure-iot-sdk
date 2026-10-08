@@ -2875,6 +2875,7 @@ static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
 static struct
 {
   unsigned count[2];
+  bool no_index_0;
   unsigned max_index;
   char paths[2][8][24];
 } g_multi;
@@ -2890,7 +2891,7 @@ static az_iot_result multi_cert_load(
   g_multi.max_index = index > g_multi.max_index ? index : g_multi.max_index;
   memset(out, 0, sizeof(*out));
   out->trusted_ca_path = "provider-ca.pem";
-  if (index >= g_multi.count[r])
+  if (index >= g_multi.count[r] || (index == 0 && g_multi.no_index_0))
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
@@ -3060,6 +3061,52 @@ static void no_index_0_certificate_asks_for_no_more(void** state)
   assert_int_equal(g_multi.max_index, 0);
 }
 
+/* Index 0 removed while index 1 is kept: the next attempt does not reuse
+ * index 1, but starts over without certificates. */
+static void a_kept_certificate_is_dropped_when_index_0_is_gone(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 2, 0);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_OK);
+
+  g_multi.no_index_0 = true;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+}
+
+/* The same for a DPS registration retried after its session dropped. */
+static void a_kept_dps_certificate_is_dropped_when_index_0_is_gone(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  memset(&g_multi, 0, sizeof(g_multi));
+  g_multi.count[0] = 2;
+  provider.vtable = &k_multi_cert_vtable;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.certificate_provider = &provider;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_OK);
+
+  g_multi.no_index_0 = true;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+}
+
 /* DPS falls back through its bootstrap certificates the same way. */
 static void dps_falls_back_to_the_next_certificate(void** state)
 {
@@ -3224,6 +3271,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_new_operational_certificate_replaces_a_kept_bootstrap_one, setup, teardown),
     cmocka_unit_test_setup_teardown(no_index_0_certificate_asks_for_no_more, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_kept_certificate_is_dropped_when_index_0_is_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_kept_dps_certificate_is_dropped_when_index_0_is_gone, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

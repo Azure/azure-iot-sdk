@@ -1738,6 +1738,40 @@ static az_iot_result load_x509(
   return lr;
 }
 
+/**
+ * @brief For an attempt about to reuse a kept certificate past index 0
+ * (@p *first X.509, @p *x509_index > 0): checks index 0 again. When it is gone,
+ * or (hub) its role changed -- e.g. DPS issued an operational certificate --
+ * the pass restarts from the first source (@p *first NONE, index 0).
+ */
+static void recheck_kept_certificate(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_auth_source* first,
+    uint8_t* x509_index)
+{
+  if (*first != AZ_IOT_AUTH_SOURCE_X509 || *x509_index == 0)
+  {
+    return;
+  }
+  az_iot_certificate_provider* prov = c->opts.certificate_provider;
+  uint8_t role = c->auth[scope].x509_role;
+  az_iot_certificate_material mat = { 0 };
+  az_iot_result lr = load_x509(c, scope, 0, &mat);
+  c->auth[scope].x509_available = lr == AZ_IOT_OK;
+  if (lr == AZ_IOT_OK)
+  {
+    prov->vtable->release(prov, &mat);
+  }
+  if (lr != AZ_IOT_OK || c->auth[scope].x509_role != role)
+  {
+    c->auth[scope].first = AZ_IOT_AUTH_SOURCE_NONE;
+    c->auth[scope].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+    *first = AZ_IOT_AUTH_SOURCE_NONE;
+    *x509_index = 0;
+  }
+}
+
 /** @brief Whether @p s can be tried for @p scope: X.509 when the last load()
  * at index 0 returned a certificate, a key or token callback when it is set. */
 static bool auth_source_available(
@@ -3251,6 +3285,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     az_iot_certificate_material mat = { 0 };
     uint8_t x509_index
         = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_DPS].first_x509_index : 0u;
+    recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_DPS, &first, &x509_index);
     az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_DPS, x509_index, &mat);
     if (x509_index == 0)
     {
@@ -4760,26 +4795,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     az_iot_certificate_material mat = { 0 };
     uint8_t x509_index
         = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_HUB].first_x509_index : 0u;
-    if (x509_index != 0)
-    {
-      /* A kept certificate past index 0: an operational identity that has
-       * appeared since (e.g. issued by DPS) comes first again. */
-      uint8_t role = c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_role;
-      az_iot_result lr0 = load_x509(c, AZ_IOT_CONN_SCOPE_HUB, 0, &mat);
-      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr0 == AZ_IOT_OK;
-      if (lr0 == AZ_IOT_OK)
-      {
-        prov->vtable->release(prov, &mat);
-      }
-      memset(&mat, 0, sizeof(mat));
-      if (c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_role != role)
-      {
-        c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
-        c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
-        first = AZ_IOT_AUTH_SOURCE_NONE;
-        x509_index = 0;
-      }
-    }
+    recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_HUB, &first, &x509_index);
     az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_HUB, x509_index, &mat);
     if (x509_index == 0)
     {

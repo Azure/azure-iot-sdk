@@ -309,7 +309,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `x509_index`. The hub uses the operational certificates when index 0 of that role exists,
   else the bootstrap ones, checked on every attempt: an operational certificate that appears
   (e.g. issued by DPS) replaces a kept bootstrap one. Without a certificate at index 0, none past
-  it is asked for. A provider with one certificate per role returns `AZ_IOT_ERR_NOT_FOUND`
+  it is asked for or reused: a kept later index is dropped, for DPS and the hub. A provider with one certificate per role returns `AZ_IOT_ERR_NOT_FOUND`
   for index > 0. Uses: a self-signed identity's primary and secondary certificates, or the
   previous issued certificate kept as a rollback.
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
