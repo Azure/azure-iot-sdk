@@ -66,16 +66,19 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       sample_connection_state_name(event->state),
       az_iot_result_to_string(event->reason));
 
-  /* Service verdicts only; transport codes are adapter-defined. */
+  /* Transport codes are adapter-defined, so they are not printed. */
   const az_iot_connection_error_detail* error = event->error;
   if (error != NULL
-      && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT))
+      && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT
+          || error->source == AZ_IOT_CONN_ERR_SRC_LOCAL))
   {
     int32_t message_len = az_span_size(error->message);
     fprintf(
         stderr,
         "[dps_csr]   %s code %ld%s%.*s\n",
-        error->source == AZ_IOT_CONN_ERR_SRC_DPS ? "DPS" : "MQTT",
+        error->source == AZ_IOT_CONN_ERR_SRC_DPS
+            ? "DPS"
+            : (error->source == AZ_IOT_CONN_ERR_SRC_MQTT ? "MQTT" : "local"),
         (long)error->code,
         message_len > 0 ? ": " : "",
         (int)message_len,

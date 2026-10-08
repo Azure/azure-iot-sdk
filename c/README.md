@@ -35,8 +35,9 @@ built for constrained and embedded devices.
   proxy support.
 - **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
   connection and feature clients do no dynamic allocation.
-- **Pluggable MQTT:** Eclipse Paho C by default; bring your own MQTT client through a small
-  adapter interface.
+- **Pluggable MQTT:** Eclipse Paho C by default; az_mqtt (single-threaded, no background
+  thread) with `AZ_IOT_WITH_AZ_MQTT=ON`; or bring your own MQTT client through a small adapter
+  interface.
 
 Device features by IoT Hub generation:
 

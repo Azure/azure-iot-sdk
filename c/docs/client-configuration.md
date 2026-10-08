@@ -20,6 +20,9 @@ it adds `c/`.
 | `AZ_IOT_WITH_CERT_PROVIDER_MANAGED` | `ON` | Build the OpenSSL managed certificate provider (CSR and key handling). Built only when OpenSSL 3.0+ is found. |
 | `AZ_IOT_WITH_CRYPTO_OPENSSL` | `ON` | Build the OpenSSL crypto backend, `az_iot_crypto_openssl()`. Built only when OpenSSL 3.0+ is found. |
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
+| `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
+| `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
+| `AZ_IOT_AZ_MQTT_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | `270336`, `64`, `16` | Per-client limits of the az_mqtt adapter: largest packet each way (send and receive buffers; MQTT 5: also the Maximum Packet Size advertised), QoS 1/2 exchanges in flight, MQTT 5 user properties per packet. Each client allocates, when created, the send and receive buffers, a buffer for the strings of a received PUBLISH (`AZ_IOT_AZ_MQTT_BUFFER_SIZE` + 3 + 2 × `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` bytes) and the transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5: also `session_expiry_seconds` > 0) it also allocates the store of unacknowledged QoS 1/2 PUBLISH (`AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE`, default `AZ_IOT_AZ_MQTT_BUFFER_SIZE` + 18), kept until the client is destroyed. With the defaults: about 792 KiB per client, 1,056 KiB with such a session. |
 | `AZ_IOT_WITH_RUST_MQTT` | `OFF` | Build the Rust MQTT adapter shell: a C adapter that forwards to a Rust MQTT client the application installs at run time. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
@@ -69,7 +72,7 @@ The tables state each outcome that is not a failed call or a dropped message.
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
 | `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
-| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding an `AZ_IOT_MAX_PENDING_PUBACKS` reservation; an mqttv5 direct method client takes one. At most 254. |
+| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding an `AZ_IOT_MAX_PENDING_PUBACKS` reservation; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
 | `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
 | `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
@@ -156,13 +159,13 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and an invocation ends at `respond()`, before its result is acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. When all are in use, sends without one. |
-| Certificate renewal | 1 request | 1 operation at a time | None |
+| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel and timeout give it back at once. |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
 
-With the defaults, telemetry gets all 16 slots, or 8 when an mqttv5 direct method client is
-attached. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
+With the defaults, telemetry gets all 16 slots, 8 when an mqttv5 direct method client is
+attached, and one fewer when `opts.csr_payload_buffer` is set. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
 16 bytes on 32-bit targets and 32 bytes on 64-bit targets; a reservation entry is 8 or 16 bytes.
 
 ## Run time

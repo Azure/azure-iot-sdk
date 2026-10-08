@@ -93,6 +93,7 @@ macros, all in [az_iot_log_components.h](../inc/azure/iot/az_iot_log_components.
 | `cert`, `cert_pem` | Issued certificate chains, PEM certificate provider |
 | `su` | Software updates |
 | `paho` | Paho MQTT adapter and TLS |
+| `az_mqtt` | az_mqtt MQTT adapter |
 | `mqttv3_telemetry`, `mqttv3_twin`, `mqttv3_direct_method`, `mqttv3_file_upload`, `c2d` | mqttv3 feature clients |
 | `mqttv5_telemetry`, `mqttv5_twin`, `mqttv5_direct_method` | mqttv5 feature clients |
 
