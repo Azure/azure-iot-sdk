@@ -102,7 +102,9 @@ extern "C"
      * AZ_IOT_ERR_NOT_FOUND: no certificate at @p index (past the last one, or
      * none for the role); for index 0, trusted_ca_pem/_path may still be set
      * (valid while the provider lives), and are then used for a role that
-     * authenticates with SAS. Any other error fails the attempt. The client
+     * authenticates with SAS. Any other error fails the attempt, except while
+     * the client checks an index > 0 during fallback: there it ends the
+     * certificates, like AZ_IOT_ERR_NOT_FOUND, and is logged. The client
      * asks for at most AZ_IOT_MAX_CERTS_PER_ROLE indexes. A provider with one
      * certificate per role returns AZ_IOT_ERR_NOT_FOUND for index > 0. */
     az_iot_result (*load)(

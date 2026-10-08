@@ -2876,6 +2876,7 @@ static struct
 {
   unsigned count[2];
   bool no_index_0;
+  unsigned fail_index; /* load() of this index fails with NOT_INITIALIZED; 0: none */
   unsigned max_index;
   char paths[2][8][24];
 } g_multi;
@@ -2891,6 +2892,10 @@ static az_iot_result multi_cert_load(
   g_multi.max_index = index > g_multi.max_index ? index : g_multi.max_index;
   memset(out, 0, sizeof(*out));
   out->trusted_ca_path = "provider-ca.pem";
+  if (g_multi.fail_index != 0 && index == g_multi.fail_index)
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
   if (index >= g_multi.count[r] || (index == 0 && g_multi.no_index_0))
   {
     return AZ_IOT_ERR_NOT_FOUND;
@@ -3107,6 +3112,21 @@ static void a_kept_dps_certificate_is_dropped_when_index_0_is_gone(void** state)
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
 }
 
+/* A probe of index 1 that fails with an error other than NOT_FOUND ends the
+ * certificates: the key is next, and index 2 is not asked for. */
+static void a_failing_probe_ends_the_certificates(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 3, 0);
+  g_multi.fail_index = 1;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-0.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_int_equal(g_multi.max_index, 1);
+}
+
 /* DPS falls back through its bootstrap certificates the same way. */
 static void dps_falls_back_to_the_next_certificate(void** state)
 {
@@ -3271,6 +3291,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_new_operational_certificate_replaces_a_kept_bootstrap_one, setup, teardown),
     cmocka_unit_test_setup_teardown(no_index_0_certificate_asks_for_no_more, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failing_probe_ends_the_certificates, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_kept_certificate_is_dropped_when_index_0_is_gone, setup, teardown),
     cmocka_unit_test_setup_teardown(
