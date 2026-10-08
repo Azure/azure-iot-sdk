@@ -2137,6 +2137,35 @@ static void a_rejected_key_falls_back_to_the_user_token(void** state)
   assert_int_equal(e->delay_ms, 0);
 }
 
+/* Primary, secondary and user-provided token rejected in turn: the pass ends,
+ * paced by identity recovery, and the next pass starts at the primary key. */
+static void a_rejected_user_token_ends_the_pass(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  opts.crypto = TEST_CRYPTO();
+  opts.unix_time.get_time = fixed_time;
+  opts.hub_auth.sas.primary_key_base64 = KEY_B64;
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(g_fake.calls, 1);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(no_connect_pending(fx));
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_USER_PROVIDED);
+  assert_int_equal(e->delay_ms, IDENTITY_MS);
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_int_equal(g_fake.calls, 1);
+}
+
 /* Renewal asks while the session stays up, until the token is supplied; then
  * the renewal reconnects with it. */
 static void a_user_token_renewal_waits_for_the_token_connected(void** state)
@@ -2710,6 +2739,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         close_from_the_token_callback_ends_the_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_rejected_user_token_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_renews_the_connected_hub, setup, teardown),

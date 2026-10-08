@@ -3129,7 +3129,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         c,
         AZ_IOT_CONN_SCOPE_DPS,
         AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
-        "no certificate provider and no SAS key");
+        "no certificate provider and no SAS key or token callback");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
   if (c->opts.certificate_provider)
@@ -4627,7 +4627,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         c,
         AZ_IOT_CONN_SCOPE_HUB,
         AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
-        "no certificate provider and no SAS key");
+        "no certificate provider and no SAS key or token callback");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
   if (c->opts.certificate_provider)

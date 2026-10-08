@@ -2633,7 +2633,10 @@ static void every_failed_hub_setup_is_reported_with_its_step(void** state)
   client.opts.certificate_provider = NULL;
   size_t i = fire_retry(&client, &log);
   assert_local_failure(
-      &log, i, AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "no certificate provider and no SAS key");
+      &log,
+      i,
+      AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
+      "no certificate provider and no SAS key or token callback");
   assert_false(log.is_retriable[i]);
 
   /* Recovery starts clean: CONNECTED carries no stale detail. */

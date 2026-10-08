@@ -249,7 +249,7 @@ extern "C"
     az_iot_connection_profile profile;
     /** @brief The token's `sr` value, NUL-terminated, already URL-encoded:
      * `<id_scope>%2fregistrations%2f<registration_id>` for DPS,
-     * `<hub host>%2Fdevices%2F<device id>` for an mqttv3 hub. */
+     * `<hub host>%2Fdevices%2F<device id>` for the hub (mqttv3 and mqttv5). */
     const char* resource_uri;
     /** @brief The token's `skn` value, NUL-terminated: `registration` for DPS,
      * "" (no `skn`) for the hub. */

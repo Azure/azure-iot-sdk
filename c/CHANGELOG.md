@@ -26,4 +26,5 @@
   [docs/connecting.md](docs/connecting.md#authentication).
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
-  (a connected hub session then renews with it). Renewed while the hub session stays up. See [docs/connecting.md](docs/connecting.md#authentication).
+  (a connected hub session then renews with it). At renewal the token is requested while the hub
+  session stays up; once supplied, the session disconnects and reconnects with it. See [docs/connecting.md](docs/connecting.md#authentication).
