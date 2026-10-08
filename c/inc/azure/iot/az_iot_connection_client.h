@@ -1922,8 +1922,9 @@ extern "C"
    *
    * The token's `sr` must match @p scope's current resource URI
    * (az_iot_sas_token_request::resource_uri, compared decoded), and its `skn`
-   * the key name. The token is copied. Call from the thread that calls
-   * do_work(), or from an SDK callback; a reconnect it causes runs in do_work().
+   * the key name; `sr`, `sig`, `se` and `skn` may appear once each. The token is copied. Call from
+   * the thread that calls do_work(), or from an SDK callback; a reconnect it causes runs in
+   * do_work().
    *
    * @param[in] client           Client.
    * @param[in] scope            Role the token is for.

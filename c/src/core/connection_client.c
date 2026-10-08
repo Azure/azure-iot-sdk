@@ -8548,8 +8548,9 @@ static bool sas_uri_decodes_to(const char* enc, size_t enc_len, const char* cons
   return expected == NULL;
 }
 
-/** @brief Finds @p key's value among the `&`-separated @p fields. */
-static bool sas_token_field(
+/** @brief Counts @p key among the `&`-separated @p fields; the first one's
+ * value goes to @p value. */
+static size_t sas_token_field(
     const char* fields,
     size_t len,
     const char* key,
@@ -8557,6 +8558,7 @@ static bool sas_token_field(
     size_t* value_len)
 {
   size_t key_len = strlen(key);
+  size_t count = 0;
   size_t i = 0;
   while (i < len)
   {
@@ -8567,13 +8569,15 @@ static bool sas_token_field(
     }
     if (end - i > key_len && memcmp(fields + i, key, key_len) == 0 && fields[i + key_len] == '=')
     {
-      *value = fields + i + key_len + 1u;
-      *value_len = end - i - key_len - 1u;
-      return true;
+      if (count++ == 0)
+      {
+        *value = fields + i + key_len + 1u;
+        *value_len = end - i - key_len - 1u;
+      }
     }
     i = end + 1u;
   }
-  return false;
+  return count;
 }
 
 /**
@@ -8616,18 +8620,19 @@ static az_iot_result check_sas_token_identity(
   size_t fields_len = len - prefix_len;
   const char* value = NULL;
   size_t value_len = 0;
-  if (!sas_token_field(fields, fields_len, "sr", &value, &value_len)
+  /* Each field once: a duplicate could be read differently by the service. */
+  if (sas_token_field(fields, fields_len, "sr", &value, &value_len) != 1u
       || !sas_uri_decodes_to(value, value_len, parts)
-      || !sas_token_field(fields, fields_len, "sig", &value, &value_len) || value_len == 0
-      || !sas_token_field(fields, fields_len, "se", &value, &value_len) || value_len == 0)
+      || sas_token_field(fields, fields_len, "sig", &value, &value_len) != 1u || value_len == 0
+      || sas_token_field(fields, fields_len, "se", &value, &value_len) != 1u || value_len == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  bool has_key_name = sas_token_field(fields, fields_len, "skn", &value, &value_len);
+  size_t key_names = sas_token_field(fields, fields_len, "skn", &value, &value_len);
   bool key_name_ok = scope == AZ_IOT_CONN_SCOPE_DPS
-      ? has_key_name && value_len == strlen(DPS_SAS_KEY_NAME)
+      ? key_names == 1u && value_len == strlen(DPS_SAS_KEY_NAME)
           && memcmp(value, DPS_SAS_KEY_NAME, value_len) == 0
-      : !has_key_name;
+      : key_names == 0u;
   return key_name_ok ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 

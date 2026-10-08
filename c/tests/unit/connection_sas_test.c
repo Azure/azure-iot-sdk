@@ -1983,6 +1983,11 @@ static void a_pending_user_token_connects_dps_once_delivered(void** state)
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_SETTING_UP);
 
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_ERR_NOT_FOUND);
+  static const char k_two_key_names[] = DPS_USER_TOKEN "&skn=other";
+  assert_int_equal(
+      az_iot_connection_client_update_sas_token(
+          &fx->client, AZ_IOT_CONN_SCOPE_DPS, k_two_key_names, strlen(k_two_key_names), 100),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
   pump(fx, 1);
   assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
@@ -2073,6 +2078,21 @@ static void update_sas_token_checks_its_arguments(void** state)
   assert_int_equal(
       az_iot_connection_client_update_sas_token(
           c, AZ_IOT_CONN_SCOPE_HUB, k_nul, sizeof(k_nul) - 1u, 100),
+      AZ_IOT_ERR_INVALID_ARG);
+  /* Each field once. */
+  assert_int_equal(
+      update_hub(
+          fx,
+          "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=a&se=1"
+          "&sr=broker.example%2Fdevices%2Fother"),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      update_hub(
+          fx, "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=a&se=1&sig=b"),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      update_hub(
+          fx, "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=a&se=1&se=2"),
       AZ_IOT_ERR_INVALID_ARG);
   /* Too large for the token area. */
   static char big[sizeof(g_sas_buffer) + 64];
