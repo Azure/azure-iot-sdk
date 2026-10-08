@@ -666,7 +666,9 @@ if(AZ_IOT_WITH_AZ_MQTT)
         integration/az_mqtt_adapter_broker_test.c NO_CTEST)
     foreach(_t az_iot_tests_az_mqtt_adapter az_iot_az_mqtt_adapter_broker)
         target_link_libraries(${_t} PRIVATE az_iot_adapter_az_mqtt)
-        target_include_directories(${_t} PRIVATE ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+        # The adapter's include paths too (evaluated at generation): a config file found there.
+        target_include_directories(${_t} PRIVATE ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+            $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
         target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
     endforeach()
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
