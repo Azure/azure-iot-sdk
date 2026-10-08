@@ -104,6 +104,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Desired-properties patch events | Yes | Yes | Yes | N/A | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240) |
 | Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | N/A | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions` |
 | MQTTv5 presence / birth handshake | N/A | Yes | N/A | N/A | `common/Protos/presence.proto`; C `presence_encode_birth()` |
+| Custom topics | N/A | **No** | N/A | N/A | mqttv5-only service feature, **publish-only in public preview** (one topic group, 10 templates, `{deviceId}` the only variable). Absent from `main` in both libraries; .NET has a `CustomTopicsClient` on the preview branch, C has a design but no code |
 | File upload (SAS URI + notify) | Yes | **N/A** | **No** | N/A | Not offered on mqttv5. C mqttv3 has it (app supplies the HTTP hook); .NET **removed** file upload from the unified API (#255) |
 | Device update (software updates) | Partial | Partial | **No** | N/A | C only: `az_iot_su.h`, su-over-DPS (renamed from ADU in #270). **.NET has no software-update code at all** |
 | Connection state / error propagation | **Yes** | **Yes** | Yes | N/A | C now has an observer registry, scoped (DPS or HUB) state, `is_retriable` + `{source,code,message}` (#221/#224/#235) |
