@@ -275,12 +275,13 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
   a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
   later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
-  retried under the policy, notifying again. To stop waiting, call `close()`. A hub renewal is
-  notified while the session stays up, with no timeout.
+  retried under the policy, notifying again. To stop waiting, call `close()`. A renewal (hub, or a
+  provisioning session kept open) is notified while the session stays up, with no timeout.
 - **Supplying a token.** `update_sas_token()` checks the token's `sr` (decoded) and `skn` against
   the role's current identity: `AZ_IOT_ERR_INVALID_ARG` on a mismatch, `AZ_IOT_ERR_NOT_FOUND` for
-  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a hub session
-  connected with a user-provided token renews with it at once (disconnect and reconnect, as below);
+  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a session
+  connected with a user-provided token (the hub, or a provisioning session that is not
+  registering) renews with it at once (disconnect and reconnect, as below);
   anything else keeps it for the role's next attempt that uses a user-provided token, until the
   role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
   key-signed token, or the other role's token request). A token supplied after its attempt timed out
