@@ -1454,6 +1454,32 @@ static void connecting_current_does_not_fetch(void** state)
   assert_int_equal(count_gets(fx), 0);
 }
 
+/* Without push_desired the service sends no patches, so an application GET is how
+ * a change made while connected is found: one showing desired ahead fetches a
+ * snapshot for the handler. */
+static void a_get_ahead_fetches_a_snapshot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record drec = { 0 };
+  set_desired(fx, &drec);
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+  /* TwinGetResponse { 1: desired_version=3, 2: reported_version=1 } */
+  const uint8_t body[] = { 0x08, 0x03, 0x10, 0x01 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+  assert_true(rec.fired);
+  assert_false(drec.fired);
+  assert_int_equal(count_gets(fx), 2);
+
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(drec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(drec.version, 3);
+  assert_string_equal(drec.payload, "{\"s\":3}");
+}
+
 /* A handler set while connected starts from a snapshot. */
 static void setting_a_handler_while_connected_fetches_a_snapshot(void** state)
 {
@@ -2561,6 +2587,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         with_push_desired_connecting_does_not_fetch, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(connecting_current_does_not_fetch, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_get_ahead_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         setting_a_handler_while_connected_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(

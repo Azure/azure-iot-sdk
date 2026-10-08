@@ -649,9 +649,12 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only). With push_desired, the service pushes
-     * the desired snapshot on connect instead of the mqttv5 twin client fetching
-     * it. With push_reported, a pushed reported section reaches
+     * Both default to false. With push_desired, the service pushes the desired
+     * snapshot on connect and each desired patch while connected. Without it
+     * (pull mode) the service sends no desired patches: the mqttv5 twin client
+     * fetches the snapshot on connect when behind, and later changes are seen
+     * only on reconnect or after az_iot_mqttv5_twin_client_get(). With
+     * push_reported, a pushed reported section reaches
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
