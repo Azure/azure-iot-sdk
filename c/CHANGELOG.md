@@ -24,6 +24,11 @@
 - SAS token renewal: at `hub_auth.sas.renewal_percent` of a key-signed token's lifetime, the hub
   session reconnects with a new token; those state events carry `is_credential_renewal`. See
   [docs/connecting.md](docs/connecting.md#authentication).
+- Breaking: the certificate provider's `load()` takes an index. A provider may offer several
+  certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
+  tries them in order when the service rejects one, before the SAS sources, and reports the index
+  in `x509_index`. At most `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4) per role. A provider with
+  one certificate per role must return `AZ_IOT_ERR_NOT_FOUND` for `index > 0`.
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
   (a connected hub session then renews with it). At renewal the token is requested while the hub

@@ -220,11 +220,9 @@ extern "C"
    * skipping any not set: the X.509 certificate from
    * az_iot_connection_client_options::certificate_provider, then the primary
    * and secondary keys of az_iot_auth::sas, then its on_sas_token_required.
-   * Setting only one of X.509 or SAS selects it alone. See az_iot_auth for
-   * fallback on rejection.
-   *
-   * Not implemented yet: further provider certificates (a load() index, see
-   * docs/eng/certificate-management.md).
+   * The provider may offer several certificates per role (load() index 0, 1,
+   * ...); each is a source in that order. Setting only one of X.509 or SAS
+   * selects it alone. See az_iot_auth for fallback on rejection.
    */
   typedef enum az_iot_auth_source
   {
@@ -1000,8 +998,8 @@ extern "C"
      * CONNECTED, the one rejected on a rejection. AZ_IOT_AUTH_SOURCE_NONE from
      * a new session's SETTING_UP until a credential is selected. */
     az_iot_auth_source auth_source;
-    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index.
-     * Always 0 until multiple certificates per role are implemented. */
+    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index
+     * (load() index). */
     uint8_t x509_index;
   } az_iot_connection_state_event;
 
@@ -1209,9 +1207,9 @@ extern "C"
  */
 #define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
   (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
-/** @brief Reserved: most certificates the client will load from the provider
- * per role once multiple certificates are implemented (indexes 0 to this - 1),
- * even if the provider never returns AZ_IOT_ERR_NOT_FOUND. At most 256. */
+/** @brief Most certificates the client loads from the provider per role
+ * (indexes 0 to this - 1), even if the provider never returns
+ * AZ_IOT_ERR_NOT_FOUND. 1 to 255. */
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
@@ -1714,11 +1712,15 @@ extern "C"
       az_iot_auth_source source;
       uint8_t x509_index;
       /* Fallback: where the next attempt starts (NONE: the first source),
-       * where the current pass began (NONE: no pass), and whether the last
-       * load() returned a certificate. */
+       * where the current pass began (NONE: no pass), with their certificate
+       * indexes for X.509; whether the last load() at index 0 returned a
+       * certificate, and the role it was for. */
       az_iot_auth_source first;
+      uint8_t first_x509_index;
       az_iot_auth_source pass_from;
+      uint8_t pass_from_x509_index;
       bool x509_available;
+      uint8_t x509_role; /* az_iot_cert_role */
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;

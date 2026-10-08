@@ -61,8 +61,13 @@ typedef struct custody_provider
 static az_iot_result custody_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   custody_provider* p = (custody_provider*)s;
   p->load_calls++;
   if (role == AZ_IOT_CRED_OPERATIONAL && p->operational_result != AZ_IOT_OK)
