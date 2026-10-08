@@ -4184,7 +4184,10 @@ static void every_failed_registration_setup_is_reported_with_its_step(void** sta
   fx->client->opts.certificate_provider = NULL;
   size_t i = fire_dps_retry(fx);
   assert_dps_local_failure(
-      fx, i, AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "no certificate provider and no SAS key");
+      fx,
+      i,
+      AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
+      "no certificate provider and no SAS key or token callback");
   assert_false(fx->log.is_retriable[i]);
 
   az_iot_connection_client_deinit(&fx->client_storage);
@@ -4308,7 +4311,10 @@ static void a_hub_setup_failure_after_assignment_is_retried(void** state)
   assert_int_not_equal(i, SIZE_MAX);
   assert_int_equal(fx->log.states[i - 1u], AZ_IOT_CONN_STATE_SETTING_UP);
   assert_dps_local_failure(
-      fx, i, AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "no certificate provider and no SAS key");
+      fx,
+      i,
+      AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
+      "no certificate provider and no SAS key or token callback");
   assert_int_equal(
       az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED), 0);
 }

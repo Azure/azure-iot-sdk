@@ -27,6 +27,7 @@ typedef struct
   az_iot_auth_source dps_source;
   az_iot_auth_source hub_source;
   int hub_renewals; /**< Hub CONNECTED events flagged is_credential_renewal. */
+  az_iot_connection_client* client; /**< The run's client while it exists; else NULL. */
 } e2e_sas_run;
 
 /** @brief Loads @p cfg; fails the test when a required variable is unset. */
