@@ -15,14 +15,17 @@ and at `sas.renewal_percent` of its lifetime. The SDK never sees a key. See [`ma
 - This sample records the request in the callback and supplies the token with
   `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. A connect attempt
   waits at most `connect_timeout_seconds`; it is then retried, and the callback notified again.
-- `sign_token()` signs with OpenSSL so the sample runs; replace it with a TPM, HSM or secure
-  element, or a call to a token service.
+- The SDK formats the token ([`az_iot_sas_token.h`](../../../inc/azure/iot/az_iot_sas_token.h)):
+  `az_iot_sas_token_string_to_sign()` gives what to sign, `az_iot_sas_token_from_signature()`
+  builds the token from its HMAC-SHA256. Only the HMAC needs the key: `key_store_hmac()` uses
+  OpenSSL so the sample runs; replace it with a TPM, HSM or secure element, or `sign_token()`
+  with a call to a token service.
 - No crypto backend and no clock are needed in the SDK.
 
 ## Service requirements
 
 A DPS symmetric-key enrollment linked to an IoT Hub. For an enrollment group, set the device key
-derived from the group key.
+derived from the group key (`az_iot_sas_derive_device_key()`).
 
 ## Environment variables
 
