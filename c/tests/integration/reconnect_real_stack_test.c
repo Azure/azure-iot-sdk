@@ -115,7 +115,7 @@ static int pump_until_count(
       return 1;
     }
     (void)az_iot_connection_client_do_work(c, 50);
-    /* do_work returns immediately while RECONNECTING (no active client to pump),
+    /* do_work returns immediately while RETRY_PENDING (no active client to pump),
      * so sleep to let wall-clock cross the reconnect delay. */
     sleep_ms(20);
   }
@@ -187,9 +187,9 @@ static void reconnect_after_real_drop(void** state)
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_CONNECTED, 1, 100));
 
   /* Induce a real network drop; the adapter reports DISCONNECTED and the core
-   * must move to RECONNECTING then reconnect on its own. */
+   * must move to RETRY_PENDING then reconnect on its own. */
   az_iot_test_proxy_drop_now(proxy);
-  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RECONNECTING, 1, 100));
+  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RETRY_PENDING, 1, 100));
 
   /* A SECOND CONNECTED proves the automatic reconnect succeeded (<= 10 s). */
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_CONNECTED, 2, 200));
@@ -302,7 +302,7 @@ static void refused_subscription_faults_the_real_stack(void** state)
   /* ...and must have failed WITHOUT retrying. Without this the test would pass
    * just as well if the refusal were classified retryable, since exhausting the
    * policy's five attempts also ends in FAULTED. */
-  assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RECONNECTING), 0);
+  assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RETRY_PENDING), 0);
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(client);
@@ -329,7 +329,7 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   az_iot_connection_client* client
       = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log);
 
-  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RECONNECTING, 1, 200));
+  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RETRY_PENDING, 1, 200));
   /* Silence is not a grant: CONNECTED must never have been announced. */
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_CONNECTED), 0);
 

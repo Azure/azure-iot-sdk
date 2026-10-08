@@ -7,6 +7,7 @@
 #include <stdio.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log_file.h"
 
 typedef struct sample_config
 {
@@ -23,6 +24,17 @@ typedef struct sample_config
    * otherwise required editing the sample. */
   char* dps_global_endpoint;
 } sample_config;
+
+/**
+ * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_TO_FILE set (any
+ * non-empty value), a rotating file sink writing AZ_IOT_LOG_FILE_DEFAULT_NAME in
+ * the working directory (see az_iot_log_file_sink_open()); otherwise stderr.
+ * Falls back to stderr, with a message, if the file cannot be opened.
+ *
+ * @param[in] min_level Lowest level written.
+ * @return Sink to pass to az_iot_log_set_global_sink().
+ */
+az_iot_log_sink sample_log_sink(az_iot_log_level min_level);
 
 // Reads DPS configuration from environment variables.
 // Returns 0 on success, non-zero if any required variable is missing.

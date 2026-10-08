@@ -54,15 +54,20 @@ through the internal `set_state_to()` helper, which is also what raises the user
 stateDiagram-v2
     direction LR
     [*] --> IDLE
-    IDLE --> CONNECTING: open()
+    IDLE --> SETTING_UP: open()
+    SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> CONNECTED: registration published on an existing DPS session
+    SETTING_UP --> RETRY_PENDING: local step failed
+    SETTING_UP --> FAULTED: local step failed, reconnect disabled
+    SETTING_UP --> IDLE: open() step failed
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
-    CONNECTING --> RECONNECTING: error, drop or timeout
+    CONNECTING --> RETRY_PENDING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
-    CONNECTED --> RECONNECTING: unexpected drop
+    CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> DISCONNECTING: close()
-    RECONNECTING --> CONNECTING: backoff elapsed
-    RECONNECTING --> FAULTED: attempts exhausted
-    RECONNECTING --> IDLE: close()
+    RETRY_PENDING --> SETTING_UP: backoff elapsed
+    RETRY_PENDING --> FAULTED: attempts exhausted
+    RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
     FAULTED --> IDLE: close()
     IDLE --> [*]: deinit()
@@ -107,7 +112,7 @@ sequenceDiagram
     participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
-    Conn->>Conn: state = CONNECTING
+    Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
 
     alt DPS configured (id_scope present)
         Conn->>Cert: load(BOOTSTRAP)
@@ -138,6 +143,7 @@ sequenceDiagram
     alt not found
         Conn->>Cert: load(BOOTSTRAP)
     end
+    Conn->>Conn: HUB state = CONNECTING
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
@@ -337,10 +343,10 @@ sequenceDiagram
         Conn-->>App: state callback(FAULTED, reason)
     else
         Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
-        Conn->>Conn: state = RECONNECTING
-        Conn-->>App: state callback(RECONNECTING, reason)
+        Conn->>Conn: state = RETRY_PENDING
+        Conn-->>App: state callback(RETRY_PENDING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
-        Conn->>Conn: start_connect_attempt() -> full sequence of section 3
+        Conn->>Conn: SETTING_UP -> CONNECTING: full sequence of section 3
         Hub-->>Conn: CONNACK ok
         Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
@@ -353,23 +359,25 @@ registration attempts, and a registration that follows an exhausted hub ladder s
 `initial_delay_ms` instead of inheriting the hub's capped backoff.
 
 Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
-the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
-registration.
+the failure: a hub failure retried as a re-registration (threshold crossed, or
+a CONNACK refusal in `REPROVISION` mode) climbs a DPS ladder. A hub identity refusal climbs a third,
+identity ladder on `opts.identity_recovery` (see [connection-c.md §5.2](connection-c.md#52-what-triggers-a-reconnect)).
 
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | both ladders reset |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
 | Hub CONNACK succeeds (birth-ack on MQTTv5) | `HUB` resets; `DPS` untouched |
+| `HUB:CONNECTED` | identity ladder resets |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
-| `open()` / `close()` | both ladders reset |
+| `open()` / `close()` | all ladders reset |
 
 ### 5.1 Backoff policy
 
-`az_iot_reconnection_policy` in
-[az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h), computed by
-`az_iot_reconnect_delay_ms()` in [reconnect.c](../../src/core/reconnect.c):
+`az_iot_retry_policy` in
+[az_iot_retry_policy.h](../../inc/azure/iot/az_iot_retry_policy.h), computed by
+`az_iot_retry_policy__delay_ms()` in [retry_policy.c](../../src/core/retry_policy.c):
 
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
@@ -648,7 +656,7 @@ flowchart TB
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
     DROP -->|"reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
-    DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
+    DROP -->|"reconnect enabled"| RECON["RETRY_PENDING<br/>exponential backoff + jitter"]
     RECON -->|"DPS configured"| REG
     RECON -->|"direct host"| CRED
     ARENEW -.->|"workflowId and unsent<br/>report persisted"| RECON
@@ -675,7 +683,7 @@ complete first.
 | --- | --- | --- |
 | State enum, policy, options | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |
 | State transitions, connect attempt, event handling | [connection_client.c](../../src/core/connection_client.c) | implemented |
-| Backoff computation and defaults | [reconnect.c](../../src/core/reconnect.c) | implemented |
+| Backoff computation and defaults | [retry_policy.c](../../src/core/retry_policy.c) | implemented |
 | Certificate provider contract | [az_iot_certificate_provider.h](../../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |

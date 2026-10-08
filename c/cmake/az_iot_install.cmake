@@ -35,9 +35,10 @@ set(_az_iot_export_names
     az_iot_mqttv3                        mqttv3
     az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
+    az_iot_adapter_az_mqtt               adapter_az_mqtt
     az_iot_adapter_rust_mqtt             adapter_rust_mqtt
-    az_iot_su_crypto_openssl             su_crypto_openssl
-    az_iot_su_crypto_mbedtls             su_crypto_mbedtls
+    az_iot_crypto_openssl                crypto_openssl
+    az_iot_crypto_mbedtls                crypto_mbedtls
     az_iot_certificate_provider_managed  certificate_provider_managed
 )
 
@@ -89,7 +90,16 @@ foreach(_tgt IN ITEMS az_core az_iot_common az_iot_hub az_iot_provisioning az_wi
     list(APPEND _az_iot_sdk_for_c_targets ${_tgt})
 endforeach()
 
-install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets}
+# az_mqtt (deps/az_mqtt) libraries the az_mqtt adapter links. Exported, not components.
+set(_az_iot_az_mqtt_targets "")
+foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3 az_mqttv5)
+    if(TARGET az_iot_adapter_az_mqtt AND TARGET ${_tgt})
+        set_target_properties(${_tgt} PROPERTIES EXPORT_NAME ${_tgt})
+        list(APPEND _az_iot_az_mqtt_targets ${_tgt})
+    endif()
+endforeach()
+
+install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets} ${_az_iot_az_mqtt_targets}
     EXPORT ${_az_iot_pkg}-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -111,8 +121,8 @@ install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
 set(_az_iot_adapter_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure/iot/adapters")
 set(_az_iot_adapter_headers
     az_iot_adapter_rust_mqtt             adapters/rust_mqtt/az_iot_mqtt_rust_ffi.h
-    az_iot_su_crypto_openssl             adapters/su/crypto_openssl/az_iot_su_crypto_openssl.h
-    az_iot_su_crypto_mbedtls             adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.h
+    az_iot_crypto_openssl                adapters/crypto_openssl/az_iot_crypto_openssl.h
+    az_iot_crypto_mbedtls                adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h
     az_iot_certificate_provider_managed  adapters/cert_openssl/az_iot_certificate_provider_managed.h
 )
 list(LENGTH _az_iot_adapter_headers _n)
@@ -149,11 +159,33 @@ if(TARGET az_iot_adapter_paho)
     endif()
     unset(_defs)
 endif()
-if(TARGET az_iot_su_crypto_openssl OR TARGET az_iot_certificate_provider_managed)
+set(AZ_IOT_PACKAGE_NEEDS_THREADS OFF)
+if(TARGET az_iot_adapter_az_mqtt)
+    if(NOT WIN32)
+        set(AZ_IOT_PACKAGE_NEEDS_THREADS ON)
+    endif()
+    get_target_property(_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    if("AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _defs)
+        set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
+        set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
+    endif()
+    unset(_defs)
+endif()
+if(TARGET az_iot_crypto_openssl OR TARGET az_iot_certificate_provider_managed)
     set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
     set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
 endif()
-if(TARGET az_iot_su_crypto_mbedtls)
+# The az_mqtt adapter needs MbedTLS's config package only when az_mqtt linked its imported target;
+# a build that found the libraries by path links them by path.
+set(_az_iot_az_mqtt_mbedtls OFF)
+if(TARGET az_mqtt_core)
+    get_target_property(_az_mqtt_links az_mqtt_core LINK_LIBRARIES)
+    if("MbedTLS::mbedtls" IN_LIST _az_mqtt_links)
+        set(_az_iot_az_mqtt_mbedtls ON)
+    endif()
+    unset(_az_mqtt_links)
+endif()
+if(TARGET az_iot_crypto_mbedtls OR _az_iot_az_mqtt_mbedtls)
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS ON)
 else()
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS OFF)

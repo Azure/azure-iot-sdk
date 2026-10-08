@@ -138,7 +138,9 @@ rejected with `409 REPORT_CONFLICT`.
 
 ### Errors
 
-Act on the machine-readable `error.code`, never on the HTTP status.
+Act on the machine-readable `error.code`, never on the HTTP status. Exception: a failure whose body
+carries no code (empty or unparseable) is classified by its status alone -- 429 throttled,
+500/502/503/504 retryable, anything else fatal -- and the missing code is reported as 0.
 
 | Case | Code / status | Device action |
 | --- | --- | --- |
@@ -150,7 +152,9 @@ Act on the machine-readable `error.code`, never on the HTTP status.
 | Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
 | Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
 
-**The device is the only retrier**: DPS makes one attempt per hop. Reports are durable writes,
+**The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
+`Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
+any accepted operation; it counts against the request timeout. Reports are durable writes,
 retried until acknowledged.
 
 ---
@@ -167,7 +171,8 @@ flowchart TB
     CH --> V2["Software updates channel<br/>Get(Onboarding)DeviceUpdate · ReportDeviceUpdateStatus<br/>over the device's DPS connection"]
     CH --> FAKE["test fake channel"]
     CORE --> AZ["azure-sdk-for-c<br/>manifest parse/format"]
-    CORE --> HK["platform + crypto hooks"]
+    CORE --> HK["platform hooks"]
+    CORE --> CR["crypto backend<br/>(connection client)"]
 ```
 
 ---
@@ -230,7 +235,7 @@ payload MUST NOT be installed before both stages pass.
 `VerifyingManifest`, the client MUST verify the update manifest's JWS signature
 chain *before* it trusts any field in the manifest — including the file hashes.
 Core parses the JWS and SJWK, resolves the root key by `kid`, and calls the
-`verify_rs256_fn` crypto primitive for each of the two signature checks (see §6).
+`verify_rs256` crypto primitive for each of the two signature checks (see §6).
 If verification fails (bad signature, unknown/revoked/`disabled` key, or `alg`
 ≠ `RS256`), the client MUST transition directly to `Failed` with source =
 manifest verification (see result-code mapping below) and MUST NOT download
@@ -240,9 +245,8 @@ anything.
 MUST be hash-verified against the `hashes[]` entry from the (now-trusted)
 manifest before the file is eligible for Install:
 
-1. The platform `download_fn` streams bytes and MUST feed them through the
-   incremental crypto hooks (`sha256_init_fn` → `sha256_update_fn` →
-   `sha256_final_fn`), or hash the completed file via `sha256_fn`.
+1. After `download_fn`, core streams the file back through `read_file_fn` and
+   the backend's SHA-256 (`sha256_init` → `sha256_update` → `sha256_final`).
 2. The client MUST compare the computed SHA-256 against the manifest's
    `hash_value` (base64) for that file. The comparison MUST be constant-time.
 3. On mismatch, the client MUST treat the file as a download failure: it MUST
@@ -299,6 +303,7 @@ superseded. The client MUST distinguish:
 |-----------|---------|----------|
 | New `workflowId` | **Replacement** | MUST restart from ManifestReceived with the new deployment |
 | Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
+| `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
 
 ### Result-Code Mapping
 
@@ -328,7 +333,7 @@ defines a structured layout:
 
 | Facility (bits 31..28) | Meaning | Set when |
 |---|---|---|
-| `0x1` | Manifest / JWS verification | `verify_rs256_fn` failed, `kid` unresolved/`disabled`, or `alg` ≠ `RS256` |
+| `0x1` | Manifest / JWS verification | `verify_rs256` failed, `kid` unresolved/`disabled`, or `alg` ≠ `RS256` |
 | `0x2` | Download (transport) | `download_fn` returned `AZ_IOT_SU_RESULT_FAILURE` |
 | `0x3` | Hash mismatch | computed SHA-256 ≠ manifest hash |
 | `0x4` | Backup | `backup_fn` failed |
@@ -663,74 +668,26 @@ typedef struct az_iot_su_platform_hooks
     void* user_ctx;
 } az_iot_su_platform_hooks;
 
-/* --- Crypto hooks (REQUIRED) --------------------------------------------- */
+/* --- Crypto (REQUIRED, from the connection client) ----------------------- */
 
 /**
- * Crypto operations MUST be provided by the customer via hooks.
- * The core software updates library MUST NOT link any crypto backend.
+ * Software updates take SHA-256 and RS256 verification from the connection
+ * client's crypto backend (az_iot_connection_client_options::crypto, declared
+ * in az_iot_crypto.h). The core links no crypto library.
  *
- * IMPORTANT: these hooks are PURE CRYPTOGRAPHIC PRIMITIVES only. They do NOT
- * parse JWS, decode base64url, resolve keys, or enforce revocation. All of
- * that orchestration lives in software updates core (see §6), which calls these primitives.
- * An adapter therefore only has to wire up "RSA verify + SHA-256" — nothing
- * security-sensitive beyond the math itself.
+ * The backend is PURE CRYPTOGRAPHIC PRIMITIVES only: SHA-256 (init / update /
+ * final) and verify_rs256. It does not parse JWS, decode base64url, resolve
+ * keys, or enforce revocation; core does all of that (see §6). Software updates
+ * need verify_rs256, which is optional for other features.
  *
- * Pre-built implementations are available in adapters/su/ for convenience.
+ * Shipped backends: az_iot_crypto_openssl(), az_iot_crypto_mbedtls().
  */
-typedef struct az_iot_su_crypto_hooks
-{
-    /**
-     * Verify an RSASSA-PKCS1-v1_5 signature over SHA-256 (JWS "alg":"RS256").
-     * This is the ONLY asymmetric primitive software updates needs: it is used both to
-     * verify the SJWK with a root key and to verify the manifest JWS with the
-     * SJWK's signing key. The public key is passed as raw big-endian modulus
-     * and exponent (as carried in a JWK's "n"/"e", already base64url-decoded
-     * by core).
-     *
-     * MUST return AZ_IOT_SU_RESULT_SUCCESS iff the signature is valid over
-     * signed_data, AZ_IOT_SU_RESULT_FAILURE otherwise. MUST NOT interpret the
-     * bytes as anything but an RSA key + message + signature.
-     */
-    int32_t (*verify_rs256_fn)(
-        const uint8_t* modulus,      size_t modulus_len,
-        const uint8_t* exponent,     size_t exponent_len,
-        const uint8_t* signed_data,  size_t signed_data_len,
-        const uint8_t* signature,    size_t signature_len,
-        void* user_ctx);
-
-    /**
-     * Compute SHA-256 hash of a buffer.
-     */
-    int32_t (*sha256_fn)(
-        const uint8_t* data,
-        size_t data_len,
-        uint8_t hash_out[32],
-        void* user_ctx);
-
-    /**
-     * Initialize incremental SHA-256 context (for streaming payload hash).
-     * ctx_out is an opaque pointer managed by the implementation.
-     */
-    int32_t (*sha256_init_fn)(void** ctx_out, void* user_ctx);
-
-    /**
-     * Feed data into incremental SHA-256.
-     */
-    int32_t (*sha256_update_fn)(void* ctx, const uint8_t* data, size_t len, void* user_ctx);
-
-    /**
-     * Finalize incremental SHA-256, write 32-byte hash. Frees ctx.
-     */
-    int32_t (*sha256_final_fn)(void* ctx, uint8_t hash_out[32], void* user_ctx);
-
-    void* user_ctx;
-} az_iot_su_crypto_hooks;
 
 /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
 /**
  * An RSA root public key trusted to sign Signed JWKs (SJWKs). Root keys are
- * managed by software updates core — NOT by the crypto adapter — so that key resolution by
+ * managed by software updates core — NOT by the crypto backend — so that key resolution by
  * `kid` and revocation policy are written once, in portable code.
  *
  * All fields are caller-owned. Core stores the pointers (no deep copy of key
@@ -786,7 +743,7 @@ typedef struct az_iot_su_client
     {
         az_iot_su_channel channel;   /* software updates channel bound to the connection client */
         az_iot_su_platform_hooks hooks;
-        az_iot_su_crypto_hooks crypto;
+        const az_iot_crypto* crypto; /* the connection client's backend */
         /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
          * Capacity is compile-time (AZ_IOT_SU_MAX_ROOT_KEYS). */
         az_iot_su_root_key root_keys[AZ_IOT_SU_MAX_ROOT_KEYS];
@@ -812,7 +769,6 @@ typedef struct az_iot_su_client
  * Configuration for az_iot_su_client_init(). Zero-initialize via
  * az_iot_su_client_config_options_default() and set the required fields:
  *   hooks:   platform operations (download/install/apply/...). See §6.
- *   crypto:  pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
@@ -827,7 +783,6 @@ typedef struct az_iot_su_client
 typedef struct az_iot_su_client_config_options
 {
     const az_iot_su_platform_hooks*    hooks;
-    const az_iot_su_crypto_hooks*      crypto;
     const az_iot_su_root_key*          root_keys;
     size_t                              root_key_count;
     const az_iot_su_device_properties* device_properties;
@@ -851,6 +806,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
+ *   UPDATE_REFUSED         -- a delivered update was not processed because it
+ *     does not fit a compile-time limit (workflow id or request buffer).
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
@@ -1028,7 +985,6 @@ size_t root_key_count;
 const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
 su_opts.hooks = &hooks;
-su_opts.crypto = &crypto;
 su_opts.root_keys = root_keys;
 su_opts.root_key_count = root_key_count;
 su_opts.device_properties = &properties;
@@ -1090,7 +1046,8 @@ path.
  *   request_json: the `updateMetadata` object (workflowId, updateManifest,
  *     updateManifestSignature, fileUrls), exactly as the service sends it.
  *     Mutated in place (manifest string unescaped); pass a writable buffer.
- *   crypto / root_keys: same trust inputs as az_iot_su_client_init().
+ *   crypto: a backend with verify_rs256 (az_iot_su_client_init() takes the
+ *     connection client's). root_keys: as az_iot_su_client_init().
  *
  * Returns AZ_IOT_OK (verified parse), AZ_IOT_ERR_NOT_FOUND
  * (no workflowId), AZ_IOT_ERR_INVALID_ARG (bad args or
@@ -1098,7 +1055,7 @@ path.
  */
 az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
-    const az_iot_su_crypto_hooks* crypto,
+    const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
     az_iot_su_client_update_request* out_request,
@@ -1111,7 +1068,7 @@ az_iot_result az_iot_su_parse_update_request(
  */
 az_iot_result az_iot_su_verify_file_hash(
     const az_iot_su_client_update_manifest_file* file,
-    const az_iot_su_crypto_hooks* crypto,
+    const az_iot_crypto* crypto,
     int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
     void* read_ctx);
 
@@ -1138,18 +1095,18 @@ download handlers, diagnostics/log upload, and privilege separation
 
 ---
 
-## 6. Cryptographic Verification — Hooks-Only Model
+## 6. Cryptographic Verification — Pluggable Backend
 
 ### Design Decision: No Built-in Crypto Backend
 
-The core software updates library (`src/features/su/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST be provided exclusively through `az_iot_su_crypto_hooks`. Rationale:
+The core software updates library (`src/features/su/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST go through the connection client's `az_iot_crypto` backend (`az_iot_connection_client_options::crypto`), which every feature that needs crypto shares. Rationale:
 
 1. **Portability** — Different platforms use different crypto stacks (mbedTLS on ESP32, OpenSSL on Linux, WolfSSL on some RTOS, hardware crypto on secure MCUs). Linking any one forces an unwanted dependency on all others.
 2. **HSM support** — Customers with hardware security modules need their crypto to route through PKCS#11 or vendor APIs. A hooks-only model naturally supports this.
 3. **Binary size** — Embedded targets (ESP32) cannot afford unused crypto code. The customer links only what they need.
-4. **Consistency** — The same pattern used for platform hooks (download, install, etc.) applies to crypto. One abstraction model, not two.
+4. **One backend per device** — The backend is set once on the connection client and shared, so a device cannot end up with two crypto libraries for two features.
 
-### Design Decision: Hooks Are Pure Primitives; Core Owns the Orchestration
+### Design Decision: The Backend Is Pure Primitives; Core Owns the Orchestration
 
 A naïve design would expose a single `verify_jws_fn(jws_token, len)` and make the
 adapter do everything: JWS compact parsing, base64url decoding, SJWK extraction,
@@ -1161,8 +1118,9 @@ signature math. That is the wrong split:
 - It scatters **root-key management and revocation policy** across adapters,
   when that logic is platform-independent.
 
-Instead, the crypto hooks are reduced to **pure primitives** — `verify_rs256_fn`
-plus one-shot and incremental SHA-256 — and **Software updates core owns all orchestration**:
+Instead, the backend is reduced to **pure primitives** — `verify_rs256` plus
+incremental SHA-256 (the SDK composes one-shot SHA-256 from it) — and **Software
+updates core owns all orchestration**:
 
 | Responsibility | Owner |
 |----------------|-------|
@@ -1172,10 +1130,10 @@ plus one-shot and incremental SHA-256 — and **Software updates core owns all o
 | Revocation enforcement (disabled kids) | **core** |
 | `alg` validation (MUST be `RS256`) | **core** |
 | Root Key Package verify/apply | **core** (not implemented; see §11) |
-| RSA-PKCS1-v1_5/SHA-256 signature math | **hook** (`verify_rs256_fn`) |
-| SHA-256 digest | **hook** (`sha256_*`) |
+| RSA-PKCS1-v1_5/SHA-256 signature math | **backend** (`verify_rs256`) |
+| SHA-256 digest | **backend** (`sha256_*`) |
 
-Consequences: adapters are tiny and identical in shape ("RSA verify + SHA-256");
+Consequences: backends are tiny and identical in shape ("RSA verify + SHA-256");
 the security-critical parsing and policy are written and reviewed once; an HSM
 backend still works because verification uses only **public** keys.
 
@@ -1188,31 +1146,29 @@ established two ways, and the doc/contract reflect both:
    the manifest JWS header) carries `"alg":"RS256"`. Core MUST read `alg` and
    **reject** any token whose `alg` is not exactly `RS256`. The algorithm is
    therefore validated from the wire, never assumed.
-2. **Contract** — the hook is named and documented `verify_rs256_fn`, so an
-   adapter knows precisely which primitive to implement. Supporting a future
-   algorithm (e.g. ES256) would add a new hook **and** a new accepted `alg`
-   value in core — existing adapters are unaffected.
+2. **Contract** — the function is named and documented `verify_rs256`, so a
+   backend knows precisely which primitive to implement. Supporting a future
+   algorithm (e.g. ES256) would add a new optional function **and** a new
+   accepted `alg` value in core — existing backends are unaffected.
 
-### Pre-built Crypto Adapters
+### Pre-built Crypto Backends
 
-For convenience, we ship ready-to-use `az_iot_su_crypto_hooks` implementations.
-Because root keys now live in core, an adapter's factory takes **no key
-material** — it only wires the primitives:
+We ship ready-to-use `az_iot_crypto` backends. Because root keys live in core, a
+backend takes **no key material** — it only provides the primitives:
 
-| Adapter | Location | Crypto Library | Target |
+| Backend | Location | Crypto Library | Target |
 |---------|----------|---------------|--------|
-| mbedTLS | `adapters/su/crypto_mbedtls/` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto) | ESP32, constrained Linux |
-| OpenSSL | `adapters/su/crypto_openssl/` | OpenSSL 3.0+ | Linux, general-purpose |
+| mbedTLS | `adapters/crypto_mbedtls/` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto) | ESP32, constrained Linux |
+| OpenSSL | `adapters/crypto_openssl/` | OpenSSL 3.0+ | Linux, general-purpose |
 
 ```c
-/* adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.h */
-az_iot_su_crypto_hooks az_iot_su_crypto_mbedtls_hooks(void);
+copts.crypto = az_iot_crypto_mbedtls(); /* adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h */
 ```
 
 ### Manifest Signature (JWS) Verification Flow
 
 The manifest is protected by a **two-level** signature chain. Core performs every
-parsing and resolution step and calls `verify_rs256_fn` only for the two
+parsing and resolution step and calls `verify_rs256` only for the two
 signature checks (the green "verify" edges):
 
 ```mermaid
@@ -1220,8 +1176,8 @@ graph TD
     RK["Root key store (core; kid-indexed, §7)"]
     H1["1. core: parse manifest JWS header,<br/>assert alg=RS256, read sjwk + kid"]
     H1 -->|"resolve kid → root key (reject if disabled/unknown)"| RK
-    RK -->|"verify_rs256_fn(root key, sjwk signed bytes, sjwk sig)"| SJWK["2. SJWK verified → parse signing key (n,e)"]
-    SJWK -->|"verify_rs256_fn(signing key, manifest signed bytes, manifest sig)"| M["3. Manifest JWS verified"]
+    RK -->|"verify_rs256(root key, sjwk signed bytes, sjwk sig)"| SJWK["2. SJWK verified → parse signing key (n,e)"]
+    SJWK -->|"verify_rs256(signing key, manifest signed bytes, manifest sig)"| M["3. Manifest JWS verified"]
     M -->|"core: SHA-256(manifest body) == hash in updateManifestSignature"| BIND["4. Manifest bound to deployment"]
     BIND --> F["5. Per-file SHA-256 hashes now trusted (§ Payload Hash Verification)"]
 ```
@@ -1235,11 +1191,11 @@ Worked sequence inside core (`verify_jws` is internal, not a hook):
    is `disabled`, fail with `0x1` (manifest verification).
 3. Split the `sjwk` into its own `header.payload.signature`; reconstruct its
    signed bytes (`base64url(header) + "." + base64url(payload)`); call
-   `verify_rs256_fn(root.modulus, root.exponent, sjwk_signed, sjwk_sig)`. On
+   `verify_rs256(root.modulus, root.exponent, sjwk_signed, sjwk_sig)`. On
    failure → `0x1`.
 4. Parse the now-trusted SJWK payload as a JWK; base64url-decode `n` and `e` to
    get the **signing key**.
-5. Reconstruct the manifest's signed bytes; call `verify_rs256_fn(signing.n,
+5. Reconstruct the manifest's signed bytes; call `verify_rs256(signing.n,
    signing.e, manifest_signed, manifest_sig)`. On failure → `0x1`.
 6. The manifest JSON is now trusted. Core computes `SHA-256` over the manifest
    body and compares it to the hash in `updateManifestSignature` from the
@@ -1250,18 +1206,18 @@ including the per-file `sha256` hashes used below.
 
 ### Payload Hash Verification
 
-Each file's SHA-256 hash (from the now-trusted manifest) MUST be verified during
-download. The `download_fn` hook SHOULD use the incremental SHA-256 hooks for
-streaming verification:
+Each file's SHA-256 hash (from the now-trusted manifest) MUST be verified after
+download. Core streams the file back through `read_file_fn` and the backend's
+SHA-256, with the state in a caller-owned context (no allocation):
 
 ```c
-void* hash_ctx;
-crypto->sha256_init_fn(&hash_ctx, crypto->user_ctx);
+az_iot_sha256_ctx hash_ctx;
+crypto->sha256_init(crypto, &hash_ctx);
 while (chunk = read_next_chunk()) {
-    crypto->sha256_update_fn(hash_ctx, chunk.data, chunk.len, crypto->user_ctx);
+    crypto->sha256_update(crypto, &hash_ctx, chunk.data, chunk.len);
 }
-uint8_t computed[32];
-crypto->sha256_final_fn(hash_ctx, computed, crypto->user_ctx);
+uint8_t computed[AZ_IOT_SHA256_SIZE];
+crypto->sha256_final(crypto, &hash_ctx, computed); /* also releases hash_ctx */
 // core compares computed vs the manifest hash; mismatch aborts the download.
 ```
 
@@ -1280,7 +1236,7 @@ crypto->sha256_final_fn(hash_ctx, computed, crypto->user_ctx);
 
 ### Our Approach: Compiled-in + Runtime-loadable (Both), Core-owned Store
 
-The root-key store lives in **Software updates core**, not in the crypto adapter (see §6). Its
+The root-key store lives in **Software updates core**, not in the crypto backend (see §6). Its
 capacity is compile-time configurable:
 
 ```c
@@ -1335,10 +1291,10 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | Location | Contains | Links to |
 |----------|----------|----------|
 | `src/features/su/` | Engine, software updates channel, wire codec, report assembly, Microsoft root keys | `az_iot_connection_client`, `azure-sdk-for-c` |
-| `adapters/su/crypto_mbedtls/` | `verify_rs256_fn`, `sha256_*` using mbedTLS | mbedTLS |
-| `adapters/su/crypto_openssl/` | `verify_rs256_fn`, `sha256_*` using OpenSSL | OpenSSL |
+| `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
+| `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
 | `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence) | ESP-IDF |
-| `samples/software_update/` | Samples that wire a crypto adapter, platform hooks and the main loop | All of the above |
+| `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.
 
@@ -1386,6 +1342,7 @@ sequenceDiagram
     participant Ch as software updates channel
     participant DPS
     participant Hook as Platform Hook
+    participant Crypto as Crypto backend
 
     App->>SU: request_onboarding_update() / request_update()
     SU->>Ch: request_update(route)
@@ -1394,8 +1351,8 @@ sequenceDiagram
     Ch-->>SU: updateMetadata
     SU->>SU: parse, dedupe on workflowId
     SU->>SU: az_iot_adu_client_parse_update_manifest() (ManifestReceived)
-    SU->>Hook: crypto.verify_rs256_fn(root_key, sjwk_signature) (VerifyingManifest)
-    SU->>Hook: crypto.verify_rs256_fn(signing_key, manifest_signature)
+    SU->>Crypto: verify_rs256(root_key, sjwk_signature) (VerifyingManifest)
+    SU->>Crypto: verify_rs256(signing_key, manifest_signature)
     loop For each step
         SU->>Hook: download_fn(file) [chunked]
         SU->>Hook: backup_fn(step)
@@ -1434,7 +1391,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 - **SDK-driven checks.** The application requests every update check and picks its route; the SDK
   runs no polling cadence or post-install re-check of its own.
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
-- **A reusable conformance suite** for customer platform and crypto hooks.
+- **A reusable conformance suite** for customer platform hooks and crypto backends.
 
 ---
 
@@ -1442,14 +1399,14 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 
 | Concern | Requirement |
 |---------|------------|
-| Manifest tampering | Core MUST parse JWS/SJWK, enforce `alg == RS256`, and verify both signatures via `verify_rs256_fn` before any download |
+| Manifest tampering | Core MUST parse JWS/SJWK, enforce `alg == RS256`, and verify both signatures via `verify_rs256` before any download |
 | Payload corruption/MITM | The client MUST verify SHA-256 hashes (streaming) from the signed manifest |
 | Key compromise | v1 MUST support per-root disable/revocation in the in-memory key store; runtime Root Key Package rotation is not implemented (§11) |
 | Privilege escalation | The SDK MUST NOT assume root; privilege management is the platform hook's responsibility |
 | Rollback attacks | `is_installed_fn` MUST perform version comparison; the service controls deployment targeting |
 | Memory safety | The core state machine MUST NOT perform dynamic allocation; all buffers MUST be caller-provided or static |
-| Crypto side-channels | Crypto MUST be delegated to well-audited libraries via hooks; HSM support MUST be possible |
-| Supply chain (compromised adapter) | The core library MUST contain zero crypto code — attack surface limited to what customer explicitly links |
+| Crypto side-channels | Crypto MUST be delegated to well-audited libraries through the crypto backend; HSM support MUST be possible |
+| Supply chain (compromised adapter) | The core library MUST contain no cryptographic primitive (it only composes HMAC from the backend's SHA-256) — attack surface limited to what customer explicitly links |
 
 ---
 
@@ -1459,7 +1416,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 |---|----------|----------|
 | 1 | Chunked vs blocking download | **Both.** `download_fn` MUST return `IN_PROGRESS` for chunked (re-invoked next do_work) or `SUCCESS` for blocking completion. Adapters MAY choose their model. |
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
-| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256_fn`. |
+| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; the crypto backend MUST implement `verify_rs256`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
 | 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The software updates client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
@@ -1488,7 +1445,7 @@ Its device-twin helpers (service-property parsing, agent-state and acknowledgeme
 Our `su_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_su_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
 
 1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
-2. **JWS verification** — via customer-provided crypto hooks.
+2. **JWS verification** — via the connection client's crypto backend.
 3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
 4. **Platform hooks** — the vtable for download, install, apply, etc.
 
@@ -1543,8 +1500,8 @@ consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the
 | Feature | Responsibility |
 |---------|---------------|
 | Workflow state machine & orchestration | Our `su_client.c` |
-| JWS signature verification | Our `su_client.c` (parsing/orchestration) + `verify_rs256_fn` crypto hook (RSA math) |
-| SHA-256 hash computation & verification | Our `su_client.c` (compare) + `sha256_*` crypto hooks (digest) |
+| JWS signature verification | Our `su_client.c` (parsing/orchestration) + the backend's `verify_rs256` (RSA math) |
+| SHA-256 hash computation & verification | Our `su_client.c` (compare) + the backend's `sha256_*` (digest) |
 | Root key store, `kid` resolution & revocation | Our `su_client.c` (core-owned; runtime rotation not implemented, §11) |
 | File download (HTTP/HTTPS) | Platform adapter hooks |
 | Install/Apply/Backup/Restore execution | Platform adapter hooks |
@@ -1561,9 +1518,9 @@ Every external effect is a hook, so the engine is tested on the host with no net
 
 | Layer | Where | What |
 | --- | --- | --- |
-| Unit | `tests/unit/su_client_test.c` | The engine against a fake channel and scripted platform and crypto hooks: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
+| Unit | `tests/unit/su_client_test.c` | The engine against a fake channel, scripted platform hooks and a mock crypto backend: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
 | Unit | `tests/unit/su_channel_dps_test.c`, `tests/unit/su_protocol_test.c` | The DPS channel against the connection client, and the wire codec. |
-| Crypto adapters | `tests/unit/su_crypto_mbedtls_test.c`, `tests/unit/su_crypto_openssl_test.c` | Known-answer RS256 and SHA-256 vectors through the real library. |
+| Crypto backends | `tests/unit/crypto_mbedtls_test.c`, `tests/unit/crypto_openssl_test.c` | Known-answer RS256, SHA-256 and HMAC-SHA256 vectors through the real library (`tests/support/crypto_contract.c`). |
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own

@@ -28,7 +28,7 @@ defaults:
 jobs:
   changes:
     name: detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read  # dorny/paths-filter lists PR files through the API.
@@ -56,7 +56,7 @@ jobs:
     name: clang-tidy
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       # Pinned: findings change between releases. Keep in sync with c/.clang-tidy
@@ -111,7 +111,7 @@ jobs:
 
       - name: Configure
         # Tests are not built. Same scope as clang-tidy (src, adapters, samples) except what needs
-        # libraries Windows runners lack: the mbedTLS software updates crypto adapter, and the
+        # libraries Windows runners lack: the mbedTLS crypto backend, and the
         # file upload sample's libcurl HTTPS path (the sample builds, without that path).
         run: >
           cmake -S . -B build/msvc-analyze -G Ninja
@@ -126,7 +126,7 @@ jobs:
         run: |
           targets="$(cmake --build build/msvc-analyze --target help)"
           for t in az_iot_core az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho \
-                   az_iot_adapter_rust_mqtt az_iot_su_crypto_openssl \
+                   az_iot_adapter_rust_mqtt az_iot_crypto_openssl \
                    az_iot_certificate_provider_managed; do
             grep -q "^${t}:" <<<"$targets" || { echo "::error::target ${t} not configured"; exit 1; }
           done

@@ -31,7 +31,7 @@
 #include "internal/su_channel_internal.h"
 #include "internal/su_protocol_internal.h"
 #include "internal/connection_client_internal.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 #include "internal/log_internal.h"
 
@@ -305,11 +305,17 @@ static az_iot_result publish_operation(
 /* inbound                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Apply a failure to the channel's state. Returns the action so the caller can
- * decide whether the operation may be retried. */
+/**
+ * @brief Apply a failure to the channel's state.
+ *
+ * @param status  Response status from the topic. Classifies the failure when
+ *                the body carries no numeric code; never reported as one.
+ * @return The action, so the caller can decide whether to retry.
+ */
 static az_iot_su_error_action handle_failure(
     az_iot_su_channel_dps* c,
     az_iot_su_operation operation,
+    int32_t status,
     const uint8_t* payload,
     size_t payload_len,
     char* code,
@@ -325,7 +331,11 @@ static az_iot_su_error_action handle_failure(
   (void)az_iot_su__parse_tracking_id(payload, payload_len, tracking_id, tracking_id_size);
   *out_numeric = numeric;
 
-  az_iot_su_error_action action = az_iot_su__classify_error(code, numeric, operation);
+  /* A bodyless or unparseable failure still has its status; without it a
+   * transient 429/503 would classify as FATAL. A bare status only ever maps to
+   * RETRY, RETRY_AFTER or FATAL. */
+  az_iot_su_error_action action
+      = az_iot_su__classify_error(code, (numeric != 0) ? numeric : status, operation);
 
   switch (action)
   {
@@ -444,7 +454,7 @@ static bool on_dps_message(
   }
   if (!rid_matches(c, rid))
   {
-    AZ_IOT_LOG_DEBUG("su: dropping a response we are no longer waiting for");
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "dropping a response we are no longer waiting for");
     return true;
   }
 
@@ -464,6 +474,7 @@ static bool on_dps_message(
     az_iot_su_error_action action = handle_failure(
         c,
         operation,
+        status,
         payload,
         payload_len,
         code,
@@ -483,14 +494,16 @@ static bool on_dps_message(
     if (retry_after_s > 0)
     {
       c->retry_after_deadline_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_ms;
-      AZ_IOT_LOG_DEBUGF("su: service asked for a %u second delay", (unsigned)retry_after_s);
+      AZ_IOT_LOG_DEBUGF(
+          AZ_IOT_LOG_COMPONENT_SU, "service asked for a %u second delay", (unsigned)retry_after_s);
     }
     az_iot_su_service_error service_error = {
       .code = numeric, .message = code, .tracking_id = tracking_id, .retry_after_ms = retry_after_ms
     };
-    AZ_IOT_LOG_ERRORF("su: operation failed with status %d", (int)status);
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "operation failed with status %d", (int)status);
     AZ_IOT_LOG_ERRORF(
-        "su: service error %d (%s) trackingId=%s",
+        AZ_IOT_LOG_COMPONENT_SU,
+        "service error %d (%s) trackingId=%s",
         (int)numeric,
         code[0] != '\0' ? code : "-",
         tracking_id[0] != '\0' ? tracking_id : "-");
@@ -508,7 +521,7 @@ static bool on_dps_message(
   az_iot_su_fetch_response resp;
   if (az_iot_su__parse_fetch_response(payload, payload_len, &resp) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("su: could not parse the update-check response");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not parse the update-check response");
     emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_SU_ERROR_ACTION_FATAL, NULL);
     return true;
   }
@@ -520,7 +533,7 @@ static bool on_dps_message(
    * service answered that there is nothing to do. */
   if (!resp.has_update)
   {
-    AZ_IOT_LOG_DEBUG("su: no update available");
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "no update available");
     emit_result(c, operation, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL);
     return true;
   }
@@ -547,7 +560,8 @@ static bool channel_forget_pending_if_session_gone(az_iot_su_channel_dps* c)
       && (c->pending_epoch != c->session_epoch
           || !az_iot_connection_client__dps_session_ready(c->connection)))
   {
-    AZ_IOT_LOG_DEBUG("su: provisioning session ended with a request outstanding");
+    AZ_IOT_LOG_DEBUG(
+        AZ_IOT_LOG_COMPONENT_SU, "provisioning session ended with a request outstanding");
     az_iot_su_operation operation = c->pending_operation;
     c->request_pending = false;
 
@@ -569,7 +583,8 @@ static bool channel_forget_pending_if_session_gone(az_iot_su_channel_dps* c)
     if (c->session_loss_attempts > AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES)
     {
       AZ_IOT_LOG_ERRORF(
-          "su: giving up on the operation after %u consecutive provisioning-session losses",
+          AZ_IOT_LOG_COMPONENT_SU,
+          "giving up on the operation after %u consecutive provisioning-session losses",
           (unsigned)c->session_loss_attempts);
       c->session_loss_attempts = 0;
       c->wants_session = false;
@@ -623,7 +638,8 @@ static az_iot_result channel_open(
   {
     /* Reported rather than swallowed: without the interest every operation
      * after registration would fail with no indication why. */
-    AZ_IOT_LOG_ERROR("su: could not register interest in the provisioning session");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "could not register interest in the provisioning session");
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return ur;
   }
@@ -635,7 +651,7 @@ static az_iot_result channel_open(
   az_iot_result sr = channel_observe(c);
   if (sr != AZ_IOT_OK && sr != AZ_IOT_ERR_BUSY)
   {
-    AZ_IOT_LOG_ERROR("su: could not observe the connection state");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not observe the connection state");
     c->wants_hold = false;
     c->holds_user = false;
     az_iot_connection_client__dps_user_release(c->connection);
@@ -794,7 +810,8 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
   {
     /* ETags are optional; property validation sized the request without them.
      * Drop them rather than fail every later request. */
-    AZ_IOT_LOG_ERROR("su: cached ETags do not fit the request; sending without them");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "cached ETags do not fit the request; sending without them");
     c->agent_info_etag[0] = '\0';
     c->service_config_etag[0] = '\0';
     r = az_iot_su__build_fetch_request(
@@ -969,7 +986,8 @@ static az_iot_result channel_do_work(void* ctx)
       if (!c->ensure_error_logged)
       {
         c->ensure_error_logged = true;
-        AZ_IOT_LOG_ERRORF("su: could not obtain a provisioning session (%d)", (int)er);
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU, "could not obtain a provisioning session (%d)", (int)er);
       }
     }
   }
@@ -1103,7 +1121,8 @@ static void channel_cancel_update(void* ctx, az_iot_su_operation operation)
   {
     return;
   }
-  AZ_IOT_LOG_DEBUG("su: no longer waiting for the answer to an abandoned update check");
+  AZ_IOT_LOG_DEBUG(
+      AZ_IOT_LOG_COMPONENT_SU, "no longer waiting for the answer to an abandoned update check");
   c->request_pending = false;
   channel_release_hold(c);
 }

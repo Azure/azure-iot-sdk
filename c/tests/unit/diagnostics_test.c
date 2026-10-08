@@ -35,6 +35,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_version.h"
@@ -154,8 +155,9 @@ static void connection_state_to_string_covers_every_state(void** state)
     { AZ_IOT_CONN_STATE_CONNECTING, "AZ_IOT_CONN_STATE_CONNECTING" },
     { AZ_IOT_CONN_STATE_CONNECTED, "AZ_IOT_CONN_STATE_CONNECTED" },
     { AZ_IOT_CONN_STATE_DISCONNECTING, "AZ_IOT_CONN_STATE_DISCONNECTING" },
-    { AZ_IOT_CONN_STATE_RECONNECTING, "AZ_IOT_CONN_STATE_RECONNECTING" },
+    { AZ_IOT_CONN_STATE_RETRY_PENDING, "AZ_IOT_CONN_STATE_RETRY_PENDING" },
     { AZ_IOT_CONN_STATE_FAULTED, "AZ_IOT_CONN_STATE_FAULTED" },
+    { AZ_IOT_CONN_STATE_SETTING_UP, "AZ_IOT_CONN_STATE_SETTING_UP" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -272,7 +274,7 @@ static void version_string_matches_the_header_macros(void** state)
 static void reconnection_policy_default_is_usable_as_supplied(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy p = az_iot_connection_client_get_default_retry_policy();
 
   /* These are documented in az_iot_connection_client.h ("1s initial delay, 60s
    * max backoff, infinite attempts, 20% jitter"), which makes them part of the
@@ -292,11 +294,11 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
 
 /* Never retry. The bytes are the same as a zeroed struct -- the value of the
  * getter is that the call site says so. The behaviour that follows from
- * initial_delay_ms == 0 is asserted in reconnect_policy_test.c. */
+ * initial_delay_ms == 0 is asserted in retry_policy_test.c. */
 static void retry_disabled_policy_disables_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  az_iot_retry_policy p = az_iot_connection_client_get_disabled_retry_policy();
   assert_int_equal(p.initial_delay_ms, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.jitter_pct, 0u);
@@ -307,7 +309,7 @@ static void retry_disabled_policy_disables_retrying(void** state)
 static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000u, 360u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(5000u, 360u);
   assert_int_equal(p.initial_delay_ms, 5000u);
   assert_int_equal(p.max_delay_ms, 5000u);
   assert_int_equal(p.max_attempts, 360u);
@@ -318,7 +320,7 @@ static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 static void fixed_interval_policy_can_retry_forever(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(1000u, 0u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(1000u, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.initial_delay_ms, p.max_delay_ms);
 }
@@ -331,7 +333,7 @@ static void fixed_interval_policy_can_retry_forever(void** state)
 static void a_zero_fixed_interval_does_not_disable_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(0u, 5u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(0u, 5u);
 
   assert_int_not_equal(p.initial_delay_ms, 0u); /* not the disable sentinel */
   assert_int_equal(p.initial_delay_ms, 1u);
@@ -358,12 +360,12 @@ static void stderr_sink_is_installable_and_emits(void** state)
   assert_int_equal(sink.min_level, AZ_IOT_LOG_LEVEL_TRACE);
 
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_TRACE("diagnostics_test: trace");
-  AZ_IOT_LOG_DEBUG("diagnostics_test: debug");
-  AZ_IOT_LOG_INFO("diagnostics_test: info");
-  AZ_IOT_LOG_WARN("diagnostics_test: warn");
-  AZ_IOT_LOG_ERROR("diagnostics_test: error");
-  AZ_IOT_LOG_ERRORF("diagnostics_test: %s %d", "formatted", 42);
+  AZ_IOT_LOG_TRACE(AZ_IOT_LOG_COMPONENT_APP, "trace");
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "debug");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "info");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "warn");
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, "error");
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "%s %d", "formatted", 42);
   az_iot_log_set_global_sink(NULL);
 }
 

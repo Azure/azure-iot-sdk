@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             ConnectionContext connectionContext = await connectionClient
-                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             RegistrationRequestPayload? sentPayload = mockDps.RegistrationRequestPayload;
@@ -100,9 +100,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 CertificateSigningRequest = new(operationalKey, csrBase64),
             };
 
+            connectionClient.HandleCertificateSigningCompleteAsync += (issuedCertificates) =>
+            {
+#pragma warning disable SYSLIB0026 // Type or member is obsolete    using this as a stub method since this code path is not actually exercised in this test
+                return Task.FromResult(new X509AuthenticationProvider(new X509Certificate2()));
+#pragma warning restore SYSLIB0026 // Type or member is obsolete
+            };
+
             Exception exception = await Assert.ThrowsAnyAsync<Exception>(
                 async () => await connectionClient
-                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
             // The service's own answer, rather than a placeholder, is what says why the registration did not start.
@@ -133,7 +140,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             ConnectionContext connectionContext = await connectionClient
-                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             RegistrationRequestPayload? sentPayload = mockDps.RegistrationRequestPayload;
@@ -144,6 +151,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // A registration without a certificate request uses the same API version.
             Assert.NotNull(dpsConnect);
             Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
+        }
+
+        [Fact]
+        public async Task ProvisioningWithACertificateSigningRequestButNoCompletionCallbackThrows()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+
+            using MockConnectionMqttClient mockMqttClient = new();
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            // Intentionally leave HandleCertificateSigningCompleteAsync unset.
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
         }
 
         private static string CreateCertificateSigningRequest(RSA key)

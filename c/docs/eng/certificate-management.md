@@ -169,6 +169,9 @@ The callback receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CS
 the chain, or `AZ_IOT_CSR_FAILED` with `status`, `service_code` and `retry_after_s`. One
 renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
 internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
+Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout and a
+terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
 
 **The application owns the rest.** The SDK neither stores the renewed chain nor reconnects.
 On `AZ_IOT_CSR_ISSUED` the application copies or persists the chain (the chain is valid only
@@ -267,6 +270,24 @@ model (D9).
    Scope the *feature* to X.509 (matches the material struct), but route bootstrap
    auth through the provider so a future TPM/SAS provider can supply a token instead of a
    cert. Do not bake "bootstrap == X.509 cert" into the connection client.
+
+   **SAS.** SAS is not routed through the provider. Per role, the client tries the
+   provider's certificates first, then the SAS sources in `dps_auth` / `hub_auth` (primary
+   key, secondary key, user-provided token), moving on when the service rejects a credential.
+   The provider keeps serving X.509 roles, CSRs and issued chains; with SAS onboarding the
+   managed provider runs without a bootstrap identity. TPM *attestation* is out of scope: DPS
+   does not support it over MQTT.
+
+   **Multiple certificates per role (proposed).** `load()` gains an index:
+   `load(self, role, index, out_material)`. Index 0 is today's certificate; a provider returns
+   `AZ_IOT_ERR_NOT_FOUND` past its last one (or for a role it has no certificate for). The
+   client remembers the index that connected, so the provider stays stateless. No count()
+   hook: the sentinel cannot go stale when a renewal adds a certificate. The client stops at
+   `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4) even without the sentinel, guarding against a
+   provider that never returns it. Covers a
+   `selfSigned` identity's primary and secondary thumbprints, and keeping the previous issued
+   certificate as a rollback after renewal. The library is unreleased, so this changes the
+   existing signature; the vtable version is not bumped.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
@@ -361,6 +382,7 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | Group | Test | Build option |
 | --- | --- | --- |
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
+| SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
