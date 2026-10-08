@@ -45,7 +45,7 @@
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.34.1" />
     <!-- protoc and friends; needed to build, never at runtime, so it stays out of the package's dependencies. -->
-    <PackageReference Include="Google.Protobuf.Tools" Version="3.36.2">
+    <PackageReference Include="Google.Protobuf.Tools" Version="3.34.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
