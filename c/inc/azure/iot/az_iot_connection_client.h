@@ -1740,10 +1740,11 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
-    /* Hub SAS token renewal: when the current token is due (monotonic ms, and
-     * Unix seconds for a monotonic clock that stops in suspend; 0: none), the
-     * bound on the wait for the renewal disconnect (0: not waiting), and
-     * whether a renewal is in progress. */
+    /* SAS token renewal per scope: when the current token is due (monotonic
+     * ms, and Unix seconds for a monotonic clock that stops in suspend; 0:
+     * none) and whether a renewal is in progress. The disconnect deadline is
+     * the hub's: the bound on the wait for its renewal disconnect (0: not
+     * waiting). */
     uint64_t sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_renewal_disconnect_deadline_ms;
@@ -1755,7 +1756,7 @@ extern "C"
     {
       uint32_t request_id;
       bool asked;
-      bool for_renewal; /* a hub renewal: the session stays up meanwhile */
+      bool for_renewal; /* a renewal: the session stays up meanwhile */
       bool held; /* supplied unasked: kept for the next attempt */
       bool ready;
       size_t token_len;
@@ -1764,12 +1765,12 @@ extern "C"
       uint64_t delivered_unix_seconds; /* the same in Unix time; 0: unknown */
       uint64_t deadline_ms; /* bound on the wait (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
-    /* When the hub's user-provided token expires: monotonic ms, and Unix
+    /* When each scope's user-provided token expires: monotonic ms, and Unix
      * seconds for a monotonic clock that stops in suspend; 0: none. */
     uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
-    /* The hub's next token request is not asked before this (monotonic ms):
-     * a renewal request that could not be asked. 0: none. */
+    /* Each scope's next token request is not asked before this (monotonic
+     * ms): a renewal request that could not be asked. 0: none. */
     uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint32_t sas_token_last_request_id;
     /* Bytes a delivered token may use now, terminator excluded. */
