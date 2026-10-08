@@ -8,9 +8,9 @@
  * @brief SAS from a symmetric key, to DPS and to the assigned hub.
  *
  * The SDK signs a SAS token with the primary key for each DPS attempt and for
- * the hub. The secondary key and AZ_IOT_SAS_RENEWAL_PERCENT are accepted but
- * not used yet: fallback and planned renewal are not implemented, so at token
- * expiry the service ends the session and the reconnect signs a new token.
+ * the hub, and with the secondary key when the primary is rejected.
+ * At AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT of the token lifetime the client reconnects to
+ * the hub with a new token.
  * Takes individual enrollment keys, or enrollment-group keys from which the
  * device keys are derived. Sends one telemetry message on
  * whichever hub generation DPS assigned; a hub that does not accept SAS fails
@@ -43,7 +43,7 @@ typedef struct
   char* key; /**< AZ_IOT_DPS_SYMMETRIC_KEY, or NULL. */
   char* group_key; /**< AZ_IOT_DPS_ENROLLMENT_GROUP_KEY, or NULL. */
   char* secondary_key; /**< AZ_IOT_DPS_SECONDARY_KEY (same kind as the primary), or NULL. */
-  char* renewal_percent; /**< AZ_IOT_SAS_RENEWAL_PERCENT, or NULL for the default. */
+  char* renewal_percent; /**< AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT, or NULL for the default. */
   char* ca; /**< AZ_IOT_TRUSTED_CA, or NULL for the default trust store. */
   char* endpoint; /**< AZ_IOT_DPS_GLOBAL_ENDPOINT, or NULL. */
 } sas_config;
@@ -106,8 +106,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
   }
+  /* Terminal: FAULTED, or hub IDLE with an error (no retry follows). A DPS
+   * failure passes DISCONNECTING and IDLE before RETRY_PENDING or FAULTED. A
+   * non-retriable RETRY_PENDING stops the sample unless it is the immediate
+   * retry with the next credential (no delay). */
+  bool falling_back = event->state == AZ_IOT_CONN_STATE_RETRY_PENDING && event->recovery != NULL
+      && event->recovery->next_attempt_delay_ms == 0;
   if (event->reason != AZ_IOT_OK
-      && (event->state == AZ_IOT_CONN_STATE_FAULTED || !event->is_retriable))
+      && (event->state == AZ_IOT_CONN_STATE_FAULTED
+          || (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_IDLE)
+          || (event->state == AZ_IOT_CONN_STATE_RETRY_PENDING && !event->is_retriable
+              && !falling_back)))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;
@@ -189,7 +198,7 @@ int main(void)
     .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
     .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
     .secondary_key = sample_env_dup("AZ_IOT_DPS_SECONDARY_KEY", NULL),
-    .renewal_percent = sample_env_dup("AZ_IOT_SAS_RENEWAL_PERCENT", NULL),
+    .renewal_percent = sample_env_dup("AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT", NULL),
     .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
     .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
   };
@@ -222,7 +231,7 @@ int main(void)
     unsigned long pct = strtoul(config.renewal_percent, &end, 10);
     if (*end != '\0' || pct < 1u || pct > 99u)
     {
-      fprintf(stderr, "[dps_sas_key] AZ_IOT_SAS_RENEWAL_PERCENT must be 1-99\n");
+      fprintf(stderr, "[dps_sas_key] AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT must be 1-99\n");
       config_release(&config);
       return 1;
     }

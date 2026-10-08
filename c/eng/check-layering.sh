@@ -79,7 +79,7 @@ destroy_hits="$(grep -rnoE '\baz_iot_[a-z0-9_]*_destroy\b' \
     --include='*.c' --include='*.h' \
     "${root_dir}/inc" "${root_dir}/src" "${root_dir}/adapters" \
     "${root_dir}/tests" "${root_dir}/samples" 2>/dev/null \
-    | grep -vxE '.*:az_iot_(mock_mqtt|paho|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
+    | grep -vxE '.*:az_iot_(mock_mqtt|paho|az_mqtt|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
     || true)"
 if [ -n "${destroy_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then

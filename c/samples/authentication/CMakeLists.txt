@@ -105,4 +105,14 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_crypto_openssl)
     endif()
 endif()
 
-# user_provided_sas_token uses the token callback, which is not implemented yet.
+# Application-supplied SAS tokens: the Paho adapter; the sample signs its
+# stand-in tokens with OpenSSL directly, so the SDK needs no crypto backend.
+if(AZ_IOT_WITH_PAHO AND TARGET OpenSSL::Crypto)
+    add_executable(az_iot_sample_auth_user_provided_sas_token
+        user_provided_sas_token/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_user_provided_sas_token
+        PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_user_provided_sas_token
+        PRIVATE az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho OpenSSL::Crypto)
+    az_iot_apply_warnings(az_iot_sample_auth_user_provided_sas_token)
+endif()

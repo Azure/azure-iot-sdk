@@ -168,7 +168,7 @@ static void fire_retry(az_iot_test_conn* fx)
   pump(fx, 1);
 }
 
-/* The HUB:RECONNECTING event the newest refusal produced. */
+/* The HUB:RETRY_PENDING event the newest refusal produced. */
 static const az_iot_connection_recovery_info* last_hub_recovery(
     az_iot_test_conn* fx,
     az_iot_connection_state state)
@@ -256,13 +256,13 @@ static void mqttv3_connack_rejection_retries_the_hub_on_the_identity_ladder(void
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   reject_identity(fx);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
-  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(r->attempt, 1);
   assert_int_equal(r->next_attempt_delay_ms, IDENTITY_MS);
   assert_false(r->next_attempt_reprovisions);
-  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_string_equal(fx->log.recovery_endpoint[i], HUB_HOST);
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_IDENTITY_REJECTED);
 
@@ -276,7 +276,7 @@ static void mqttv5_connack_rejection_retries_the_hub_on_the_identity_ladder(void
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   reject_identity(fx);
-  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(r->next_attempt_delay_ms, IDENTITY_MS);
 
@@ -292,7 +292,7 @@ static void mqttv5_mid_session_not_authorized_uses_the_identity_ladder(void** st
   connect_v5(fx);
 
   inject_v5_disconnect(fx, az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), 0x87);
-  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RECONNECTING);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_AUTH);
   assert_true(fx->log.error_present[i]);
   assert_int_equal(fx->log.error_codes[i], 0x87);
@@ -310,7 +310,7 @@ static void mqttv5_mid_session_server_busy_uses_the_reconnection_policy(void** s
   connect_v5(fx);
 
   inject_v5_disconnect(fx, az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x89), 0x89);
-  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_TRANSIENT);
   assert_int_equal(r->next_attempt_delay_ms, RECONNECT_MS);
   assert_int_equal(fx->client->identity_retry_attempt, 0);
@@ -348,7 +348,7 @@ static void identity_backoff_grows_until_max_attempts_faults(void** state)
   {
     reject_identity(fx);
     const az_iot_connection_recovery_info* r
-        = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+        = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
     assert_int_equal(r->attempt, n + 1);
     assert_int_equal(r->next_attempt_delay_ms, expected[n]);
     fire_retry(fx);
@@ -378,7 +378,7 @@ static void identity_recovery_stops_at_max_duration(void** state)
   for (int n = 0; n < 6 && az_iot_test_last_state(&fx->log) != AZ_IOT_CONN_STATE_FAULTED; ++n)
   {
     reject_identity(fx);
-    if (az_iot_test_last_state(&fx->log) == AZ_IOT_CONN_STATE_RECONNECTING)
+    if (az_iot_test_last_state(&fx->log) == AZ_IOT_CONN_STATE_RETRY_PENDING)
     {
       assert_true(fx->client->reconnect_due_ms < fx->client->identity_recovery_started_ms + 1000u);
       fire_retry(fx);
@@ -397,7 +397,7 @@ static void a_retry_due_before_the_deadline_does_not_start_after_it(void** state
   fx->client->opts.identity_recovery.max_duration_seconds = 1;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   reject_identity(fx);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
   pump(fx, 1);
@@ -459,7 +459,7 @@ static void max_duration_bounds_transient_retries_after_a_refusal(void** state)
     assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
     pump(fx, 2);
     if (az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB)
-        == AZ_IOT_CONN_STATE_RECONNECTING)
+        == AZ_IOT_CONN_STATE_RETRY_PENDING)
     {
       fire_retry(fx);
     }
@@ -488,11 +488,11 @@ static void only_a_hub_connection_resets_the_identity_ladder(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   pump(fx, 2);
   assert_int_equal(
-      last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING)->classification,
+      last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->classification,
       AZ_IOT_CONN_FAILURE_TRANSIENT);
   fire_retry(fx);
   reject_identity(fx);
-  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING)->attempt, 2);
+  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->attempt, 2);
 
   fire_retry(fx);
   m = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -503,7 +503,7 @@ static void only_a_hub_connection_resets_the_identity_ladder(void** state)
   pump(fx, 1);
   fire_retry(fx);
   reject_identity(fx);
-  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING)->attempt, 1);
+  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->attempt, 1);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -521,7 +521,7 @@ static void a_refusal_retries_the_assigned_hub_without_dps(void** state)
   {
     reject_identity(fx);
     assert_false(fx->client->needs_reprovision);
-    assert_false(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING)->next_attempt_reprovisions);
+    assert_false(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->next_attempt_reprovisions);
     fire_retry(fx);
     assert_string_equal(last_connect_host(fx), HUB_HOST);
     assert_null(fx->client->dps_mqtt);
@@ -572,7 +572,7 @@ static void reprovision_cycles_are_bounded(void** state)
   {
     reject_identity(fx);
     const az_iot_connection_recovery_info* r
-        = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+        = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
     assert_int_equal(r->attempt, n + 1);
     assert_int_equal(r->next_attempt_delay_ms, expected[n]);
     assert_true(r->next_attempt_reprovisions);
@@ -604,7 +604,7 @@ static void request_reprovision_runs_the_pending_retry_through_dps_now(void** st
   provision(fx);
 
   reject_identity(fx);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   pump(fx, 1);
   assert_string_equal(last_connect_host(fx), DPS_HOST);
@@ -612,7 +612,7 @@ static void request_reprovision_runs_the_pending_retry_through_dps_now(void** st
   /* The re-provision completes and the refusal ladder carries on from it. */
   provision(fx);
   reject_identity(fx);
-  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING)->attempt, 2);
+  assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->attempt, 2);
 }
 
 static void close_and_open_after_a_fault_returns_to_the_cached_hub(void** state)
@@ -648,7 +648,7 @@ static void request_reprovision_keeps_a_pending_registration_schedule(void** sta
   pump(fx, 3);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
-      AZ_IOT_CONN_STATE_RECONNECTING);
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
   uint64_t due = fx->client->reconnect_due_ms;
   uint32_t attempts = fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS];
 
@@ -689,7 +689,7 @@ static void a_dps_refusal_is_not_on_the_identity_ladder(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   reject_identity(fx);
-  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RECONNECTING);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_true(fx->log.recovery_present[i]);
   assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_TERMINAL);
   assert_int_equal(fx->log.recovery[i].next_attempt_delay_ms, RECONNECT_MS);
@@ -745,7 +745,7 @@ static void a_failed_registration_past_the_identity_deadline_faults_both_scopes(
   az_iot_mock_mqtt_client* dps = reprovision_after_a_bounded_refusal(fx);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_RECONNECTING);
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   static const char k_failed[]
       = "{\"operationId\":\"op-1\",\"status\":\"failed\","
@@ -769,7 +769,7 @@ static void a_delayed_registration_retry_past_the_deadline_faults_both_scopes(vo
   pump(fx, 3);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
-      AZ_IOT_CONN_STATE_RECONNECTING);
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_not_equal(fx->client->reconnect_due_ms, 0);
 
   az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
@@ -857,7 +857,7 @@ static void assert_both_scopes_faulted(az_iot_test_conn* fx, az_iot_result reaso
 }
 
 /* A re-registration after a refusal returns an assignment the client cannot
- * use: the hub waiting on it is faulted too, not left RECONNECTING. */
+ * use: the hub waiting on it is faulted too, not left RETRY_PENDING. */
 static void a_rejected_reassignment_after_a_refusal_faults_the_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -927,7 +927,7 @@ static void zeroed_identity_recovery_reprovisions_on_the_reconnection_schedule(v
   provision(fx);
 
   reject_identity(fx);
-  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RECONNECTING);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(r->next_attempt_delay_ms, RECONNECT_MS);
   assert_true(r->next_attempt_reprovisions);

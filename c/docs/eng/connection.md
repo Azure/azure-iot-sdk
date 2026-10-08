@@ -54,15 +54,20 @@ through the internal `set_state_to()` helper, which is also what raises the user
 stateDiagram-v2
     direction LR
     [*] --> IDLE
-    IDLE --> CONNECTING: open()
+    IDLE --> SETTING_UP: open()
+    SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> CONNECTED: registration published on an existing DPS session
+    SETTING_UP --> RETRY_PENDING: local step failed
+    SETTING_UP --> FAULTED: local step failed, reconnect disabled
+    SETTING_UP --> IDLE: open() step failed
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
-    CONNECTING --> RECONNECTING: error, drop or timeout
+    CONNECTING --> RETRY_PENDING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
-    CONNECTED --> RECONNECTING: unexpected drop
+    CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> DISCONNECTING: close()
-    RECONNECTING --> CONNECTING: backoff elapsed
-    RECONNECTING --> FAULTED: attempts exhausted
-    RECONNECTING --> IDLE: close()
+    RETRY_PENDING --> SETTING_UP: backoff elapsed
+    RETRY_PENDING --> FAULTED: attempts exhausted
+    RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
     FAULTED --> IDLE: close()
     IDLE --> [*]: deinit()
@@ -107,7 +112,7 @@ sequenceDiagram
     participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
-    Conn->>Conn: state = CONNECTING
+    Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
 
     alt DPS configured (id_scope present)
         Conn->>Cert: load(BOOTSTRAP)
@@ -138,6 +143,7 @@ sequenceDiagram
     alt not found
         Conn->>Cert: load(BOOTSTRAP)
     end
+    Conn->>Conn: HUB state = CONNECTING
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
@@ -337,10 +343,10 @@ sequenceDiagram
         Conn-->>App: state callback(FAULTED, reason)
     else
         Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
-        Conn->>Conn: state = RECONNECTING
-        Conn-->>App: state callback(RECONNECTING, reason)
+        Conn->>Conn: state = RETRY_PENDING
+        Conn-->>App: state callback(RETRY_PENDING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
-        Conn->>Conn: start_connect_attempt() -> full sequence of section 3
+        Conn->>Conn: SETTING_UP -> CONNECTING: full sequence of section 3
         Hub-->>Conn: CONNACK ok
         Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
@@ -650,7 +656,7 @@ flowchart TB
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
     DROP -->|"reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
-    DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
+    DROP -->|"reconnect enabled"| RECON["RETRY_PENDING<br/>exponential backoff + jitter"]
     RECON -->|"DPS configured"| REG
     RECON -->|"direct host"| CRED
     ARENEW -.->|"workflowId and unsent<br/>report persisted"| RECON

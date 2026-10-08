@@ -392,7 +392,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
 
   /* Retrying, not terminal. */
-  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
 
   /* And the retry is really issued once the backoff elapses. */
