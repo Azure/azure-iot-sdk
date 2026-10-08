@@ -2196,6 +2196,31 @@ static void a_user_token_renewal_waits_for_the_token_connected(void** state)
   assert_int_equal(g_fake.calls, 2);
 }
 
+/* A renewal token that expired before do_work() used it: the session stays
+ * up, and the token is asked for again. */
+static void an_expired_renewal_token_is_asked_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  g_fake.mode = FAKE_TOKEN_LATER;
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(g_fake.calls, 2);
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].delivered_ms
+      = az_iot_time_mono_ms() - 101000u;
+  pump(fx, 2);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(g_fake.calls, 3);
+  assert_true(g_fake.is_renewal);
+  assert_false(user_token_left(fx));
+}
+
 /* A token supplied unasked to a session on a user-provided token renews it
  * at once, without the callback. */
 static void an_unasked_token_renews_the_connected_hub(void** state)
@@ -2742,6 +2767,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_rejected_user_token_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_expired_renewal_token_is_asked_again, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_renews_the_connected_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_does_not_renew_a_key_session, setup, teardown),
     cmocka_unit_test_setup_teardown(

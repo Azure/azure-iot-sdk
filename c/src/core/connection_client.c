@@ -2026,6 +2026,33 @@ static uint64_t unix_deadline_seconds(uint64_t unix_seconds, uint64_t add_second
 }
 
 /**
+ * @brief Age of @p scope's supplied token, by whichever clock shows more time
+ * passed: the monotonic one may stop in suspend. Capped just past its lifetime.
+ */
+static uint64_t user_token_age_ms(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint64_t now_ms,
+    uint64_t unix_seconds)
+{
+  uint32_t valid_seconds = c->sas_token_request[scope].valid_seconds;
+  uint64_t age_ms = now_ms - c->sas_token_request[scope].delivered_ms;
+  uint64_t delivered_unix = c->sas_token_request[scope].delivered_unix_seconds;
+  if (delivered_unix != 0 && unix_seconds > delivered_unix)
+  {
+    uint64_t unix_age_seconds = unix_seconds - delivered_unix;
+    uint64_t unix_age_ms = unix_age_seconds > valid_seconds
+        ? (uint64_t)valid_seconds * 1000u + 1000u
+        : unix_age_seconds * 1000u;
+    if (unix_age_ms > age_ms)
+    {
+      age_ms = unix_age_ms;
+    }
+  }
+  return age_ms;
+}
+
+/**
  * @brief Selects a user-provided token for @p scope's attempt: the one
  * delivered for its request, or a wait for one. The callback is not called
  * here but from do_work().
@@ -2043,20 +2070,7 @@ static void apply_user_token(
   uint64_t unix_seconds = unix_now(c);
   uint32_t valid_seconds = c->sas_token_request[scope].valid_seconds;
   uint64_t valid_ms = (uint64_t)valid_seconds * 1000u;
-  /* Aged by whichever clock shows more time passed: the monotonic one may
-   * stop in suspend. */
-  uint64_t age_ms = now_ms - c->sas_token_request[scope].delivered_ms;
-  uint64_t delivered_unix = c->sas_token_request[scope].delivered_unix_seconds;
-  if (delivered_unix != 0 && unix_seconds > delivered_unix)
-  {
-    uint64_t unix_age_seconds = unix_seconds - delivered_unix;
-    uint64_t unix_age_ms
-        = unix_age_seconds > valid_seconds ? valid_ms + 1000u : unix_age_seconds * 1000u;
-    if (unix_age_ms > age_ms)
-    {
-      age_ms = unix_age_ms;
-    }
-  }
+  uint64_t age_ms = user_token_age_ms(c, scope, now_ms, unix_seconds);
   if (c->sas_token_request[scope].request_id != 0 && c->sas_token_request[scope].ready
       && c->sas_token_holder == (uint8_t)(scope + 1) && age_ms >= valid_ms)
   {
@@ -4849,6 +4863,16 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   uint64_t now = az_iot_time_mono_ms();
   if (!c->sas_token_renewal_in_progress && sas_token_renewal_ready(c))
   {
+    if (user_token_age_ms(c, AZ_IOT_CONN_SCOPE_HUB, now, unix_now(c))
+        >= (uint64_t)c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].valid_seconds * 1000u)
+    {
+      /* Expired before use: asked again; the session stays up. */
+      c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].asked = false;
+      c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].ready = false;
+      c->sas_token_holder = 0;
+      sas_wipe_token(c);
+      return;
+    }
     start_sas_token_renewal(c, now);
     return;
   }
