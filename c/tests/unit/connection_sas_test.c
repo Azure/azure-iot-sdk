@@ -2192,7 +2192,8 @@ static void an_unasked_token_renews_the_connected_hub(void** state)
 }
 
 /* A session on a key is not renewed by a token supplied unasked: the token
- * waits for an attempt that uses it. */
+ * waits for an attempt that uses it, unless the key's renewal needs the token
+ * area first. */
 static void an_unasked_token_does_not_renew_a_key_session(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2210,6 +2211,14 @@ static void an_unasked_token_does_not_renew_a_key_session(void** state)
   assert_false(fx->client.sas_token_renewal_in_progress);
   assert_true(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].held);
   assert_int_equal(g_fake.calls, 0);
+
+  fx->client.sas_token_renewal_due_ms = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 2);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_int_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id, 0);
+  assert_false(user_token_left(fx));
 }
 
 /* A connection loss queued before the renewal token arrives is reported as a

@@ -283,7 +283,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a hub session
   connected with a user-provided token renews with it at once (disconnect and reconnect, as below);
   anything else keeps it for the role's next attempt that uses a user-provided token, until the
-  role settles in `IDLE` or `FAULTED`, or `close()`. A token supplied after its attempt timed out
+  role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
+  key-signed token, or the other role's token request). A token supplied after its attempt timed out
   is kept for the retry. Call it from the `do_work()` thread or an SDK callback; it returns
   `AZ_IOT_ERR_BUSY` while a token is being handed to a CONNECT, or from the other role's callback.
   During a callback the resource URI shares the token area, so the token has less room then.

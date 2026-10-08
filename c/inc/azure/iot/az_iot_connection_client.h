@@ -1916,7 +1916,9 @@ extern "C"
    *   session, so the session disconnects and reconnects at once, as for any
    *   renewal (see az_iot_auth::sas::renewal_percent).
    * - Otherwise: kept for @p scope's next attempt that uses a user-provided
-   *   token; dropped when @p scope settles in IDLE or FAULTED, and by close().
+   *   token; dropped when @p scope settles in IDLE or FAULTED, by close(), or
+   *   when the token area of sas_buffer is needed first (a key-signed token,
+   *   or the other role's token request).
    *
    * The token's `sr` must match @p scope's current resource URI
    * (az_iot_sas_token_request::resource_uri, compared decoded), and its `skn`
