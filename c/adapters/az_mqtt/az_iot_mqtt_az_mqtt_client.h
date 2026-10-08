@@ -50,14 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// MQTT 5 uses twice as many entries, and az_mqtt uses at most 65,535.
-#if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 32767
-#error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 32767"
-#endif
 #if AZ_IOT_AZ_MQTT_V == 5
-#if AZ_IOT_AZ_MQTT_BUFFER_SIZE < 1 || AZ_IOT_AZ_MQTT_BUFFER_SIZE > 268435455
-#error "AZ_IOT_AZ_MQTT_BUFFER_SIZE must be 1 to 268435455 (MQTT 5 Maximum Packet Size)"
-#endif
 /** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
 #define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
 /** @brief In-flight entries: AZ_IOT_AZ_MQTT_INFLIGHT_MAX requests, plus those kept for inbound. */
@@ -69,16 +62,17 @@
 /** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
-  (AZ_IOT_AZ_MQTT_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
+  (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
 #endif
 
 #if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
-    < AZ_IOT_AZ_MQTT_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
-#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must hold one packet of AZ_IOT_AZ_MQTT_BUFFER_SIZE"
+    < AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
+#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must hold one packet of AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE"
 #endif
 
 /** @brief Room for the strings of one received PUBLISH: its bytes, plus one NUL per string. */
-#define _AZM_STRINGS_SIZE (AZ_IOT_AZ_MQTT_BUFFER_SIZE + 3 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
+#define _AZM_STRINGS_SIZE \
+  (AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 3 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
 
 /** @brief Connect strings owned until the next connect: host, credentials, TLS, proxy, will... */
 #define _AZM_OWNED_MAX (20 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
@@ -680,7 +674,7 @@ static bool _azm_copy_options(
   // Below the entry count, so az_mqtt keeps this many entries for inbound QoS 2.
   c->receive_maximum = _AZM_RECEIVE_MAXIMUM;
   // Omitted, it would mean any size; larger packets do not fit the receive buffer.
-  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_BUFFER_SIZE;
+  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {
@@ -748,8 +742,8 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
     _azm_release_owned(m);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  options.send_buffer = az_span_create(m->send_buffer, AZ_IOT_AZ_MQTT_BUFFER_SIZE);
-  options.receive_buffer = az_span_create(m->receive_buffer, AZ_IOT_AZ_MQTT_BUFFER_SIZE);
+  options.send_buffer = az_span_create(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
+  options.receive_buffer = az_span_create(m->receive_buffer, AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
   options.inflight_control_buffer = _AZM_SPAN_OF(m->inflight);
   options.inflight_message_buffer = persists
       ? az_span_create(m->message_storage, AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE)
@@ -1094,7 +1088,9 @@ static az_iot_mqtt_client* _azm_create(void* factory_context)
     return NULL;
   }
   // One block: send buffer, receive buffer, transport (16-byte aligned), received strings.
-  size_t const transport_offset = (2u * AZ_IOT_AZ_MQTT_BUFFER_SIZE + 15u) & ~(size_t)15u;
+  size_t const transport_offset
+      = ((size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 15u)
+      & ~(size_t)15u;
   size_t const strings_offset
       = transport_offset + (((size_t)az_mqtt_transport_sizeof() + 15u) & ~(size_t)15u);
   uint8_t* block = (uint8_t*)malloc(strings_offset + (size_t)_AZM_STRINGS_SIZE);
@@ -1104,7 +1100,7 @@ static az_iot_mqtt_client* _azm_create(void* factory_context)
     return NULL;
   }
   m->send_buffer = block;
-  m->receive_buffer = block + AZ_IOT_AZ_MQTT_BUFFER_SIZE;
+  m->receive_buffer = block + AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE;
   m->transport = (az_mqtt_transport*)(void*)(block + transport_offset);
   m->strings = (char*)(block + strings_offset);
   m->base.iface = &_azm_iface;
