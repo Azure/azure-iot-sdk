@@ -275,12 +275,13 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
   a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
   later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
-  retried under the policy, notifying again. To stop waiting, call `close()`. A hub renewal is
-  notified while the session stays up, with no timeout.
+  retried under the policy, notifying again. To stop waiting, call `close()`. A renewal (hub, or a
+  provisioning session kept open) is notified while the session stays up, with no timeout.
 - **Supplying a token.** `update_sas_token()` checks the token's `sr` (decoded) and `skn` against
   the role's current identity: `AZ_IOT_ERR_INVALID_ARG` on a mismatch, `AZ_IOT_ERR_NOT_FOUND` for
-  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a hub session
-  connected with a user-provided token renews with it at once (disconnect and reconnect, as below);
+  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a session
+  connected with a user-provided token (the hub, or a provisioning session that is not
+  registering) renews with it at once (disconnect and reconnect, as below);
   anything else keeps it for the role's next attempt that uses a user-provided token, until the
   role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
   key-signed token, or the other role's token request). A token supplied after its attempt timed out
@@ -292,16 +293,17 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   and a session whose token expires before its replacement arrives is ended, the reconnect
   waiting for the token. A new DPS assignment drops a hub token asked for or held before it; the
   next attempt asks again.
-- **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
+- **Renewal.** In `hub_auth.sas` and `dps_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
   disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
   `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
-  reconnect is an ordinary failure (fallback, policy). A provisioning session is not renewed: a
-  registration is short, and a session a feature client holds is reopened with a new token when
-  the service ends it.
+  reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
+  registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
+  `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see
+  `DISCONNECTING` as for any loss of the session. A registration in progress is not interrupted.
 - **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until
   `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4). Each is a
   source in the pass, in index order, before the keys: a rejected certificate falls back to the

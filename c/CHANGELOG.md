@@ -23,8 +23,9 @@
   small) produces a state event on each retry. Such failures carry the new error source
   `AZ_IOT_CONN_ERR_SRC_LOCAL`. `AZ_IOT_CONN_STATE_RECONNECTING` is renamed
   `AZ_IOT_CONN_STATE_RETRY_PENDING`. See [docs/connecting.md](docs/connecting.md#connection-states).
-- SAS token renewal: at `hub_auth.sas.renewal_percent` of a key-signed token's lifetime, the hub
-  session reconnects with a new token; those state events carry `is_credential_renewal`. See
+- SAS token renewal: at `renewal_percent` of a key-signed token's lifetime, the hub session, and a
+  provisioning session kept open without a registration, reconnect with a new token; those state
+  events carry `is_credential_renewal`. See
   [docs/connecting.md](docs/connecting.md#authentication).
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
@@ -33,5 +34,5 @@
   one certificate per role must return `AZ_IOT_ERR_NOT_FOUND` for `index > 0`.
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
-  (a connected hub session then renews with it). At renewal the token is requested while the hub
+  (a connected session then renews with it). At renewal the token is requested while the
   session stays up; once supplied, the session disconnects and reconnects with it. See [docs/connecting.md](docs/connecting.md#authentication).
