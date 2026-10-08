@@ -53,7 +53,8 @@ extern "C"
    * @param[in]  resource_uri         URL-encoded resource URI
    *                                  (az_iot_sas_token_request::resource_uri).
    * @param[in]  expiry_unix_seconds  Expiry, in seconds since the Unix epoch; not 0.
-   * @param[out] out                  Buffer; NUL-terminated on success.
+   * @param[out] out                  Buffer; NUL-terminated on success, zeroed
+   *                                  on failure.
    * @param[in]  out_size             Bytes in @p out; see AZ_IOT_SAS_STRING_TO_SIGN_SIZE().
    * @param[out] out_len              Characters written, terminator excluded.
    * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL pointer, an empty

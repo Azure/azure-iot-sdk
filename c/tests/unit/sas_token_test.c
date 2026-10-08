@@ -135,10 +135,11 @@ static void the_string_to_sign_is_uri_newline_expiry(void** state)
       az_iot_sas_token_string_to_sign(DPS_URI, UINT64_MAX, out, sizeof(out), &len), AZ_IOT_OK);
   assert_string_equal(out, DPS_URI "\n18446744073709551615");
   assert_int_equal(len + 1u, sizeof(out));
+  memset(out, 'x', sizeof(out));
   assert_int_equal(
       az_iot_sas_token_string_to_sign(DPS_URI, UINT64_MAX, out, sizeof(out) - 1u, &len),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_int_equal(out[0], '\0');
+  assert_true(all_zero(out, sizeof(out) - 1u));
 }
 
 /* The signature from an external signer: base64 with `+`, `/` and `=` URL-encoded. */
@@ -312,6 +313,32 @@ static void invalid_arguments_are_rejected(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* A rejected call also zeroes the buffer: no earlier token stays readable. */
+static void a_rejected_call_wipes_the_buffer(void** state)
+{
+  (void)state;
+  uint8_t key[32];
+  key_bytes(key, sizeof(key), 0);
+  uint8_t mac[AZ_IOT_SHA256_SIZE] = { 0 };
+  char out[64];
+  size_t len = 0;
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_sas_token_string_to_sign("a&b", EXPIRY, out, sizeof(out), &len),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(out, sizeof(out)));
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_sas_token_from_signature(HUB_URI, "a b", EXPIRY, mac, out, sizeof(out), &len),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(out, sizeof(out)));
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_sas_token_sign(TEST_CRYPTO(), key, 0u, HUB_URI, NULL, EXPIRY, out, sizeof(out), &len),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(out, sizeof(out)));
+}
+
 static void derive_rejects_bad_arguments_and_zeroes_its_output(void** state)
 {
   (void)state;
@@ -357,6 +384,7 @@ int main(void)
     cmocka_unit_test(the_size_macros_cover_the_worst_case),
     cmocka_unit_test(a_short_buffer_fails_and_is_wiped),
     cmocka_unit_test(invalid_arguments_are_rejected),
+    cmocka_unit_test(a_rejected_call_wipes_the_buffer),
     cmocka_unit_test(derive_rejects_bad_arguments_and_zeroes_its_output),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
