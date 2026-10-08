@@ -310,12 +310,14 @@ const char* sample_connection_state_name(az_iot_connection_state state)
       return "Connecting";
     case AZ_IOT_CONN_STATE_CONNECTED:
       return "Connected";
-    case AZ_IOT_CONN_STATE_RECONNECTING:
-      return "Reconnecting";
+    case AZ_IOT_CONN_STATE_RETRY_PENDING:
+      return "Retry pending";
     case AZ_IOT_CONN_STATE_DISCONNECTING:
       return "Disconnecting";
     case AZ_IOT_CONN_STATE_FAULTED:
       return "Faulted";
+    case AZ_IOT_CONN_STATE_SETTING_UP:
+      return "Setting up";
     default:
       return "?";
   }

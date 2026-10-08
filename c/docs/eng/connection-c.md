@@ -56,17 +56,22 @@ through the internal `set_state_to()` helper, which is also what raises the user
 stateDiagram-v2
     direction LR
     [*] --> IDLE
-    IDLE --> CONNECTING: open()
+    IDLE --> SETTING_UP: open()
+    SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> CONNECTED: registration published on an existing DPS session
+    SETTING_UP --> RETRY_PENDING: local step failed
+    SETTING_UP --> FAULTED: local step failed, reconnect disabled
+    SETTING_UP --> IDLE: open() step failed
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
-    CONNECTING --> RECONNECTING: error, drop or timeout
+    CONNECTING --> RETRY_PENDING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
     CONNECTING --> IDLE: drop, reconnect disabled
-    CONNECTED --> RECONNECTING: unexpected drop
+    CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> IDLE: drop, reconnect disabled
     CONNECTED --> DISCONNECTING: close()
-    RECONNECTING --> CONNECTING: backoff elapsed
-    RECONNECTING --> FAULTED: attempts exhausted
-    RECONNECTING --> IDLE: close()
+    RETRY_PENDING --> SETTING_UP: backoff elapsed
+    RETRY_PENDING --> FAULTED: attempts exhausted
+    RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
     FAULTED --> IDLE: close()
     IDLE --> [*]: deinit()
@@ -119,7 +124,7 @@ sequenceDiagram
     participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
-    Conn->>Conn: state = CONNECTING
+    Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
 
     opt no valid assignment cached
         Conn->>Cert: load(BOOTSTRAP)
@@ -154,6 +159,7 @@ sequenceDiagram
     alt not found
         Conn->>Cert: load(BOOTSTRAP)
     end
+    Conn->>Conn: HUB state = CONNECTING
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
@@ -370,10 +376,10 @@ sequenceDiagram
         Conn-->>App: state callback(FAULTED, reason)
     else
         Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
-        Conn->>Conn: state = RECONNECTING
-        Conn-->>App: state callback(RECONNECTING, reason)
+        Conn->>Conn: state = RETRY_PENDING
+        Conn-->>App: state callback(RETRY_PENDING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
-        Conn->>Conn: start_connect_attempt() -> full sequence of section 3
+        Conn->>Conn: SETTING_UP -> CONNECTING: full sequence of section 3
         Hub-->>Conn: CONNACK ok
         Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
@@ -478,7 +484,7 @@ fault comes when the retry would have been scheduled); a due retry that `do_work
 not started; a DPS retry-after that lands past it stops recovery; the DPS pump abandons a registration
 still running (held, registering or polling); and an assignment adopted after it does not start a
 hub connect. Every give-up of the single pending retry goes through `fault_retry_scopes()`, which
-faults the failing scope and the other one if it is still `RECONNECTING`: a hub waiting on a
+faults the failing scope and the other one if it is still `RETRY_PENDING`: a hub waiting on a
 re-registration is not left there with no retry.
 `az_iot_connection_client_request_reprovision()` sets
 `needs_reprovision` on demand and brings a pending hub retry forward. On the retry path the flag is
@@ -511,7 +517,7 @@ checked before backoff is scheduled.
 | Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
-| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. |
+| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once, a session end before the PUBACK does not. |
 
 ### 5.4 The first attempt
 
@@ -763,7 +769,7 @@ flowchart TB
     CONNECTED --> DROP{"drop or error"}
     DROP -->|"error, reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
     DROP -->|"disconnect,<br/>reconnect disabled"| IDLE
-    DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
+    DROP -->|"reconnect enabled"| RECON["RETRY_PENDING<br/>exponential backoff + jitter"]
     RECON -->|"needs_reprovision"| REG
     RECON -->|"assignment still valid"| CRED
     ARENEW -.->|"workflowId and unsent<br/>report persisted"| RECON
@@ -1025,7 +1031,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
 | DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
-| Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RECONNECTING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
+| Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RETRY_PENDING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |
 | Twin | Service status `400` | `AZ_IOT_ERR_INVALID_ARG` | `status_to_result()` in the twin client | that request completes with the failure | Contained. |
@@ -1057,11 +1063,12 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | `close()` while `IDLE` | — | `AZ_IOT_OK` | connection client | idempotent no-op | |
+| `close()` while `SETTING_UP` (from its state callback) | — | `AZ_IOT_OK` | connection client | no adapter exists yet: the scope settles to `IDLE` (a live hub still goes through `DISCONNECTING`); the attempt is abandoned, not reported as a failure, and no retry is scheduled | Same for a `close()` from the `CONNECTING` announcement. |
 | `close()` while `CONNECTING`, hub attempt in flight | — | `AZ_IOT_OK` | connection client | sets `user_close`, `DISCONNECTING`, calls `disconnect()` | `active_client` is assigned at the end of `start_connect_attempt()`, after `HUB:CONNECTING` has been raised. A `close()` from a state observer during that transition sees no adapter and takes the no-adapter path. |
 | `close()` while `CONNECTING`, provisioning in flight | — | `AZ_IOT_OK` | connection client | disconnects and tears down the DPS session, drops `dps_pending_finalize`, resets the attempt counter, goes to `IDLE` | The pending finalize is dropped on purpose: it describes the outcome of a session being abandoned, and acting on it in the next pump tick would move a client the application has just closed. `needs_reprovision` survives. |
 | `close()` while `CONNECTED` | — | `AZ_IOT_OK`, or the adapter's disconnect error | connection client | sets `user_close`, transitions to `DISCONNECTING`, calls the adapter's `disconnect()` | |
 | `close()` while `DISCONNECTING` | — | `AZ_IOT_OK`, or the adapter's error | connection client | sets `user_close` again and re-issues `disconnect()` | Harmless, but not a no-op. |
-| `close()` while `RECONNECTING` | — | `AZ_IOT_OK` | connection client | cancels the schedule (`retry_attempt[]` both scopes and `reconnect_due_ms` to 0), clears `user_close`, transitions straight to `IDLE` | No adapter exists to disconnect. |
+| `close()` while `RETRY_PENDING` | — | `AZ_IOT_OK` | connection client | cancels the schedule (`retry_attempt[]` both scopes and `reconnect_due_ms` to 0), clears `user_close`, transitions straight to `IDLE` | No adapter exists to disconnect. |
 | `close()` while `FAULTED` | — | `AZ_IOT_OK` | connection client | resets the attempt counter, defensively calls `teardown_active()`, goes to `IDLE` | Handled **before** the `active_client` check, or it would report `NOT_INITIALIZED` and leave the client in a state no API could leave. `needs_reprovision` survives on purpose: it says the cached assignment is no good, which a `close()` does not change. |
 | `deinit()` with PUBACKs pending | — | none | connection client | the table is zeroed **without** invoking the callbacks | Deliberate: on deinit the context those callbacks close over may already be gone, and calling into it would turn cleanup into a use-after-free. Contrast session teardown, where the callbacks **do** fire. |
 | `deinit()` with session handlers registered | — | none | connection client | cleared without invoking them | Same reasoning. |
