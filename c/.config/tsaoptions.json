@@ -1,0 +1,8 @@
+{
+  "instanceUrl": "https://dev.azure.com/msazure",
+  "projectName": "One",
+  "areaPath": "One\\Azure Edge and Platform\\One Edge\\Digital Operations\\AIO\\Core\\SDKs",
+  "codebaseName": "azure-iot-sdk-c",
+  "notificationAliases": [ "ewertons@microsoft.com" ],
+  "allTools": true
+}
