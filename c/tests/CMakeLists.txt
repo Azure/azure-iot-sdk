@@ -656,21 +656,36 @@ if(AZ_IOT_WITH_PAHO)
 endif()
 
 if(AZ_IOT_WITH_AZ_MQTT)
+    # The adapter's sizes: its az_iot_az_mqtt_config.h, with the same definitions.
+    get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|SEND_|RECEIVE_|INFLIGHT_|USER_PROPERTIES_)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
-    target_compile_definitions(az_iot_tests_az_mqtt_adapter PRIVATE
-        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
         integration/az_mqtt_adapter_broker_test.c NO_CTEST)
-    target_link_libraries(az_iot_az_mqtt_adapter_broker PRIVATE az_iot_adapter_az_mqtt)
-    target_compile_definitions(az_iot_az_mqtt_adapter_broker PRIVATE
-        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
+    foreach(_t az_iot_tests_az_mqtt_adapter az_iot_az_mqtt_adapter_broker)
+        target_link_libraries(${_t} PRIVATE az_iot_adapter_az_mqtt)
+        target_include_directories(${_t} PRIVATE ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+        target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
+    endforeach()
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
 
-    get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    # Each footprint, a user's definition over it, and a config file: resolved as documented.
+    foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
+        set(_t az_iot_tests_az_mqtt_config_${_case})
+        add_executable(${_t} unit/az_mqtt_config_test.c)
+        target_include_directories(${_t} PRIVATE
+            ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${CMAKE_CURRENT_SOURCE_DIR}/unit)
+        target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_CONFIG_TEST_${_case})
+        az_iot_apply_warnings(${_t})
+        add_test(NAME ${_t} COMMAND ${_t})
+    endforeach()
+    unset(_case)
+    unset(_az_mqtt_size_defs)
+
     foreach(_v 3 5)
         set(_t az_iot_conformance_az_mqtt_v${_v})
         add_executable(${_t} conformance/az_mqtt_main.c)
