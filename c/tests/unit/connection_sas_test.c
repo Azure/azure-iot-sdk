@@ -3177,6 +3177,27 @@ static void a_pending_dps_renewal_past_expiry_ends_the_session(void** state)
   assert_int_equal(g_fake.calls, 2);
 }
 
+/* A token held while the session could not be renewed (registering) is the
+ * renewal's token when it is due: no callback, renewed with it. */
+static void a_held_dps_token_is_used_for_the_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_user_token_dps(fx);
+  fx->client.dps_registration_ref = true;
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
+  assert_true(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].held);
+  fx->client.dps_registration_ref = false;
+  size_t from = fx->log_count;
+
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
+  pump(fx, 2);
+  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
+  (void)ready_dps(fx);
+  assert_dps_renewal_events(fx, from, true);
+  assert_int_equal(g_fake.calls, 1);
+}
+
 /* A token supplied unasked to a session on a user-provided token renews it. */
 static void an_unasked_token_renews_the_dps_session(void** state)
 {
@@ -3529,6 +3550,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_pending_dps_renewal_past_expiry_ends_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_renews_the_dps_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_held_dps_token_is_used_for_the_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_connects_with_a_sas_token_when_only_a_key_is_set, setup, teardown),
     cmocka_unit_test_setup_teardown(

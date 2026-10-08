@@ -4967,8 +4967,9 @@ static void retry_sas_token_renewal_later(
   c->sas_token_ask_after_ms[scope] = c->sas_token_renewal_due_ms[scope];
 }
 
-/** @brief Opens a request for @p scope's renewal token; do_work() asks for it
- * while the session stays up, and the renewal starts once it is READY. */
+/** @brief Opens a request for @p scope's renewal token, or makes a held one
+ * it; do_work() asks for it while the session stays up, and the renewal starts
+ * once it is READY. */
 static void request_sas_token_for_renewal(
     az_iot_connection_client* c,
     az_iot_connection_scope scope)
@@ -4978,6 +4979,12 @@ static void request_sas_token_for_renewal(
   if (c->sas_token_request[scope].request_id == 0)
   {
     open_sas_token_request(c, scope, true, 0);
+  }
+  else if (c->sas_token_request[scope].held)
+  {
+    /* Supplied while the session could not be renewed (e.g. registering). */
+    c->sas_token_request[scope].held = false;
+    c->sas_token_request[scope].for_renewal = true;
   }
 }
 
