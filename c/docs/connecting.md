@@ -224,11 +224,10 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 
 ## Authentication
 
-> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
-> with the primary and secondary keys, then tokens from `on_sas_token_required`, with fallback on
-> rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the hub's token
-> (`renewal_percent`); `auth_source` in state events. Proposed, not implemented yet: further
-> provider certificates.
+> **Implemented:** X.509 from `certificate_provider` (several certificates per role), then SAS
+> tokens signed with the primary and secondary keys, then tokens from `on_sas_token_required`,
+> with fallback on rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the
+> hub's token (`renewal_percent`); `auth_source` and `x509_index` in state events.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -303,8 +302,16 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   reconnect is an ordinary failure (fallback, policy). A provisioning session is not renewed: a
   registration is short, and a session a feature client holds is reopened with a new token when
   the service ends it.
-- **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
-  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
+- **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until
+  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4). Each is a
+  source in the pass, in index order, before the keys: a rejected certificate falls back to the
+  next index at once. The index that connected is kept, like any source, and reported in
+  `x509_index`. The hub uses the operational certificates when index 0 of that role exists,
+  else the bootstrap ones, checked on every attempt: an operational certificate that appears
+  (e.g. issued by DPS) replaces a kept bootstrap one. Without a certificate at index 0, none past
+  it is asked for or reused: a kept later index is dropped, for DPS and the hub. A provider with one certificate per role returns `AZ_IOT_ERR_NOT_FOUND`
+  for index > 0. Uses: a self-signed identity's primary and secondary certificates, or the
+  previous issued certificate kept as a rollback.
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
   certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).

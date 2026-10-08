@@ -15,6 +15,7 @@
 
 #include <cmocka.h>
 
+#include "az_iot_az_mqtt_config.h"
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -175,7 +176,7 @@ static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state
   // Five fields of 65,000 bytes (each under the MQTT limit): more than the send buffer.
   static char text[65001];
   memset(text, 'a', sizeof(text) - 1);
-  assert_true(5u * (sizeof(text) - 1) > AZ_IOT_AZ_MQTT_BUFFER_SIZE);
+  assert_true(5u * (sizeof(text) - 1) > AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
   az_iot_mqtt_connect_options o = valid_connect();
   o.client_id = text;
   o.username = text;
