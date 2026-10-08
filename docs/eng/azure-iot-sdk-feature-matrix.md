@@ -1,8 +1,8 @@
 # Azure/azure-iot-sdk — client feature matrix
 
-Repo: `Azure/azure-iot-sdk` (**private** mono-repo), `main` @ `a453698`, 2026-10-08. Verified by reading the code, not docs or the public SDKs.
+Repo: `Azure/azure-iot-sdk` (**private** mono-repo). Consolidated across **both** shipping branches: `main` @ `43973a1` and `releases/public-preview` @ `093138f`, 2026-10-08. Verified by reading the code, not docs or the public SDKs.
 
-**This is not the old public SDK.** It ships two client libraries only — **C** (`/c`, C99, `AZ_IOT_VERSION_STRING "1.0.0-preview"`) and **.NET** (`/dotnet`, `net10.0`, `Microsoft.Azure.Iot.Device` **1.1.0**, published to **GitHub Packages**, not nuget.org). No Java/Node/Python/embedded columns exist.
+**This is not the old public SDK.** It ships two client libraries only — **C** (`/c`, C99, `AZ_IOT_VERSION_STRING "1.0.0-preview"` on both branches) and **.NET** (`/dotnet`, `net10.0`, `Microsoft.Azure.Iot.Device` **1.1.0** on `main` and **2.0.0-preview3** on the preview branch, published to **GitHub Packages**, not nuget.org). No Java/Node/Python/embedded columns exist.
 
 ### Reading the columns
 
@@ -11,14 +11,22 @@ The columns are **MQTT protocol versions**, because that is what determines wire
 | | Hub | MQTT | Encoding | C symbols | .NET types |
 |---|---|---|---|---|---|
 | **mqttv3** | the current Azure IoT Hub | v3.1.1 only | `$iothub/...` topics, percent-encoded property bag | `az_iot_mqttv3_*`, `inc/azure/iot/mqttv3/` | the mqttv3 path inside `Unified/*` |
-| **mqttv5** | the new Azure IoT Hub | v5 only | `ih/{deviceId}/...` topics, protobuf + v5 user properties | `az_iot_mqttv5_*`, `inc/azure/iot/mqttv5/` | **not on `main`** — see below |
+| **mqttv5** | the new Azure IoT Hub | v5 only | `ih/{deviceId}/...` topics, protobuf + v5 user properties | `az_iot_mqttv5_*`, `inc/azure/iot/mqttv5/` | `MQTTv5/*`, directly or via `Unified/*` |
 
-**The .NET mqttv5 column is `N/A` throughout.** The mqttv5 API set was split out of `main` to the `releases/public-preview` branch, so `dotnet/src` ships only the mqttv3 path inside `Unified/*`; there is no `MQTTv5/` directory on `main`, and `DoesClientSupportHubType` accepts Classic only. Rows describing .NET mqttv5 behaviour therefore describe a branch this matrix does not track. The protobuf contracts are still compiled into the package.
+### Branch notes
 
-**`Unified` is not the .NET equivalent of C mqttv3** — it is a facade that *was* designed to span both versions. On `main` only its mqttv3 half is reachable.
+The two branches have diverged: `main` is 20 commits ahead of `releases/public-preview`, which is 9 ahead of `main`. A cell states whether the capability **exists at all**; a Note says which branch when it is not on both:
 
-- **C** exposes two sibling API families and makes the **application** branch: read `az_iot_connection_client_get_hub_profile()`, then instantiate either `az_iot_mqttv3_telemetry_client` or `az_iot_mqttv5_telemetry_client`. Choosing the wrong one is refused with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
-- **.NET** branched internally on `ConnectionProfile` at runtime. With the mqttv5 half on the preview branch, that branch resolves to mqttv3 on `main`.
+- **no branch note** — present on both branches.
+- **"C: main only"** — the C side is on `main` but not yet on the preview branch (.NET, if applicable, is on both).
+- **".NET: preview only"** — the .NET side is on the preview branch but not on `main`.
+
+The split in one line: the **.NET mqttv5 client set lives only on the preview branch**, while the **newest C work (az_mqtt adapter, SAS application tokens and renewal, credential fallback, `SETTING_UP`) is only on `main`**.
+
+**`Unified` is not the .NET equivalent of C mqttv3** — it is a facade spanning both versions. On `main` only its mqttv3 half is reachable; the preview branch carries the whole thing.
+
+- **C** exposes two sibling API families and makes the **application** branch: read `az_iot_connection_client_get_hub_profile()`, then instantiate either `az_iot_mqttv3_telemetry_client` or `az_iot_mqttv5_telemetry_client`. A mismatch is refused with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- **.NET** branches internally on `ConnectionProfile` at runtime.
 
 - **DPS always speaks MQTT v3.1.1**, whichever hub follows, and is **not a separate client** — it runs inside the connection client, which then picks the MQTT version from the DPS-returned `connectionProfile`.
 - C keeps **one** connection client and splits only the feature clients (`c/docs/eng/client-separation.md`).
@@ -32,14 +40,14 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C mqttv3 | C mqttv5 | .NET mqttv3 | .NET mqttv5 | Notes |
 |---|---|---|---|---|---|
-| Maturity | Partial | Partial | Partial | N/A | C `1.0.0-preview` (header is the single source of truth, gated by `eng/check-version.sh`); .NET 1.1.0 to GitHub Packages |
-| Single connection client, DPS internal | Yes | Yes | Yes | N/A | `az_iot_connection_client` / `AbstractConnectionClient`; provisioning is not an app step |
-| Per-feature clients over one connection | Yes | Yes | Yes | N/A | telemetry / c2d / direct method / twin (+ file upload mqttv3 only) |
-| Generation selected at | client init (app picks the API) | ← | N/A — mqttv3 only | N/A | C refuses a mismatch with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. On `main` .NET has one path, so there is nothing to select |
-| Runtime generation query | Yes | Yes | Yes | N/A | `az_iot_connection_client_get_hub_profile()` / `ConnectionProfile` |
-| MQTTv3↔MQTTv5 fallback handled by | application | ← | N/A | N/A | C app must instantiate the other API family. No fallback exists on `main` for .NET — the mqttv5 half is on the preview branch |
-| API model | single-threaded `do_work()` pump, callbacks on caller thread, no internal threads | ← | Task-based async, `CancellationToken` on every op, `IDisposable` | N/A | .NET has **no** `IAsyncDisposable` |
-| Nullable / strictness | C99-strict, `-pedantic`, banned-construct + layering CI gates | ← | `<Nullable>enable</Nullable>` | N/A | |
+| Maturity | Partial | Partial | Partial | Partial | C `1.0.0-preview` on both branches (header is the single source of truth, gated by `eng/check-version.sh`); .NET 1.1.0 on `main`, 2.0.0-preview3 on the preview branch |
+| Single connection client, DPS internal | Yes | Yes | Yes | Yes | `az_iot_connection_client` / `AbstractConnectionClient`; provisioning is not an app step. .NET mqttv5: preview only |
+| Per-feature clients over one connection | Yes | Yes | Yes | Yes | telemetry / c2d / direct method / twin (+ file upload mqttv3 only). .NET mqttv5: preview only |
+| Generation selected at | client init (app picks the API) | ← | runtime, per connection | ← | C refuses a mismatch with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; .NET switches on `ConnectionProfile`. .NET mqttv5: preview only |
+| Runtime generation query | Yes | Yes | Yes | Yes | `az_iot_connection_client_get_hub_profile()` / `ConnectionProfile`. .NET mqttv5: preview only |
+| MQTTv3↔MQTTv5 fallback handled by | application | ← | library | ← | C app must instantiate the other API family; the .NET `Unified` facade branches for you. .NET mqttv5: preview only |
+| API model | single-threaded `do_work()` pump, callbacks on caller thread, no internal threads | ← | Task-based async, `CancellationToken` on every op, `IDisposable` | ← | .NET has **no** `IAsyncDisposable` |
+| Nullable / strictness | C99-strict, `-pedantic`, banned-construct + layering CI gates | ← | `<Nullable>enable</Nullable>` | ← | |
 | Struct/ABI versioning | Partial | Partial | N/A | N/A | `_internal_size` on events + cert-provider vtable v2; `struct_versioning.md` still a proposal |
 | Preview/experimental markers | Partial | Partial | No | N/A | No per-API attributes; C README carries the status banner |
 
@@ -48,21 +56,21 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Feature | C mqttv3 | C mqttv5 | .NET mqttv3 | .NET mqttv5 | Notes |
 |---|---|---|---|---|---|
 | MQTT 3.1.1 | Yes | N/A | Yes | N/A | Required for MQTTv3 **and** for DPS in both generations |
-| MQTT 5.0 | N/A | Yes | N/A | N/A | v5 user properties, correlation data, content type, message expiry, reason codes |
-| v5 user properties end-to-end | N/A | Yes | N/A | N/A | C now sets outbound and extracts inbound, with conformance round-trip cases (#205) |
-| MQTT over WebSockets | Yes | Yes | Yes | N/A | C `samples/websockets`; .NET mqttv5 websocket URI added (#269) |
-| HTTP CONNECT proxy | Yes | Yes | Partial | N/A | C `az_iot_mqtt_proxy_options` + `samples/proxy`; .NET websocket-only and not forwarded to MQTTv5 |
-| AMQP | No | No | No | N/A | Deliberate — see `c/docs/amqp_vs_mqtt_for_new_sdk_client.md`. Test-only AMQP under `c/tests/deps/amqp` |
-| HTTPS | Partial | No | Partial | N/A | Only the file-upload SAS PUT/notify; C ships **no** HTTP client (app supplies a transport hook) |
-| BYO MQTT client | Yes | Yes | Yes | N/A | C `az_iot_mqtt_iface` vtable + published conformance suite; .NET `IMqttClient` + `CustomMqttClientSample` |
-| Shipped adapters | Paho v3.1.1 + v5 (default) | ← | MQTTnet 5.1.0.1559 (`MqttNetAdapter`) | N/A | C adds **az_mqtt** (vendored, zero-allocation, v3+v5, `AZ_IOT_WITH_AZ_MQTT=OFF` by default, conformance-tested) and a Rust adapter that delegates to a runtime-installed FFI table, refusing only WebSockets and proxy connects |
+| MQTT 5.0 | N/A | Yes | N/A | Yes | v5 user properties, correlation data, content type, message expiry, reason codes. .NET mqttv5: preview only |
+| v5 user properties end-to-end | N/A | Yes | N/A | Yes | C sets outbound and extracts inbound, with conformance round-trip cases. .NET mqttv5: preview only |
+| MQTT over WebSockets | Yes | Yes | Yes | Yes | C `samples/websockets`; .NET mqttv5 websocket URI. .NET mqttv5: preview only |
+| HTTP CONNECT proxy | Yes | Yes | Partial | Partial | C `az_iot_mqtt_proxy_options` + `samples/proxy`; .NET websocket-only, and not forwarded to the nested mqttv5 client. .NET mqttv5: preview only |
+| AMQP | No | No | No | No | Deliberate — see `c/docs/amqp_vs_mqtt_for_new_sdk_client.md`. Test-only AMQP under `c/tests/deps/amqp` |
+| HTTPS | Partial | No | Partial | No | Only the file-upload SAS PUT/notify; C ships **no** HTTP client (app supplies a transport hook) |
+| BYO MQTT client | Yes | Yes | Yes | Yes | C `az_iot_mqtt_iface` vtable + published conformance suite; .NET `IMqttClient` + `CustomMqttClientSample` |
+| Shipped adapters | Paho v3.1.1 + v5 (default) | ← | MQTTnet 5.1.0.1559 (`MqttNetAdapter`) | ← | C adds **az_mqtt** (vendored, zero-allocation, v3+v5, `AZ_IOT_WITH_AZ_MQTT=OFF` by default, conformance-tested) and a Rust adapter that delegates to a runtime-installed FFI table, refusing only WebSockets and proxy connects. **C az_mqtt: main only** |
 | Allocation profile | Partial | Partial | N/A | N/A | Core is static/caller-allocated; PEM cert provider and the Paho adapter malloc |
-| TLS version control | No | No | Yes | N/A | C exposes only `use_tls`; .NET forces Tls12/Tls13. Neither can disable validation |
-| Reconnect / connection maintenance | Yes | Yes | Yes | N/A | C `src/core/retry_policy.c` + public `az_iot_retry_policy.h`; .NET `MqttConnectionManager.MaintainConnectionAsync` |
-| Keep-alive | Yes | Yes | Yes | N/A | C default 30 s; .NET default 60 s |
-| Clean start / session expiry / LWT | Yes | Yes | Yes | N/A | C `resolve_session_options()` sets per role (#204); MQTTv5 `//TODO subscribe elide logic` |
-| Subscription-ack gating | Yes | Yes | **Yes** | N/A | Both check SUBACK reason codes. C failure scope is configurable (`az_iot_subscription_failure_scope`); .NET always disconnects and reconnects |
-| MQTT DISCONNECT reason code | N/A | **Yes** | **N/A** | N/A | v5 only — v3.1.1 has no reason-code field. C sets 0x04 on the mqttv5 hub. `MqttDisconnect.Reason` exists as a model property but is unreachable on .NET `main`, which is mqttv3-only |
+| TLS version control | No | No | Yes | Yes | C exposes only `use_tls`; .NET forces Tls12/Tls13. Neither can disable validation |
+| Reconnect / connection maintenance | Yes | Yes | Yes | Yes | C `src/core/retry_policy.c` + public `az_iot_retry_policy.h`; .NET `MqttConnectionManager.MaintainConnectionAsync` |
+| Keep-alive | Yes | Yes | Yes | Yes | C default 30 s; .NET default 60 s |
+| Clean start / session expiry / LWT | Yes | Yes | Yes | Partial | C `resolve_session_options()` sets per role; .NET mqttv5 carries a `//TODO subscribe elide logic`. .NET mqttv5: preview only |
+| Subscription-ack gating | Yes | Yes | **Yes** | **Yes** | Both check SUBACK reason codes. C failure scope is configurable (`az_iot_subscription_failure_scope`); .NET always disconnects and reconnects. .NET mqttv5: preview only |
+| MQTT DISCONNECT reason code | N/A | **Yes** | **N/A** | Partial | v5 only — v3.1.1 has no reason-code field, so the .NET mqttv3 cell is N/A. C sets 0x04 on the mqttv5 hub; .NET exposes `MqttDisconnect.Reason` but always sends NormalDisconnection. .NET mqttv5: preview only |
 
 ## 3. Authentication
 
@@ -70,10 +78,10 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 |---|---|---|---|
 | X.509 client certificates | Yes | Yes | First auth source tried in C (`az_iot_auth_source`); the only one in .NET |
 | SAS token from symmetric key | **Partial** | **No** | C: Yes for DPS and the mqttv3 hub (base64 primary/secondary key, enrollment-group derivation); **the mqttv5 hub does not accept SAS yet**. .NET: `Password` is always an empty array |
-| Application-supplied SAS tokens | **Partial** | No | C `on_sas_token_required` + `az_iot_connection_client_update_sas_token()`; needs `sas_buffer`, no crypto backend. **DPS and mqttv3 hub only** — the mqttv5 hub refuses SAS |
-| SAS renewal before expiry | **Partial** | N/A | C renews at `renewal_percent` of lifetime (default 80) and reconnects; surfaced as `is_credential_renewal`. **DPS and mqttv3 hub only**, as above |
-| Credential fallback on rejection | **Yes** | No | C order: X.509 certificate indexes → primary key → secondary key → application token, without a backoff delay |
-| Multiple certificates per role | **Yes** | No | C `load(index)`, up to `AZ_IOT_MAX_CERTS_PER_ROLE` (4); each index is its own auth source |
+| Application-supplied SAS tokens | **Partial** | No | C `on_sas_token_required` + `az_iot_connection_client_update_sas_token()`; needs `sas_buffer`, no crypto backend. **DPS and mqttv3 hub only** — the mqttv5 hub refuses SAS. **C: main only** |
+| SAS renewal before expiry | **Partial** | N/A | C renews at `renewal_percent` of lifetime (default 80) and reconnects; surfaced as `is_credential_renewal`. **DPS and mqttv3 hub only**, as above. **C: main only** |
+| Credential fallback on rejection | **Yes** | No | C order: X.509 certificate indexes → primary key → secondary key → application token, without a backoff delay. **C: main only** |
+| Multiple certificates per role | **Yes** | No | C `load(index)`, up to `AZ_IOT_MAX_CERTS_PER_ROLE` (4); each index is its own auth source. **C: main only** |
 | TPM attestation | No | No | Explicitly out of scope (`c/docs/eng/certificate-management.md`) |
 | Entra ID / token credential | No | No | |
 | Certificate-provider abstraction | Yes | Partial | C `az_iot_certificate_provider.h` vtable (load/release + csr/sign, v2); .NET has `X509AuthenticationProvider` only |
@@ -90,31 +98,31 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C mqttv3 | C mqttv5 | .NET mqttv3 | .NET mqttv5 | Notes |
 |---|---|---|---|---|---|
-| D2C telemetry | Yes | Yes | Yes | N/A | |
-| Message properties | Yes | Yes | Yes | N/A | mqttv3 percent-encoded topic bag; mqttv5 v5 user properties |
-| Content type / encoding | Yes | Yes | Yes | N/A | .NET serializes `ContentType` and `ContentEncoding` into the mqttv3 topic; a `//TODO` there covers only filling them from user properties |
-| Message expiry | Partial | Partial | Partial | N/A | Present on the MQTT publish, not surfaced on the telemetry API |
-| Configurable QoS | Partial | Partial | No | N/A | .NET `//TODO do we want configurable QoS here?` |
+| D2C telemetry | Yes | Yes | Yes | Yes | .NET mqttv5: preview only |
+| Message properties | Yes | Yes | Yes | Yes | mqttv3 percent-encoded topic bag; mqttv5 v5 user properties. .NET mqttv5: preview only |
+| Content type / encoding | Yes | Yes | Yes | Yes | .NET serializes `ContentType` and `ContentEncoding` into the mqttv3 topic; a `//TODO` there covers only filling them from user properties. .NET mqttv5: preview only |
+| Message expiry | Partial | Partial | Partial | Partial | Present on the MQTT publish, not surfaced on the telemetry API. .NET mqttv5: preview only |
+| Configurable QoS | Partial | Partial | No | No | .NET `//TODO do we want configurable QoS here?` |
 | C2D receive | Yes | **N/A** | **No** | N/A | Service supports C2D on mqttv3 only. C mqttv5 C2D client was **removed** (#272); .NET dropped C2D from the unified API (#255) |
 | C2D settlement (accept/reject/abandon) | No | N/A | N/A | N/A | C: "design C2D strict-settlement state machine" still open (mqttv3 only) |
-| Direct methods | Yes | Yes | Yes | N/A | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake |
-| Slow / async method responses | Yes | Yes | Partial | N/A | C has a `direct_method_slow_responder` sample under both `samples/unified/` and `samples/mqttv5/` (#260) |
-| Twin get | Yes | Yes | Yes | N/A | .NET mqttv5 supports selective/ETag (`getReported`, `ifNotMatch`) |
-| Reported-properties patch | Yes | Yes | Yes | N/A | |
-| Desired-properties patch events | Yes | Yes | Yes | N/A | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240) |
-| Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | N/A | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions` |
-| MQTTv5 presence / birth handshake | N/A | Yes | N/A | N/A | `common/Protos/presence.proto`; C `presence_encode_birth()` |
-| Custom topics | N/A | **No** | N/A | N/A | mqttv5-only service feature, **publish-only in public preview** (one topic group, 10 templates, `{deviceId}` the only variable). Absent from `main` in both libraries; .NET has a `CustomTopicsClient` on the preview branch, C has a design but no code |
+| Direct methods | Yes | Yes | Yes | Yes | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake. .NET mqttv5: preview only |
+| Slow / async method responses | Yes | Yes | Partial | Partial | C has a `direct_method_slow_responder` sample under both `samples/unified/` and `samples/mqttv5/` (#260). .NET mqttv5: preview only |
+| Twin get | Yes | Yes | Yes | Yes | .NET mqttv5 supports selective/ETag (`getReported`, `ifNotMatch`). .NET mqttv5: preview only |
+| Reported-properties patch | Yes | Yes | Yes | Yes | .NET mqttv5: preview only |
+| Desired-properties patch events | Yes | Yes | Yes | Yes | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240). .NET mqttv5: preview only |
+| Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | Yes | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions`. .NET mqttv5: preview only |
+| MQTTv5 presence / birth handshake | N/A | Yes | N/A | Yes | `common/Protos/presence.proto`; C `presence_encode_birth()`. .NET mqttv5: preview only |
+| Custom topics | N/A | **No** | N/A | **Partial** | mqttv5-only service feature, **publish-only in public preview** (one topic group, 10 templates, `{deviceId}` the only variable). .NET `CustomTopicsClient` matches wildcards itself; subscriptions are lost on reconnect. **.NET: preview only; C: not implemented on either branch** |
 | File upload (SAS URI + notify) | Yes | **N/A** | **No** | N/A | Not offered on mqttv5. C mqttv3 has it (app supplies the HTTP hook); .NET **removed** file upload from the unified API (#255) |
-| Device update (software updates) | Partial | Partial | **No** | N/A | C only: `az_iot_su.h`, su-over-DPS (renamed from ADU in #270). **.NET has no software-update code at all** |
-| Connection state / error propagation | **Yes** | **Yes** | Yes | N/A | C now has an observer registry, scoped (DPS or HUB) state, `is_retriable` + `{source,code,message}` (#221/#224/#235) |
+| Device update (software updates) | Partial | Partial | **No** | No | C only: `az_iot_su.h`, su-over-DPS (renamed from ADU in #270). **.NET has no software-update code at all** |
+| Connection state / error propagation | **Yes** | **Yes** | Yes | Yes | C now has an observer registry, scoped (DPS or HUB) state, `is_retriable` + `{source,code,message}` (#221/#224/#235). .NET mqttv5: preview only |
 | Recover from FAULTED via close() | **Yes** | **Yes** | N/A | N/A | C: close() is a legal exit from FAULTED (#213) — was a permanent deadlock |
-| Retry: exponential backoff + jitter | Yes | Yes | Yes | N/A | C 1 s→**60 s** default cap (#273), ∞, ±20 %, jitter not clamped to the cap (#219), per-scope ladders (#214); .NET `ExponentialBackoffRetryPolicy` (cap 60 s, jitter 95–105 %) |
-| Retry-after honoured | Partial | Partial | Partial | N/A | Both honour DPS polling retry-after; C also honours it on the software-update topic. CSR `RetryAfterSeconds` is surfaced, not auto-applied |
-| Identity-rejection recovery | Yes | Yes | Yes | N/A | C now selectable: `REPROVISION`, `RETRY_HUB` (retry the cached hub) or `NONE`, bounded by `max_hub_connect_attempts_before_reprovision` |
-| Offline queueing / persistence | No | No | No | N/A | Publishing while disconnected fails (`AZ_IOT_ERR_NOT_CONNECTED` / `MqttClientNotConnectedException`) |
-| Modules / IoT Edge | No | No | No | N/A | No ModuleClient, no edgeHub/workload HSM, no gateway support anywhere in the repo |
-| Service-side client | No | No | No | N/A | No registry/jobs/query/digital-twin/C2D-send. .NET tests consume the **old** v1 packages for the service side |
+| Retry: exponential backoff + jitter | Yes | Yes | Yes | Yes | C 1 s→**60 s** default cap (#273), ∞, ±20 %, jitter not clamped to the cap (#219), per-scope ladders (#214); .NET `ExponentialBackoffRetryPolicy` (cap 60 s, jitter 95–105 %). .NET mqttv5: preview only |
+| Retry-after honoured | Partial | Partial | Partial | Partial | Both honour DPS polling retry-after; C also honours it on the software-update topic. CSR `RetryAfterSeconds` is surfaced, not auto-applied. .NET mqttv5: preview only |
+| Identity-rejection recovery | Yes | Yes | Yes | Yes | C now selectable: `REPROVISION`, `RETRY_HUB` (retry the cached hub) or `NONE`, bounded by `max_hub_connect_attempts_before_reprovision`. .NET mqttv5: preview only |
+| Offline queueing / persistence | No | No | No | No | Publishing while disconnected fails (`AZ_IOT_ERR_NOT_CONNECTED` / `MqttClientNotConnectedException`) |
+| Modules / IoT Edge | No | No | No | No | No ModuleClient, no edgeHub/workload HSM, no gateway support anywhere in the repo |
+| Service-side client | No | No | No | No | No registry/jobs/query/digital-twin/C2D-send. .NET tests consume the **old** v1 packages for the service side |
 
 ## 5. DPS / provisioning
 
@@ -170,19 +178,19 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Unit tests | Yes (46 cmocka files) | Yes (xunit.v3 + Moq, 75 facts + 9 theories) | C runs the suite under each of four language standards |
+| Unit tests | Yes (46 cmocka files) | Yes (xunit.v3 + Moq, 75 facts + 9 theories on `main`) | C runs the suite under each of four language standards. The preview branch carries additional .NET mqttv5 test files |
 | Known-answer crypto vectors | Yes | N/A | C software-update adapters: FIPS 180-4 SHA-256, RS256 good/bad, root→SJWK→manifest chain |
 | MQTT-interface conformance suite | Yes | No | C `tests/conformance/` for BYO adapters; Paho v3 + v5 **and** az_mqtt v3 + v5, against a Mosquitto service container |
 | Integration tests | Yes | Yes | |
 | E2E against live Azure | Yes | Yes | Resources provisioned per run via OIDC, torn down after; Windows + Linux legs |
-| SAS e2e | **Yes** | N/A | C `e2e_sas_test.c`, `e2e_csr_sas_test.c`: DPS and hub over SAS, and SAS onboarding with a DPS-issued certificate |
-| **MQTTv5 e2e actually executed** | Yes (vs a mock mqttv5 hub) | **No** | .NET `Setup.cs` skips 2×, both "No MQTTv5 hub to test against yet" |
+| SAS e2e | **Yes** | N/A | C `e2e_sas_test.c`, `e2e_csr_sas_test.c`: DPS and hub over SAS, and SAS onboarding with a DPS-issued certificate. **C: main only** |
+| **MQTTv5 e2e actually executed** | Yes (vs a mock mqttv5 hub) | **No** | .NET `Setup.cs` skips 2×, both "No MQTTv5 hub to test against yet". The C e2e suites run against mqttv3 only |
 | Dedicated software-update / CSR / PKCS#11 e2e | Yes | **Yes** | C: `ci-c-e2e-adu.yml`, `ci-c-e2e-csr.yml` (Linux only), PKCS#11 on the Linux leg. .NET CSR tests re-enabled and split into `ci-dotnet-e2e-csr.yml` |
 | Software-update e2e vs the real service | Yes | N/A | `az_iot_tests_e2e_su_offer`: real offered update, libcurl download, engine hash check |
 | Fault injection | Partial | Yes | .NET covers faults by **unit test** by design — `ConnectionFaultedUnitTests.cs`, 28 facts/theories |
 | Sanitizers | Yes | No | valgrind (Linux) + MSVC ASan, plus a race-detector job (helgrind/DRD) |
 | Style / layering gates | Yes | No | `check-banned-constructs.sh`, `check-layering.sh`, `check-log-components.sh`, `check-hardening.sh`, clang-format |
-| **Static analysis** | **Yes** | **No** | C: clang-tidy (`c/.clang-tidy`), MSVC `/analyze`, CodeQL `c-cpp`, plus an Azure Pipelines SDL build (CodeQL, BinSkim, antimalware, SBOM). Repo-wide: CodeQL for `actions`, dependency review, workflow lint. **There is no C# CodeQL job** — the .NET workflow scans for vulnerable packages, which is dependency scanning, not static code analysis |
+| **Static analysis** | **Yes** | **Yes** | C: clang-tidy (`c/.clang-tidy`), MSVC `/analyze`, CodeQL `c-cpp`, plus an Azure Pipelines SDL build (CodeQL, BinSkim, antimalware, SBOM) — **C SDL pipeline: main only**. .NET: `codeql-dotnet.yml` (`languages: csharp`) plus vulnerable-package scanning — **both main only**. Repo-wide: CodeQL for `actions`, dependency review, workflow lint |
 | **Build hardening** | **Yes** | Partial | C: stack protector, FORTIFY, PIE/RELRO on GCC/Clang; `/guard:cf`, `/CETCOMPAT`, `/sdl` on MSVC, enforced by `check-hardening.sh`. .NET: strong-name signing |
 | Coverage | Yes | Yes | C: gcovr with per-component floors, patch coverage, and a zero-gcda failure. **No overall percentage is published any more.** .NET: XPlat + CodeCoverageSummary |
 | Fuzzing | No | No | |
@@ -195,11 +203,11 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 |---|---|---|---|
 | Installable / linkable package | **Yes** | Yes | C: `install()`/`export()` targets, CMake package config and pkg-config behind `AZ_IOT_INSTALL`; builds correctly as a CMake subproject. **No vcpkg port published** |
 | Generated API reference | **No** | **No** | Public C headers are Doxygen-formatted but there is still **no Doxyfile and no doc build**, so no API reference is produced |
-| Static analysis | **Yes** | **No** | See §9 — .NET has dependency scanning only, no C# CodeQL |
-| Supply chain / SBOM | **Partial** | **Partial** | C `cgmanifest.json` pins every third-party component, SBOM generated by the official pipeline, installed deps ship LICENSE/NOTICE. Repo-wide dependency review; .NET vulnerable-package scan. Not confirmed whether the SBOM is published as an artifact |
+| Static analysis | **Yes** | **Yes** | See §9. C SDL pipeline and the whole .NET analysis set are **main only** |
+| Supply chain / SBOM | **Partial** | **Partial** | C `cgmanifest.json` pins every third-party component, SBOM generated by the official pipeline, installed deps ship LICENSE/NOTICE — **C: main only**. Repo-wide dependency review; .NET vulnerable-package scan — **.NET: main only**. Not confirmed whether the SBOM is published as an artifact |
 | Secret hygiene in memory | **Partial** | **No** | C `az_iot_crypto__wipe()` covers HMAC scratch, SAS tokens, key slots and `sas_buffer` on teardown; `OPENSSL_cleanse` in key custody. .NET relies on the GC |
 | Log redaction guarantees | Partial | Partial | C redacts PKCS#11 URIs and truncates Paho traces; neither library **documents** what must never reach a sink |
-| Measured footprint (ROM/RAM) | **Partial** | N/A | Published for the az_mqtt adapter only: per-module `.text`/`.rodata`/`.data`, per-config deltas, RAM per client. No figures for the Paho build |
+| Measured footprint (ROM/RAM) | **Partial** | N/A | Published for the az_mqtt adapter only: per-module `.text`/`.rodata`/`.data`, per-config deltas, RAM per client. No figures for the Paho build. **C: main only** |
 | Portable time source | Partial | N/A | `az_iot_time_mono_ms()` is POSIX `clock_gettime` or Win32 `GetTickCount64` behind `#if defined(_WIN32)`. **Still no platform hook**, so an RTOS port must patch `src/core/mono_time.c` |
 | Thread-safety contract | Partial | Partial | C is a single-threaded `do_work()` pump with callbacks on the caller's thread, stated in `README.md`/`design.md` but not enforced by a test |
 | Reboot persistence / session resumption | Partial | **No** | Only the software-update client persists (`persist_state_fn`/`load_state_fn`, CRC-32 guarded). MQTT session, twin version and in-flight operations are cold-started |
@@ -226,7 +234,7 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 - Naming: one file still references the retired `gen1`/`gen2`/`Classic` terms — `c/eng/check-layering.sh`, where they are the guard pattern itself.
 
 **.NET**
-- **The mqttv5 API set is not on `main`** — it lives on `releases/public-preview`. Everything mqttv5 in this matrix is therefore untracked here.
+- **The mqttv5 API set is on `releases/public-preview`, not `main`.** Rows above record what it does; the branch note says where it lives. Known gaps in it: subscriptions are lost on reconnect, and a device ID that changes after reprovisioning is not handled (both in `CustomTopicsClient`).
 - `Unified` twin error mapping always returns `Result.Ok` (`Unified/Twin/TwinClient.cs:261-262`).
 - Content type/encoding carries a `//TODO` on the unified telemetry path (`Unified/Telemetry/TelemetryClient.cs:65`).
 - Telemetry QoS is not configurable (`Models/Telemetry/DeviceToCloudTelemetry.cs:13`).
@@ -252,24 +260,25 @@ Old-SDK staples deliberately **absent**: AMQP and multiplexing, HTTPS transport,
 
 ## 13. Caveats on this report
 
-- Read from a local clone at `a453698` (2026-10-08); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
-- **The .NET mqttv5 API set is on `releases/public-preview`, not `main`.** This matrix tracks `main`, so every .NET mqttv5 cell reads N/A. That is a statement about where the code lives, not about whether the feature works.
+- Read from local clones of **both** branches at `main` @ `43973a1` and `releases/public-preview` @ `093138f` (2026-10-08); nothing was built or executed, so "Yes" means the code path exists and is wired, not that it was run.
+- **A cell says whether the capability exists at all; the Note says which branch when it is not on both.** No branch note means both branches carry it. `main` is 20 commits ahead of the preview branch, which is 9 ahead of `main`.
+- The split in one line: the **.NET mqttv5 client set is preview-only**, and the **newest C work is main-only** (az_mqtt adapter, SAS application tokens and renewal, credential fallback, multiple certificates per role, `SETTING_UP`/`RETRY_PENDING`, the SDL pipeline, SAS e2e). The .NET analysis workflows are also main-only.
 - **Cut is not the same as missing.** C2D and file upload are absent on mqttv5 because the service does not offer them there; both libraries deleted their mqttv5 implementations rather than ship ahead of the service.
-- Both libraries are **pre-release** — C `1.0.0-preview`, .NET `1.1.0` to GitHub Packages — so API shapes are still free to change.
-- **No overall coverage percentage is published any more**; `code-coverage.md` now defines per-component floors and patch coverage instead. The 72.5 % / 49.9 % figures quoted in earlier revisions are withdrawn, not superseded.
+- Both libraries are **pre-release** — C `1.0.0-preview` on both branches; .NET `1.1.0` on `main` and `2.0.0-preview3` on the preview branch.
+- **No overall coverage percentage is published any more**; `code-coverage.md` defines per-component floors and patch coverage instead. The 72.5 % / 49.9 % figures quoted in earlier revisions are withdrawn, not superseded.
 - `c/docs/TODO.md` has been deleted; see the note in §11.
 - Terminology follows the `mqttv3` / `mqttv5` convention.
 
 ## 14. What changed since the 2026-09-28 revision
 
-Rechecked at `a453698` after roughly 65 merged PRs (#315–#387). The largest movements:
+Rechecked across both branches after roughly 65 merged PRs (#315–#392). The largest movements:
 
 - **SAS authentication landed for C** and is first-class alongside X.509: symmetric keys (primary/secondary, enrollment-group derivation), application-supplied tokens, renewal before expiry, and ordered fallback on rejection. **This retires the "X.509 is the only device auth" statement that headed earlier revisions.** The mqttv5 hub still refuses SAS.
-- **.NET mqttv5 moved off `main`** to `releases/public-preview`, so its column is N/A throughout.
-- **Static analysis and build hardening arrived**, from nothing: clang-tidy, MSVC `/analyze`, CodeQL (C and actions), dependency review, workflow lint, an SDL pipeline, and enforced hardening flags. Earlier revisions listed this as absent.
+- **The branches diverged**, and this revision consolidates them rather than tracking `main` alone: the .NET mqttv5 client set (including `CustomTopicsClient`) is preview-only, the newest C work is main-only.
+- **Static analysis and build hardening arrived**, from nothing: clang-tidy, MSVC `/analyze`, CodeQL for C, C# and actions, dependency review, workflow lint, an SDL pipeline, and enforced hardening flags.
 - **The C library is installable** (CMake export + pkg-config + subproject support) and gained a **Yocto consumer leg**.
 - **A second MQTT adapter** — vendored `az_mqtt`, zero-allocation, v3 and v5, opt-in, conformance-tested — with the first **published memory-footprint figures**.
-- Version moved to `1.0.0-preview` (C) and `1.1.0` (.NET); C `README` and a client-configuration reference replaced the old build docs.
+- **Custom topics** appears for the first time: an mqttv5-only, publish-only preview capability, implemented in .NET on the preview branch and designed but not written in C.
 - Connection work: generalized retry policy (`retry_policy.c`, `az_iot_retry_policy.h`; `reconnect.c` is gone), `SETTING_UP` state, `RETRY_PENDING` rename, a `LOCAL` error source, selectable identity-rejection recovery, and pending-PUBACK slots taken before the publish — which closes GitHub issue #258.
 - Logging gained a file sink, a defined line format and 16 CI-checked components.
 - Secret zeroization went from a single `OPENSSL_cleanse` to a general `az_iot_crypto__wipe()` across tokens, keys and buffers.
