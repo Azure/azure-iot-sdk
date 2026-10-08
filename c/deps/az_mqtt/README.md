@@ -96,6 +96,7 @@ az_result rc = az_mqtt5_client_init(&client, &options);
 | `AZ_MQTT_BUILD_SAMPLES` | `ON`; `OFF` as a subproject | |
 | `AZ_MQTT_BUILD_TESTS` | `ON`; `OFF` as a subproject | |
 | `AZ_MQTT_WARNINGS_AS_ERRORS` | `OFF` | |
+| `AZ_MQTT_BUILD_FUZZERS` | `OFF` | libFuzzer targets and their drop folder ([tests/fuzz](tests/fuzz/README.md)): clang (ASan, UBSan) or MSVC (ASan) |
 
 In another CMake project, `add_subdirectory()` this directory and link `az_mqtt::mqttv3` and/or
 `az_mqtt::mqttv5`. If the project already builds azure-sdk-for-c (target `az_core`), az_mqtt uses

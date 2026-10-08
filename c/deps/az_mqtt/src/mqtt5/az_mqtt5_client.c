@@ -37,10 +37,6 @@ _user_properties(az_mqtt5_client const* client, int32_t* out_capacity)
   return (az_mqtt5_user_property*)az_span_ptr(span);
 }
 
-// Reason codes share decode_codes with subscription identifiers (int32_t).
-typedef char
-    _az_mqtt5_reason_code_is_32_bits[sizeof(az_mqtt5_reason_code) == sizeof(int32_t) ? 1 : -1];
-
 /** @brief decode_codes as an int32_t array; its capacity in *@p out_capacity. */
 static int32_t* _codes(az_mqtt5_client const* client, int32_t* out_capacity)
 {
@@ -368,7 +364,7 @@ static az_result _handle_ack(az_mqtt5_client* client, az_mqtt_packet_type type, 
 static az_result _handle_suback(az_mqtt5_client* client, az_span body)
 {
   az_mqtt5_suback_data suback;
-  suback.reason_codes = (az_mqtt5_reason_code*)_codes(client, &suback.reason_code_capacity);
+  suback.reason_codes = _codes(client, &suback.reason_code_capacity);
   suback.reason_code_count = 0;
   suback.user_properties = _user_properties(client, &suback.user_property_capacity);
   suback.user_property_count = 0;
@@ -395,7 +391,7 @@ static az_result _handle_suback(az_mqtt5_client* client, az_span body)
 static az_result _handle_unsuback(az_mqtt5_client* client, az_span body)
 {
   az_mqtt5_suback_data unsuback;
-  unsuback.reason_codes = (az_mqtt5_reason_code*)_codes(client, &unsuback.reason_code_capacity);
+  unsuback.reason_codes = _codes(client, &unsuback.reason_code_capacity);
   unsuback.reason_code_count = 0;
   unsuback.user_properties = _user_properties(client, &unsuback.user_property_capacity);
   unsuback.user_property_count = 0;
