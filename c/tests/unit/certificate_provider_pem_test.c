@@ -231,6 +231,13 @@ static void test_load_rejects_null_arguments(void** state)
       AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, NULL));
+  /* At any index; past index 0 a valid call is NOT_FOUND (one certificate). */
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 1, NULL));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
 
   az_iot_certificate_provider_pem_deinit(&mgr);
 }

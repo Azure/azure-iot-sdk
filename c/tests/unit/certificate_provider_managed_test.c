@@ -144,6 +144,14 @@ static void managed_init_generates_key_and_valid_csr(void** state)
   assert_int_equal(
       AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
 
+  /* One certificate per role: past index 0 NOT_FOUND; arguments are still checked. */
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_BOOTSTRAP, 1, NULL));
+
   az_iot_certificate_provider_managed_deinit(&prov);
   remove_test_files();
 }
