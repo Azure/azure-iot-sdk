@@ -36,9 +36,10 @@ set(_sources
     mqttv3                        mqttv3_test.c
     mqttv5                        mqttv5_test.c
     adapter_paho                  adapter_paho_test.c
+    adapter_az_mqtt               adapter_az_mqtt_test.c
     adapter_rust_mqtt             adapter_rust_mqtt_test.c
-    su_crypto_openssl             su_crypto_test.c
-    su_crypto_mbedtls             su_crypto_test.c
+    crypto_openssl                crypto_test.c
+    crypto_mbedtls                crypto_test.c
     certificate_provider_managed  certificate_provider_managed_test.c
 )
 list(LENGTH _sources _n)
@@ -60,13 +61,13 @@ foreach(_i RANGE 0 ${_last} 2)
     add_test(NAME install_test_${_comp} COMMAND install_test_${_comp})
 endforeach()
 
-if(TARGET install_test_su_crypto_openssl)
-    target_compile_definitions(install_test_su_crypto_openssl PRIVATE
-        AZ_IOT_TEST_HOOKS_HEADER="az_iot_su_crypto_openssl.h"
-        AZ_IOT_TEST_HOOKS=az_iot_su_crypto_openssl_hooks)
+if(TARGET install_test_crypto_openssl)
+    target_compile_definitions(install_test_crypto_openssl PRIVATE
+        AZ_IOT_TEST_CRYPTO_HEADER="az_iot_crypto_openssl.h"
+        AZ_IOT_TEST_CRYPTO=az_iot_crypto_openssl)
 endif()
-if(TARGET install_test_su_crypto_mbedtls)
-    target_compile_definitions(install_test_su_crypto_mbedtls PRIVATE
-        AZ_IOT_TEST_HOOKS_HEADER="az_iot_su_crypto_mbedtls.h"
-        AZ_IOT_TEST_HOOKS=az_iot_su_crypto_mbedtls_hooks)
+if(TARGET install_test_crypto_mbedtls)
+    target_compile_definitions(install_test_crypto_mbedtls PRIVATE
+        AZ_IOT_TEST_CRYPTO_HEADER="az_iot_crypto_mbedtls.h"
+        AZ_IOT_TEST_CRYPTO=az_iot_crypto_mbedtls)
 endif()

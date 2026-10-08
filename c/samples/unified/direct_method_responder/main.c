@@ -263,7 +263,7 @@ static void pump(sample_state* s, uint32_t timeout_ms)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -287,7 +287,7 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
-   * policy is what re-provisions a device its hub no longer accepts. */
+   * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;

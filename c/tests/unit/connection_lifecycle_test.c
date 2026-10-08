@@ -346,7 +346,7 @@ static void the_default_options_enable_reconnection(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  az_iot_reconnection_policy expected = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy expected = az_iot_connection_client_get_default_retry_policy();
 
   assert_true(opts.reconnection_policy.initial_delay_ms > 0);
   assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
@@ -392,7 +392,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
 
   /* Retrying, not terminal. */
-  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
 
   /* And the retry is really issued once the backoff elapses. */
@@ -449,7 +449,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
+  opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
   opts.host = "broker.example";
   opts.client_id = "ut-device";
 
@@ -1265,7 +1265,8 @@ static void publish_before_connected_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 static void subscribe_before_connected_is_rejected(void** state)
@@ -1294,7 +1295,8 @@ static void publish_after_disconnect_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 /* ------------------------------------------------------------------------- */

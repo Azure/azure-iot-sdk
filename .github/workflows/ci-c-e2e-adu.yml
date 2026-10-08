@@ -19,12 +19,14 @@
 # Environment. E2E-PLACEHOLDER: runs against a standing environment described
 # by the repository variables and secrets below, until the shared provisioning
 # action can create one (DPS + ADR namespace + Device Update instance, linked):
-#   vars:    E2E_SU_DPS_HOST, E2E_SU_ID_SCOPE, E2E_SU_REG_ID, E2E_SU_RESOURCE_GROUP,
-#            E2E_SU_LOCATION, E2E_SU_ADR_NAMESPACE, E2E_SU_ADU_ENDPOINT,
+#   vars:    E2E_SU_SUBSCRIPTION_ID, E2E_SU_DPS_HOST, E2E_SU_ID_SCOPE, E2E_SU_REG_ID,
+#            E2E_SU_RESOURCE_GROUP, E2E_SU_LOCATION, E2E_SU_ADR_NAMESPACE, E2E_SU_ADU_ENDPOINT,
 #            E2E_SU_STORAGE_ACCOUNT, E2E_SU_STORAGE_CONTAINER, E2E_SU_ARM_ENDPOINT (optional)
 #   secrets: E2E_SU_DEVICE_CERT_PEM_B64, E2E_SU_DEVICE_KEY_PEM_B64 (X.509 of E2E_SU_REG_ID),
-#            AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID (OIDC; needs ADR job
-#            and Device Update import rights, and blob write on the storage account)
+#            AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC; needs ADR job and Device Update
+#            import rights, and blob write on the storage account)
+#   The environment's subscription is its own variable, not the shared
+#   AZURE_SUBSCRIPTION_ID secret, so it can differ from the other e2e workflows'.
 
 name: ci-c-e2e-adu
 
@@ -46,14 +48,14 @@ permissions:
 jobs:
   e2e-su:
     name: software updates e2e (linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Above the sum of the step budgets (215 min), so the always() cleanup runs.
     timeout-minutes: 240
     env:
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_SU_DPS_HOST }}
       AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_SU_ID_SCOPE }}
       AZ_IOT_E2E_SU_REG_ID: ${{ vars.E2E_SU_REG_ID }}
-      AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_SU_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_SU_RESOURCE_GROUP }}
       AZ_IOT_E2E_SU_LOCATION: ${{ vars.E2E_SU_LOCATION }}
       AZ_IOT_E2E_SU_ADR_NAMESPACE: ${{ vars.E2E_SU_ADR_NAMESPACE }}
@@ -102,7 +104,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ vars.E2E_SU_SUBSCRIPTION_ID }}
 
       - name: Stage offers
         timeout-minutes: 70

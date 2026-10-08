@@ -350,7 +350,8 @@ extern "C"
    * This does not weaken the "records no traffic" rule above and is not a step
    * toward a codec: nothing is stored except the handful of scalars below, no
    * PUBLISH is ever looked at, and no payload is retained (the Will is reported
-   * by topic and length, never by content). What it buys is the only honest way
+   * by topic and length, never by content; User Name and Password by length and
+   * digest). What it buys is the only honest way
    * to assert that an adapter put the Clean Start flag, the Session Expiry
    * Interval or the Will on the wire -- the client's own API cannot testify to
    * that, and a broker will not report it back.
@@ -381,7 +382,19 @@ extern "C"
     uint32_t session_expiry_seconds;
     int has_will_delay;
     uint32_t will_delay_seconds;
+    /* User Name and Password, by presence, length and 64-bit FNV-1a digest
+     * only: the bytes themselves are never kept. Enough to assert the CONNECT
+     * carried exactly the credentials the adapter was given. */
+    int has_username;
+    size_t username_len;
+    uint64_t username_digest;
+    int has_password;
+    size_t password_len;
+    uint64_t password_digest;
   } az_iot_test_proxy_connect_fields;
+
+  /* 64-bit FNV-1a of `len` bytes, as reported in the *_digest fields. */
+  uint64_t az_iot_test_proxy_digest(const void* bytes, size_t len);
 
   /* Copy the decoded CONNECT of the current connection into `out`. Returns 1
    * when one has been seen, 0 otherwise (`out` is zeroed either way). */

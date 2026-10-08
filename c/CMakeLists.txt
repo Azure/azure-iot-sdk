@@ -87,6 +87,7 @@ if(POLICY CMP0169)
     cmake_policy(SET CMP0169 OLD)
 endif()
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "")
+# Keep the commit for this tag in c/cgmanifest.json.
 set(AZ_SDK_C_TAG "1.5.0" CACHE STRING "azure-sdk-for-c git tag/branch")
 set(AZ_SDK_C_REPO "https://github.com/Azure/azure-sdk-for-c.git" CACHE STRING "azure-sdk-for-c git repository")
 
@@ -159,16 +160,20 @@ if(AZ_IOT_WITH_PAHO)
     add_subdirectory(adapters/paho)
 endif()
 
+if(AZ_IOT_WITH_AZ_MQTT)
+    add_subdirectory(adapters/az_mqtt)
+endif()
+
 if(AZ_IOT_WITH_RUST_MQTT)
     add_subdirectory(adapters/rust_mqtt)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
-    add_subdirectory(adapters/su/crypto_openssl)
+if(AZ_IOT_WITH_CRYPTO_OPENSSL)
+    add_subdirectory(adapters/crypto_openssl)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS)
-    add_subdirectory(adapters/su/crypto_mbedtls)
+if(AZ_IOT_WITH_CRYPTO_MBEDTLS)
+    add_subdirectory(adapters/crypto_mbedtls)
 endif()
 
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)

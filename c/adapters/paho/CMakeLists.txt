@@ -14,6 +14,7 @@
 
 include(FetchContent)
 
+# Keep the commit for this tag in c/cgmanifest.json.
 set(PAHO_C_TAG  "v1.3.13" CACHE STRING "Eclipse Paho MQTT C git tag")
 set(PAHO_C_REPO "https://github.com/eclipse/paho.mqtt.c.git" CACHE STRING "Eclipse Paho MQTT C git repository")
 
@@ -135,7 +136,7 @@ add_library(azure::iot::adapter_paho ALIAS az_iot_adapter_paho)
 
 target_include_directories(az_iot_adapter_paho
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
 )
 target_link_libraries(az_iot_adapter_paho
     PUBLIC

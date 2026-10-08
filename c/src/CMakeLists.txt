@@ -3,12 +3,14 @@
 
 add_library(az_iot_core
     core/log.c
+    core/log_file.c
     core/result.c
     core/version.c
     core/mqtt_iface.c
     core/connection_client.c
     core/cert_util.c
-    core/reconnect.c
+    core/mono_time.c
+    core/retry_policy.c
     core/env.c
     core/dispatch.c
     core/proto3.c
@@ -16,6 +18,7 @@ add_library(az_iot_core
     core/json_string.c
     core/message.c
     core/certificate_provider_pem.c
+    core/crypto.c
     features/su/su_client.c
     features/su/su_device_properties.c
     features/su/su_root_keys_microsoft.c
@@ -28,7 +31,7 @@ add_library(azure::iot::core ALIAS az_iot_core)
 
 target_include_directories(az_iot_core
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         # Lets internal headers refer to siblings as "internal/foo.h" regardless
@@ -39,7 +42,7 @@ target_include_directories(az_iot_core
         ${CMAKE_CURRENT_SOURCE_DIR}/features/su
 )
 
-# reconnect.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
+# mono_time.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
 if(UNIX)
     target_compile_definitions(az_iot_core PRIVATE
         _POSIX_C_SOURCE=200809L
