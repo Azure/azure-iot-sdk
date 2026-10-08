@@ -673,6 +673,20 @@ if(AZ_IOT_WITH_AZ_MQTT)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
 
+    # The adapter with a receive buffer larger than its send buffer, against an in-process server.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes
+        unit/az_mqtt_adapter_sizes_test.c
+        support/az_mqtt_asymmetric_common.c
+        support/az_mqtt_asymmetric_v3.c
+        support/az_mqtt_asymmetric_v5.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
+    endif()
+
     # Each footprint, a user's definition over it, and a config file: resolved as documented.
     foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
         set(_t az_iot_tests_az_mqtt_config_${_case})
