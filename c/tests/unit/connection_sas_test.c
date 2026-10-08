@@ -1997,6 +1997,27 @@ static az_iot_result update_hub(fixture* fx, const char* token)
       &fx->client, AZ_IOT_CONN_SCOPE_HUB, token, strlen(token), 100);
 }
 
+/* A DPS token supplied before open() is used by the registration, without
+ * asking. */
+static void a_dps_token_supplied_before_open_is_used(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  opts.host = NULL;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  fx->initialized = true;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
+  assert_int_equal(g_fake.calls, 0);
+}
+
 /* update_sas_token() argument and identity checks. */
 static void update_sas_token_checks_its_arguments(void** state)
 {
@@ -2047,6 +2068,12 @@ static void update_sas_token_checks_its_arguments(void** state)
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       update_hub(fx, "sr=broker.example%2Fdevices%2Fut-device&sig=a&se=1"), AZ_IOT_ERR_INVALID_ARG);
+  static const char k_nul[]
+      = "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=a\0b&se=1";
+  assert_int_equal(
+      az_iot_connection_client_update_sas_token(
+          c, AZ_IOT_CONN_SCOPE_HUB, k_nul, sizeof(k_nul) - 1u, 100),
+      AZ_IOT_ERR_INVALID_ARG);
   /* Too large for the token area. */
   static char big[sizeof(g_sas_buffer) + 64];
   int len = snprintf(big, sizeof(big), "%s&x=", USER_TOKEN);
@@ -2759,6 +2786,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(update_sas_token_checks_its_arguments, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_dps_token_supplied_before_open_is_used, setup, teardown),
     cmocka_unit_test_setup_teardown(an_undelivered_user_token_times_out, setup, teardown),
     cmocka_unit_test_setup_teardown(close_cancels_a_pending_user_token, setup, teardown),
     cmocka_unit_test_setup_teardown(

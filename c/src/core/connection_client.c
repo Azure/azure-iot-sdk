@@ -3340,8 +3340,10 @@ static az_iot_result dps_start(az_iot_connection_client* c)
     c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
-  /* An attempt already waiting for its user-provided token continues. */
-  if (c->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id != 0)
+  /* An attempt already waiting for its user-provided token continues; a
+   * token held for the next attempt is this one's to take. */
+  if (c->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id != 0
+      && !c->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].held)
   {
     return AZ_IOT_OK;
   }
@@ -8637,7 +8639,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_update_sas_token(
     uint32_t lifetime_seconds)
 {
   if (client == NULL || (scope != AZ_IOT_CONN_SCOPE_DPS && scope != AZ_IOT_CONN_SCOPE_HUB)
-      || token == NULL || token_len == 0 || lifetime_seconds == 0)
+      || token == NULL || token_len == 0 || lifetime_seconds == 0
+      || memchr(token, '\0', token_len) != NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

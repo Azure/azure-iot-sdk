@@ -1932,8 +1932,8 @@ extern "C"
    * @param[in] token_len        Bytes of @p token.
    * @param[in] lifetime_seconds Seconds the token stays valid from now; non-zero.
    * @return AZ_IOT_OK;
-   * AZ_IOT_ERR_INVALID_ARG for a NULL or empty token, a lifetime of 0, or a
-   * token not for @p scope's identity;
+   * AZ_IOT_ERR_INVALID_ARG for a NULL or empty token, one with a NUL byte, a
+   * lifetime of 0, or a token not for @p scope's identity;
    * AZ_IOT_ERR_NOT_FOUND when @p scope's identity is not known yet (a hub
    * before its DPS assignment);
    * AZ_IOT_ERR_NOT_SUPPORTED when @p scope has no on_sas_token_required;
