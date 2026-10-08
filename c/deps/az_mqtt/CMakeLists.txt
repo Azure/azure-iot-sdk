@@ -21,6 +21,7 @@ endif()
 option(AZ_MQTT_BUILD_SAMPLES "Build sample applications" ${_az_mqtt_top_level})
 option(AZ_MQTT_BUILD_TESTS "Build tests" ${_az_mqtt_top_level})
 option(AZ_MQTT_WARNINGS_AS_ERRORS "Treat warnings in az_mqtt code (libraries, samples, tests) as errors" OFF)
+option(AZ_MQTT_BUILD_FUZZERS "Build libFuzzer targets (clang: ASan + UBSan; MSVC: ASan) and their drop folder" OFF)
 
 # TLS backend. auto (default): OpenSSL 3.0+ if found, otherwise none.
 #   openssl: require OpenSSL 3.0+.  mbedtls: require mbedTLS.  none: no TLS.
@@ -29,6 +30,22 @@ set(AZ_MQTT_TLS_BACKEND "auto" CACHE STRING "TLS backend: auto | openssl | mbedt
 set_property(CACHE AZ_MQTT_TLS_BACKEND PROPERTY STRINGS auto openssl mbedtls none)
 if(NOT AZ_MQTT_TLS_BACKEND MATCHES "^(auto|openssl|mbedtls|none)$")
   message(FATAL_ERROR "AZ_MQTT_TLS_BACKEND must be auto, openssl, mbedtls or none (got '${AZ_MQTT_TLS_BACKEND}')")
+endif()
+
+if(AZ_MQTT_BUILD_FUZZERS)
+  if(MSVC)
+    # libFuzzer with ASan (MSVC has no UBSan). ASan rules out /RTC and incremental linking.
+    add_compile_options(/fsanitize=address /fsanitize=fuzzer /Zi)
+    add_link_options(/INCREMENTAL:NO /DEBUG)
+    foreach(config DEBUG RELWITHDEBINFO)
+      string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_${config} "${CMAKE_C_FLAGS_${config}}")
+    endforeach()
+  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=all)
+    add_link_options(-fsanitize=address,undefined)
+  else()
+    message(FATAL_ERROR "AZ_MQTT_BUILD_FUZZERS needs clang or MSVC (libFuzzer)")
+  endif()
 endif()
 
 if(NOT AZ_MQTT_ENABLE_MQTTV3 AND NOT AZ_MQTT_ENABLE_MQTTV5)
@@ -234,4 +251,8 @@ endif()
 if(AZ_MQTT_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(AZ_MQTT_BUILD_FUZZERS)
+  add_subdirectory(tests/fuzz)
 endif()

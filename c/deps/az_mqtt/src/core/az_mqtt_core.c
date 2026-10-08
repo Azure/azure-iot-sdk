@@ -1123,6 +1123,11 @@ az_result _az_mqtt_core_process_loop(
   {
     return AZ_MQTT_ERROR_NOT_CONNECTED;
   }
+  // From a callback of a packet of this session: that packet is still in the receive buffer.
+  if (_S(core).dispatching && _S(core).dispatching_generation == _S(core).session_generation)
+  {
+    return AZ_MQTT_ERROR_INVALID_STATE;
+  }
 
   int32_t next_keep_alive_ms;
   az_result rc = _service_keep_alive(core, &next_keep_alive_ms);
@@ -1173,8 +1178,21 @@ az_result _az_mqtt_core_process_loop(
     {
       _log_packet(AZ_SPAN_FROM_STR("received "), (uint8_t)(type << 4), packet_size);
       // While connecting, only a CONNACK is valid; after that, never.
-      rc = connecting != (type == AZ_MQTT_PACKET_TYPE_CONNACK) ? AZ_MQTT_ERROR_PROTOCOL
-                                                               : dispatch(core, type, flags, body);
+      if (connecting != (type == AZ_MQTT_PACKET_TYPE_CONNACK))
+      {
+        rc = AZ_MQTT_ERROR_PROTOCOL;
+      }
+      else
+      {
+        // Restored after: a callback may reconnect, and that session dispatch in turn.
+        bool const outer = _S(core).dispatching;
+        uint32_t const outer_generation = _S(core).dispatching_generation;
+        _S(core).dispatching = true;
+        _S(core).dispatching_generation = generation;
+        rc = dispatch(core, type, flags, body);
+        _S(core).dispatching = outer;
+        _S(core).dispatching_generation = outer_generation;
+      }
       if (_S(core).session_generation != generation)
       {
         // A callback ended this session, and may have connected a new one whose

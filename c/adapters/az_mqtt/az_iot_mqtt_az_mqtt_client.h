@@ -106,10 +106,9 @@ typedef struct
 #if AZ_IOT_AZ_MQTT_V == 5
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   az_mqtt5_user_property publish_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_user_property received_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_user_property ack_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_reason_code suback_codes[4];
-  int32_t subscription_ids[4];
+  /* Decoded from the packet being handled, any type: valid during its callback only. */
+  az_mqtt5_user_property decode_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
+  int32_t decode_codes[4]; /* Subscription identifiers or reason codes. */
   int32_t server_disconnect_code; /* -1: none. */
   uint8_t disconnect_reason_code;
 #endif
@@ -759,13 +758,8 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   options.on_transport_error = _azm_on_transport_error;
 #if AZ_IOT_AZ_MQTT_V == 5
   options.on_disconnect = _azm_on_disconnect;
-  options.buffers.connack_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.publish_user_properties = _AZM_SPAN_OF(m->received_properties);
-  options.buffers.publish_subscription_identifiers = _AZM_SPAN_OF(m->subscription_ids);
-  options.buffers.suback_reason_codes = _AZM_SPAN_OF(m->suback_codes);
-  options.buffers.suback_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.ack_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.disconnect_user_properties = _AZM_SPAN_OF(m->ack_properties);
+  options.decode_user_properties = _AZM_SPAN_OF(m->decode_properties);
+  options.decode_codes = _AZM_SPAN_OF(m->decode_codes);
   m->server_disconnect_code = -1;
   m->disconnect_reason_code = o->disconnect_reason_code;
 #endif
