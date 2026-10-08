@@ -25,7 +25,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 
 #include "support/mock_mqtt_iface.h"
 #include "support/subscription_ack.h"
@@ -51,6 +51,11 @@ typedef struct az_iot_test_state_log
   az_iot_connection_error_source error_sources[AZ_IOT_TEST_MAX_STATES];
   int32_t error_codes[AZ_IOT_TEST_MAX_STATES];
   char error_message[AZ_IOT_TEST_MAX_STATES][128];
+  az_iot_auth_source auth_sources[AZ_IOT_TEST_MAX_STATES];
+  /* event->recovery, copied; the endpoint string dies with the callback. */
+  bool recovery_present[AZ_IOT_TEST_MAX_STATES];
+  az_iot_connection_recovery_info recovery[AZ_IOT_TEST_MAX_STATES];
+  char recovery_endpoint[AZ_IOT_TEST_MAX_STATES][128];
   size_t count;
 } az_iot_test_state_log;
 
@@ -65,6 +70,7 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
     log->reasons[index] = event->reason;
     log->profile_present[index] = event->profile != NULL;
     log->is_retriable[index] = event->is_retriable;
+    log->auth_sources[index] = event->auth_source;
     log->error_present[index] = event->error != NULL;
     if (event->error)
     {
@@ -80,6 +86,23 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
         }
         memcpy(log->error_message[index], az_span_ptr(event->error->message), n);
         log->error_message[index][n] = '\0';
+      }
+    }
+    log->recovery_present[index] = event->recovery != NULL;
+    if (event->recovery)
+    {
+      log->recovery[index] = *event->recovery;
+      log->recovery[index].endpoint = NULL;
+      log->recovery_endpoint[index][0] = '\0';
+      if (event->recovery->endpoint)
+      {
+        size_t n = strlen(event->recovery->endpoint);
+        if (n >= sizeof(log->recovery_endpoint[index]))
+        {
+          n = sizeof(log->recovery_endpoint[index]) - 1u;
+        }
+        memcpy(log->recovery_endpoint[index], event->recovery->endpoint, n);
+        log->recovery_endpoint[index][n] = '\0';
       }
     }
     if (event->profile)

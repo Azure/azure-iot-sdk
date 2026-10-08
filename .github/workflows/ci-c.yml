@@ -15,6 +15,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # All run steps execute from the c/ project directory (where CMakePresets.json
 # lives). Path-based fields (paths filters, working-directory overrides, artifact
 # paths) stay relative to the repo root and are qualified with c/ explicitly.
@@ -25,7 +28,7 @@ defaults:
 jobs:
   changes:
     name: detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # dorny/paths-filter calls the pulls/listFiles API on pull_request events.
     # Without pull-requests:read it fails with "Resource not accessible by
     # integration".
@@ -35,8 +38,10 @@ jobs:
     outputs:
       c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           # `every`: a file counts only if it matches all patterns of a filter,
@@ -62,11 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-gcc-debug
             build_type: Debug
             with_paho: ON
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             preset: linux-clang-debug
             build_type: Debug
             with_paho: ON
@@ -82,7 +87,7 @@ jobs:
     # not registered there and nothing needs a broker.
     services:
       mosquitto:
-        image: ${{ matrix.os == 'ubuntu-latest' && 'eclipse-mosquitto:2' || '' }}
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'eclipse-mosquitto:2' || '' }}
         ports:
           - 1883:1883
         # A real liveness probe: mosquitto_pub succeeds only once the broker is
@@ -97,11 +102,13 @@ jobs:
           --health-start-period=5s
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
@@ -112,7 +119,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
 
@@ -141,9 +148,11 @@ jobs:
     name: coding conventions (c/src)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Guards the rules in c/docs/eng/coding-conventions.md. Cheap and
       # dependency-free on purpose: it is the only part of those rules that a
       # reviewer cannot forget to apply.
@@ -151,6 +160,10 @@ jobs:
         run: bash eng/check-banned-constructs.sh
       - name: Check generation layering
         run: bash eng/check-layering.sh
+      - name: Check version consistency
+        run: bash eng/check-version.sh
+      - name: Check log components
+        run: bash eng/check-log-components.sh
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -168,7 +181,7 @@ jobs:
     name: ${{ matrix.std }}-strict (gcc -pedantic)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -200,7 +213,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-14
       - name: Configure (${{ matrix.std }} strict)
@@ -270,7 +285,7 @@ jobs:
     name: linux-gcc / valgrind
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -282,7 +297,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
@@ -313,7 +330,7 @@ jobs:
           fi
       - name: Upload valgrind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: valgrind-logs
           path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
@@ -344,9 +361,11 @@ jobs:
     name: linux-gcc / helgrind + drd
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
@@ -393,7 +412,7 @@ jobs:
           exit "${status}"
       - name: Upload race-detector logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: race-detector-logs
           path: c/build/linux-gcc-debug/*.log
@@ -405,13 +424,15 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Configure (MSVC AddressSanitizer)
         # Disable Paho here: pulling it in through FetchContent forces the
         # /MD[d] runtime which conflicts with /fsanitize=address's internal
         # runtime selection on some toolchain builds. The first-party suites
-        # (smoke / mqtt_iface_contract / connection_client / reconnect_policy
+        # (smoke / mqtt_iface_contract / connection_client / retry_policy
         # / protocol_profile_dispatch / telemetry / direct_method / twin /
         # dps_client / dps_handoff / certificate_provider_pem / easy_client /
         # rust_mqtt_adapter) cover everything we want ASan to vet.
@@ -434,22 +455,77 @@ jobs:
         # belt-and-braces rather than load-bearing.
         run: ctest --preset windows-msvc-debug -C Debug --output-on-failure -E conformance
 
+  # AddressSanitizer + UndefinedBehaviorSanitizer on Linux, including the
+  # conformance suites against a real broker. Paho is built instrumented too.
+  asan-ubsan-linux:
+    name: linux-clang / ASan + UBSan
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        # UBSan stays recoverable so eng/sanitizers/ubsan.supp can silence
+        # third-party findings; halt_on_error below still stops on any other.
+        run: >
+          cmake --preset linux-clang-debug
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build --preset linux-clang-debug
+      - name: Test under ASan + UBSan
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # Same reason as the build job: no PKCS#11 token on this leg.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:suppressions=${{ github.workspace }}/c/eng/sanitizers/ubsan.supp
+        # Function-name suppressions (and readable stacks) need clang's own symbolizer.
+        run: |
+          symbolizer="$(clang -print-prog-name=llvm-symbolizer)"
+          test -x "$symbolizer"
+          export ASAN_SYMBOLIZER_PATH="$symbolizer"
+          export UBSAN_OPTIONS="$UBSAN_OPTIONS:external_symbolizer_path=$symbolizer"
+          ctest --preset linux-clang-debug --output-on-failure
+
   # ---------------------------------------------------------------------------
   # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch
   # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
   # pinned release. The known-answer suite also runs under valgrind.
   # ---------------------------------------------------------------------------
-  su-crypto-mbedtls:
-    name: su crypto / mbedTLS ${{ matrix.mbedtls }}
+  crypto-mbedtls:
+    name: crypto / mbedTLS ${{ matrix.mbedtls }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         mbedtls: [ '3.6.7', '4.1.1', '4.2.0' ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev valgrind
       - name: Build mbedTLS ${{ matrix.mbedtls }}
@@ -461,14 +537,174 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_BUILD_SAMPLES=OFF
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
       - name: Build
-        run: cmake --build build/su-mbedtls --target az_iot_tests_su_crypto_mbedtls az_iot_tests_su_crypto_openssl
+        run: cmake --build build/su-mbedtls --target az_iot_tests_crypto_mbedtls az_iot_tests_crypto_openssl
       - name: Test
-        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_su_crypto_' --no-tests=error
+        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_crypto_' --no-tests=error
       - name: Test under valgrind
         run: >
           valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
           --track-origins=yes --errors-for-leak-kinds=definite,possible
-          build/su-mbedtls/tests/az_iot_tests_su_crypto_mbedtls
+          build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
+
+  # ---------------------------------------------------------------------------
+  # az_mqtt adapter conformance, every capability it implements: proxy (the
+  # suite's own), WebSockets (a Mosquitto WebSocket listener) and, on OpenSSL,
+  # the key-reference custody route (a SoftHSM token, as in coverage-c). The
+  # build job also runs these suites, without WebSockets or a token.
+  # ---------------------------------------------------------------------------
+  az-mqtt:
+    name: az_mqtt adapter / ${{ matrix.tls }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tls: openssl
+            mbedtls: ''
+          - tls: mbedtls
+            mbedtls: '4.1.1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev mosquitto
+          mosquitto-clients softhsm2 opensc meson pkg-config
+      - name: Start Mosquitto (TCP 1883, WebSocket 8080)
+        run: |
+          sudo systemctl stop mosquitto || true
+          printf 'listener 1883 127.0.0.1\nallow_anonymous true\nlistener 8080 127.0.0.1\nprotocol websockets\n' \
+            > "$RUNNER_TEMP/mosquitto.conf"
+          mosquitto -d -c "$RUNNER_TEMP/mosquitto.conf"
+          for _ in $(seq 1 20); do
+            mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok && break
+            sleep 1
+          done
+          mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok
+      - name: Build mbedTLS ${{ matrix.mbedtls }}
+        if: matrix.mbedtls != ''
+        run: |
+          bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$RUNNER_TEMP/mbedtls"
+          echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/mbedtls" >> "$GITHUB_ENV"
+      - name: Provision a PKCS#11 token
+        if: matrix.tls == 'openssl'
+        run: |
+          eval "$(eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          openssl list -providers -provider pkcs11 > /dev/null
+          {
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Configure
+        run: >
+          cmake -S . -B build/az-mqtt -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_BUILD_SAMPLES=OFF -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
+      - name: Build
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
+      - name: Conformance
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_WS_PORT: '8080'
+          AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
+        run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
+
+  # Optimized build (so _FORTIFY_SOURCE is active) checked by
+  # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
+  # static and shared: flags are probed per toolchain, and FORTIFY differs
+  # between them (glibc makes some libc calls macros under clang).
+  hardening-linux:
+    name: linux-${{ matrix.compiler }}${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ gcc, clang ]
+        shared: [ 'OFF', 'ON' ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build/hardening -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/hardening
+      - name: Check binaries
+        run: bash eng/check-hardening.sh build/hardening
+      - name: Unit tests
+        run: ctest --test-dir build/hardening --output-on-failure
+
+  # MSVC counterpart: /guard:cf, /CETCOMPAT and /sdl, checked with dumpbin.
+  # Samples are off in the shared leg: Windows shared builds put every
+  # executable in one bin/, and sample names repeat across groups (as in the
+  # install job).
+  hardening-windows:
+    name: windows-msvc${{ matrix.shared == 'ON' && '-shared' || '' }} / hardening (RelWithDebInfo)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: [ 'OFF', 'ON' ]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Configure
+        run: >
+          cmake -S . -B build/hardening -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DAZ_IOT_BUILD_SAMPLES=${{ matrix.shared == 'ON' && 'OFF' || 'ON' }}
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+      - name: Build
+        run: cmake --build build/hardening
+      - name: Check binaries
+        run: bash eng/check-hardening.sh build/hardening
+      - name: Unit tests
+        run: ctest --test-dir build/hardening --output-on-failure
 
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
@@ -477,7 +713,7 @@ jobs:
   # c/tests/install then builds and runs against the install prefix alone: the
   # build tree is deleted first, and the prefix must hold no path back into the
   # checkout. Each adapter is a REQUIRED component there, so one dropping out of
-  # the package fails the job. mbedTLS is Linux-only, as in su-crypto-mbedtls.
+  # the package fails the job. mbedTLS is Linux-only, as in crypto-mbedtls.
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
@@ -490,37 +726,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
-          - os: ubuntu-latest
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+          - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;su_crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;su_crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -552,6 +790,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
         run: cmake --build build/install
@@ -598,8 +837,9 @@ jobs:
         # Linux must fail to load when only another release is present.
         if: matrix.shared == 'ON'
         run: |
-          ver=$(sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)")$/\1/p' \
-            "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config-version.cmake")
+          # Full version, pre-release label included; the CMake package version is numeric only.
+          ver=$(sed -n 's/^#define AZ_IOT_VERSION_STRING "\([^"]*\)".*/\1/p' \
+            "$AZ_IOT_PREFIX/include/azure/iot/az_iot_version.h")
           test -n "$ver"
           exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -642,6 +882,52 @@ jobs:
           bash tests/install/pkg-config-test.sh --run "$RUNNER_TEMP/pkg-config-test" "${comps[@]}"
 
   # ---------------------------------------------------------------------------
+  # c/ embedded with add_subdirectory() (c/tests/subproject), so paths that
+  # assume c/ is the top-level project fail here. Unit tests and samples are on
+  # so their CMake files are covered too.
+  # ---------------------------------------------------------------------------
+  subproject:
+    name: subproject / ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux-gcc
+          - os: windows-latest
+            name: windows-msvc
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >
+          cmake -S tests/subproject -B build/subproject -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
+      - name: Build
+        run: cmake --build build/subproject
+      - name: Test
+        run: ctest --test-dir build/subproject --output-on-failure --no-tests=error
+
+  # ---------------------------------------------------------------------------
   # Code coverage (gcov/gcovr) for first-party code -- c/src and c/adapters.
   #
   # Report-only, deliberately. The per-component floors in
@@ -658,7 +944,7 @@ jobs:
     name: coverage (linux-gcc)
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Exact number of CTest suites the coverage preset must register. An
       # inequality only caught the build collapsing to nothing; it could not
@@ -666,7 +952,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '46'
+      EXPECTED_TESTS: '49'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -680,8 +966,9 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           # diff-cover compares against the merge base.
           fetch-depth: 0
 
@@ -799,7 +1086,7 @@ jobs:
         run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
 
       - name: Upload coverage tracefile
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-unit
           path: c/coverage/unit.json
@@ -824,10 +1111,12 @@ jobs:
         # can be adopted against real data rather than a guess -- the same
         # approach used for the per-component floors, which were set from
         # measured values rather than chosen up front.
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
           diff-cover build/linux-gcc-coverage/coverage/cobertura.xml \
-            --compare-branch "origin/${{ github.base_ref }}" \
+            --compare-branch "origin/$BASE_REF" \
             --markdown-report build/linux-gcc-coverage/coverage/patch.md \
             --src-roots . || echo "::warning::diff-cover failed; patch coverage not reported"
           {
@@ -845,7 +1134,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-c
           path: c/build/linux-gcc-coverage/coverage/
@@ -859,7 +1148,7 @@ jobs:
     name: coverage-gate
     needs: [changes, coverage-c]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # This job does not check out the repo, so the workflow-level
     # working-directory of c/ would not exist.
     defaults:

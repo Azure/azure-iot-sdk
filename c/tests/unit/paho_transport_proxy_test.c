@@ -402,10 +402,12 @@ static log_capture g_log_capture;
 static void capturing_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   (void)user_ctx;
   (void)level;
   (void)file;

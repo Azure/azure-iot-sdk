@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Software updates client (Phase 1) unit tests. Drives the state machine through the public
- * API + the in-memory mock_mqtt_iface, with recording platform/crypto hooks.
+ * API + the in-memory mock_mqtt_iface, with recording platform hooks and crypto backend.
  *
  * The manifest is taken from azure-sdk-for-c's own parser tests (the only known
  * parser-valid v5 manifest) and wrapped in the software updates updateMetadata object. */
@@ -24,8 +24,9 @@
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log_components.h"
 
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_internal.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -56,7 +57,7 @@
 /* A single-step, single-file v5 deployment as the updateMetadata object the
  * channel delivers. Filled with workflow id, manifest version and a
  * structurally-valid JWS (see signed_patch()): core fully parses the JWS/SJWK
- * chain even though the mock crypto hook ignores the signature bytes. The
+ * chain even though the mock crypto backend ignores the signature bytes. The
  * unknown property must be skipped. */
 static const char k_patch_fmt[]
     = "{\"workflowId\":\"%s\",\"futureField\":{\"a\":[1,2]}," SU_TEST_MANIFEST_PROPERTY ","
@@ -112,7 +113,7 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
 /* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
  * (itself a JWS over a JWK signing key, signed by the root key `testkid`); the
  * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
- * are arbitrary because the mock verify hook does not validate them. */
+ * are arbitrary because the mock backend does not validate them. */
 static void build_jws(char* out, int32_t out_cap)
 {
   uint8_t fixed_hash[32];
@@ -211,6 +212,7 @@ typedef struct
   int32_t restore_result;
   int32_t is_installed_result;
   int32_t verify_result;
+  int sha256_calls; /* SHA-256 digests of something other than a file (the manifest) */
 
   bool install_in_progress_once; /* first install returns IN_PROGRESS */
   bool install_in_progress_consumed;
@@ -337,7 +339,17 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   return l->is_installed_result;
 }
 
-static int32_t mock_verify_rs256(
+/** @brief Mock crypto backend; reaches the hook log through the embedding struct. */
+typedef struct mock_crypto
+{
+  az_iot_crypto base; /**< Must be first. */
+  hook_log* log;
+} mock_crypto;
+
+static hook_log* mock_log(const az_iot_crypto* self) { return ((const mock_crypto*)self)->log; }
+
+static az_iot_result mock_verify_rs256(
+    const az_iot_crypto* self,
     const uint8_t* mod,
     size_t mod_len,
     const uint8_t* exp,
@@ -345,8 +357,7 @@ static int32_t mock_verify_rs256(
     const uint8_t* signed_data,
     size_t signed_len,
     const uint8_t* sig,
-    size_t sig_len,
-    void* ctx)
+    size_t sig_len)
 {
   (void)mod;
   (void)mod_len;
@@ -356,18 +367,9 @@ static int32_t mock_verify_rs256(
   (void)signed_len;
   (void)sig;
   (void)sig_len;
-  hook_log* l = (hook_log*)ctx;
+  hook_log* l = mock_log(self);
   log_op(l, OP_VERIFY, 0);
-  return l->verify_result;
-}
-
-static int32_t mock_sha256(const uint8_t* data, size_t len, uint8_t out[32], void* ctx)
-{
-  (void)data;
-  (void)len;
-  (void)ctx;
-  memset(out, SU_TEST_HASH_BYTE, 32);
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
 }
 
 /* Serve fx->log.file_len bytes of dummy content in chunks, then EOF. */
@@ -395,28 +397,64 @@ static int32_t mock_read_file(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static int32_t mock_sha_init(void** ctx_out, void* ctx)
+/* The mock tells a file from a manifest by the first byte hashed: mock_read_file
+ * serves 0x55, a manifest starts with '{'. opaque[0] holds that byte + 1, 0
+ * before any data. */
+static az_iot_result mock_sha_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
 {
-  (void)ctx;
-  *ctx_out = (void*)(uintptr_t)1; /* non-NULL opaque handle */
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  (void)self;
+  ctx->opaque[0] = 0;
+  return AZ_IOT_OK;
 }
 
-static int32_t mock_sha_update(void* c, const uint8_t* data, size_t len, void* ctx)
+static az_iot_result mock_sha_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
 {
-  (void)c;
-  (void)data;
-  (void)len;
-  (void)ctx;
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  (void)self;
+  if (ctx->opaque[0] == 0 && len > 0)
+  {
+    ctx->opaque[0] = (uint64_t)data[0] + 1u;
+  }
+  return AZ_IOT_OK;
 }
 
-static int32_t mock_sha_final(void* c, uint8_t out[32], void* ctx)
+/* A file hashes to log->file_hash; anything else to SU_TEST_HASH_BYTE repeated,
+ * the digest build_jws() signs for the manifest. */
+static az_iot_result mock_sha_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
 {
-  (void)c;
-  hook_log* l = (hook_log*)ctx;
-  memcpy(out, l->file_hash, 32);
-  return AZ_IOT_SU_RESULT_SUCCESS;
+  if (out != NULL)
+  {
+    if (ctx->opaque[0] == 0x55u + 1u)
+    {
+      memcpy(out, mock_log(self)->file_hash, AZ_IOT_SHA256_SIZE);
+    }
+    else
+    {
+      mock_log(self)->sha256_calls++;
+      memset(out, SU_TEST_HASH_BYTE, AZ_IOT_SHA256_SIZE);
+    }
+  }
+  return AZ_IOT_OK;
+}
+
+/** @brief A complete mock backend over @p log. */
+static mock_crypto make_mock_crypto(hook_log* log)
+{
+  mock_crypto c;
+  memset(&c, 0, sizeof(c));
+  c.base.version = AZ_IOT_CRYPTO_VERSION;
+  c.base.sha256_init = mock_sha_init;
+  c.base.sha256_update = mock_sha_update;
+  c.base.sha256_final = mock_sha_final;
+  c.base.verify_rs256 = mock_verify_rs256;
+  c.log = log;
+  return c;
 }
 
 static int32_t mock_persist(const uint8_t* blob, size_t len, void* ctx)
@@ -488,6 +526,8 @@ typedef struct
   /* An accepted report gets an OK verdict from inside report(), as from a
    * service that accepts it; true leaves the verdict to the test. */
   bool report_verdict_deferred;
+  /* The next accepted report gets a no-hint retryable verdict from inside report(). */
+  bool report_sync_retry_once;
   /* Opaque state handed out by save_state(); empty means nothing to keep. */
   char saved_state[32];
   uint8_t restored_state[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
@@ -614,6 +654,19 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
         sizeof(fc->last_installed_version),
         report->installed_update_id->version);
   }
+  if (fc->report_result == AZ_IOT_OK && fc->report_sync_retry_once && fc->result_cb != NULL)
+  {
+    az_iot_su_service_error se
+        = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 0 };
+    fc->report_sync_retry_once = false;
+    fc->result_cb(
+        AZ_IOT_SU_OP_REPORT_STATUS,
+        AZ_IOT_ERR_DPS,
+        AZ_IOT_SU_ERROR_ACTION_RETRY,
+        &se,
+        fc->engine_ctx);
+    return AZ_IOT_OK;
+  }
   if (fc->report_result == AZ_IOT_OK && !fc->report_verdict_deferred && fc->result_cb != NULL)
   {
     fc->result_cb(
@@ -717,6 +770,7 @@ typedef struct
   az_iot_mock_mqtt_client* mock;
 
   hook_log log;
+  mock_crypto crypto; /**< Outlives su: the client keeps a pointer. */
   uint8_t dp_buf[512];
 
   /* What the application would have been told. */
@@ -731,6 +785,7 @@ typedef struct
   int state_event_count;
   az_iot_su_state last_state;
   az_iot_su_state last_previous_state;
+  az_iot_su_state states[16]; /* first states entered, in order */
 
   int persist_failed_count;
   int persist_recovered_count;
@@ -738,6 +793,9 @@ typedef struct
   uint32_t last_persist_attempts;
   bool last_persist_retrying;
   az_iot_result last_persist_reason;
+
+  int refused_count;
+  az_iot_result last_refused_reason;
 } fixture;
 
 /* Records whatever the client raises. */
@@ -757,9 +815,18 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
   }
   else if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED)
   {
+    if (fx->state_event_count < (int)(sizeof(fx->states) / sizeof(fx->states[0])))
+    {
+      fx->states[fx->state_event_count] = event->state;
+    }
     fx->state_event_count++;
     fx->last_state = event->state;
     fx->last_previous_state = event->previous_state;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    fx->refused_count++;
+    fx->last_refused_reason = event->reason;
   }
   else if (
       event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED
@@ -792,13 +859,10 @@ static void count_events(const az_iot_su_event* event, void* user_ctx)
   (*(int*)user_ctx)++;
 }
 
-static void wire_hooks(
-    hook_log* log,
-    az_iot_su_platform_hooks* hooks,
-    az_iot_su_crypto_hooks* crypto)
+static void wire_hooks(hook_log* log, az_iot_su_platform_hooks* hooks, mock_crypto* crypto)
 {
   memset(hooks, 0, sizeof(*hooks));
-  memset(crypto, 0, sizeof(*crypto));
+  *crypto = make_mock_crypto(log);
 
   /* default all results to SUCCESS */
   log->download_result = AZ_IOT_SU_RESULT_SUCCESS;
@@ -820,13 +884,6 @@ static void wire_hooks(
   hooks->load_state_fn = mock_load;
   hooks->user_ctx = log;
 
-  crypto->verify_rs256_fn = mock_verify_rs256;
-  crypto->sha256_fn = mock_sha256;
-  crypto->sha256_init_fn = mock_sha_init;
-  crypto->sha256_update_fn = mock_sha_update;
-  crypto->sha256_final_fn = mock_sha_final;
-  crypto->user_ctx = log;
-
   /* By default the streaming file-hash matches the manifest, so the happy
    * paths pass verification. Serve a multi-chunk file to exercise the loop. */
   log->file_len = 700;
@@ -838,7 +895,7 @@ static void wire_hooks(
   assert_int_equal(hw, 32);
 }
 
-static void init_hooks(fixture* fx, az_iot_su_platform_hooks* hooks, az_iot_su_crypto_hooks* crypto)
+static void init_hooks(fixture* fx, az_iot_su_platform_hooks* hooks, mock_crypto* crypto)
 {
   wire_hooks(&fx->log, hooks, crypto);
 }
@@ -851,10 +908,12 @@ static int setup(void** state)
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
+  fx->crypto = make_mock_crypto(&fx->log);
   az_iot_connection_client_options opts = { 0 };
   opts.host = "broker.example";
   opts.port = 8883;
   opts.client_id = "ut-device";
+  opts.crypto = &fx->crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -866,8 +925,7 @@ static int setup(void** state)
   fx->channel.ctx = &fx->chan;
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
-  init_hooks(fx, &hooks, &crypto);
+  init_hooks(fx, &hooks, &fx->crypto);
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -878,14 +936,14 @@ static int setup(void** state)
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = fx->dp_buf;
   su_opts.device_properties_buffer_size = sizeof(fx->dp_buf);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &su_opts), AZ_IOT_OK);
+      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &su_opts),
+      AZ_IOT_OK);
   assert_int_equal(fx->su._internal.persist_max_attempts, AZ_IOT_SU_PERSIST_MAX_ATTEMPTS);
   /* Pinned so the retry tests do not depend on an AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
    * override; limit-1 behaviour has its own test. */
@@ -930,8 +988,7 @@ static void open_to_connected(fixture* fx)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
-/* Deliver an update payload through the channel. Under Device Update for IoT Hub this arrived as an
- * MQTT twin desired-property PATCH; the engine no longer knows or cares what
+/* Deliver an update payload through the channel. The engine does not know what
  * carried it, so the test hands the payload straight to the channel callback. */
 static void inject_patch(fixture* fx, const char* body)
 {
@@ -1279,9 +1336,12 @@ static void oversized_update_metadata_is_ignored(void** state)
   big[pos] = '\0';
   assert_true(strlen(big) > AZ_IOT_SU_REQUEST_BUFFER_SIZE);
 
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
   inject_patch(fx, big);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -1311,6 +1371,74 @@ static void verify_failure_blocks_download_and_fails(void** state)
   /* Terminal: machine returns to Idle after reporting FAILED. */
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+}
+
+/* A manifest that is not JSON, with a well-formed JWS around it. */
+static const char* not_json_manifest_patch(void)
+{
+  static char patch[4096];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  int n = snprintf(
+      patch,
+      sizeof(patch),
+      "{\"workflowId\":\"7d2f0a8e-not-json\",\"updateManifest\":\"not-json\","
+      "\"updateManifestSignature\":\"%s\","
+      "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}",
+      jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* A rejected signature fails the workflow before the manifest is parsed. */
+static void rejected_signature_fails_before_manifest_is_parsed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, not_json_manifest_patch());
+  pump(fx, 40);
+
+  assert_int_equal((int)count_ops(&fx->log, OP_VERIFY), 1);
+  assert_int_equal(fx->log.sha256_calls, 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_DOWNLOAD), 0);
+  assert_true(fx->state_event_count >= 3);
+  assert_int_equal(fx->states[0], AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fx->states[1], AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_int_equal(fx->states[2], AZ_IOT_SU_STATE_FAILED);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].extended_result_code,
+      (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, 0u));
+}
+
+/* A verified manifest that does not parse fails after verification. */
+static void verified_malformed_manifest_fails_after_verification(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  inject_patch(fx, not_json_manifest_patch());
+  pump(fx, 40);
+
+  assert_int_equal((int)count_ops(&fx->log, OP_VERIFY), 2); /* SJWK + manifest */
+  assert_int_equal(fx->log.sha256_calls, 1);
+  assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_DOWNLOAD), 0);
+  assert_true(fx->state_event_count >= 3);
+  assert_int_equal(fx->states[1], AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_int_equal(fx->states[2], AZ_IOT_SU_STATE_FAILED);
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].extended_result_code,
+      (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_INTERNAL, 0u));
 }
 
 static void install_failure_triggers_rollback(void** state)
@@ -1498,8 +1626,7 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   pump_to_checkpoint(fx);
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
-  init_hooks(fx, &hooks, &crypto);
+  init_hooks(fx, &hooks, &fx->crypto);
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -1511,7 +1638,6 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   uint8_t dp_buf[256];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
   su_opts.device_properties = &dp;
@@ -1529,7 +1655,8 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   az_iot_su_client* fresh = (az_iot_su_client*)calloc(1, sizeof(*fresh));
   assert_non_null(fresh);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(fresh, &channel2, &su_opts), AZ_IOT_OK);
+      az_iot_su_client__initialize_with_channel(fresh, &channel2, &fx->crypto.base, &su_opts),
+      AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(fresh), AZ_IOT_SU_STATE_IDLE);
 
   /* Observing from before the resume, which is the only way to see it. */
@@ -1592,8 +1719,7 @@ static void cancel_action_sets_cancelled_flag(void** state)
 /* Reporting is keyed on workflowId and is therefore per-workflow: a device with
  * no workflow in flight has nothing the service could attribute a report to.
  * Refreshing device properties must be accepted and must NOT manufacture a
- * report. Under Device Update for IoT Hub this same call produced an unsolicited reported-property
- * PATCH; that channel, and the concept, are gone. */
+ * report. */
 static void update_device_properties_is_accepted_without_reporting(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1794,21 +1920,22 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   fixture* fx = (fixture*)*state;
   (void)fx;
 
+  hook_log log = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
+
+  /* The client takes its crypto backend from the connection. */
   az_iot_connection_client conn;
   az_iot_connection_client_options copts = { 0 };
   copts.host = "broker.example";
   copts.port = 8883;
   copts.client_id = "ut-su-public";
+  copts.crypto = &crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
 
-  hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "Contoso";
@@ -1820,7 +1947,6 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   uint8_t buf[256];
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.crypto = &crypto;
   o.device_properties = &dp;
   o.device_properties_buffer = buf;
   o.device_properties_buffer_size = sizeof(buf);
@@ -1922,12 +2048,10 @@ static void device_properties_too_small_is_rejected(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = "AReallyLongManufacturerNameThatWillNotFit";
@@ -1936,12 +2060,11 @@ static void device_properties_too_small_is_rejected(void** state)
   uint8_t tiny[8];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = tiny;
   su_opts.device_properties_buffer_size = sizeof(tiny);
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts),
+      az_iot_su_client__initialize_with_channel(&su, &channel, &crypto.base, &su_opts),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_deinit(&conn);
@@ -1960,24 +2083,22 @@ static void a_channel_without_cancel_update_is_rejected(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
   az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
   uint8_t buf[256];
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.device_properties = &dp;
   su_opts.device_properties_buffer = buf;
   su_opts.device_properties_buffer_size = sizeof(buf);
 
   az_iot_su_client su;
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su, &channel, &su_opts), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_su_client__initialize_with_channel(&su, &channel, &crypto.base, &su_opts),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
 }
 
@@ -2002,12 +2123,10 @@ static void device_properties_buffer_size_matches_need(void** state)
 
   hook_log log = { 0 };
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  crypto.verify_rs256_fn = mock_verify_rs256;
-  crypto.user_ctx = &log;
 
   az_iot_su_custom_property customs[] = { { "location", "building42" } };
   az_iot_su_device_properties dp = { 0 };
@@ -2027,20 +2146,20 @@ static void device_properties_buffer_size_matches_need(void** state)
 
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.crypto = &crypto;
   o.device_properties = &dp;
   o.device_properties_buffer = buf;
 
   /* Exactly `need` bytes must succeed; one byte short must be rejected. */
   az_iot_su_client su_ok;
   o.device_properties_buffer_size = need;
-  assert_int_equal(az_iot_su_client__initialize_with_channel(&su_ok, &channel, &o), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su_ok, &channel, &crypto.base, &o), AZ_IOT_OK);
   az_iot_su_client_deinit(&su_ok);
 
   az_iot_su_client su_short;
   o.device_properties_buffer_size = need - 1;
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&su_short, &channel, &o),
+      az_iot_su_client__initialize_with_channel(&su_short, &channel, &crypto.base, &o),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   az_iot_connection_client_deinit(&conn);
@@ -2223,7 +2342,6 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   az_iot_su_device_properties dp = { 0 };
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.hooks = &fx->su._internal.hooks;
-  opts.crypto = &fx->su._internal.crypto;
   opts.device_properties = &dp;
   uint8_t storage[513];
   opts.device_properties_buffer = storage + 1;
@@ -2232,7 +2350,8 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   fake_channel fc = { 0 };
   az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
   assert_int_equal(
-      az_iot_su_client__initialize_with_channel(&client, &channel, &opts), AZ_IOT_ERR_INVALID_ARG);
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(fx->conn.dps_user_count, 0);
@@ -2803,7 +2922,7 @@ static void a_failed_checkpoint_retire_is_retried(void** state)
   int calls = fx->log.persist_calls;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->log.persist_calls, calls);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->log.persist_calls, calls + 1);
   assert_true(fx->log.have_persist);
@@ -2831,7 +2950,7 @@ static void a_failed_checkpoint_clear_is_retried_while_idle(void** state)
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_true(fx->log.have_persist);
 
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_false(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_stored);
@@ -3023,12 +3142,12 @@ static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
       assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
     }
     assert_int_equal(fx->log.persist_calls, calls);
-    fx->su._internal.persist_retry_ms = 0;
+    fx->su._internal.persist_retry._internal.due_ms = 0;
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
     assert_int_equal(fx->log.persist_calls, calls + 1);
   }
   assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* this write succeeds */
   assert_true(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_pending);
@@ -3136,6 +3255,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 1);
 
@@ -3147,7 +3267,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
   assert_true(fx->su._internal.report_owed);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   pump(fx, 3);
   assert_true(fx->log.have_persist);
 
@@ -3287,24 +3407,247 @@ static void channel_state_round_trips_through_the_blob(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A workflow whose id is too long to keep has no terminal record to write;
- * that is not retried as a failed write. */
+/* A workflow id longer than AZ_IOT_SU_WORKFLOW_ID_SIZE could never be
+ * reported, so the deployment is refused before anything runs, and the
+ * application is told. A redelivery is refused again. */
+static void an_oversized_workflow_id_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+
+  for (int delivery = 1; delivery <= 2; ++delivery)
+  {
+    inject_patch(fx, build_patch(id));
+    assert_int_equal(fx->refused_count, delivery);
+    assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    pump(fx, 40);
+    assert_int_equal((int)fx->log.op_count, 0);
+    assert_int_equal(fx->state_event_count, 0);
+    assert_false(fx->su._internal.have_request);
+    assert_false(fx->log.have_persist);
+    assert_int_equal(fx->chan.report_count, 0);
+  }
+}
+
+/* An oversized id does not disturb the workflow already running. */
+static void an_oversized_workflow_id_leaves_the_active_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+  inject_patch(fx, build_patch(id));
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > 0);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+}
+
+/* The limit applies to the decoded id: one of exactly AZ_IOT_SU_WORKFLOW_ID_SIZE
+ * bytes, even when escaped longer on the wire, runs and is reported in full. */
+static void a_workflow_id_at_the_limit_is_reported_in_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  /* Wire form: "\/" then SIZE-1 'w'; decoded: "/" then SIZE-1 'w'. */
+  char wire[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  wire[0] = '\\';
+  wire[1] = '/';
+  memset(&wire[2], 'w', AZ_IOT_SU_WORKFLOW_ID_SIZE - 1);
+  wire[sizeof(wire) - 1] = '\0';
+  char decoded[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+  decoded[0] = '/';
+  memset(&decoded[1], 'w', AZ_IOT_SU_WORKFLOW_ID_SIZE - 1);
+  decoded[sizeof(decoded) - 1] = '\0';
+
+  inject_patch(fx, build_patch(wire));
+  pump(fx, 40);
+  assert_int_equal(fx->refused_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(strlen(fx->chan.last_workflow_id), AZ_IOT_SU_WORKFLOW_ID_SIZE);
+  assert_string_equal(fx->chan.last_workflow_id, decoded);
+}
+
+/* Counts ERROR lines containing `needle`. */
+typedef struct
+{
+  const char* needle;
+  int count;
+} su_error_log_capture;
+
+static void su_error_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
+  {
+    cap->count++;
+  }
+}
+
+/* Counts DEBUG and TRACE "su" lines containing `needle` and a JSON body. */
+typedef struct
+{
+  const char* needle;
+  int debug_count;
+  int trace_count;
+} su_level_log_capture;
+
+static void su_level_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  su_level_log_capture* cap = (su_level_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  /* A body is JSON, so a line carrying one has a '{'. */
+  if (strcmp(component, AZ_IOT_LOG_COMPONENT_SU) != 0 || strstr(msg, cap->needle) == NULL
+      || strchr(msg, '{') == NULL)
+  {
+    return;
+  }
+  cap->debug_count += level == AZ_IOT_LOG_LEVEL_DEBUG ? 1 : 0;
+  cap->trace_count += level == AZ_IOT_LOG_LEVEL_TRACE ? 1 : 0;
+}
+
+/* The update body carries service-issued download URLs; DEBUG logs only its
+ * size, TRACE the body. */
+static void update_payload_body_is_logged_only_at_trace(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  su_level_log_capture cap = { .needle = "update payload", .debug_count = 0, .trace_count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_level_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_TRACE };
+
+  az_iot_log_set_global_sink(&sink);
+  inject_patch(fx, signed_patch());
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(cap.debug_count, 0);
+  assert_int_equal(cap.trace_count, 1);
+}
+
+/* A checkpoint written before oversized ids were refused holds the id only in
+ * its stored request (the kept-id field is empty). Resuming it continues the
+ * install but logs that the workflow cannot be reported. */
+static void a_resumed_oversized_workflow_id_is_logged(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+
+  /* Splice an id too long to keep into the stored request. It is the first
+   * string, so every later request offset moves by `delta`. */
+  static uint8_t old_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE];
+  size_t old_len = fx->log.persist_len;
+  memcpy(old_blob, fx->log.persist_blob, old_len);
+  uint32_t old_req_len = blob_u32(&old_blob[36]);
+  uint32_t wf_off = blob_u32(&old_blob[20]);
+  uint32_t old_wf_len = blob_u32(&old_blob[24]);
+
+  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 2];
+  memset(id, 'w', sizeof(id) - 1);
+  id[sizeof(id) - 1] = '\0';
+  uint32_t delta = (uint32_t)strlen(id) - old_wf_len;
+  uint32_t req_len = old_req_len + delta;
+
+  uint8_t* b = fx->log.persist_blob;
+  memcpy(b, old_blob, 40u + wf_off);
+  memcpy(&b[40u + wf_off], id, strlen(id));
+  memcpy(
+      &b[40u + wf_off + strlen(id)],
+      &old_blob[40u + wf_off + old_wf_len],
+      old_req_len - wf_off - old_wf_len);
+  blob_put_u32(&b[24], (uint32_t)strlen(id));
+  blob_put_u32(&b[28], blob_u32(&old_blob[28]) + delta);
+  blob_put_u32(&b[36], req_len);
+
+  uint32_t old_t = 40u + old_req_len;
+  uint32_t old_urls = old_t + 16u + blob_u32(&old_blob[old_t + 12u]) * 16u;
+  uint32_t url_count = blob_u32(&old_blob[old_urls]);
+  uint32_t old_wf = old_urls + 4u + url_count * 16u;
+  uint32_t old_after_wf = old_wf + 4u + blob_u32(&old_blob[old_wf]);
+
+  uint32_t p = 40u + req_len;
+  memcpy(&b[p], &old_blob[old_t], old_wf - old_t);
+  uint32_t urls = p + (old_urls - old_t);
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    uint8_t* u = &b[urls + 4u + i * 16u];
+    blob_put_u32(u, blob_u32(u) + delta);
+    blob_put_u32(u + 8, blob_u32(u + 8) + delta);
+  }
+  p += old_wf - old_t;
+  blob_put_u32(&b[p], 0u); /* no id kept */
+  p += 4u;
+  memcpy(&b[p], &old_blob[old_after_wf], old_len - old_after_wf);
+  fx->log.persist_len = p + (old_len - old_after_wf);
+  blob_reseal(b, fx->log.persist_len);
+
+  su_error_log_capture cap = { .needle = "does not fit AZ_IOT_SU_WORKFLOW_ID_SIZE", .count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_TRACE };
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  az_iot_log_set_global_sink(&sink);
+  az_iot_result r = az_iot_su_client_resume(&fresh->su);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_OK);
+  assert_int_equal(cap.count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_false(fresh->su._internal.active_workflow_valid);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A workflow with no workflow id kept (as resumed from a record written by an
+ * earlier build) has no terminal record to write; that is not retried as a
+ * failed write. */
 static void an_unrepresentable_terminal_record_is_not_retried(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   fx->chan.report_verdict_deferred = true;
-  char id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 8];
-  memset(id, 'w', sizeof(id) - 1);
-  id[sizeof(id) - 1] = '\0';
-  inject_patch(fx, build_patch(id));
+  inject_patch(fx, signed_patch());
+  fx->su._internal.active_workflow_valid = false;
+  fx->su._internal.active_workflow_id_len = 0;
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_false(fx->log.have_persist);
   assert_false(fx->su._internal.report_owed);
 
   int calls = fx->log.persist_calls;
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   pump(fx, 3);
   assert_int_equal(fx->log.persist_calls, calls);
 }
@@ -3323,7 +3666,7 @@ static void a_failed_supersede_clear_holds_the_new_workflow(void** state)
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
 
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_false(fx->log.have_persist);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
@@ -3435,14 +3778,14 @@ static void a_failed_apply_reboot_checkpoint_holds_the_next_step(void** state)
   }
   assert_int_equal(fx->log.op_count, ops);
   assert_int_equal(fx->log.persist_calls, 1);
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK); /* fails again */
   assert_int_equal(fx->log.op_count, ops);
   assert_false(fx->log.have_persist);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
 
   /* The write lands, recording the next step. */
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(fx->log.have_persist);
   assert_false(fx->su._internal.checkpoint_pending);
@@ -3481,7 +3824,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
 
   fx->chan.report_result = AZ_IOT_ERR_BUSY;
   fx->su._internal.device_properties_report_pending = true;
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(fx->su._internal.device_properties_report_pending);
   assert_true(fx->log.have_persist);
@@ -3494,7 +3837,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
 /* Make the next retry due now and tick once. */
 static void persist_retry_now(fixture* fx)
 {
-  fx->su._internal.persist_retry_ms = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
 }
 
@@ -3520,9 +3863,9 @@ static void persist_retries_back_off_and_report_recovery(void** state)
   const uint64_t expected[] = { 1000u, 2000u, 4000u, 8000u };
   for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); ++i)
   {
-    uint64_t delay = fx->su._internal.persist_retry_ms - az_iot_time_mono_ms();
+    uint64_t delay = fx->su._internal.persist_retry._internal.due_ms - az_iot_time_mono_ms();
     assert_true(delay <= expected[i] && delay + 200u > expected[i]);
-    assert_int_equal(fx->su._internal.persist_failures, (uint32_t)(i + 1u));
+    assert_int_equal(fx->su._internal.persist_retry._internal.attempt, (uint32_t)(i + 1u));
     if (i + 1u < sizeof(expected) / sizeof(expected[0]))
     {
       persist_retry_now(fx);
@@ -3535,7 +3878,7 @@ static void persist_retries_back_off_and_report_recovery(void** state)
   assert_true(fx->log.have_persist);
   assert_int_equal(fx->persist_recovered_count, 1);
   assert_int_equal(fx->last_persist_attempts, 4);
-  assert_int_equal(fx->su._internal.persist_failures, 0);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 0);
   pump(fx, 20);
   assert_int_equal(count_ops(&fx->log, OP_APPLY), 1);
 }
@@ -3544,11 +3887,11 @@ static void persist_retries_back_off_and_report_recovery(void** state)
 static void persist_retry_delay_is_capped(void** state)
 {
   fixture* fx = (fixture*)*state;
-  fx->su._internal.persist_failures = 10;
+  fx->su._internal.persist_retry._internal.attempt = 10;
   fx->log.persist_failures = 1;
   fx->su._internal.checkpoint_stored = true;
   inject_patch(fx, signed_patch()); /* the supersede clear fails */
-  uint64_t delay = fx->su._internal.persist_retry_ms - az_iot_time_mono_ms();
+  uint64_t delay = fx->su._internal.persist_retry._internal.due_ms - az_iot_time_mono_ms();
   assert_true(delay <= 60000u && delay + 200u > 60000u);
 }
 
@@ -3571,7 +3914,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   {
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   }
-  while (fx->su._internal.persist_failures + 1u < SU_TEST_PERSIST_MAX_ATTEMPTS)
+  while (fx->su._internal.persist_retry._internal.attempt + 1u < SU_TEST_PERSIST_MAX_ATTEMPTS)
   {
     persist_retry_now(fx);
   }
@@ -3581,7 +3924,8 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   persist_retry_now(fx);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
   assert_int_equal(fx->chan.report_count, reports + 1);
-  assert_int_equal(fx->su._internal.persist_failures >= SU_TEST_PERSIST_MAX_ATTEMPTS, true);
+  assert_int_equal(
+      fx->su._internal.persist_retry._internal.attempt >= SU_TEST_PERSIST_MAX_ATTEMPTS, true);
   assert_int_equal(fx->persist_failed_count, 2);
   assert_false(fx->last_persist_retrying);
   assert_int_equal(fx->last_persist_attempts, SU_TEST_PERSIST_MAX_ATTEMPTS);
@@ -3613,7 +3957,7 @@ static void a_reboot_checkpoint_that_never_lands_fails_the_workflow(void** state
   }
   assert_true(fx->log.have_persist);
   assert_int_equal(fx->persist_recovered_count, 1);
-  assert_int_equal(fx->su._internal.persist_failures, 0);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 0);
   assert_false(fx->su._internal.checkpoint_pending);
 }
 
@@ -3636,7 +3980,7 @@ static void a_terminal_record_that_never_lands_stops_being_retried(void** state)
   {
     persist_retry_now(fx);
   }
-  assert_int_equal(fx->su._internal.persist_failures, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
   assert_int_equal(fx->persist_failed_count, 2);
   assert_false(fx->last_persist_retrying);
   int calls = fx->log.persist_calls;
@@ -3664,7 +4008,7 @@ static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(voi
     persist_retry_now(fx);
   }
   assert_false(fx->su._internal.checkpoint_superseded);
-  assert_int_equal(fx->su._internal.persist_failures, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000002");
@@ -3751,7 +4095,7 @@ static void a_new_workflow_waits_for_a_held_workflow(void** state)
     /* Storage recovers: the held workflow resumes and completes. */
     fx->log.persist_failures = 0;
     fx->log.apply_result = AZ_IOT_SU_RESULT_SUCCESS;
-    fx->su._internal.persist_retry_ms = 0;
+    fx->su._internal.persist_retry._internal.due_ms = 0;
     pump(fx, 60);
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
     assert_string_equal(fx->chan.last_workflow_id, "distinct-files-deployment");
@@ -3934,7 +4278,7 @@ static void a_failed_terminal_write_counts_once_with_a_stored_record(void** stat
     }
     pump(fx, 40);
     assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
-    assert_int_equal(fx->su._internal.persist_failures, 1u);
+    assert_int_equal(fx->su._internal.persist_retry._internal.attempt, 1u);
     assert_int_equal(fx->persist_failed_count, 1);
     if (c == 1)
     {
@@ -3952,7 +4296,7 @@ static void a_failed_terminal_write_counts_once_with_a_stored_record(void** stat
     for (uint32_t n = 2; n <= SU_TEST_PERSIST_MAX_ATTEMPTS; ++n)
     {
       persist_retry_now(fx);
-      assert_int_equal(fx->su._internal.persist_failures, n);
+      assert_int_equal(fx->su._internal.persist_retry._internal.attempt, n);
     }
     assert_int_equal(fx->persist_failed_count, 2);
     assert_false(fx->last_persist_retrying);
@@ -4176,7 +4520,7 @@ static void build_report_with_too_small_a_buffer_is_rejected(void** state)
   assert_true(written > 0);
 }
 
-/* Parse a patch with the fixture's crypto hooks and the given root keys. */
+/* Parse a patch with the mock crypto backend and the given root keys. */
 static az_iot_result parse_with_roots(
     hook_log* log,
     const char* patch,
@@ -4186,7 +4530,7 @@ static az_iot_result parse_with_roots(
     az_iot_su_client_update_manifest* out_manifest)
 {
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
+  mock_crypto crypto;
   wire_hooks(log, &hooks, &crypto);
 
   /* The parser unescapes the manifest in place, so it needs a writable copy. */
@@ -4197,7 +4541,7 @@ static az_iot_result parse_with_roots(
 
   return az_iot_su_parse_update_request(
       az_span_create((uint8_t*)scratch, (int32_t)len),
-      &crypto,
+      &crypto.base,
       roots,
       root_count,
       out_req,
@@ -4356,11 +4700,132 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
   assert_true(manifest.files_count > 0);
 
   az_iot_su_platform_hooks hooks;
-  az_iot_su_crypto_hooks crypto;
+  mock_crypto crypto;
   wire_hooks(&fx->log, &hooks, &crypto);
   assert_int_equal(
-      az_iot_su_verify_file_hash(&manifest.files[0], &crypto, standalone_read_chunk, &fx->log),
+      az_iot_su_verify_file_hash(&manifest.files[0], &crypto.base, standalone_read_chunk, &fx->log),
       AZ_IOT_ERR_AUTH);
+}
+
+/* The backend must have SHA-256 and this header's version; software updates
+ * also need verify_rs256. The public entry point takes it from the connection. */
+static void init_requires_a_crypto_backend_that_verifies(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  uint8_t buf[256];
+  az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
+  o.hooks = &fx->su._internal.hooks;
+  o.device_properties = &dp;
+  o.device_properties_buffer = buf;
+  o.device_properties_buffer_size = sizeof(buf);
+  fake_channel fc = { 0 };
+  az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
+  az_iot_su_client su;
+
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto no_update = make_mock_crypto(&fx->log);
+  no_update.base.sha256_update = NULL;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &no_update.base, &o),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto newer = make_mock_crypto(&fx->log);
+  newer.base.version = AZ_IOT_CRYPTO_VERSION + 1u;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &newer.base, &o),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  mock_crypto no_verify = make_mock_crypto(&fx->log);
+  no_verify.base.verify_rs256 = NULL;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&su, &channel, &no_verify.base, &o),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_false(fc.opened);
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.host = "broker.example";
+  copts.port = 8883;
+  copts.client_id = "ut-no-crypto";
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_connection_client_deinit(&conn);
+}
+
+/** @brief Whether all @p len bytes at @p p are zero. */
+static bool all_zero(const void* p, size_t len)
+{
+  const uint8_t* b = (const uint8_t*)p;
+  for (size_t i = 0; i < len; ++i)
+  {
+    if (b[i] != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* The standalone entry points take the backend directly. Parsing verifies
+ * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
+static void standalone_entry_points_check_the_backend_they_need(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char request[] = "{}";
+  az_span json = az_span_create((uint8_t*)request, (int32_t)strlen(request));
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+
+  /* Outputs are zeroed on every error, including the argument checks. */
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, NULL, k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+
+  mock_crypto no_verify = make_mock_crypto(&fx->log);
+  no_verify.base.verify_rs256 = NULL;
+  memset(&req, 0xA5, sizeof(req));
+  memset(&manifest, 0xA5, sizeof(manifest));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, &no_verify.base, k_root_keys, 1, &req, &manifest),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_true(all_zero(&req, sizeof(req)));
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+
+  /* With one output missing, the other is still cleared. */
+  memset(&req, 0xA5, sizeof(req));
+  assert_int_equal(
+      az_iot_su_parse_update_request(json, &fx->crypto.base, k_root_keys, 1, &req, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(&req, sizeof(req)));
+
+  az_iot_su_client_update_manifest_file file;
+  memset(&file, 0, sizeof(file));
+  assert_int_equal(
+      az_iot_su_verify_file_hash(&file, NULL, standalone_read_chunk, &fx->log),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* The mock digests a file not starting with 0x55 to SU_TEST_HASH_BYTE x 32. */
+  uint8_t digest[32];
+  memset(digest, SU_TEST_HASH_BYTE, sizeof(digest));
+  char digest_b64[64];
+  int32_t written = 0;
+  assert_true(az_result_succeeded(az_base64_encode(
+      az_span_create((uint8_t*)digest_b64, (int32_t)sizeof(digest_b64)),
+      az_span_create(digest, (int32_t)sizeof(digest)),
+      &written)));
+  file.hashes[0].hash_type = AZ_SPAN_FROM_STR("sha256");
+  file.hashes[0].hash_value = az_span_create((uint8_t*)digest_b64, written);
+  file.hashes_count = 1;
+  assert_int_equal(
+      az_iot_su_verify_file_hash(&file, &no_verify.base, standalone_read_chunk, &fx->log),
+      AZ_IOT_OK);
 }
 
 /* The vtable advertises an optional do_work hook for a channel with
@@ -5207,6 +5672,10 @@ static void a_retryable_verdict_re_arms_the_same_route(void** state)
       NULL,
       fx->chan.engine_ctx);
 
+  /* Paced: not on the next tick, but once the fallback delay elapses. */
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
@@ -5266,9 +5735,273 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
 
   /* The retry survived the accepted publish and goes out again, on the route
    * that was asked for. */
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+/** @brief A retryable verdict with no service delay, as for a 503 with no retry-after. */
+static void deliver_no_hint_retry(fixture* fx, az_iot_su_operation operation)
+{
+  az_iot_su_service_error se = {
+    .code = 503000, .message = "UPSTREAM_UNAVAILABLE", .tracking_id = "", .retry_after_ms = 0
+  };
+  fx->chan.result_cb(
+      operation, AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY, &se, fx->chan.engine_ctx);
+}
+
+/** @brief Asserts the armed fallback delay is base * 2^(attempt-1), capped, +/- jitter. */
+static void assert_fallback_delay(fixture* fx, uint64_t before, uint32_t attempt)
+{
+  uint64_t base = (attempt > 7u) ? 60000u : (uint64_t)1000u << (attempt - 1u);
+  if (base > 60000u)
+  {
+    base = 60000u;
+  }
+  uint64_t due = fx->su._internal.retry._internal.due_ms;
+  assert_int_equal(fx->su._internal.retry._internal.attempt, attempt);
+  assert_true(due >= before + base - base / 5u);
+  assert_true(due <= az_iot_time_mono_ms() + base + base / 5u);
+}
+
+/* A no-hint retryable fetch is not resent at pump frequency, and the caller's
+ * deadline still abandons it exactly once. */
+static void a_no_hint_retryable_fetch_is_paced_and_keeps_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  uint64_t armed = fx->su._internal.pending_fetch_deadline_ms;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  uint64_t before = az_iot_time_mono_ms();
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_fallback_delay(fx, before, 1u);
+
+  pump(fx, 5);
+  assert_int_equal(fx->chan.request_update_count, 1);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, armed);
+  assert_int_equal(fx->abandoned_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  pump(fx, 3);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->chan.request_update_count, 1);
+}
+
+/* A no-hint retryable report waits for the fallback delay, then is resent
+ * unchanged and without reinstalling. */
+static void a_no_hint_retryable_report_is_paced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  az_iot_su_report first = fx->chan.last_report;
+  char workflow_id[128];
+  char extended[32];
+  memcpy(workflow_id, fx->chan.last_workflow_id, sizeof(workflow_id));
+  memcpy(extended, fx->chan.last_extended, sizeof(extended));
+  size_t installs = count_ops(&fx->log, OP_INSTALL);
+
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  assert_int_equal(fx->chan.last_report.outcome, first.outcome);
+  assert_int_equal(fx->chan.last_report.result_code, first.result_code);
+  assert_string_equal(fx->chan.last_workflow_id, workflow_id);
+  assert_string_equal(fx->chan.last_extended, extended);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), installs);
+}
+
+/* Only a service verdict that named no delay arms the fallback: a named delay
+ * is the channel's, a lost session the connection client's, and a corrective
+ * resend is due at once. */
+static void only_a_no_hint_service_verdict_arms_the_fallback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+
+  az_iot_su_service_error hinted
+      = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      &hinted,
+      fx->chan.engine_ctx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
+  assert_int_equal(fx->su._internal.retry._internal.attempt, 0);
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A fresh application request is not held by the fallback: the application
+ * owns its cadence. */
+static void a_new_application_request_is_not_paced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/* A fallback already running does not hold a retry whose own verdict did not
+ * arm it: session loss, a corrective resend, or a service-named delay. */
+static void a_stale_fallback_does_not_hold_an_excluded_fetch_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_su_service_error hinted
+      = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  struct
+  {
+    az_iot_result result;
+    az_iot_su_error_action action;
+    const az_iot_su_service_error* service_error;
+  } verdicts[] = {
+    { AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG, NULL },
+    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, &hinted },
+  };
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  /* The application asks again, bypassing the fallback, which stays armed. */
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 2);
+
+  for (size_t i = 0; i < sizeof(verdicts) / sizeof(verdicts[0]); ++i)
+  {
+    assert_true(fx->su._internal.retry._internal.due_ms > az_iot_time_mono_ms());
+    fx->chan.result_cb(
+        AZ_IOT_SU_OP_GET_UPDATE,
+        verdicts[i].result,
+        verdicts[i].action,
+        verdicts[i].service_error,
+        fx->chan.engine_ctx);
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->chan.request_update_count, 3 + i);
+  }
+}
+
+/* Likewise for a report: a fallback armed by a fetch does not hold a report
+ * retried after a session loss. */
+static void a_stale_fallback_does_not_hold_an_excluded_report_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms() + 60000u;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* A retryable verdict delivered from inside report() keeps the report queued
+ * and paced, rather than being cleared by report() returning OK. */
+static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+
+  fx->chan.report_sync_retry_once = true;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 2);
+}
+
+/* A late verdict for an older report does not pace a report the application
+ * queued since. */
+static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar2";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.1";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_true(fx->su._internal.retry._internal.due_ms > az_iot_time_mono_ms());
+
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* The fallback doubles to a cap, and an accepted operation resets it. */
+static void the_fallback_backs_off_and_resets_on_success(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+
+  for (uint32_t attempt = 1u; attempt <= 10u; ++attempt)
+  {
+    uint64_t before = az_iot_time_mono_ms();
+    deliver_no_hint_retry(fx, AZ_IOT_SU_OP_GET_UPDATE);
+    assert_fallback_delay(fx, before, attempt);
+  }
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.retry._internal.attempt, 0);
+  assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
 }
 
 /* The mirror case: a synchronous TERMINAL verdict must not be retried, or the
@@ -5367,12 +6100,28 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_retryable_verdict_does_not_overwrite_a_newer_request, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_retryable_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_no_hint_retryable_fetch_is_paced_and_keeps_its_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_no_hint_retryable_report_is_paced, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        only_a_no_hint_service_verdict_arms_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_application_request_is_not_paced, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_stale_fallback_does_not_hold_an_excluded_fetch_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_stale_fallback_does_not_hold_an_excluded_report_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_late_report_verdict_does_not_pace_a_newer_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
     cmocka_unit_test_setup_teardown(a_synchronous_terminal_verdict_is_not_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         two_requests_before_do_work_issue_only_the_newest, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_report_is_re_armed_and_resent, setup, teardown),
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(update_payload_body_is_logged_only_at_trace, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
@@ -5382,6 +6131,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(oversized_update_metadata_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(public_parser_accepts_update_metadata, setup, teardown),
     cmocka_unit_test_setup_teardown(verify_failure_blocks_download_and_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        rejected_signature_fails_before_manifest_is_parsed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        verified_malformed_manifest_fails_after_verification, setup, teardown),
     cmocka_unit_test_setup_teardown(install_failure_triggers_rollback, setup, teardown),
     cmocka_unit_test_setup_teardown(hash_mismatch_blocks_install_and_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -5464,6 +6217,12 @@ int main(void)
         a_failed_terminal_write_counts_once_with_a_stored_record, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unrepresentable_terminal_record_is_not_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_oversized_workflow_id_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_workflow_id_leaves_the_active_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_workflow_id_at_the_limit_is_reported_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_resumed_oversized_workflow_id_is_logged, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -5493,6 +6252,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        standalone_entry_points_check_the_backend_they_need, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(

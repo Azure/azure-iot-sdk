@@ -6,7 +6,7 @@ includedir=@AZ_IOT_PC_INCLUDEDIR@
 Name: azure-iot-sdk-@AZ_IOT_PC_COMPONENT@
 Description: @AZ_IOT_PC_DESCRIPTION@
 URL: https://github.com/Azure/azure-iot-sdk
-Version: @PROJECT_VERSION@
+Version: @AZ_IOT_VERSION_FULL@
 Requires: @AZ_IOT_PC_REQUIRES@
 Requires.private: @AZ_IOT_PC_REQUIRES_PRIVATE@
 Cflags: @AZ_IOT_PC_CFLAGS@

@@ -88,9 +88,8 @@ export AZ_IOT_DPS_REGISTRATION_ID='<registration-id>'
 export AZ_IOT_CLIENT_CERT="$PWD/device-cert.pem"
 export AZ_IOT_CLIENT_KEY="$PWD/device-key.pem"
 export AZ_IOT_TRUSTED_CA='/etc/ssl/certs/ca-certificates.crt'
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# export AZ_IOT_DPS_GLOBAL_ENDPOINT='global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# export AZ_IOT_DPS_GLOBAL_ENDPOINT='<dps-global-endpoint>'
 ```
 
 PowerShell:
@@ -101,12 +100,11 @@ $env:AZ_IOT_DPS_REGISTRATION_ID = '<registration-id>'
 $env:AZ_IOT_CLIENT_CERT         = "$PWD\device-cert.pem"
 $env:AZ_IOT_CLIENT_KEY          = "$PWD\device-key.pem"
 $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
-# Only when your provisioning service is not on the default global endpoint,
-# e.g. a preview environment:
-# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = 'global-canary.azure-devices-provisioning.net'
+# Only when your provisioning service is not on the default global endpoint:
+# $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = '<dps-global-endpoint>'
 ```
 
-> Manifest signature verification works out of the box: the sample uses
+> Manifest signatures are verified against Microsoft's root keys: the sample uses
 > `az_iot_su_microsoft_root_keys()`, Microsoft's published software updates production roots
 > compiled into the SDK — see [Root keys](#root-keys) below.
 
@@ -115,12 +113,12 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 ## Build and run
 
 The sample target is `az_iot_sample_software_update_simulated_onboarding` (built
-when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL software updates crypto adapter is
+when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL crypto backend is
 available — both are on by default).
 
 ### Prerequisites
 
-The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c, vcpkg)
+The build fetches its CMake dependencies (Paho MQTT, azure-sdk-for-c)
 automatically, so you only need a toolchain, CMake, and OpenSSL on the host.
 
 **Linux** (Debian/Ubuntu package names shown; adjust for your distro):
@@ -135,7 +133,7 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 
 - A C compiler — **GCC** (`build-essential`) or **Clang**.
 - **CMake 3.21+** and **Ninja** (the `linux-gcc-debug` preset uses the Ninja generator).
-- **OpenSSL 3.0+** development headers (`libssl-dev`) for the software updates crypto adapter.
+- **OpenSSL 3.0+** development headers (`libssl-dev`) for the OpenSSL crypto backend.
 - **Git** to clone the repo and let CMake fetch dependencies.
 
 **Windows:**
@@ -148,8 +146,8 @@ sudo update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 - **[CMake 3.21+](https://cmake.org/download/)** — bundled with Visual Studio, or
   install standalone and ensure `cmake` is on `PATH`.
 - **OpenSSL 3.0+** — install [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
-  (or `vcpkg install openssl:x64-windows`) so CMake's `find_package(OpenSSL 3.0)`
-  succeeds. Without it the software updates crypto adapter — and therefore this sample — is
+  (or vcpkg; see [Build tools](../../../README.md#build-tools)) so CMake's `find_package(OpenSSL 3.0)`
+  succeeds. Without it the OpenSSL crypto backend — and therefore this sample — is
   skipped.
 - **Git** to clone the repo and let CMake fetch dependencies.
 
@@ -250,7 +248,7 @@ The simulated hooks are shared with the regular-update sample, in
 | Concern | Behavior |
 |---|---|
 | Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
-| Manifest JWS signature verification | **Real** (OpenSSL crypto hooks, real root keys) |
+| Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
 | `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |

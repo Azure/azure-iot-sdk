@@ -107,6 +107,13 @@ extern "C"
   void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value);
   void az_iot_span_writer_append_i32(az_iot_span_writer* writer, int32_t value);
 
+  /** @brief Decimal, zero-padded to @p min_digits (clamped to 1..10) and widened
+   * past it when the value needs more digits. */
+  void az_iot_span_writer_append_u32_padded(
+      az_iot_span_writer* writer,
+      uint32_t value,
+      uint8_t min_digits);
+
   /* Lowercase hexadecimal, zero-padded to @p min_digits (clamped to 1..8) and
    * widened past it when the value needs more digits. */
   void az_iot_span_writer_append_hex32(

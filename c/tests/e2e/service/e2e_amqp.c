@@ -4,12 +4,14 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_amqp.h"
+#include "e2e_notify_time.h"
 
 #include "az_amqp_sample_wait.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* GCC flags these AZ_NODISCARD (warn_unused_result) az_amqp calls under -Werror even
    with a plain (void) cast, which GCC deliberately ignores. Route the intentional
@@ -67,6 +69,8 @@
 #define E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_CBS_AUTH_REJECTED
 #define E2E_ERR_TELEMETRY_RECEIVER_INIT E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_INIT
 #define E2E_ERR_TELEMETRY_RECEIVER_ATTACH E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_ATTACH
+#define E2E_ERR_TELEMETRY_FILTER E2E_AMQP_PFX_TELEMETRY "enqueued-time filter encode failed"
+#define E2E_ERR_TELEMETRY_SOURCE E2E_AMQP_PFX_TELEMETRY "partition source address too long"
 
 /* c2d */
 #define E2E_ERR_C2D_OUT_OF_MEMORY E2E_AMQP_PFX_C2D "out of memory"
@@ -197,30 +201,75 @@ static void on_message_received(
   az_amqp_message_body_kind body_kind;
   az_span body;
   if (az_result_succeeded(az_amqp_message_get_body(message, &body_kind, &body))
-      && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA && t->captured_count < E2E_AMQP_CAPTURE_MAX)
+      && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA)
   {
     int n = az_span_size(body);
     if (n > E2E_AMQP_CAPTURE_BODY_MAX - 1)
     {
       n = E2E_AMQP_CAPTURE_BODY_MAX - 1;
     }
-    memcpy(t->captured[t->captured_count], az_span_ptr(body), (size_t)n);
-    t->captured[t->captured_count][n] = '\0';
-    t->captured_count++;
+    char* slot = t->captured[t->captured_next];
+    memcpy(slot, az_span_ptr(body), (size_t)n);
+    slot[n] = '\0';
+    t->captured_next = (t->captured_next + 1) % E2E_AMQP_CAPTURE_MAX;
+    if (t->captured_count < E2E_AMQP_CAPTURE_MAX)
+    {
+      t->captured_count++;
+    }
   }
 
   E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+}
+
+/**
+ * @brief Encodes an Event Hubs filter-set selecting messages enqueued after @p after_ms.
+ *
+ * @return true with the encoded map in @p out_filter; false if @p buffer is too small.
+ */
+static bool encode_enqueued_after_filter(az_span buffer, int64_t after_ms, az_span* out_filter)
+{
+  static const az_span selector = AZ_SPAN_LITERAL_FROM_STR("apache.org:selector-filter:string");
+  char expression[96];
+  int length = snprintf(
+      expression,
+      sizeof(expression),
+      "amqp.annotation.x-opt-enqueued-time > '%lld'",
+      (long long)after_ms);
+  if (length <= 0 || length >= (int)sizeof(expression))
+  {
+    return false;
+  }
+
+  az_amqp_encoder encoder;
+  if (az_result_failed(az_amqp_encoder_init(&encoder, buffer))
+      || az_result_failed(az_amqp_encoder_begin_map(&encoder))
+      || az_result_failed(az_amqp_encoder_append_symbol(&encoder, selector))
+      || az_result_failed(az_amqp_encoder_append_descriptor_symbol(&encoder, selector))
+      || az_result_failed(
+          az_amqp_encoder_append_string(&encoder, az_span_create((uint8_t*)expression, length)))
+      || az_result_failed(az_amqp_encoder_end_map(&encoder)))
+  {
+    return false;
+  }
+  *out_filter = az_amqp_encoder_get_bytes(&encoder);
+  return true;
 }
 
 bool e2e_amqp_telemetry_begin(
     e2e_amqp_telemetry* t,
     const char* eh_host,
     const char* entity_path,
+    const char* consumer_group,
+    int64_t enqueued_after_ms,
     const char* sas_token,
     int partition_count,
     const char** err_out)
 {
   const char* err = NULL;
+  if (consumer_group == NULL || consumer_group[0] == '\0')
+  {
+    consumer_group = "$Default";
+  }
   if (partition_count < 1)
   {
     partition_count = 1;
@@ -350,20 +399,38 @@ bool e2e_amqp_telemetry_begin(
     goto error;
   }
 
-  /* 5. One earliest-position receiver per partition. */
+  /* 5. One receiver per partition, from enqueued_after_ms when set. */
+  az_span filter = AZ_SPAN_EMPTY;
+  if (enqueued_after_ms > 0
+      && !encode_enqueued_after_filter(
+          AZ_SPAN_FROM_BUFFER(t->filter_buffer), enqueued_after_ms, &filter))
+  {
+    err = E2E_ERR_TELEMETRY_FILTER;
+    goto error;
+  }
+
   for (int p = 0; p < partition_count; p++)
   {
     int source_length = snprintf(
         t->source_addr[p],
         sizeof(t->source_addr[p]),
-        "%s/ConsumerGroups/$Default/Partitions/%d",
+        "%s/ConsumerGroups/%s/Partitions/%d",
         entity_path,
+        consumer_group,
         p);
+    if (source_length <= 0 || source_length >= (int)sizeof(t->source_addr[p]))
+    {
+      err = E2E_ERR_TELEMETRY_SOURCE;
+      goto error;
+    }
     int name_length = snprintf(t->link_name[p], sizeof(t->link_name[p]), "e2e-recv-%d", p);
 
+    az_amqp_source source
+        = az_amqp_source_from_address(az_span_create((uint8_t*)t->source_addr[p], source_length));
+    source.filter = filter;
     az_amqp_link_options receiver_options = az_amqp_link_receiver_options_default(
         az_span_create((uint8_t*)t->link_name[p], name_length),
-        az_amqp_source_from_address(az_span_create((uint8_t*)t->source_addr[p], source_length)),
+        source,
         AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
         AZ_SPAN_FROM_BUFFER(t->recv_buffers[p]),
         50 /* prefetch credit */);
@@ -742,6 +809,37 @@ cleanup:
 
 /* --- file-upload notification receiver ------------------------------------ */
 
+/* Age past which another device's notification has no waiting watcher: a test
+ * process is killed at CTest's 900 s timeout. The rest is clock-skew margin. */
+#define E2E_AMQP_NOTIFY_STALE_S (20 * 60)
+
+/* How long another live watcher's notification is held before it is released.
+ * With time()'s 1 s resolution this is 1-2 s. */
+#define E2E_AMQP_NOTIFY_HOLD_S 2
+
+/**
+ * @brief Releases held notifications; all of them if @p all, else those held
+ * for at least #E2E_AMQP_NOTIFY_HOLD_S.
+ */
+static void release_held(e2e_amqp_filenotify* f, bool all)
+{
+  int64_t const now = (int64_t)time(NULL);
+  int kept = 0;
+  for (int i = 0; i < f->held_count; i++)
+  {
+    if (all || now - f->held[i].held_at_s >= E2E_AMQP_NOTIFY_HOLD_S)
+    {
+      f->released_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_release(&f->receiver, f->held[i].delivery_number));
+    }
+    else
+    {
+      f->held[kept++] = f->held[i];
+    }
+  }
+  f->held_count = kept;
+}
+
 static void on_filenotify_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -771,9 +869,29 @@ static void on_filenotify_received(
   text[n] = '\0';
 
   /* The notification node is hub-wide. A notification for someone else is
-   * RELEASED so the hub redelivers it to the leg that is waiting for it. */
+   * RELEASED so the hub redelivers it to the leg that is waiting for it --
+   * unless it is too old for any leg to be waiting. Nobody settles those, so on
+   * a long-lived hub they pile up and are redelivered to every watcher ahead of
+   * its own; accept them instead. Unparseable times are released, as before. */
   if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
   {
+    int64_t enqueued_s;
+    if (e2e_notify_enqueued_time(text, &enqueued_s)
+        && (int64_t)time(NULL) - enqueued_s > E2E_AMQP_NOTIFY_STALE_S)
+    {
+      f->stale_count++;
+      E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+      return;
+    }
+    /* Released at once, it would come straight back to this link in a tight
+     * loop; hold it briefly (see e2e_amqp_filenotify_do_work). */
+    if (f->held_count < E2E_AMQP_NOTIFY_HOLD_MAX)
+    {
+      f->held[f->held_count].delivery_number = delivery->number;
+      f->held[f->held_count].held_at_s = (int64_t)time(NULL);
+      f->held_count++;
+      return;
+    }
     f->released_count++;
     E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
     return;
@@ -998,7 +1116,12 @@ bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
   {
     return false;
   }
-  return pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  bool ok = pump_connection(&f->connection, &f->transport_storage, &f->connection_failed, wait_ms);
+  if (ok)
+  {
+    release_held(f, false);
+  }
+  return ok;
 }
 
 bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
@@ -1018,6 +1141,7 @@ void e2e_amqp_filenotify_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
+    int* out_stale,
     int* out_unparsed)
 {
   if (out_delivered != NULL)
@@ -1032,6 +1156,10 @@ void e2e_amqp_filenotify_stats(
   {
     *out_released = f->released_count;
   }
+  if (out_stale != NULL)
+  {
+    *out_stale = f->stale_count;
+  }
   if (out_unparsed != NULL)
   {
     *out_unparsed = f->unparsed_count;
@@ -1043,6 +1171,7 @@ void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
   if (f->started)
   {
     f->started = false;
+    release_held(f, true);
     E2E_AMQP_DISCARD(az_amqp_link_detach(&f->receiver, NULL));
     E2E_AMQP_DISCARD(az_amqp_cbs_close(&f->cbs));
     E2E_AMQP_DISCARD(az_amqp_session_end(&f->session, NULL));

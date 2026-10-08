@@ -184,6 +184,42 @@ static void hex_pads_clamps_and_widens(void** state)
   }
 }
 
+static void padded_decimal_pads_clamps_and_widens(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    uint32_t value;
+    uint8_t min_digits;
+    const char* expected;
+  } cases[] = {
+    { 7u, 3u, "007" },
+    { 0u, 0u, "0" }, /* min_digits clamps up to 1 */
+    { 12345u, 2u, "12345" }, /* widens past min_digits */
+    { 0u, 4u, "0000" },
+    { 4294967295u, 200u, "4294967295" }, /* min_digits clamps down to 10 */
+    { 1u, 200u, "0000000001" },
+  };
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    char actual[16];
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(actual));
+    az_iot_span_writer_append_u32_padded(&writer, cases[i].value, cases[i].min_digits);
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+    assert_string_equal(actual, cases[i].expected);
+  }
+
+  /* Padding counts toward the space needed: nothing is written when it does not fit. */
+  char small[4];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(small));
+  az_iot_span_writer_append_u32_padded(&writer, 1u, 4u);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_span_writer_append_u32_padded(NULL, 1u, 2u);
+}
+
 static void a_number_that_does_not_fit_writes_nothing(void** state)
 {
   (void)state;
@@ -509,6 +545,7 @@ int main(void)
     cmocka_unit_test(empty_appends_are_no_ops),
     cmocka_unit_test(decimal_matches_snprintf_at_the_extremes),
     cmocka_unit_test(hex_pads_clamps_and_widens),
+    cmocka_unit_test(padded_decimal_pads_clamps_and_widens),
     cmocka_unit_test(a_number_that_does_not_fit_writes_nothing),
     cmocka_unit_test(matches_snprintf_for_a_real_url),
     cmocka_unit_test(matches_snprintf_for_a_mixed_topic),

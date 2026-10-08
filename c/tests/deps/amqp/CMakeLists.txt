@@ -6,6 +6,8 @@
 #
 # Provenance: https://github.com/Azure/az_amqp @ fe7c0c2ed87257a22f0cd6b183374cdc855e5000
 # (inc/, src/, and the reference transport from samples/common/).
+# Local change: receiver links advance delivery-count per incoming delivery
+# (src/az_amqp_link.c), without which replenished credit is never granted.
 #
 # A small, allocation-free, single-pump C99 AMQP 1.0 client. It is used ONLY by
 # the end-to-end test service client (c/tests/e2e/service) to receive device
@@ -14,7 +16,7 @@
 # az_core + platform (az_win32 / az_posix) target and does NOT re-fetch
 # azure-sdk-for-c.
 #
-# The SHIPPING SDK stays MQTT-only (see c/docs/amqp_vs_mqtt_for_new_sdk_client.md);
+# The SHIPPING SDK stays MQTT-only;
 # AMQP appears here strictly as a test dependency so the C service half of every
 # scenario can be verified in-process, with no C# harness.
 #

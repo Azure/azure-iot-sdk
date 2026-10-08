@@ -14,6 +14,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -34,7 +35,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        /// <param name="connectionContext">
+        /// An optional IoT hub assignment the application restored (for example, one persisted to disk across a device
+        /// reboot). When supplied, <see cref="AbstractConnectionClient.ProvisionAndConnectAsync"/> attempts to connect
+        /// directly to this IoT hub before provisioning for a new assignment.
+        /// </param>
+        public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
             options ??= new ConnectionClientOptions();
 
@@ -226,6 +232,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private static string GetPackageVersion()
         {
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

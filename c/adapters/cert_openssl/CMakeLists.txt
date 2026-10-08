@@ -31,7 +31,7 @@ add_library(azure::iot::certificate_provider_managed ALIAS az_iot_certificate_pr
 
 target_include_directories(az_iot_certificate_provider_managed
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 target_link_libraries(az_iot_certificate_provider_managed

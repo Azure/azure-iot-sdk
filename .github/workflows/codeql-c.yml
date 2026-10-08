@@ -1,0 +1,113 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# CodeQL (security-extended) for the C SDK. Results go to the repository's code scanning alerts.
+#
+# Analyzes what the SDK ships: library, adapters and samples, with every optional component whose
+# dependencies the runner can provide. Tests are not built.
+#
+# Fetched dependencies (azure-sdk-for-c, Paho) and mbedTLS are built BEFORE CodeQL starts; only
+# first-party sources are then recompiled under CodeQL. For compiled languages `paths-ignore` does
+# not filter results, so this is what keeps third-party code out of the alerts.
+name: codeql-c
+
+on:
+  push:
+    branches: [ main ]
+  # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
+  # no check, which would block a required check. The `changes` job below skips analysis instead.
+  pull_request:
+  schedule:
+    - cron: '0 12 * * 1'  # Weekly, Monday 12:00 UTC: new queries run against unchanged code.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read  # dorny/paths-filter lists PR files through the API.
+    outputs:
+      c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            c:
+              - 'c/**'
+              - '!c/**/*.md'
+            common:
+              - 'common/**'
+              - '!common/**/*.md'
+            workflow:
+              - '.github/workflows/codeql-c.yml'
+
+  analyze:
+    name: analyze (c-cpp)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write  # Upload results to code scanning.
+    defaults:
+      run:
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install deps
+        # libcurl: HTTPS path of the file upload sample. libssl: Paho TLS, key custody,
+        # software updates OpenSSL crypto and the managed certificate provider.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+
+      - name: Build mbedTLS
+        # Enables the software updates mbedTLS crypto adapter.
+        run: bash eng/install-mbedtls.sh 3.6.7 "$RUNNER_TEMP/mbedtls"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build/codeql -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
+          -DAZ_IOT_BUILD_TESTS=OFF
+          -DAZ_IOT_BUILD_SAMPLES=ON
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_RUST_MQTT=ON
+
+      - name: Build everything (not analyzed)
+        run: cmake --build build/codeql
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build first-party code (analyzed)
+        # Tracked sources only; submodule and fetched dependency files are not tracked here.
+        run: |
+          git ls-files -z -- '*.c' '*.h' | xargs -0 touch
+          cmake --build build/codeql
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:c-cpp
