@@ -231,7 +231,7 @@ int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   s->persist_failed = 1;
-  FILE* f = fopen(s->state_file, "wb");
+  FILE* f = sample_fopen_private(s->state_file);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -260,7 +260,7 @@ int32_t su_load_state(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx
   /* A blob of exactly cap bytes fits: EOF is only seen by reading past it. */
   int overflow = (r == cap && fgetc(f) != EOF);
   int failed = ferror(f);
-  fclose(f);
+  (void)fclose(f);
   if (overflow || failed)
   {
     return 1; /* did not fit in cap, or unreadable -> treat as no state */

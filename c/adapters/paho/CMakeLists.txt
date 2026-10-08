@@ -14,6 +14,7 @@
 
 include(FetchContent)
 
+# Keep the commit for this tag in c/cgmanifest.json.
 set(PAHO_C_TAG  "v1.3.13" CACHE STRING "Eclipse Paho MQTT C git tag")
 set(PAHO_C_REPO "https://github.com/eclipse/paho.mqtt.c.git" CACHE STRING "Eclipse Paho MQTT C git repository")
 
@@ -68,17 +69,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(paho_mqtt_c)
 
-# Paho v1.3.x triggers multiple warnings (unnamed structs, sign-compare,
-# unused-parameter) that are fatal under strict -Werror builds.  Suppress all
-# warnings on Paho's object-library and static targets so the upstream code
-# compiles cleanly regardless of global CMAKE_C_FLAGS.
+# Paho v1.3.x warnings are not fatal and the known ones are silenced, so strict
+# CMAKE_C_FLAGS (-Wall -Wextra -Werror) do not break it. Not -w: that would also
+# disable -Werror=format-security from az_iot_hardening.cmake.
 if(NOT MSVC)
     foreach(_pt IN ITEMS
         paho-mqtt3a-static paho-mqtt3as-static
         paho-mqtt3c-static paho-mqtt3cs-static
         common_obj_static common_ssl_obj_static)
         if(TARGET ${_pt})
-            target_compile_options(${_pt} PRIVATE -w)
+            target_compile_options(${_pt} PRIVATE
+                -Wno-error
+                -Wno-overflow -Wno-sign-compare -Wno-unused-parameter -Wno-pedantic
+                -Wno-unused-but-set-variable -Wno-unused-function -Wno-deprecated-declarations
+                -Wno-misleading-indentation)
         endif()
     endforeach()
 endif()
@@ -132,7 +136,7 @@ add_library(azure::iot::adapter_paho ALIAS az_iot_adapter_paho)
 
 target_include_directories(az_iot_adapter_paho
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/inc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
 )
 target_link_libraries(az_iot_adapter_paho
     PUBLIC

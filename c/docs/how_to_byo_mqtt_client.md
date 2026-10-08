@@ -30,7 +30,8 @@ inc/azure/iot/adapters/
 └── az_iot_adapter_mymqtt.h # public factory builders (one per version)
 ```
 
-You can take [adapters/paho/](../adapters/paho/) as a working reference.
+You can take [adapters/paho/](../adapters/paho/) (a client with its own I/O thread) or
+[adapters/az_mqtt/](../adapters/az_mqtt/) (a single-threaded client) as a working reference.
 
 ## Step 1 — Implement the iface vtable
 
@@ -71,12 +72,15 @@ If any property is absent in the packet, set the pointer to NULL and the length/
 
 The SDK decides these per session role and hands them to `connect`. An adapter that drops any of them still connects, publishes and subscribes normally, so nothing except the wire shows the difference — which is why the conformance suite decodes the CONNECT and the DISCONNECT and asserts on them directly.
 
+- `username`, `password` — valid only while `connect()` runs. Copy or serialize them before
+  returning: the SDK wipes the password (a SAS token) as soon as `connect()` returns and reuses
+  its buffer. Conformance: `connect_does_not_read_credentials_after_returning`.
 - `clean_start` — the v5 Clean Start flag. On v3.1.1 map it onto Clean Session; do **not** hardcode either value.
 - `session_expiry_seconds` — the v5 Session Expiry Interval property. **v5 only.** A v3.1.1 CONNECT has no property field, so a v3.1.1 adapter must send nothing for it.
 - `lwt` — set the Will topic, payload, QoS and retain flag on the CONNECT when `lwt.topic` is non-NULL. `lwt.will_delay_seconds` is the v5 Will Delay Interval property and is **v5 only**; a v3.1.1 adapter ignores it.
 - `disconnect_reason_code` — the reason code to put in the MQTT 5 DISCONNECT when `disconnect()` is later called on this session. It is an *additive* field on `az_iot_mqtt_connect_options`, not a parameter of `disconnect()`, so the vtable every adapter implements is unchanged and an adapter written before this field never reads it (see [struct_versioning.md](struct_versioning.md)). `0` (`AZ_IOT_MQTT_DISCONNECT_NORMAL`) is what a zero-initialized struct yields and is the orderly close that discards the Will; `0x04` (`AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE`) asks the broker to publish the Will anyway. **v5 only** — MQTT 3.1.1 has no DISCONNECT reason codes, and a v3.1.1 adapter must ignore the field rather than invent a byte for it.
 
-**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`), and the SDK re-provisions through DPS on the former and only on the former. An adapter that flattens the two leaves a device unable to follow a DPS hub reassignment.
+**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`). The SDK retries an identity refusal on `identity_recovery` (and, in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, re-provisions through DPS), and a connection failure on `reconnection_policy`. An adapter that flattens the two leaves the device on the wrong retry schedule, and unable to follow a DPS hub reassignment in `REPROVISION` mode.
 
 **On a refused SUBACK** — set `status` from `az_iot_mqtt_suback_result(version, suback_code)`, for the same reason. Pass the code exactly as it came off the wire: a v3.1.1 SUBACK return code (`0x00`–`0x02` granted QoS, `0x80` Failure) or a v5 reason code; pass a negative value for failures your client raised itself. The helper decides whether the broker refused the *filter* in a way a retry cannot change (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` — `0x87` Not authorized, `0x8F` Topic Filter invalid) or hit something transient (`AZ_IOT_ERR_MQTT` — `0x97` Quota exceeded, `0x80` Unspecified error). That distinction is what lets connection policy separate a filter that will be refused identically next time from one that failed because the service was briefly unwell; an adapter that flattens them denies it the choice. **A granted QoS lower than the one requested is a success, not a refusal** — never report it as an error.
 
@@ -156,7 +160,7 @@ add_library(az_iot_adapter_mymqtt STATIC
     az_iot_mqtt_mymqtt.c
 )
 target_include_directories(az_iot_adapter_mymqtt PUBLIC
-    ${CMAKE_SOURCE_DIR}/inc
+    ${PROJECT_SOURCE_DIR}/inc
 )
 target_link_libraries(az_iot_adapter_mymqtt
     PUBLIC  az_iot_core
@@ -235,13 +239,21 @@ Test #N: az_iot_conformance_mymqtt_v5 ........   Passed
 
 ### 4.4 — What the suite actually exercises
 
-Today the suites cover the iface contract end-to-end:
+The cases are in [tests/conformance/az_iot_conformance.c](../tests/conformance/az_iot_conformance.c). They cover:
 
-1. **`connect_disconnect_roundtrip`** — fresh client connects, observes `EVT_CONNECTED(OK)`, disconnects cleanly.
-2. **`publish_subscribe_roundtrip`** — subscribe to a unique topic with QoS 1, observe `EVT_SUBSCRIBE_ACK(OK)`, publish a known payload, receive it back via `EVT_MESSAGE`, validate topic + payload bytes.
-3. **`disconnect_without_connect_is_rejected`** — calling `disconnect` on a never-connected client must not return `az_iot_OK`.
+- **Lifecycle:** connect/disconnect, reuse after disconnect, disconnect without connect, keep-alive,
+  and server- and client-initiated disconnects.
+- **Messaging:** publish/subscribe round trips, refused SUBSCRIBE and PUBLISH, truncated PUBLISH,
+  unknown packet ids, and MQTT 5 properties in both directions.
+- **Network faults** (through a test proxy): refused, unresolvable and black-holed endpoints,
+  network drops, fragmentation, latency, bandwidth limits and stalled links.
+- **Session terms:** clean-session flag, session expiry (MQTT 5 only), Will, DISCONNECT reason
+  code, session-present.
+- **TLS** (with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`): server certificate validation (trusted,
+  untrusted, expired, hostname mismatch) and mutual TLS.
+- **Egress:** a WebSocket request is never downgraded, and an unreachable proxy is never bypassed.
 
-More tests will be added as the SDK grows (reconnect semantics, large payloads, retained messages, MQTTv5 properties, malformed-input handling, etc.). Re-running the suite after each SDK upgrade is the recommended way to catch regressions in your adapter.
+Re-run the suite after each SDK upgrade to catch regressions in your adapter.
 
 The suite also holds every adapter to the safety half of the optional features, whatever it declares:
 
@@ -251,8 +263,6 @@ The suite also holds every adapter to the safety half of the optional features, 
 ### 4.5 — Declaring optional capabilities
 
 If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly.
-
-> **Renamed:** `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY` is now `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` (same bit, same proof). There is no alias: change the name to the route you implement. If you implement the callback route, that build error is the point — you want `_SIGN`, which the old single capability could never prove.
 
 Non-extractable key custody has **two independent routes**, and `az_iot_mqtt_tls_options` says you may implement either, both or neither. They are separate capabilities, so declare only what you implement:
 
@@ -336,4 +346,4 @@ If your v5 adapter does not propagate these properties, the feature clients will
 - Iface header: [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)
 - Reference adapter: [adapters/paho/](../adapters/paho/)
 - Conformance suite: [tests/conformance/](../tests/conformance/)
-- Architecture overview: [docs/design.md](design.md)
+- Architecture overview: [architecture.md](architecture.md)

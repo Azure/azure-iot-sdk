@@ -2,8 +2,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Enforces the generation-client boundaries specified in
-# docs/eng/client-separation.md. Keep this dependency-free so it can run in the
+# Enforces the generation-client boundaries listed in docs/architecture.md
+# ("Library boundaries"). Keep this dependency-free so it can run in the
 # conventions job before the project is configured.
 
 set -euo pipefail
@@ -79,7 +79,7 @@ destroy_hits="$(grep -rnoE '\baz_iot_[a-z0-9_]*_destroy\b' \
     --include='*.c' --include='*.h' \
     "${root_dir}/inc" "${root_dir}/src" "${root_dir}/adapters" \
     "${root_dir}/tests" "${root_dir}/samples" 2>/dev/null \
-    | grep -vxE '.*:az_iot_(mock_mqtt|paho|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
+    | grep -vxE '.*:az_iot_(mock_mqtt|paho|az_mqtt|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
     || true)"
 if [ -n "${destroy_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then

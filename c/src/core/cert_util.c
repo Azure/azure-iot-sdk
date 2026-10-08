@@ -6,7 +6,7 @@
 #include "internal/cert_util.h"
 
 #include "internal/log_internal.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 /* LCG mixing constants for the request-id nonce generator. */
@@ -64,7 +64,8 @@ az_iot_result az_iot_cert_util_collect_chain_spans(
     }
     if (count >= max)
     {
-      AZ_IOT_LOG_ERROR("issued cert chain: more certificates than the supported maximum");
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CERT, "issued chain: more certificates than the supported maximum");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     certs[count++] = jr->token.slice;

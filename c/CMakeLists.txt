@@ -3,11 +3,43 @@
 
 cmake_minimum_required(VERSION 3.21)
 
+# The version comes from az_iot_version.h, the single source of truth (non-CMake
+# builds such as ESP-IDF compile it directly). project() takes only the numeric
+# part; AZ_IOT_VERSION_FULL carries the pre-release label too.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/inc/azure/iot/az_iot_version.h" _az_iot_ver_lines
+    REGEX "^#define AZ_IOT_VERSION_(STRING|MAJOR|MINOR|PATCH|PRERELEASE) ")
+foreach(_l IN LISTS _az_iot_ver_lines)
+    if(_l MATCHES "^#define AZ_IOT_VERSION_([A-Z]+) \"?([^\"]*)\"?$")
+        set(_az_iot_ver_${CMAKE_MATCH_1} "${CMAKE_MATCH_2}")
+    endif()
+endforeach()
+set(_az_iot_ver_expected "${_az_iot_ver_MAJOR}.${_az_iot_ver_MINOR}.${_az_iot_ver_PATCH}")
+if(DEFINED _az_iot_ver_PRERELEASE)
+    string(APPEND _az_iot_ver_expected "-${_az_iot_ver_PRERELEASE}")
+endif()
+# SemVer 2.0.0 without build metadata; keep in sync with eng/check-version.sh.
+set(_az_iot_ver_num "(0|[1-9][0-9]*)")
+set(_az_iot_ver_id "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
+if(NOT _az_iot_ver_STRING MATCHES
+   "^${_az_iot_ver_num}\\.${_az_iot_ver_num}\\.${_az_iot_ver_num}(-${_az_iot_ver_id}(\\.${_az_iot_ver_id})*)?$")
+    message(FATAL_ERROR "az_iot_version.h: AZ_IOT_VERSION_STRING \"${_az_iot_ver_STRING}\" "
+        "is not a valid SemVer MAJOR.MINOR.PATCH[-PRERELEASE].")
+endif()
+if(NOT _az_iot_ver_STRING STREQUAL _az_iot_ver_expected)
+    message(FATAL_ERROR "az_iot_version.h: AZ_IOT_VERSION_STRING \"${_az_iot_ver_STRING}\" "
+        "does not match the component macros (\"${_az_iot_ver_expected}\").")
+endif()
+set(AZ_IOT_VERSION_FULL "${_az_iot_ver_STRING}")
+
 project(azure-iot-sdk
-    VERSION 0.0.1
+    VERSION ${_az_iot_ver_MAJOR}.${_az_iot_ver_MINOR}.${_az_iot_ver_PATCH}
     DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)"
     LANGUAGES C
 )
+
+# Re-configure when the version header changes.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/inc/azure/iot/az_iot_version.h")
 
 # C99 is the baseline. Overridable (-DCMAKE_C_STANDARD=11|17|23) so CI can
 # check forward compatibility with later standards.
@@ -35,6 +67,8 @@ endif()
 include(az_iot_options)
 include(compiler_warnings)
 include(az_iot_coverage)
+# Before any dependency is fetched, so dependencies are hardened too.
+include(az_iot_hardening)
 
 # azure-sdk-for-c is a mandatory dependency.
 #   az::core                 — spans, JSON, log, contexts, result codes.
@@ -53,6 +87,7 @@ if(POLICY CMP0169)
     cmake_policy(SET CMP0169 OLD)
 endif()
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "")
+# Keep the commit for this tag in c/cgmanifest.json.
 set(AZ_SDK_C_TAG "1.5.0" CACHE STRING "azure-sdk-for-c git tag/branch")
 set(AZ_SDK_C_REPO "https://github.com/Azure/azure-sdk-for-c.git" CACHE STRING "azure-sdk-for-c git repository")
 
@@ -125,16 +160,20 @@ if(AZ_IOT_WITH_PAHO)
     add_subdirectory(adapters/paho)
 endif()
 
+if(AZ_IOT_WITH_AZ_MQTT)
+    add_subdirectory(adapters/az_mqtt)
+endif()
+
 if(AZ_IOT_WITH_RUST_MQTT)
     add_subdirectory(adapters/rust_mqtt)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_OPENSSL)
-    add_subdirectory(adapters/su/crypto_openssl)
+if(AZ_IOT_WITH_CRYPTO_OPENSSL)
+    add_subdirectory(adapters/crypto_openssl)
 endif()
 
-if(AZ_IOT_WITH_SU_CRYPTO_MBEDTLS)
-    add_subdirectory(adapters/su/crypto_mbedtls)
+if(AZ_IOT_WITH_CRYPTO_MBEDTLS)
+    add_subdirectory(adapters/crypto_mbedtls)
 endif()
 
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)

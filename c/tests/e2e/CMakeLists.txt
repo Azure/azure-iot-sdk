@@ -9,7 +9,7 @@
 # Shared test helpers (support/) are included as "support/<name>.h" from every
 # suite here, so the tests root goes on the include path once for the directory
 # rather than per target.
-include_directories(${CMAKE_SOURCE_DIR}/tests)
+include_directories(${PROJECT_SOURCE_DIR}/tests)
 
 # Everything here needs the Paho adapter, and the legacy suites additionally
 # need the AMQP service facade. A target left outside this guard fails to build
@@ -40,29 +40,40 @@ if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
     target_link_libraries(az_iot_tests_e2e_su PRIVATE az_iot_core az_iot_adapter_paho)
     # The suite asserts on the channel and the codecs, which are internal.
     target_include_directories(az_iot_tests_e2e_su PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/features/su/internal)
+        ${PROJECT_SOURCE_DIR}/src/core
+        ${PROJECT_SOURCE_DIR}/src/features/su/internal)
 
-    if(NOT TARGET az_iot_su_crypto_openssl)
+    if(NOT TARGET az_iot_crypto_openssl)
         message(FATAL_ERROR
-            "AZ_IOT_BUILD_E2E_SU needs the OpenSSL software updates crypto adapter "
-            "(AZ_IOT_WITH_SU_CRYPTO_OPENSSL=ON).")
+            "AZ_IOT_BUILD_E2E_SU needs the OpenSSL crypto backend "
+            "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
     az_iot_add_cmocka_test(az_iot_tests_e2e_su_offer
         tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c)
     target_link_libraries(az_iot_tests_e2e_su_offer PRIVATE
-        az_iot_core az_iot_adapter_paho az_iot_su_crypto_openssl CURL::libcurl)
+        az_iot_core az_iot_adapter_paho az_iot_crypto_openssl CURL::libcurl)
     # The spy wraps the internal channel to observe reports and verdicts.
     target_include_directories(az_iot_tests_e2e_su_offer PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/features/su/internal)
+        ${PROJECT_SOURCE_DIR}/src/core
+        ${PROJECT_SOURCE_DIR}/src/features/su/internal)
 else()
     message(STATUS "Software updates e2e suites disabled (set AZ_IOT_BUILD_E2E_SU=ON).")
 endif()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
                  ${CMAKE_CURRENT_BINARY_DIR}/deps/amqp)
+
+# Receiver credit accounting of the vendored AMQP client, over an in-memory
+# peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
+target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
+
+# Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
+# stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
+    tests/e2e_notify_time_test.c service/e2e_notify_time.c)
+target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
 
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
@@ -107,6 +118,31 @@ if(AZ_IOT_BUILD_E2E_CSR)
     az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
     target_link_libraries(az_iot_tests_e2e_csr PRIVATE
         az_iot_mqttv3 az_iot_adapter_paho az_iot_certificate_provider_managed)
+endif()
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_sas, az_iot_tests_e2e_csr_sas
+#
+# SAS from a DPS symmetric-key enrollment group: DPS and hub over SAS; and,
+# with AZ_IOT_BUILD_E2E_CSR (group linked to a signing CA), SAS onboarding with
+# a DPS-issued certificate for the hub. Every e2e environment provides the
+# group, so both are built with the suites they sit beside.
+# ---------------------------------------------------------------------------
+if(NOT TARGET az_iot_crypto_openssl)
+    message(FATAL_ERROR
+        "AZ_IOT_BUILD_E2E=ON requires the OpenSSL crypto backend (az_iot_crypto_openssl) "
+        "for the SAS e2e suites.")
+endif()
+az_iot_add_cmocka_test(az_iot_tests_e2e_sas tests/e2e_sas_test.c tests/e2e_sas_device.c)
+# OpenSSL::Crypto: the user-provided token test signs its own tokens.
+target_link_libraries(az_iot_tests_e2e_sas PRIVATE
+    az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl OpenSSL::Crypto)
+if(AZ_IOT_BUILD_E2E_CSR)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_csr_sas
+        tests/e2e_csr_sas_test.c tests/e2e_sas_device.c)
+    target_link_libraries(az_iot_tests_e2e_csr_sas PRIVATE
+        az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
+        az_iot_certificate_provider_managed)
 endif()
 
 # ---------------------------------------------------------------------------

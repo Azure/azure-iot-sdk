@@ -17,12 +17,14 @@ idf_component_register(
         # when you add or remove a source there, change it here too. Nothing in
         # CI builds this component, so a mismatch surfaces only on-device.
         "${AZ_IOT_ROOT}/src/core/log.c"
+        "${AZ_IOT_ROOT}/src/core/log_file.c"
         "${AZ_IOT_ROOT}/src/core/result.c"
         "${AZ_IOT_ROOT}/src/core/version.c"
         "${AZ_IOT_ROOT}/src/core/mqtt_iface.c"
         "${AZ_IOT_ROOT}/src/core/connection_client.c"
         "${AZ_IOT_ROOT}/src/core/cert_util.c"
-        "${AZ_IOT_ROOT}/src/core/reconnect.c"
+        "${AZ_IOT_ROOT}/src/core/mono_time.c"
+        "${AZ_IOT_ROOT}/src/core/retry_policy.c"
         "${AZ_IOT_ROOT}/src/core/env.c"
         "${AZ_IOT_ROOT}/src/core/dispatch.c"
         "${AZ_IOT_ROOT}/src/core/proto3.c"
@@ -30,6 +32,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/core/json_string.c"
         "${AZ_IOT_ROOT}/src/core/message.c"
         "${AZ_IOT_ROOT}/src/core/certificate_provider_pem.c"
+        "${AZ_IOT_ROOT}/src/core/crypto.c"
         "${AZ_IOT_ROOT}/src/features/su/su_client.c"
         "${AZ_IOT_ROOT}/src/features/su/su_device_properties.c"
         "${AZ_IOT_ROOT}/src/features/su/su_root_keys_microsoft.c"

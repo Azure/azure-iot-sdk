@@ -15,9 +15,16 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
@@ -153,6 +160,31 @@ void sample_apply_dps_options(
   }
 }
 
+az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
+{
+  /* Static: the sink writes through this state for the life of the process. */
+  static az_iot_log_file_sink s_file_sink;
+  az_iot_log_sink sink;
+  char* enabled = sample_env_dup("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
+  if (enabled == NULL)
+  {
+    return az_iot_log_stderr_sink(min_level);
+  }
+  free(enabled);
+  az_iot_result r = az_iot_log_file_sink_open(
+      &s_file_sink, AZ_IOT_LOG_FILE_DEFAULT_NAME, NULL, min_level, &sink);
+  if (r != AZ_IOT_OK)
+  {
+    fprintf(
+        stderr,
+        "AZ_IOT_SAMPLE_LOG_TO_FILE: cannot open '%s' (%s); logging to stderr\n",
+        AZ_IOT_LOG_FILE_DEFAULT_NAME,
+        az_iot_result_to_string(r));
+    sink = az_iot_log_stderr_sink(min_level);
+  }
+  return sink;
+}
+
 char* sample_env_dup(const char* name, const char* fallback)
 {
 #ifdef _WIN32
@@ -197,6 +229,45 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
+FILE* sample_fopen_private(const char* path)
+{
+  FILE* f = NULL;
+  int fd;
+  if (!path)
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  if (_sopen_s(
+          &fd, path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE)
+      != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  /* open() keeps the mode of a file that already exists. */
+  if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
+}
+
 uint64_t sample_now_ms(void)
 {
 #ifdef _WIN32
@@ -239,12 +310,14 @@ const char* sample_connection_state_name(az_iot_connection_state state)
       return "Connecting";
     case AZ_IOT_CONN_STATE_CONNECTED:
       return "Connected";
-    case AZ_IOT_CONN_STATE_RECONNECTING:
-      return "Reconnecting";
+    case AZ_IOT_CONN_STATE_RETRY_PENDING:
+      return "Retry pending";
     case AZ_IOT_CONN_STATE_DISCONNECTING:
       return "Disconnecting";
     case AZ_IOT_CONN_STATE_FAULTED:
       return "Faulted";
+    case AZ_IOT_CONN_STATE_SETTING_UP:
+      return "Setting up";
     default:
       return "?";
   }

@@ -29,13 +29,13 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 /* MQTT 5 CONNACK reason codes (spec 3.2.2.2) that reject the identity. 0x86 is
  * included alongside the three the core needs because it is the v5 spelling of
  * v3.1.1's code 4, and treating the same refusal differently per protocol
- * version would make the re-provisioning trigger depend on the hub flavor. */
+ * version would make identity recovery depend on the hub flavor. */
 #define CONNACK_V5_CLIENT_ID_NOT_VALID 0x85
 #define CONNACK_V5_BAD_CREDENTIALS 0x86
 #define CONNACK_V5_NOT_AUTHORIZED 0x87
 #define CONNACK_V5_BAD_AUTH_METHOD 0x8C
 
-az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
 {
   if (connack_code == 0)
   {
@@ -80,7 +80,7 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
   /* A version this function does not know. The code cannot be interpreted --
    * the two schemes overlap numerically (2, 4 and 5 mean identity refusals in
    * v3.1.1 and something else entirely in v5) -- so guessing a scheme would be
-   * guessing whether to re-provision. Report a connection failure, which is the
+   * guessing whether the identity was refused. Report a connection failure, which is the
    * conservative half of the split: a device retries instead of abandoning
    * credentials that may be perfectly good.
    *
@@ -113,7 +113,8 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
 #define DISCONNECT_V5_NORMAL 0x00
 #define DISCONNECT_V5_NOT_AUTHORIZED 0x87
 
-az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
+AZ_NODISCARD az_iot_result
+az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
 {
   /* No code: an ordinary end of session, and what v3.1.1 always reports. */
   if (disconnect_code == DISCONNECT_V5_NORMAL || version != AZ_IOT_MQTT_VERSION_5)
@@ -138,7 +139,7 @@ az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int dis
   return AZ_IOT_ERR_MQTT;
 }
 
-az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
 {
   /* A granted QoS, including one below what was requested. That is still a
    * grant: the subscription exists, and delivery is min(publish QoS, granted

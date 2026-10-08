@@ -1318,6 +1318,51 @@ static void connect_carries_the_clean_session_flag(void** state)
   }
 }
 
+/* connect() owns the credentials only while it runs: the client wipes a SAS
+ * token as soon as connect() returns, and reuses the buffer for the next role.
+ * An adapter must therefore copy or serialize the User Name and Password
+ * before returning. Overwriting the caller's buffers right after connect()
+ * proves it: the CONNECT on the wire must still carry the original bytes. */
+static void connect_does_not_read_credentials_after_returning(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-creds");
+
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_connect_options copts;
+  conf_proxy_connect_options(&proxy, &copts, cid);
+  char username[64] = "conformance-user";
+  char password[96] = "SharedAccessSignature sr=conformance&sig=c2lnbmF0dXJl&se=4102444800";
+  size_t username_len = strlen(username);
+  size_t password_len = strlen(password);
+  uint64_t username_digest = az_iot_test_proxy_digest(username, username_len);
+  uint64_t password_digest = az_iot_test_proxy_digest(password, password_len);
+  copts.username = username;
+  copts.password = password;
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  memset(username, 'X', sizeof(username) - 1u);
+  memset(password, 'X', sizeof(password) - 1u);
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  az_iot_test_proxy_connect_fields f;
+  assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
+  assert_int_equal(f.has_username, 1);
+  assert_int_equal(f.username_len, username_len);
+  assert_true(f.username_digest == username_digest);
+  assert_int_equal(f.has_password, 1);
+  assert_int_equal(f.password_len, password_len);
+  assert_true(f.password_digest == password_digest);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* The Session Expiry Interval is an MQTT 5 property. A v5 adapter must put the
  * value it was given in the CONNECT; a v3.1.1 adapter must send no property at
  * all, because a v3.1.1 CONNECT has nowhere to put one. */
@@ -3739,6 +3784,7 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(a_websocket_request_is_never_silently_downgraded),                        \
       cmocka_unit_test(an_unreachable_proxy_is_never_bypassed),                                  \
       cmocka_unit_test(connect_carries_the_clean_session_flag),                                  \
+      cmocka_unit_test(connect_does_not_read_credentials_after_returning),                       \
       cmocka_unit_test(session_expiry_is_sent_only_on_v5),                                       \
       cmocka_unit_test(the_will_is_announced_in_connect),                                        \
       cmocka_unit_test(disconnect_carries_the_reason_code_it_was_connected_with),                \

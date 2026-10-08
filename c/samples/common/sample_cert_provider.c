@@ -11,6 +11,7 @@
 
 #include "sample_cert_provider.h"
 #include "sample_csr_backend.h"
+#include "sample_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ static int cert_file_has_pem(const char* path)
   }
   char buf[64] = { 0 };
   size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
+  (void)fclose(f);
   return (n > 0) && (strstr(buf, "-----BEGIN CERTIFICATE-----") != NULL);
 }
 
@@ -132,7 +133,7 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  FILE* f = fopen(p->operational_cert_path, "wb");
+  FILE* f = sample_fopen_private(p->operational_cert_path);
   if (!f)
   {
     return AZ_IOT_ERR_INTERNAL;

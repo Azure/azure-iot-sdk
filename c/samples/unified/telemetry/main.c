@@ -10,7 +10,7 @@
  * when the device is moved to a hub of the other generation while it runs. The
  * MQTTv5-only route is mqttv5/telemetry.
  *
- * Every unified sample has this shape, and this is the one to read first:
+ * Most unified samples have this shape, and this is the one to read first:
  *
  *   1. Register BOTH MQTT adapters: DPS and MQTTv3 speak v3.1.1, MQTTv5 speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This
@@ -182,7 +182,7 @@ static az_iot_result send_one(sample_state* state, user_context* ctx)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -206,7 +206,7 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
-   * policy is what re-provisions a device its hub no longer accepts. */
+   * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   sample_apply_dps_options(&copts, &state.config);
   copts.certificate_provider = &state.certs.base;

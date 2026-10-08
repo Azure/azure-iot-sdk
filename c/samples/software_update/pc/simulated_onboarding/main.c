@@ -8,7 +8,7 @@
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
- * See the companion README.md and docs/eng/su-client-design.md.
+ * See the companion README.md and docs/eng/software-updates.md.
  *
  * ONBOARDING ROUTE ONLY: a day-0 device, with no device record yet, asks with
  * az_iot_su_client_request_onboarding_update(). A device that has already
@@ -65,7 +65,7 @@
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "az_iot_su_crypto_openssl.h"
+#include "az_iot_crypto_openssl.h"
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -232,6 +232,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
               ? "; giving up"
               : "");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
+      /* Nothing was installed or reported; raise the limit named in the log. */
+      fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
+      break;
   }
 }
 
@@ -269,6 +273,8 @@ static int initialize_connection_client(sample_state* state)
    * one both fail registration the same way, so inferring it would hide real
    * misconfiguration. */
   copts.dps.provision_only = true;
+  /* Verifies update manifests and hashes downloaded files. */
+  copts.crypto = az_iot_crypto_openssl();
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -299,10 +305,10 @@ static int initialize_connection_client(sample_state* state)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
+  az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
 
   sample_state state = { 0 };
 
@@ -344,8 +350,6 @@ int main(void)
   hooks.persist_state_fn = su_persist_state;
   hooks.load_state_fn = su_load_state;
   hooks.user_ctx = &state.simulation_control;
-
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
 
   /* Microsoft's compiled-in software updates production root keys: anchors the trust chain
    * for updates signed by the real Device Update service. */
@@ -408,7 +412,6 @@ int main(void)
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
@@ -498,7 +501,7 @@ int main(void)
     {
       state.su_workflow_completed = 0;
       printf("Deployment workflow complete. Restart the sample to ask again.\n");
-      remove(state.simulation_control.state_file); /* clear the resume blob */
+      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
     }
 
     /* A (simulated) reboot was requested. Exit so the operator can "reboot"

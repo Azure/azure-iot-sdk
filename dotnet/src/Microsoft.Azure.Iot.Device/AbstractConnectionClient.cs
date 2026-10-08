@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Provisioning;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -72,9 +73,25 @@ namespace Microsoft.Azure.Iot.Device
 
         internal MqttConnectionManager ManagedMqttConnection;
 
-        internal ConnectionContext? CurrentConnectionContext { get; set; }
+        internal abstract bool DoesClientSupportHubType(ConnectionProfile connectionProfile);
+
+        // Backing field for CurrentConnectionContext. Volatile because the connection layer's callback threads read it
+        // (through GetCurrentConnectionContext and the connect/fault flows) while a caller thread publishes it, so the
+        // reference must be seen fully constructed across threads.
+        private volatile ConnectionContext? _currentConnectionContext;
+
+        internal ConnectionContext? CurrentConnectionContext
+        {
+            get => _currentConnectionContext;
+            set => _currentConnectionContext = value;
+        }
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
+
+        // Backing field for CurrentEndpoint. Volatile because it is written on a caller thread (as a connection is
+        // established) and read on the connection layer's callback threads (which dispatch the provisioning vs. device
+        // presence flow on it), so every thread must observe the latest value.
+        private volatile ConnectionEndpoint _currentEndpoint = ConnectionEndpoint.None;
 
         /// <summary>
         /// The endpoint that this client is currently connecting to, or connected to.
@@ -84,7 +101,11 @@ namespace Microsoft.Azure.Iot.Device
         /// starts the provisioning flow, while connecting to an IoT hub starts the device presence flow. The connection
         /// layer owns reconnection for both endpoints, so this also decides which flow a reconnection restarts.
         /// </remarks>
-        internal ConnectionEndpoint CurrentEndpoint { get; private set; } = ConnectionEndpoint.None;
+        internal ConnectionEndpoint CurrentEndpoint
+        {
+            get => _currentEndpoint;
+            private set => _currentEndpoint = value;
+        }
 
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
@@ -97,6 +118,28 @@ namespace Microsoft.Azure.Iot.Device
         // Set while a re-provisioning attempt started by an identity fault is in flight. Only one such attempt may run
         // at a time because each one takes over this client's single connection.
         private int _isReprovisioning;
+
+        // The retry policy that governs how many times, and how quickly, an automatic re-provisioning attempt is
+        // repeated after it fails. Mirrors the C connection client, whose needs_reprovision intent keeps sending the
+        // device back to DPS until a registration succeeds rather than giving up after a single failed attempt.
+        private readonly IRetryPolicy _connectionRetryPolicy;
+
+        // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
+        // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
+        // the same hub. Mirrors the C client's needs_reprovision: it is the single input to the Hub-vs-DPS recovery
+        // decision in HandleConnectionFaultedAsync, and it is consumed only once a re-provisioning attempt actually
+        // starts, so a trigger that cannot be acted on leaves the intent standing. Volatile because the connection
+        // layer's callback threads set it while caller threads read it (and vice versa), so the decision must be made
+        // on the latest value rather than a stale cache.
+        private volatile bool _needsReprovision;
+
+        // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
+        // when it asked for none). It is captured from each provisioning response and read as a floor on the
+        // re-provisioning backoff, so a registration that fails after the service asked to be left alone waits at least
+        // that long before registering again. Mirrors the C client's dps_pending_retry_after_secs, whose retry-after
+        // floors the reconnection policy's backoff (connection_client.c:2149-2166). Stored as a long so it can be
+        // written from the DPS response handler and read from the re-provisioning loop without tearing.
+        private long _lastProvisioningServiceRetryAfterTicks;
 
         /// <summary>
         /// Cancels the re-provisioning attempt that an identity fault started, if one is in flight. Because that attempt
@@ -134,9 +177,20 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public AbstractConnectionClient(ConnectionClientOptions? options = null)
+        /// <param name="connectionContext">
+        /// An optional IoT hub assignment the application restored (for example, one persisted to disk across a device
+        /// reboot). When supplied, <see cref="ProvisionAndConnectAsync"/> attempts to connect directly to this IoT hub
+        /// before provisioning for a new assignment.
+        /// </param>
+        public AbstractConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
         {
             options ??= new ConnectionClientOptions();
+
+            // Seed any assignment the application restored so that ProvisionAndConnectAsync can try connecting directly
+            // to it before falling back to provisioning for a fresh one.
+            CurrentConnectionContext = connectionContext;
+
+            _connectionRetryPolicy = options.ConnectionRetryPolicy;
 
             // This is the basic MQTT client that has no reconnection/retry logic
             MqttNetClientOptions mqttNetClientOptions = new()
@@ -159,61 +213,76 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedProvisioningPublishAsync;
         }
 
-        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
-        {
-            if (PublishReceivedAsync != null)
-            {
-                await PublishReceivedAsync.Invoke(args);
-            }
-        }
-
         /// <summary>
-        /// Provision this device with the provided credentials using Device Provisioning Service, then connect this device to the IoT hub it was provisioned to.
+        /// Connect this device to IoT hub, provisioning it through Device Provisioning Service first if it cannot
+        /// connect directly to an IoT hub assignment it already holds.
         /// </summary>
         /// <remarks>
+        /// <para>
+        /// Unless <paramref name="forceProvisioning"/> is set, this method first tries to connect directly to the IoT
+        /// hub named by the <see cref="ConnectionContext"/> this client already holds -- one returned by an earlier
+        /// provisioning run in this process, or one the application restored into this client at construction. The
+        /// connection layer retries that direct connection under the configured retry policy, so the attempt is only
+        /// abandoned once the retry policy is exhausted or the hub rejects this device's identity with a fatal error.
+        /// When there is no cached connection context, when the direct connection is abandoned, or when
+        /// <paramref name="forceProvisioning"/> is set, this device provisions through Device Provisioning Service and
+        /// connects to the hub it is assigned.
+        /// </para>
+        /// <para>
         /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
         /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
         /// application having to do anything.
+        /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
         /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
-        /// <param name="twinOptions">The optional flags to control twin updates to this device from IoT hub.</param>
+        /// <param name="forceProvisioning">
+        /// When <c>true</c>, skip trying to connect directly to any cached IoT hub assignment and provision through
+        /// Device Provisioning Service immediately.
+        /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The received twin push upon connecting to IoT hub if any part of the twin was configured to be pushed in <see cref="TwinPushOptions"/>.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        /// <returns>The connection context for the IoT hub this device connected to.</returns>
+        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
-
-            CurrentConnectionContext = new ConnectionContext()
+            if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
             {
-                DeviceId = provisioningResult.DeviceId!,
-                IotHubHostName = provisioningResult.AssignedHub!,
-                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
-                AuthenticationProvider = authentication,
-                ConnectionProfile = provisioningResult.ConnectionProfile ?? Provisioning.Models.ConnectionProfile.Classic,
-            };
+                throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+            }
 
-            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
-            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            // Remember what this device was asked to provision with before attempting either path, so that a connection
+            // established directly from a cached assignment -- not only one established after provisioning -- can still
+            // be recovered by re-provisioning if it later faults on this device's identity.
+            _lastProvisioningSettings = provisioningSettings;
+            _lastProvisioningAuthentication = authentication;
+
+            // Unless the caller insists on provisioning, try the IoT hub assignment this client already holds first. A
+            // cached context comes either from a previous provisioning run in this process or from one the application
+            // restored into this client at construction. The connection layer retries the direct connection under the
+            // configured retry policy, so it only fails once that policy is exhausted or the hub rejects this device's
+            // identity -- exactly the cases in which the cached assignment is no good and this device must ask Device
+            // Provisioning Service for a fresh one.
+            ConnectionContext? cachedConnectionContext = CurrentConnectionContext;
+            if (!forceProvisioning && cachedConnectionContext != null)
             {
-                if (HandleCertificateSigningCompleteAsync == null)
+                try
                 {
-                    throw new Exception("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+                    await ConnectToHubAsync(cachedConnectionContext, cancellationToken);
+                    return cachedConnectionContext;
                 }
-
-                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // The caller cancelled, so this is not a failure of the cached assignment to fall back from.
+                    throw;
+                }
+                catch (DeviceException e)
+                {
+                    Trace.TraceWarning("Could not connect directly to the cached IoT hub assignment; provisioning for a fresh one. {0}", e);
+                }
             }
-            else
-            {
-                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
-                CurrentConnectionContext.AuthenticationProvider = authentication;
-            }
 
-            await ConnectAsync(CurrentConnectionContext, cancellationToken);
-
-            return CurrentConnectionContext;
+            return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
         }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
@@ -297,14 +366,142 @@ namespace Microsoft.Azure.Iot.Device
             _isDisposed = true;
         }
 
-        internal async Task ConnectAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
+        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (PublishReceivedAsync != null)
+            {
+                await PublishReceivedAsync.Invoke(args);
+            }
+        }
+        /// <summary>
+        /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
+        /// </summary>
+        /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields.</param>
+        /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The connection context for the IoT hub this device was assigned and connected to.</returns>
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken)
+        {
+            var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
+            if (provisioningResult.Status != ProvisioningRegistrationStatus.Assigned)
+            {
+                // Device Provisioning Service returned a terminal result other than "assigned" (for example "failed",
+                // "disabled" or "unassigned"), so there is no hub assignment to connect to and AssignedHub/DeviceId are
+                // null. Mirror the C connection client (dps_apply_deferred), which treats a registration that failed or
+                // completed without an assignment as the most transient failure a device meets -- the enrollment may
+                // not have been created yet, DPS may not have a linked IoT hub yet, or the service may simply have been
+                // unavailable -- and retries it under the reconnection policy rather than giving up. Throwing a
+                // retryable fault lets ReprovisionWithRetryAsync keep re-provisioning under the policy (indefinitely,
+                // under the default policy), and surfaces a meaningful error to a caller that provisioned directly
+                // instead of dereferencing a null assignment.
+                string errorDetails = provisioningResult.ErrorCode != null || provisioningResult.ErrorMessage != null
+                    ? $" (error code {provisioningResult.ErrorCode}, error message \"{provisioningResult.ErrorMessage}\")"
+                    : string.Empty;
+
+                Trace.TraceError(
+                    "Device Provisioning Service returned registration status '{0}' (substatus '{1}') instead of 'assigned'.{2}",
+                    provisioningResult.Status,
+                    provisioningResult.Substatus,
+                    errorDetails);
+
+                throw new DeviceException(
+                    $"Device Provisioning Service did not assign this device to an IoT hub: registration status was '{provisioningResult.Status}' (substatus '{provisioningResult.Substatus}'){errorDetails}.")
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = false,
+                };
+            }
+
+            // An absent connection profile resolves to the documented default ("classic"); an unknown profile string
+            // never reaches here because the registration response deserializer rejects values outside this enum.
+            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile ?? ConnectionProfile.Classic;
+
+            // Even a registration that reports "assigned" must actually carry the information this device needs to
+            // connect: a hub hostname, a device id, and a connection profile this SDK can speak. Mirror the C
+            // connection client's reject_assignment (connection_client.c:2045-2049, 2187-2246): if the assignment is
+            // missing a hub hostname or device id, or names a connection profile this SDK does not understand, refuse
+            // to adopt it and re-provision for a usable one instead of connecting with missing or wrong parameters (or
+            // dereferencing a null assignment at connect time). The Enum.IsDefined check is defense-in-depth against a
+            // reconfigured, lenient deserializer letting an unrecognized profile through. Like the non-"assigned" case
+            // above, this is thrown as a retryable fault so ReprovisionWithRetryAsync keeps re-provisioning under the
+            // policy (the enrollment's hub assignment may be corrected service-side) and a caller that provisioned
+            // directly gets a meaningful error.
+            if (string.IsNullOrEmpty(provisioningResult.AssignedHub)
+                || string.IsNullOrEmpty(provisioningResult.DeviceId)
+                || !DoesClientSupportHubType(connectionProfile))
+            {
+                Trace.TraceError(
+                    "Device Provisioning Service reported an 'assigned' registration this device cannot use (assigned hub '{0}', device id '{1}', connection profile '{2}').",
+                    provisioningResult.AssignedHub,
+                    provisioningResult.DeviceId,
+                    provisioningResult.ConnectionProfile);
+
+                throw new DeviceException(
+                    "Device Provisioning Service assigned this device to an IoT hub, but the assignment is missing a hub hostname or device id, or names a connection profile this SDK does not support, so it cannot be used.")
+                {
+                    Retryability = ErrorRetryability.Retryable,
+                    IsContained = false,
+                };
+            }
+
+            CurrentConnectionContext = new ConnectionContext()
+            {
+                DeviceId = provisioningResult.DeviceId!,
+                IotHubHostName = provisioningResult.AssignedHub!,
+                IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
+                AuthenticationProvider = authentication,
+                ConnectionProfile = connectionProfile,
+            };
+
+            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
+            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
+            {
+                // Service should only return signed certificates if the provisioning request included a certificate signing request, and this HandleCertificateSigningCompleteAsync callback
+                // is null checked earlier if one was provided
+                Debug.Assert(HandleCertificateSigningCompleteAsync != null);
+                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
+            }
+            else
+            {
+                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
+                CurrentConnectionContext.AuthenticationProvider = authentication;
+            }
+
+            await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
+
+            return CurrentConnectionContext;
+        }
+
+        /// <summary>
+        /// Connect this device to the IoT hub named by the given connection context and run the device presence flow,
+        /// throwing if the attempt fails.
+        /// </summary>
+        /// <remarks>
+        /// The connection layer retries a retryable failure under the configured retry policy, so this call only
+        /// throws once the retry policy is exhausted or the failure is terminal (including an identity-terminal
+        /// rejection). This method does not provision the device.
+        /// </remarks>
+        /// <param name="connectionContext">The hub and identity to connect as.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        internal async Task ConnectToHubAsync(ConnectionContext connectionContext, CancellationToken cancellationToken)
+        {
             // From here on, every connection this client establishes targets IoT hub, so every connection (including the
             // ones the connection layer re-establishes on its own) runs the device presence flow.
             Trace.TraceInformation("ConnectionClient's current endpoint is now IoT Hub");
             CurrentEndpoint = ConnectionEndpoint.IotHub;
+
+            // Tell the connection layer whether this client could actually re-provision -- that is, whether it holds the
+            // inputs of a previous provisioning run. A device connected with credentials the application supplied
+            // directly has no registration to renew, so retrying the hub is all it can do, and the layer must not cross
+            // over to re-provisioning no matter what the retry policy advises. Mirrors the C client, which only treats
+            // hub failures as a re-provision trigger when DPS is configured. The number of hub attempts before
+            // re-provisioning is advised lives in the retry policy, not here.
+            ManagedMqttConnection.CanReprovision = CanReprovision;
+
+            // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
+            // targets an IoT hub.
+            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.IotHub;
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
@@ -431,21 +628,52 @@ namespace Microsoft.Azure.Iot.Device
                 return;
             }
 
-            if (args.IsIdentityFault && TryStartReprovisioning(args))
+            if (args.IsIdentityFault || args.ReprovisionRequired)
+            {
+                // Mirror the C connection client's needs_reprovision: an identity rejection at CONNACK or the
+                // hub-unreachable threshold both mean the cached assignment is no good and this device should ask DPS
+                // for a fresh one. This flag is the single input to the Hub-vs-DPS recovery decision below, and it
+                // persists until a re-provisioning attempt actually starts.
+                _needsReprovision = true;
+            }
+
+            if (_needsReprovision && TryStartReprovisioning(args))
             {
                 // This client is recovering from the fault on its own, so anything waiting for the connection should
                 // keep waiting for that recovery to re-establish it.
                 return;
             }
 
-            // Nothing is going to bring this connection back, so stop anything that is waiting for it.
+            // Stop anything that is waiting on this connection: a fault during a connect attempt is thrown back to the
+            // caller that requested it, while a fault after CONNACK is surfaced through this completion.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
+
+            if (args.LastDisconnect == null && (Volatile.Read(ref _isReprovisioning) != 0 || (_needsReprovision && CanReprovision)))
+            {
+                // This fault ended a connect attempt that a caller is awaiting (LastDisconnect is null), so that caller
+                // is already being told about it -- through the exception thrown back to it -- and owns what happens
+                // next. Declaring this client unrecoverably faulted on top of that would raise a spurious application
+                // fault for a connection that is still being actively driven. That is the case either when a
+                // re-provisioning attempt is already in flight and this fault ended one of its own connect attempts
+                // (that loop owns the decision to retry or give up), or when the failed direct connection left a
+                // standing re-provision demand that the caller can act on after the direct connect attempt fails.
+                return;
+            }
+
+            // Nothing is going to bring this connection back, so let the application know it must connect again itself.
             await MarkUnrecoverablyFaultedAsync(args.Exception);
         }
 
         /// <summary>
-        /// Start provisioning this device again in response to a connection that faulted on this device's identity, and
-        /// connect to the hub it gets assigned.
+        /// Whether this client holds the inputs of a previous provisioning run and can therefore re-provision on its
+        /// own. A device connected with credentials the application supplied directly cannot, since there is no
+        /// registration for this client to renew.
+        /// </summary>
+        private bool CanReprovision => _lastProvisioningSettings != null && _lastProvisioningAuthentication != null;
+
+        /// <summary>
+        /// Start provisioning this device again in response to a standing re-provision demand (an identity fault or the
+        /// hub-unreachable threshold), and connect to the hub it gets assigned.
         /// </summary>
         /// <remarks>
         /// This is started rather than awaited because the fault is reported from within the connection layer's own
@@ -460,7 +688,7 @@ namespace Microsoft.Azure.Iot.Device
                 // The fault ended a connect attempt that a caller is waiting on, so that caller is told about it and
                 // decides what to do. Recovering here as well would have both this client and that caller trying to
                 // establish the same connection.
-                Trace.TraceWarning("Not re-provisioning after an identity fault because the fault is reported to the caller that requested the connection.");
+                Trace.TraceWarning("Not re-provisioning because the fault is reported to the caller that requested the connection.");
                 return false;
             }
 
@@ -471,16 +699,21 @@ namespace Microsoft.Azure.Iot.Device
             {
                 // This device was connected with credentials that the application supplied directly, so there is no
                 // registration for this client to renew. Only the application can recover from here.
-                Trace.TraceError("The connection faulted on this device's identity, but this device was not provisioned through Device Provisioning Service so it cannot re-provision. {0}", args.Exception);
+                Trace.TraceError("The connection demanded re-provisioning, but this device was not provisioned through Device Provisioning Service so it cannot re-provision. {0}", args.Exception);
                 return false;
             }
 
             if (Interlocked.CompareExchange(ref _isReprovisioning, 1, 0) != 0)
             {
                 // An earlier fault already started this recovery, and a second one would fight it over this client's connection.
-                Trace.TraceInformation("Ignoring an identity fault because this device is already re-provisioning.");
+                Trace.TraceInformation("Ignoring a re-provision demand because this device is already re-provisioning.");
                 return true;
             }
+
+            // The decision to re-provision has been taken, so the standing demand is consumed. Mirrors the C client,
+            // which clears needs_reprovision once a registration attempt is actually under way; a trigger that could
+            // not be acted on above leaves the demand standing instead.
+            _needsReprovision = false;
 
             var reprovisioningCancellation = new CancellationTokenSource();
             _currentReprovisioningCancellation = reprovisioningCancellation;
@@ -489,11 +722,9 @@ namespace Microsoft.Azure.Iot.Device
             {
                 try
                 {
-                    Trace.TraceInformation("Re-provisioning this device because the connection faulted on its identity. {0}", args.Exception);
+                    Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
 
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
-
-                    Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
+                    await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -501,11 +732,9 @@ namespace Microsoft.Azure.Iot.Device
                 }
                 catch (Exception e)
                 {
-                    // This task is unmonitored, so nothing may escape it.
-                    Trace.TraceError("Failed to re-provision this device after the connection faulted on its identity. {0}", e);
-
-                    // This recovery was the only thing left that could have re-established the connection, so anything
-                    // waiting for it is waiting for something that will never happen.
+                    // This task is unmonitored, so nothing may escape it. The retry loop already reports an exhausted
+                    // retry policy as an unrecoverable fault, so reaching here means something unexpected ended it.
+                    Trace.TraceError("An unexpected error ended the re-provisioning of this device. {0}", e);
                     await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
                 }
                 finally
@@ -521,6 +750,100 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
+        /// Provision this device again and connect it to the hub it is assigned, repeating the attempt for as long as
+        /// the configured retry policy allows after each failure.
+        /// </summary>
+        /// <remarks>
+        /// Mirrors the C connection client, whose needs_reprovision intent keeps sending the device back to Device
+        /// Provisioning Service until a registration finally succeeds, rather than giving up after a failed attempt. A
+        /// hub that was only transiently unreachable, a DPS enrollment that is briefly absent (which fails the device's
+        /// TLS handshake or registration), or an assignment that is not yet ready to authorize the device are all
+        /// recovered from once they resolve. Because that standing demand persists, this loop retries every failure --
+        /// including ones the connection layer classifies as terminal, since re-provisioning is itself the recovery and
+        /// a terminal result at one point in time (a missing enrollment, say) can become valid once it is restored. The
+        /// loop only stops when provisioning succeeds, when this client is disconnected or disposed (which cancels it),
+        /// or when the retry policy is exhausted (which it never is under the default indefinite policy).
+        /// </remarks>
+        /// <param name="provisioningSettings">The settings of the provisioning run to repeat.</param>
+        /// <param name="provisioningAuthentication">The authentication of the provisioning run to repeat.</param>
+        /// <param name="cancellationToken">Cancels the whole retry loop when this client is disconnected or disposed.</param>
+        private async Task ReprovisionWithRetryAsync(
+            ProvisioningSettings provisioningSettings,
+            X509AuthenticationProvider provisioningAuthentication,
+            CancellationToken cancellationToken)
+        {
+            uint attempt = 0;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Start this attempt with no standing service guidance so that only a Retry-After the service sends
+                // during this attempt can floor the backoff after it fails.
+                ResetProvisioningServiceRetryAfter();
+
+                try
+                {
+                    // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
+                    // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
+                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
+
+                    Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // This client was disconnected or disposed, so this recovery is abandoned rather than retried.
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    // Saturate rather than wrap: under the default indefinite policy this loop can run without bound, and
+                    // a uint that wrapped back to 0 would make the retry policy see this as a first attempt again and
+                    // reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
+                    if (attempt < uint.MaxValue)
+                    {
+                        attempt++;
+                    }
+
+                    // This loop is itself the re-provisioning recovery, so it always consults the policy for a Device
+                    // Provisioning Service endpoint. Only AbandonRetry stops it; both Retry and
+                    // AbandonHubRetryAndReprovision (which is treated the same as Retry for a DPS endpoint) continue it.
+                    RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay);
+
+                    if (guidance == RetryGuidance.AbandonRetry)
+                    {
+                        // The retry policy asked this device to stop retrying, so this recovery has run out of options.
+                        // This was the only thing left that could have re-established the connection, so anything waiting
+                        // for it is waiting for something that will never happen.
+                        Trace.TraceError("Giving up on re-provisioning this device after {0} attempt(s) because the retry policy asked to abandon retrying. {1}", attempt, e);
+                        await MarkUnrecoverablyFaultedAsync(AsUnrecoverableFault(e));
+                        return;
+                    }
+
+                    // The service's Retry-After floors the policy's backoff: when Device Provisioning Service asked to
+                    // be left alone for longer than the policy would wait on its own, honor the service. Mirrors the C
+                    // client (connection_client.c:2149-2166), where the policy's maximum delay deliberately does NOT cap
+                    // this -- it bounds how long the SDK waits of its own accord, not how long the service asked to be
+                    // left alone -- so the two combine as a floor rather than either one alone deciding.
+                    TimeSpan serviceRetryAfter = GetProvisioningServiceRetryAfter();
+                    if (serviceRetryAfter > retryDelay)
+                    {
+                        Trace.TraceWarning("Device Provisioning Service asked for a Retry-After of {0}; honoring it over the reconnection policy's backoff of {1}.", serviceRetryAfter, retryDelay);
+                        retryDelay = serviceRetryAfter;
+                    }
+
+                    Trace.TraceWarning("Re-provisioning attempt {0} failed; retrying in {1}. {2}", attempt, retryDelay, e);
+
+                    if (retryDelay > TimeSpan.Zero)
+                    {
+                        await Task.Delay(retryDelay, cancellationToken);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Record that this client has stopped maintaining its connection for a reason that neither the connection
         /// layer nor this client will recover from, release everything that is waiting for the connection, and let
         /// the application know that it must connect again itself if it wants to keep using this client.
@@ -530,8 +853,30 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
             _unrecoverableFault = fault;
 
-            UnrecoverablyFaulted?.Invoke();
+            // Release everything inside this client that is waiting for the connection (for example feature operations
+            // parked in PerformWhileRespectingConnectionState) so they stop waiting for a connection that is never
+            // coming back. Each waiter is released independently: one that throws must not stop the others from being
+            // released, nor prevent the application notification below. Without this isolation a single misbehaving
+            // waiter would suppress the application's connection-faulted callback entirely, leaving it unaware that the
+            // connection is gone for good.
+            Action? unrecoverablyFaulted = UnrecoverablyFaulted;
+            if (unrecoverablyFaulted != null)
+            {
+                foreach (Delegate releaseWaiter in unrecoverablyFaulted.GetInvocationList())
+                {
+                    try
+                    {
+                        ((Action)releaseWaiter).Invoke();
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceWarning("An internal handler for the unrecoverable fault threw and was ignored. {0}", e);
+                    }
+                }
+            }
 
+            // Always let the application know, even if one of the internal waiters above threw, so that it can connect
+            // again itself if it wants to keep using this client.
             if (ConnectionFaultedAsync != null)
             {
                 await ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault });
@@ -628,6 +973,15 @@ namespace Microsoft.Azure.Iot.Device
             // the connection layer re-establishes on its own) runs the provisioning flow.
             Trace.TraceInformation("ConnectionClient's current endpoint is now DPS");
             CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
+
+            // A connection to DPS never crosses over to re-provisioning on the retry policy's hub-unreachable guidance;
+            // that only applies to hub connections. Clear the flag so a DPS reconnection just retries DPS under the usual
+            // policy.
+            ManagedMqttConnection.CanReprovision = false;
+
+            // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
+            // targets Device Provisioning Service.
+            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.DeviceProvisioningService;
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
@@ -870,8 +1224,10 @@ namespace Microsoft.Azure.Iot.Device
                 // The service is expected to return a value signalling how long to wait before polling again, but
                 // the SDK has a default value for when the service does not send that value. Included in this default value
                 // is some jitter to help stagger the requests if multiple provisioning device clients are checking their provisioning
-                // state at the same time.
-                TimeSpan pollingDelay = currentStatus.RetryAfter ?? RetryJitter.GenerateDelayWithJitterForRetry(s_defaultOperationPollingInterval);
+                // state at the same time. The service's value is never used to poll faster than that default cadence.
+                TimeSpan pollingDelay = currentStatus.RetryAfter is { } serviceRetryAfter
+                    ? (serviceRetryAfter < s_defaultOperationPollingInterval ? s_defaultOperationPollingInterval : serviceRetryAfter)
+                    : RetryJitter.GenerateDelayWithJitterForRetry(s_defaultOperationPollingInterval);
 
                 await Task.Delay(pollingDelay, cancellationToken);
             }
@@ -946,6 +1302,10 @@ namespace Microsoft.Azure.Iot.Device
                     // reported as-is by the caller of this flow rather than hidden behind a deserialization failure.
                 }
 
+                // The service may ask to be left alone for a while on this response -- including on an error response
+                // that refuses to start the registration -- so remember it as a floor on the re-provisioning backoff.
+                CaptureProvisioningServiceRetryAfter(GetRetryAfterFromTopic(topic));
+
                 startProvisioningRequestStatusSource.TrySetResult(new ProvisioningServiceResponse(topic, jsonString, operation));
             }
             else
@@ -961,7 +1321,11 @@ namespace Microsoft.Azure.Iot.Device
                 // All status polling requests' response topics are shaped like "$dps/registrations/res/200/?$rid=2"
                 string jsonString = Encoding.UTF8.GetString(receivedEventArgs.Publish.Payload);
                 RegistrationOperationStatus operation = JsonSerializer.Deserialize<RegistrationOperationStatus>(jsonString, JsonSerializationSettings.Options)!;
-                operation.RetryAfter = GetRetryAfterFromTopic(topic, s_defaultOperationPollingInterval);
+                operation.RetryAfter = GetRetryAfterFromTopic(topic);
+
+                // Remember what the service asked for on this response so that, if this is the response that ends the
+                // registration without an assignment, the re-provisioning backoff waits at least this long.
+                CaptureProvisioningServiceRetryAfter(operation.RetryAfter);
 
                 checkRegistrationOperationStatusSource.TrySetResult(operation);
             }
@@ -969,7 +1333,39 @@ namespace Microsoft.Azure.Iot.Device
             return Task.CompletedTask;
         }
 
-        private static TimeSpan? GetRetryAfterFromTopic(string topic, TimeSpan defaultPoolingInterval)
+        /// <summary>
+        /// Remember the Retry-After the service asked for on a provisioning response, so that a re-provisioning attempt
+        /// that then fails waits at least this long before registering again. Mirrors the C client, where the service's
+        /// retry-after floors the reconnection policy's backoff (connection_client.c:2149-2166). A response that carries
+        /// no Retry-After clears the stored value, so the response that ends the registration is the one that counts.
+        /// </summary>
+        private void CaptureProvisioningServiceRetryAfter(TimeSpan? retryAfter)
+        {
+            Volatile.Write(
+                ref _lastProvisioningServiceRetryAfterTicks,
+                retryAfter is { } value && value > TimeSpan.Zero ? value.Ticks : 0);
+        }
+
+        /// <summary>
+        /// Forget any Retry-After the service asked for, so that a fresh re-provisioning attempt starts with no standing
+        /// service guidance until the service sends some during that attempt.
+        /// </summary>
+        private void ResetProvisioningServiceRetryAfter()
+        {
+            Volatile.Write(ref _lastProvisioningServiceRetryAfterTicks, 0);
+        }
+
+        /// <summary>
+        /// The Retry-After the service most recently asked for during a registration, or <see cref="TimeSpan.Zero"/>
+        /// when it asked for none.
+        /// </summary>
+        private TimeSpan GetProvisioningServiceRetryAfter()
+        {
+            long ticks = Volatile.Read(ref _lastProvisioningServiceRetryAfterTicks);
+            return ticks > 0 ? TimeSpan.FromTicks(ticks) : TimeSpan.Zero;
+        }
+
+        private static TimeSpan? GetRetryAfterFromTopic(string topic)
         {
             string[] topicAndQueryString = topic.Split('?');
             if (topicAndQueryString.Length > 1)
@@ -982,11 +1378,7 @@ namespace Microsoft.Azure.Iot.Device
                     {
                         if (int.TryParse(queryKeyAndValue[1], out int secondsToWait))
                         {
-                            var serviceRecommendedDelay = TimeSpan.FromSeconds(secondsToWait);
-
-                            return serviceRecommendedDelay.TotalSeconds < defaultPoolingInterval.TotalSeconds
-                                ? defaultPoolingInterval
-                                : serviceRecommendedDelay;
+                            return TimeSpan.FromSeconds(secondsToWait);
                         }
                     }
                 }
@@ -1029,14 +1421,32 @@ namespace Microsoft.Azure.Iot.Device
             // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
             using ManualResetEventSlim latch = new();
             latch.Set();
+
+            // Release the latch, tolerating this operation having already completed and disposed it in a race with the
+            // connection event that is releasing it. The connection event (a device presence flow completing, or an
+            // unrecoverable fault) fires on the connection layer's threads and may capture this subscriber an instant
+            // before the finally below removes it, so a disposed latch here is expected and simply means there is
+            // nothing left to release. Swallowing it keeps that race from propagating into -- and aborting -- the fault
+            // notification path that raises it.
+            void ReleaseLatch()
+            {
+                try
+                {
+                    latch.Set();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
-                latch.Set();
-                return Task.CompletedTask; // Not covered? It should be, right?
+                ReleaseLatch();
+                return Task.CompletedTask;
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            Action HandleUnrecoverableFault = () => latch.Set(); // Stop waiting for a connection that is never coming back
+            Action HandleUnrecoverableFault = ReleaseLatch; // Stop waiting for a connection that is never coming back
             UnrecoverablyFaulted += HandleUnrecoverableFault;
             try
             {
@@ -1053,6 +1463,17 @@ namespace Microsoft.Azure.Iot.Device
                         // A fault that this client will not recover from must not be waited out, whether it happened
                         // before this operation started or while this operation was waiting.
                         ThrowIfUnrecoverablyFaulted();
+
+                        // If this client is deliberately idle -- it has never connected, or it was deliberately
+                        // disconnected -- then no reconnection and no re-provisioning will ever arrive to release this
+                        // operation, so fail fast with the not-connected error instead of waiting forever. While a
+                        // connection is being (re-)established, a terminal fault is still being delivered, or a
+                        // re-provision is in flight (which has its own gaps where no socket is up), a release is coming,
+                        // so keep waiting in those cases.
+                        if (!ManagedMqttConnection.IsConnectionLifecycleActive && Volatile.Read(ref _isReprovisioning) == 0)
+                        {
+                            throw;
+                        }
 
                         try
                         {

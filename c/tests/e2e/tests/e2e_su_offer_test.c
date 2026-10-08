@@ -11,7 +11,7 @@
  *
  * Everything under the test is shipping code: az_iot_su_client (engine), the
  * DPS device-update channel, the Paho adapter, X.509 auth and the OpenSSL
- * crypto adapter. Files are downloaded for real (libcurl) and hashed by the
+ * crypto backend. Files are downloaded for real (libcurl) and hashed by the
  * engine. Install and apply only record that they ran, with failures injected
  * per scenario.
  *
@@ -64,7 +64,7 @@
 
 #include "su_internal.h"
 
-#include "az_iot_su_crypto_openssl.h"
+#include "az_iot_crypto_openssl.h"
 
 #include "e2e_su_env.h"
 #include "e2e_su_test_roots.h"
@@ -703,18 +703,17 @@ static void fixture_open(fixture* fx, const fixture_options* o)
     .load_state_fn = hook_load,
     .user_ctx = &fx->plat,
   };
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
-
   az_iot_su_client_config_options su = az_iot_su_client_config_options_default();
   su.hooks = &hooks;
-  su.crypto = &crypto;
   su.root_keys = o->roots;
   su.root_key_count = o->root_count;
   su.device_properties = &dp;
   su.device_properties_buffer = fx->dp_buf;
   su.device_properties_buffer_size = sizeof(fx->dp_buf);
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
-  assert_int_equal(az_iot_su_client__initialize_with_channel(&fx->su, &spy, &su), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&fx->su, &spy, az_iot_crypto_openssl(), &su),
+      AZ_IOT_OK);
   fx->have_su = true;
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_su_event, fx), AZ_IOT_OK);
 
