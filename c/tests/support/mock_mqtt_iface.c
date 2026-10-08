@@ -56,6 +56,8 @@ typedef struct az_iot_mock_mqtt_factory_state
 {
   az_iot_mqtt_factory public_;
   az_iot_mock_mqtt_client* last_client;
+  /* Clients destroyed after a disconnect() call. */
+  size_t disconnected_destroyed;
   /* One-shot CONNECT failure armed on the FACTORY rather than a client, for
    * the cases where the client under test has not been created yet -- the
    * connection client builds a fresh adapter inside the call being tested. */
@@ -379,6 +381,10 @@ static void mock_destroy(az_iot_mqtt_client* self)
   }
   az_iot_mock_mqtt_client* m = mock_self(self);
   push_call(m, AZ_IOT_MOCK_CALL_DESTROY);
+  if (m->owner && az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT) > 0)
+  {
+    m->owner->disconnected_destroyed++;
+  }
   /* Detach from owner's last_client cache so factory destroy doesn't double-free. */
   if (m->owner && m->owner->last_client == m)
   {
@@ -679,4 +685,13 @@ bool az_iot_mock_mqtt_client_inject_message(
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   evt.message = &msg;
   return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory* factory)
+{
+  if (factory == NULL)
+  {
+    return 0;
+  }
+  return ((const az_iot_mock_mqtt_factory_state*)factory->factory_ctx)->disconnected_destroyed;
 }
