@@ -5,7 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter built with a receive buffer larger than its send buffer
  * (az_mqtt_asymmetric_sizes.h), against an in-process server: CONNECT advertises the receive size
- * (MQTT 5 Maximum Packet Size), and a PUBLISH larger than the send size arrives whole. */
+ * (MQTT 5 Maximum Packet Size), and a PUBLISH whose payload, topic and user property value each
+ * exceed the send size arrives whole. */
 #include "az_mqtt_asymmetric_sizes.h"
 
 #include <stdarg.h>
@@ -43,25 +44,28 @@ typedef socklen_t test_socklen;
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
-/* Between the two sizes: too large to send, small enough to receive. */
-#define PAYLOAD_LEN 4000
-#if PAYLOAD_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE \
-    || PAYLOAD_LEN + 64 > AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
-#error "PAYLOAD_LEN must be over the send size and under the receive size"
+/* Payload, topic and user property value each over the send size; together under the receive
+ * size. Strings are copied out of the packet, so the topic and value also cover their buffer. */
+#define PAYLOAD_LEN 2000
+#define TOPIC_LEN 1500
+#define VALUE_LEN 1500
+#if PAYLOAD_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE || TOPIC_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE \
+    || VALUE_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE                                                \
+    || PAYLOAD_LEN + TOPIC_LEN + VALUE_LEN + 64 > AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
+#error "Each must be over the send size, and all under the receive size"
 #endif
-#define TOPIC "sizes/inbound"
 #define STEPS 500
 
 typedef struct
 {
   int connected;
   int messages;
-  char topic[sizeof(TOPIC)];
+  char topic[TOPIC_LEN + 1];
   uint8_t payload[PAYLOAD_LEN];
   size_t payload_len;
   size_t properties;
   char key[2];
-  char value[2];
+  char value[VALUE_LEN + 1];
 } recorder;
 
 /* Copies NUL-terminated @p src into @p dst of @p size bytes; fails when it does not fit. */
@@ -137,18 +141,14 @@ static void send_all(test_sock s, const uint8_t* p, size_t n)
 static size_t read_varint(const uint8_t* p, size_t n, size_t* i)
 {
   size_t value = 0;
-  for (int shift = 0; shift < 28; shift += 7)
+  uint8_t b = 0;
+  for (int shift = 0; shift == 0 || (b & 0x80) != 0; shift += 7)
   {
-    assert_true(*i < n);
-    uint8_t b = p[(*i)++];
+    assert_true(shift < 28 && *i < n);
+    b = p[(*i)++];
     value |= (size_t)(b & 0x7F) << shift;
-    if ((b & 0x80) == 0)
-    {
-      return value;
-    }
   }
-  fail_msg("bad variable byte integer");
-  return 0;
+  return value;
 }
 
 static size_t write_varint(uint8_t* p, size_t value)
@@ -167,7 +167,8 @@ static size_t write_varint(uint8_t* p, size_t value)
 static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size_t size)
 {
   size_t have = 0;
-  for (int step = 0; step < STEPS; step++)
+  size_t packet_len = 0;
+  for (int step = 0; step < STEPS && packet_len == 0; step++)
   {
     if (have >= 2)
     {
@@ -186,7 +187,8 @@ static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size
         size_t remaining = read_varint(buf, have, &i);
         if (have >= i + remaining)
         {
-          return i + remaining;
+          packet_len = i + remaining;
+          break;
         }
       }
     }
@@ -199,8 +201,8 @@ static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size
       have += (size_t)got;
     }
   }
-  fail_msg("no packet from the client");
-  return 0;
+  assert_true(packet_len > 0);
+  return packet_len;
 }
 
 /* The Maximum Packet Size property of an MQTT 5 CONNECT, 0 when absent. */
@@ -290,23 +292,38 @@ static void run_client(az_iot_mqtt_factory* f)
   }
   assert_int_equal(r->connected, 1);
 
-  // QoS 0 PUBLISH; MQTT 5: one User Property "k" = "v".
-  static const uint8_t properties[] = { 0x26, 0x00, 0x01, 'k', 0x00, 0x01, 'v' };
-  static uint8_t publish[PAYLOAD_LEN + 64];
-  size_t const topic_len = sizeof(TOPIC) - 1;
-  size_t const remaining = 2 + topic_len + (v5 ? 1 + sizeof(properties) : 0) + (size_t)PAYLOAD_LEN;
+  // QoS 0 PUBLISH; MQTT 5: one User Property "k" = value.
+  static char topic[TOPIC_LEN + 1];
+  static char value[VALUE_LEN + 1];
+  for (size_t k = 0; k < TOPIC_LEN; k++)
+  {
+    topic[k] = (char)('a' + k % 26);
+  }
+  for (size_t k = 0; k < VALUE_LEN; k++)
+  {
+    value[k] = (char)('A' + k % 26);
+  }
+  size_t const properties_len = 1 + 2 + 1 + 2 + VALUE_LEN;
+  static uint8_t publish[PAYLOAD_LEN + TOPIC_LEN + VALUE_LEN + 64];
+  size_t const remaining = 2 + TOPIC_LEN + (v5 ? 2 + properties_len : 0) + (size_t)PAYLOAD_LEN;
   size_t i = 0;
   publish[i++] = 0x30;
   i += write_varint(publish + i, remaining);
-  publish[i++] = 0;
-  publish[i++] = (uint8_t)topic_len;
-  memcpy(publish + i, TOPIC, topic_len);
-  i += topic_len;
+  publish[i++] = (uint8_t)(TOPIC_LEN >> 8);
+  publish[i++] = (uint8_t)(TOPIC_LEN & 0xFF);
+  memcpy(publish + i, topic, TOPIC_LEN);
+  i += TOPIC_LEN;
   if (v5)
   {
-    publish[i++] = (uint8_t)sizeof(properties);
-    memcpy(publish + i, properties, sizeof(properties));
-    i += sizeof(properties);
+    i += write_varint(publish + i, properties_len);
+    publish[i++] = 0x26;
+    publish[i++] = 0;
+    publish[i++] = 1;
+    publish[i++] = 'k';
+    publish[i++] = (uint8_t)(VALUE_LEN >> 8);
+    publish[i++] = (uint8_t)(VALUE_LEN & 0xFF);
+    memcpy(publish + i, value, VALUE_LEN);
+    i += VALUE_LEN;
   }
   for (size_t k = 0; k < PAYLOAD_LEN; k++)
   {
@@ -318,7 +335,7 @@ static void run_client(az_iot_mqtt_factory* f)
     assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
   }
   assert_int_equal(r->messages, 1);
-  assert_string_equal(r->topic, TOPIC);
+  assert_string_equal(r->topic, topic);
   assert_int_equal(r->payload_len, PAYLOAD_LEN);
   for (size_t k = 0; k < PAYLOAD_LEN; k++)
   {
@@ -328,7 +345,7 @@ static void run_client(az_iot_mqtt_factory* f)
   {
     assert_int_equal(r->properties, 1);
     assert_string_equal(r->key, "k");
-    assert_string_equal(r->value, "v");
+    assert_string_equal(r->value, value);
   }
 
   (void)c->iface->disconnect(c);
