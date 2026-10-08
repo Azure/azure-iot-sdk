@@ -123,6 +123,8 @@ static void sign_user_token(const az_iot_sas_token_request* request, void* user_
           az_span_create(mac, (int32_t)sizeof(mac)),
           &sig_len)))
   {
+    OPENSSL_cleanse(mac, sizeof(mac));
+    OPENSSL_cleanse(sig, sizeof(sig));
     return;
   }
   static const char k_prefix[] = "SharedAccessSignature sr=";

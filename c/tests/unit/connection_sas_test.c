@@ -1859,6 +1859,7 @@ static struct
   uint32_t lifetime_seconds;
   int calls;
   az_iot_connection_scope scope;
+  az_iot_connection_profile profile;
   bool is_renewal;
   char resource_uri[128];
   char key_name[32];
@@ -1871,6 +1872,7 @@ static void fake_token_callback(const az_iot_sas_token_request* request, void* u
   (void)user_ctx;
   g_fake.calls++;
   g_fake.scope = request->scope;
+  g_fake.profile = request->profile;
   g_fake.is_renewal = request->is_renewal;
   snprintf(g_fake.resource_uri, sizeof(g_fake.resource_uri), "%s", request->resource_uri);
   snprintf(g_fake.key_name, sizeof(g_fake.key_name), "%s", request->key_name);
@@ -1963,6 +1965,24 @@ static void a_ready_user_token_connects_the_hub(void** state)
   assert_true(fx->client.sas_token_renewal_due_ms <= az_iot_time_mono_ms() + 80000u);
 }
 
+/* An mqttv5 hub: the request carries its profile, and the supplied token is
+ * the CONNECT password. */
+static void a_user_token_connects_an_mqttv5_hub(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  assert_non_null(fx->factory);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_int_equal(g_fake.profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  assert_string_equal(g_fake.resource_uri, "broker.example%2Fdevices%2Fut-device");
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+}
+
 /* The attempt waits in SETTING_UP until the token is supplied, then connects
  * DPS with it. A hub token before the assignment has no identity to match. */
 static void a_pending_user_token_connects_dps_once_delivered(void** state)
@@ -1977,6 +1997,7 @@ static void a_pending_user_token_connects_dps_once_delivered(void** state)
   pump(fx, 2);
   assert_int_equal(g_fake.calls, 1);
   assert_int_equal(g_fake.scope, AZ_IOT_CONN_SCOPE_DPS);
+  assert_int_equal(g_fake.profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   assert_string_equal(g_fake.resource_uri, "0ne00000001%2fregistrations%2fut-device");
   assert_string_equal(g_fake.key_name, "registration");
   assert_true(no_connect_pending(fx));
@@ -2826,6 +2847,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_invalid_sas_options, setup, teardown),
     cmocka_unit_test_setup_teardown(init_accepts_a_token_callback_without_keys, setup, teardown),
     cmocka_unit_test_setup_teardown(a_ready_user_token_connects_the_hub, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_user_token_connects_an_mqttv5_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(update_sas_token_checks_its_arguments, setup, teardown),
