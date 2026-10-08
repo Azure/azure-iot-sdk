@@ -10,6 +10,15 @@
  * header, as an application compiling the adapter would.
  */
 
+// Each case sets its own inputs: drop any from the build (e.g. CMAKE_C_FLAGS).
+#undef AZ_IOT_AZ_MQTT_CONFIG_FILE
+#undef AZ_IOT_AZ_MQTT_FOOTPRINT
+#undef AZ_IOT_AZ_MQTT_BUFFER_SIZE
+#undef AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE
+#undef AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
+#undef AZ_IOT_AZ_MQTT_INFLIGHT_MAX
+#undef AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
+
 #if defined(AZ_IOT_AZ_MQTT_CONFIG_TEST_DEFAULT)
 #define EXPECTED_SEND (264 * 1024)
 #define EXPECTED_RECEIVE (264 * 1024)
