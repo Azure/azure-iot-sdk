@@ -35,11 +35,11 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Maturity | Partial | Partial | Partial | N/A | C `1.0.0-preview` (header is the single source of truth, gated by `eng/check-version.sh`); .NET 1.1.0 to GitHub Packages |
 | Single connection client, DPS internal | Yes | Yes | Yes | N/A | `az_iot_connection_client` / `AbstractConnectionClient`; provisioning is not an app step |
 | Per-feature clients over one connection | Yes | Yes | Yes | N/A | telemetry / c2d / direct method / twin (+ file upload mqttv3 only) |
-| Generation selected at | client init (app picks the API) | ← | runtime, per connection | ← | C refuses a mismatch with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; .NET switches on `ConnectionProfile` internally |
+| Generation selected at | client init (app picks the API) | ← | N/A — mqttv3 only | N/A | C refuses a mismatch with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. On `main` .NET has one path, so there is nothing to select |
 | Runtime generation query | Yes | Yes | Yes | N/A | `az_iot_connection_client_get_hub_profile()` / `ConnectionProfile` |
-| MQTTv3↔MQTTv5 fallback handled by | application | ← | library | ← | C app must instantiate the other API family; .NET `Unified` facade branches for you |
-| API model | single-threaded `do_work()` pump, callbacks on caller thread, no internal threads | ← | Task-based async, `CancellationToken` on every op, `IDisposable` | ← | .NET has **no** `IAsyncDisposable` |
-| Nullable / strictness | C99-strict, `-pedantic`, banned-construct + layering CI gates | ← | `<Nullable>enable</Nullable>` | ← | |
+| MQTTv3↔MQTTv5 fallback handled by | application | ← | N/A | N/A | C app must instantiate the other API family. No fallback exists on `main` for .NET — the mqttv5 half is on the preview branch |
+| API model | single-threaded `do_work()` pump, callbacks on caller thread, no internal threads | ← | Task-based async, `CancellationToken` on every op, `IDisposable` | N/A | .NET has **no** `IAsyncDisposable` |
+| Nullable / strictness | C99-strict, `-pedantic`, banned-construct + layering CI gates | ← | `<Nullable>enable</Nullable>` | N/A | |
 | Struct/ABI versioning | Partial | Partial | N/A | N/A | `_internal_size` on events + cert-provider vtable v2; `struct_versioning.md` still a proposal |
 | Preview/experimental markers | Partial | Partial | No | N/A | No per-API attributes; C README carries the status banner |
 
@@ -55,14 +55,14 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | AMQP | No | No | No | N/A | Deliberate — see `c/docs/amqp_vs_mqtt_for_new_sdk_client.md`. Test-only AMQP under `c/tests/deps/amqp` |
 | HTTPS | Partial | No | Partial | N/A | Only the file-upload SAS PUT/notify; C ships **no** HTTP client (app supplies a transport hook) |
 | BYO MQTT client | Yes | Yes | Yes | N/A | C `az_iot_mqtt_iface` vtable + published conformance suite; .NET `IMqttClient` + `CustomMqttClientSample` |
-| Shipped adapters | Paho v3.1.1 + v5 (default) | ← | MQTTnet 5.1.0.1559 (`MqttNetAdapter`) | N/A | C adds **az_mqtt** (vendored, zero-allocation, v3+v5, `AZ_IOT_WITH_AZ_MQTT=OFF` by default, conformance-tested) and a Rust shell that refuses everything |
+| Shipped adapters | Paho v3.1.1 + v5 (default) | ← | MQTTnet 5.1.0.1559 (`MqttNetAdapter`) | N/A | C adds **az_mqtt** (vendored, zero-allocation, v3+v5, `AZ_IOT_WITH_AZ_MQTT=OFF` by default, conformance-tested) and a Rust adapter that delegates to a runtime-installed FFI table, refusing only WebSockets and proxy connects |
 | Allocation profile | Partial | Partial | N/A | N/A | Core is static/caller-allocated; PEM cert provider and the Paho adapter malloc |
 | TLS version control | No | No | Yes | N/A | C exposes only `use_tls`; .NET forces Tls12/Tls13. Neither can disable validation |
 | Reconnect / connection maintenance | Yes | Yes | Yes | N/A | C `src/core/retry_policy.c` + public `az_iot_retry_policy.h`; .NET `MqttConnectionManager.MaintainConnectionAsync` |
 | Keep-alive | Yes | Yes | Yes | N/A | C default 30 s; .NET default 60 s |
 | Clean start / session expiry / LWT | Yes | Yes | Yes | N/A | C `resolve_session_options()` sets per role (#204); MQTTv5 `//TODO subscribe elide logic` |
 | Subscription-ack gating | Yes | Yes | **Yes** | N/A | Both check SUBACK reason codes. C failure scope is configurable (`az_iot_subscription_failure_scope`); .NET always disconnects and reconnects |
-| MQTT DISCONNECT reason code | N/A | **Yes** | **Yes** | N/A | Both expose it (.NET `MqttDisconnect.Reason`, incl. `DisconnectWithWillMessage`=4). C sets 0x04 on the mqttv5 hub (#204); .NET always sends NormalDisconnection |
+| MQTT DISCONNECT reason code | N/A | **Yes** | **N/A** | N/A | v5 only — v3.1.1 has no reason-code field. C sets 0x04 on the mqttv5 hub. `MqttDisconnect.Reason` exists as a model property but is unreachable on .NET `main`, which is mqttv3-only |
 
 ## 3. Authentication
 
@@ -70,8 +70,8 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 |---|---|---|---|
 | X.509 client certificates | Yes | Yes | First auth source tried in C (`az_iot_auth_source`); the only one in .NET |
 | SAS token from symmetric key | **Partial** | **No** | C: Yes for DPS and the mqttv3 hub (base64 primary/secondary key, enrollment-group derivation); **the mqttv5 hub does not accept SAS yet**. .NET: `Password` is always an empty array |
-| Application-supplied SAS tokens | **Yes** | No | C `on_sas_token_required` + `az_iot_connection_client_update_sas_token()`; needs `sas_buffer`, no crypto backend required |
-| SAS renewal before expiry | **Yes** | N/A | C renews at `renewal_percent` of lifetime (default 80) and reconnects; surfaced as `is_credential_renewal` |
+| Application-supplied SAS tokens | **Partial** | No | C `on_sas_token_required` + `az_iot_connection_client_update_sas_token()`; needs `sas_buffer`, no crypto backend. **DPS and mqttv3 hub only** — the mqttv5 hub refuses SAS |
+| SAS renewal before expiry | **Partial** | N/A | C renews at `renewal_percent` of lifetime (default 80) and reconnects; surfaced as `is_credential_renewal`. **DPS and mqttv3 hub only**, as above |
 | Credential fallback on rejection | **Yes** | No | C order: X.509 certificate indexes → primary key → secondary key → application token, without a backoff delay |
 | Multiple certificates per role | **Yes** | No | C `load(index)`, up to `AZ_IOT_MAX_CERTS_PER_ROLE` (4); each index is its own auth source |
 | TPM attestation | No | No | Explicitly out of scope (`c/docs/eng/certificate-management.md`) |
@@ -92,7 +92,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 |---|---|---|---|---|---|
 | D2C telemetry | Yes | Yes | Yes | N/A | |
 | Message properties | Yes | Yes | Yes | N/A | mqttv3 percent-encoded topic bag; mqttv5 v5 user properties |
-| Content type / encoding | Yes | Yes | Yes | N/A | .NET mqttv5 has `//TODO fill in content type` |
+| Content type / encoding | Yes | Yes | Yes | N/A | .NET serializes `ContentType` and `ContentEncoding` into the mqttv3 topic; a `//TODO` there covers only filling them from user properties |
 | Message expiry | Partial | Partial | Partial | N/A | Present on the MQTT publish, not surfaced on the telemetry API |
 | Configurable QoS | Partial | Partial | No | N/A | .NET `//TODO do we want configurable QoS here?` |
 | C2D receive | Yes | **N/A** | **No** | N/A | Service supports C2D on mqttv3 only. C mqttv5 C2D client was **removed** (#272); .NET dropped C2D from the unified API (#255) |
@@ -121,7 +121,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 |---|---|---|---|
 | Separate provisioning client | No | No | By design: a phase inside the connection client (`c/docs/dps-integration.md`) |
 | Register + poll + assignment | Yes | Yes | .NET now pins api-version **2026-11-02-preview** for all DPS device sessions (#262); both poll with retry-after + jitter |
-| X.509 attestation | Yes | Yes | Only attestation type supported |
+| X.509 attestation | Yes | Yes | The only attestation type in .NET; C also supports symmetric key (see the row below) |
 | Symmetric key (SAS) attestation | **Yes** | No | C derives the device key from an enrollment-group key, or takes a device key directly |
 | TPM attestation | No | No | |
 | CSR-based provisioning | Yes | Yes | .NET now serializes the CSR and requests a CSR-capable api-version (#202) |
@@ -181,7 +181,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Fault injection | Partial | Yes | .NET covers faults by **unit test** by design — `ConnectionFaultedUnitTests.cs`, 28 facts/theories |
 | Sanitizers | Yes | No | valgrind (Linux) + MSVC ASan, plus a race-detector job (helgrind/DRD) |
 | Style / layering gates | Yes | No | `check-banned-constructs.sh`, `check-layering.sh`, `check-log-components.sh`, `check-hardening.sh`, clang-format |
-| **Static analysis** | **Yes** | **Partial** | C: clang-tidy (`c/.clang-tidy`), MSVC `/analyze`, CodeQL c-cpp, plus an Azure Pipelines SDL build (CodeQL, BinSkim, antimalware, SBOM). Repo-wide: CodeQL for actions, dependency review, workflow lint. .NET: CodeQL + vulnerable-package scanning |
+| **Static analysis** | **Yes** | **No** | C: clang-tidy (`c/.clang-tidy`), MSVC `/analyze`, CodeQL `c-cpp`, plus an Azure Pipelines SDL build (CodeQL, BinSkim, antimalware, SBOM). Repo-wide: CodeQL for `actions`, dependency review, workflow lint. **There is no C# CodeQL job** — the .NET workflow scans for vulnerable packages, which is dependency scanning, not static code analysis |
 | **Build hardening** | **Yes** | Partial | C: stack protector, FORTIFY, PIE/RELRO on GCC/Clang; `/guard:cf`, `/CETCOMPAT`, `/sdl` on MSVC, enforced by `check-hardening.sh`. .NET: strong-name signing |
 | Coverage | Yes | Yes | C: gcovr with per-component floors, patch coverage, and a zero-gcda failure. **No overall percentage is published any more.** .NET: XPlat + CodeCoverageSummary |
 | Fuzzing | No | No | |
@@ -194,7 +194,7 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 |---|---|---|---|
 | Installable / linkable package | **Yes** | Yes | C: `install()`/`export()` targets, CMake package config and pkg-config behind `AZ_IOT_INSTALL`; builds correctly as a CMake subproject. **No vcpkg port published** |
 | Generated API reference | **No** | **No** | Public C headers are Doxygen-formatted but there is still **no Doxyfile and no doc build**, so no API reference is produced |
-| Static analysis | **Yes** | **Partial** | See §9 |
+| Static analysis | **Yes** | **No** | See §9 — .NET has dependency scanning only, no C# CodeQL |
 | Supply chain / SBOM | **Partial** | **Partial** | C `cgmanifest.json` pins every third-party component, SBOM generated by the official pipeline, installed deps ship LICENSE/NOTICE. Repo-wide dependency review; .NET vulnerable-package scan. Not confirmed whether the SBOM is published as an artifact |
 | Secret hygiene in memory | **Partial** | **No** | C `az_iot_crypto__wipe()` covers HMAC scratch, SAS tokens, key slots and `sas_buffer` on teardown; `OPENSSL_cleanse` in key custody. .NET relies on the GC |
 | Log redaction guarantees | Partial | Partial | C redacts PKCS#11 URIs and truncates Paho traces; neither library **documents** what must never reach a sink |
@@ -202,7 +202,7 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 | Portable time source | Partial | N/A | `az_iot_time_mono_ms()` is POSIX `clock_gettime` or Win32 `GetTickCount64` behind `#if defined(_WIN32)`. **Still no platform hook**, so an RTOS port must patch `src/core/mono_time.c` |
 | Thread-safety contract | Partial | Partial | C is a single-threaded `do_work()` pump with callbacks on the caller's thread, stated in `README.md`/`design.md` but not enforced by a test |
 | Reboot persistence / session resumption | Partial | **No** | Only the software-update client persists (`persist_state_fn`/`load_state_fn`, CRC-32 guarded). MQTT session, twin version and in-flight operations are cold-started |
-| Backpressure / in-flight bounds | **Yes** | Partial | C reserves pending-PUBACK slots **per feature client** and refuses before publishing when the pool is full (`AZ_IOT_ERR_BUSY`) rather than failing an already-sent publish |
+| Backpressure / in-flight bounds | **Yes** | Partial | C has one connection-wide `AZ_IOT_MAX_PENDING_PUBACKS` table; selected feature clients may reserve part of it and every other caller shares the remainder. A slot is taken before the publish, so a full table refuses with `AZ_IOT_ERR_BUSY` instead of failing an already-sent publish |
 | Credential expiry handling | **Yes** | Partial | C renews a SAS token at `renewal_percent` before expiry and falls back across credentials on rejection; neither library warns ahead of client-certificate expiry |
 | Clock-skew tolerance | Partial | Partial | Monotonic time drives backoff; SAS needs a real clock, and the samples check for one. No guidance on wall-clock skew against certificate validity |
 | API deprecation policy | N/A | N/A | Both are pre-release; no policy is written |
@@ -269,6 +269,6 @@ Rechecked at `a453698` after roughly 65 merged PRs (#315–#387). The largest mo
 - **The C library is installable** (CMake export + pkg-config + subproject support) and gained a **Yocto consumer leg**.
 - **A second MQTT adapter** — vendored `az_mqtt`, zero-allocation, v3 and v5, opt-in, conformance-tested — with the first **published memory-footprint figures**.
 - Version moved to `1.0.0-preview` (C) and `1.1.0` (.NET); C `README` and a client-configuration reference replaced the old build docs.
-- Connection work: generalized retry policy (`retry_policy.c`, `az_iot_retry_policy.h`; `reconnect.c` is gone), `SETTING_UP` state, `RETRY_PENDING` rename, a `LOCAL` error source, selectable identity-rejection recovery, and per-feature pending-PUBACK reservations that close GitHub issue #258.
+- Connection work: generalized retry policy (`retry_policy.c`, `az_iot_retry_policy.h`; `reconnect.c` is gone), `SETTING_UP` state, `RETRY_PENDING` rename, a `LOCAL` error source, selectable identity-rejection recovery, and pending-PUBACK slots taken before the publish — which closes GitHub issue #258.
 - Logging gained a file sink, a defined line format and 16 CI-checked components.
 - Secret zeroization went from a single `OPENSSL_cleanse` to a general `az_iot_crypto__wipe()` across tokens, keys and buffers.
