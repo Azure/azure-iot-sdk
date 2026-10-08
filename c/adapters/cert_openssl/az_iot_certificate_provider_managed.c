@@ -131,8 +131,13 @@ static bool operational_cert_is_valid(const char* path)
 static az_iot_result managed_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   az_iot_certificate_provider_managed* m = (az_iot_certificate_provider_managed*)self;
   if (!m || !out)
   {

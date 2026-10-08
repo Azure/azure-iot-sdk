@@ -96,15 +96,19 @@ extern "C"
   {
     uint32_t version; /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
 
-    /* v1 core. load() returns credential material for the requested role.
-     * AZ_IOT_ERR_NOT_FOUND: no certificate for the role; trusted_ca_pem/_path
-     * may still be set (valid while the provider lives), and are then used
-     * for a role that authenticates with SAS. Any other error fails the
-     * attempt. (Proposed, not implemented: an index parameter for several
-     * certificates per role; see docs/eng/certificate-management.md.) */
+    /* v1 core. load() returns the @p index-th certificate for @p role,
+     * index 0 first; the client tries them in order when the service rejects
+     * one, and remembers the index that connected.
+     * AZ_IOT_ERR_NOT_FOUND: no certificate at @p index (past the last one, or
+     * none for the role); for index 0, trusted_ca_pem/_path may still be set
+     * (valid while the provider lives), and are then used for a role that
+     * authenticates with SAS. Any other error fails the attempt. The client
+     * asks for at most AZ_IOT_MAX_CERTS_PER_ROLE indexes. A provider with one
+     * certificate per role returns AZ_IOT_ERR_NOT_FOUND for index > 0. */
     az_iot_result (*load)(
         az_iot_certificate_provider* self,
         az_iot_cert_role role,
+        uint8_t index,
         az_iot_certificate_material* out_material);
     void (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
     void (*deinit)(az_iot_certificate_provider* self);

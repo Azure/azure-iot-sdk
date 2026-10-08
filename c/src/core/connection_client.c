@@ -1666,33 +1666,80 @@ static void note_identity_refusal(az_iot_connection_client* c, az_iot_result sta
   }
 }
 
-/** @brief Source after @p s in the order X.509, primary key, secondary key,
- * user-provided token, wrapping to X.509. */
-static az_iot_auth_source auth_source_after(az_iot_auth_source s)
-{
-  switch (s)
-  {
-    case AZ_IOT_AUTH_SOURCE_X509:
-      return AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
-    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
-      return AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
-    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
-      return AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
-    case AZ_IOT_AUTH_SOURCE_NONE:
-    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
-    default:
-      return AZ_IOT_AUTH_SOURCE_X509;
-  }
-}
-
 /** @brief az_iot_auth of @p scope. */
 static const az_iot_auth* auth_of(const az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   return scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
 }
 
+#if AZ_IOT_MAX_CERTS_PER_ROLE < 1 || AZ_IOT_MAX_CERTS_PER_ROLE > 255
+#error "AZ_IOT_MAX_CERTS_PER_ROLE must be 1 to 255"
+#endif
+
+/** @brief Credential sources in pass order: the X.509 certificates by index,
+ * then the primary key, the secondary key and the user-provided token. */
+#define AUTH_POSITIONS ((unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 3u)
+
+/** @brief Position of source @p s (certificate @p index for X.509) in pass order. */
+static unsigned auth_position(az_iot_auth_source s, uint8_t index)
+{
+  switch (s)
+  {
+    case AZ_IOT_AUTH_SOURCE_X509:
+      return index;
+    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE;
+    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u;
+    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
+    case AZ_IOT_AUTH_SOURCE_NONE:
+    default:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 2u;
+  }
+}
+
+/**
+ * @brief Loads @p scope's certificate at @p index: for DPS the bootstrap
+ * identity; for the hub at index 0 the operational identity, else the
+ * bootstrap one, and at later indexes the role index 0 resolved to.
+ */
+static az_iot_result load_x509(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint8_t index,
+    az_iot_certificate_material* mat)
+{
+  az_iot_certificate_provider* prov = c->opts.certificate_provider;
+  if (scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_BOOTSTRAP;
+    return prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, index, mat);
+  }
+  if (index != 0)
+  {
+    az_iot_cert_role role = c->auth[scope].x509_role == (uint8_t)AZ_IOT_CRED_OPERATIONAL
+        ? AZ_IOT_CRED_OPERATIONAL
+        : AZ_IOT_CRED_BOOTSTRAP;
+    return prov->vtable->load(prov, role, index, mat);
+  }
+  c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_OPERATIONAL;
+  az_iot_result op_lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, 0, mat);
+  az_iot_result lr = op_lr;
+  if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
+  {
+    c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_BOOTSTRAP;
+    lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, 0, mat);
+    /* A bootstrap NOT_FOUND must not hide the operational error. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && op_lr != AZ_IOT_ERR_NOT_FOUND)
+    {
+      lr = op_lr;
+    }
+  }
+  return lr;
+}
+
 /** @brief Whether @p s can be tried for @p scope: X.509 when the last load()
- * returned a certificate, a key or token callback when it is set. */
+ * at index 0 returned a certificate, a key or token callback when it is set. */
 static bool auth_source_available(
     const az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -1714,29 +1761,82 @@ static bool auth_source_available(
 }
 
 /**
+ * @brief Whether position @p p (see auth_position()) can be tried for
+ * @p scope. A certificate past index 0 is probed with load(); the first index
+ * that fails ends the certificates (@p x509_end).
+ */
+static bool auth_position_available(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    unsigned p,
+    unsigned* x509_end)
+{
+  if (p >= (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE)
+  {
+    az_iot_auth_source s = p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? AZ_IOT_AUTH_SOURCE_PRIMARY_KEY
+        : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+                                                        : AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+    return auth_source_available(c, scope, s);
+  }
+  /* No certificate at index 0: none past it either. */
+  if (p == 0 || p >= *x509_end || !auth_source_available(c, scope, AZ_IOT_AUTH_SOURCE_X509))
+  {
+    return p == 0 && auth_source_available(c, scope, AZ_IOT_AUTH_SOURCE_X509);
+  }
+  az_iot_certificate_material mat = { 0 };
+  az_iot_result lr = load_x509(c, scope, (uint8_t)p, &mat);
+  if (lr != AZ_IOT_OK)
+  {
+    if (lr != AZ_IOT_ERR_NOT_FOUND)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "certificate provider load() of index %u failed (%s); no further certificates",
+          p,
+          az_iot_result_to_string(lr));
+    }
+    *x509_end = p;
+    return false;
+  }
+  c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+  return true;
+}
+
+/**
  * @brief After the service rejected the credential of the last attempt on
  * @p scope: selects the next source of the pass and returns true, or ends the
  * pass and returns false.
  *
  * A pass tries each available source once, from the one it began with, in the
- * order X.509, primary key, secondary key, user-provided token, wrapping. After a full pass the
- * next attempt starts at the first source.
+ * order X.509 (index 0, 1, ...), primary key, secondary key, user-provided
+ * token, wrapping. After a full pass the next attempt starts at the first
+ * source.
  */
 static bool auth_next_source(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   az_iot_auth_source s = c->auth[scope].source;
-  az_iot_auth_source from = c->auth[scope].pass_from;
-  for (int i = 0; s != AZ_IOT_AUTH_SOURCE_NONE && from != AZ_IOT_AUTH_SOURCE_NONE && i < 3; ++i)
+  az_iot_auth_source from_s = c->auth[scope].pass_from;
+  if (s != AZ_IOT_AUTH_SOURCE_NONE && from_s != AZ_IOT_AUTH_SOURCE_NONE)
   {
-    s = auth_source_after(s);
-    if (s == from)
+    unsigned from = auth_position(from_s, c->auth[scope].pass_from_x509_index);
+    unsigned pos = auth_position(s, c->auth[scope].x509_index);
+    unsigned x509_end = (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE;
+    for (unsigned i = 1; i < AUTH_POSITIONS; ++i)
     {
-      break;
-    }
-    if (auth_source_available(c, scope, s))
-    {
-      c->auth[scope].first = s;
-      return true;
+      unsigned p = (pos + i) % AUTH_POSITIONS;
+      if (p == from)
+      {
+        break;
+      }
+      if (auth_position_available(c, scope, p, &x509_end))
+      {
+        c->auth[scope].first = p < (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? AZ_IOT_AUTH_SOURCE_X509
+            : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE      ? AZ_IOT_AUTH_SOURCE_PRIMARY_KEY
+            : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+                                                            : AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+        c->auth[scope].first_x509_index = p < (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? (uint8_t)p : 0u;
+        return true;
+      }
     }
   }
   c->auth[scope].first = AZ_IOT_AUTH_SOURCE_NONE;
@@ -3149,15 +3249,19 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   if (c->opts.certificate_provider)
   {
     az_iot_certificate_material mat = { 0 };
-    az_iot_result lr = c->opts.certificate_provider->vtable->load(
-        c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
-    c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
+    uint8_t x509_index
+        = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_DPS].first_x509_index : 0u;
+    az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_DPS, x509_index, &mat);
+    if (x509_index == 0)
+    {
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
+    }
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
     if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
     {
-      /* The pass reached X.509 after its keys were rejected, and the
-       * certificate is gone: the pass ends, failing this attempt, rather than
-       * trying those keys again unpaced. */
+      /* The certificate selected (by fallback, or kept after connecting) is
+       * gone: the pass ends, failing this attempt, rather than trying the
+       * sources before it again unpaced. */
       AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
       c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -3184,7 +3288,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       const char* key_query = strchr(key_uri, '?');
       AZ_IOT_LOG_DEBUGF(
           AZ_IOT_LOG_COMPONENT_DPS,
-          "bootstrap TLS ca=%s cert=%s key=%s key_uri=%.*s%s engine=%s",
+          "bootstrap TLS index=%u ca=%s cert=%s key=%s key_uri=%.*s%s engine=%s",
+          (unsigned)x509_index,
           text_or_none(mat.trusted_ca_path),
           text_or_none(mat.client_cert_path),
           text_or_none(mat.client_key_path),
@@ -3200,6 +3305,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         return cr;
       }
       c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_X509;
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = x509_index;
       apply_trusted_ca(c, &copts);
     }
     else
@@ -3251,6 +3357,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index;
   }
 
   c->dps_mqtt = mc;
@@ -3376,6 +3483,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
   if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index;
   }
   az_iot_result r = dps_do_register_publish(c);
   if (r == AZ_IOT_OK)
@@ -4650,24 +4758,39 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
-    az_iot_result op_lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, &mat);
-    az_iot_result lr = op_lr;
-    if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
+    uint8_t x509_index
+        = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_HUB].first_x509_index : 0u;
+    if (x509_index != 0)
     {
-      lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
-      /* A bootstrap NOT_FOUND must not hide the operational error. */
-      if (lr == AZ_IOT_ERR_NOT_FOUND && op_lr != AZ_IOT_ERR_NOT_FOUND)
+      /* A kept certificate past index 0: an operational identity that has
+       * appeared since (e.g. issued by DPS) comes first again. */
+      uint8_t role = c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_role;
+      az_iot_result lr0 = load_x509(c, AZ_IOT_CONN_SCOPE_HUB, 0, &mat);
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr0 == AZ_IOT_OK;
+      if (lr0 == AZ_IOT_OK)
       {
-        lr = op_lr;
+        prov->vtable->release(prov, &mat);
+      }
+      memset(&mat, 0, sizeof(mat));
+      if (c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_role != role)
+      {
+        c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
+        c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+        first = AZ_IOT_AUTH_SOURCE_NONE;
+        x509_index = 0;
       }
     }
-    c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
+    az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_HUB, x509_index, &mat);
+    if (x509_index == 0)
+    {
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
+    }
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
     if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
     {
-      /* The pass reached X.509 after its keys were rejected, and the
-       * certificate is gone: the pass ends, failing this attempt, rather than
-       * trying those keys again unpaced. */
+      /* The certificate selected (by fallback, or kept after connecting) is
+       * gone: the pass ends, failing this attempt, rather than trying the
+       * sources before it again unpaced. */
       AZ_IOT_LOG_WARN(
           AZ_IOT_LOG_COMPONENT_CONNECTION, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
@@ -4706,6 +4829,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         return cr;
       }
       c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_X509;
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = x509_index;
       apply_trusted_ca(c, &copts);
     }
   }
@@ -4747,6 +4871,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+    c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index;
   }
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
@@ -6198,10 +6323,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     az_iot_certificate_material mat = { 0 };
-    az_iot_result lr = p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, &mat);
+    az_iot_result lr = p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, 0, &mat);
     if (lr != AZ_IOT_OK)
     {
-      lr = p->vtable->load(p, AZ_IOT_CRED_BOOTSTRAP, &mat);
+      lr = p->vtable->load(p, AZ_IOT_CRED_BOOTSTRAP, 0, &mat);
     }
     if (lr == AZ_IOT_OK)
     {

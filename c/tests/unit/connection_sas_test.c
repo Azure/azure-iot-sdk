@@ -68,8 +68,13 @@
 static az_iot_result ca_only_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -81,8 +86,13 @@ static az_iot_result ca_only_load(
 static az_iot_result not_ready_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -103,8 +113,13 @@ static bool g_late_cert_ready;
 static az_iot_result late_cert_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -129,8 +144,13 @@ static const az_iot_certificate_provider_vtable k_ca_only_vtable = {
 static az_iot_result operational_not_ready_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   memset(out, 0, sizeof(*out));
   return role == AZ_IOT_CRED_OPERATIONAL ? AZ_IOT_ERR_NOT_INITIALIZED : AZ_IOT_ERR_NOT_FOUND;
@@ -160,6 +180,7 @@ typedef struct
   uint32_t attempt;
   uint32_t delay_ms;
   bool renewal;
+  uint8_t x509_index;
 } recorded_event;
 
 typedef struct
@@ -210,6 +231,7 @@ static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
     e->attempt = event->recovery != NULL ? event->recovery->attempt : 0u;
     e->delay_ms = event->recovery != NULL ? event->recovery->next_attempt_delay_ms : 0u;
     e->renewal = event->is_credential_renewal;
+    e->x509_index = event->x509_index;
   }
 }
 
@@ -1325,8 +1347,13 @@ static az_iot_result g_cert_load_result;
 static az_iot_result scripted_cert_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -2841,6 +2868,216 @@ static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
 }
 
+/* ---- Multiple provider certificates per role ---- */
+
+/* A provider with g_multi.count[role] certificates per role, `<role>-<index>.pem`;
+ * g_multi.max_index records the highest index asked for. */
+static struct
+{
+  unsigned count[2];
+  unsigned max_index;
+  char paths[2][8][24];
+} g_multi;
+
+static az_iot_result multi_cert_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    uint8_t index,
+    az_iot_certificate_material* out)
+{
+  (void)self;
+  unsigned r = role == AZ_IOT_CRED_OPERATIONAL ? 1u : 0u;
+  g_multi.max_index = index > g_multi.max_index ? index : g_multi.max_index;
+  memset(out, 0, sizeof(*out));
+  out->trusted_ca_path = "provider-ca.pem";
+  if (index >= g_multi.count[r])
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  unsigned slot = index < 8u ? index : 7u;
+  snprintf(
+      g_multi.paths[r][slot],
+      sizeof(g_multi.paths[r][slot]),
+      "%s-%u.pem",
+      r == 1u ? "op" : "boot",
+      (unsigned)index);
+  out->client_cert_path = g_multi.paths[r][slot];
+  out->client_key_path = "key.pem";
+  return AZ_IOT_OK;
+}
+
+static const az_iot_certificate_provider_vtable k_multi_cert_vtable = {
+  .version = 1u,
+  .load = multi_cert_load,
+  .release = ca_only_release,
+  .deinit = ca_only_deinit,
+};
+
+/** @brief Hub options on @p provider with @p bootstrap and @p operational
+ * certificates, the primary key, and the reconnection policies. */
+static az_iot_connection_client_options multi_cert_hub_options(
+    az_iot_certificate_provider* provider,
+    unsigned bootstrap,
+    unsigned operational)
+{
+  memset(&g_multi, 0, sizeof(g_multi));
+  g_multi.count[0] = bootstrap;
+  g_multi.count[1] = operational;
+  provider->vtable = &k_multi_cert_vtable;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = provider;
+  with_policies(&opts);
+  return opts;
+}
+
+/* A rejected certificate falls back to the next index at once, then to the
+ * keys after the last one. */
+static void a_rejected_certificate_falls_back_to_the_next_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 3, 0);
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-0.pem");
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
+  assert_int_equal(e->x509_index, 0);
+  assert_int_equal(e->delay_ms, 0);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-2.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(
+      last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING)->x509_index, 2);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
+  assert_int_equal(g_multi.max_index, 3);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+}
+
+/* The certificate that connected is kept; when it is rejected later, the pass
+ * wraps through the keys to index 0 and ends before it. */
+static void the_certificate_that_connected_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 2, 0);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_OK);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
+  assert_int_equal(e->x509_index, 1);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-0.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(no_connect_pending(fx));
+  e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->x509_index, 0);
+  assert_int_equal(e->delay_ms, IDENTITY_MS);
+}
+
+/* A provider that never returns NOT_FOUND is asked for at most
+ * AZ_IOT_MAX_CERTS_PER_ROLE certificates. */
+static void at_most_max_certs_per_role_are_tried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 255, 0);
+  init_and_open(fx, &opts);
+  for (unsigned i = 0; i < AZ_IOT_MAX_CERTS_PER_ROLE; ++i)
+  {
+    assert_non_null(strstr(last_connect(fx)->connect.client_cert_path, "boot-"));
+    connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  }
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  assert_int_equal(g_multi.max_index, AZ_IOT_MAX_CERTS_PER_ROLE - 1);
+}
+
+/* The hub's operational certificates come first; their indexes are asked of
+ * the operational role, not the bootstrap one. */
+static void the_hub_tries_its_operational_certificates(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 1, 2);
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "op-0.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "op-1.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+}
+
+/* A kept bootstrap certificate past index 0 gives way to an operational one
+ * that has appeared since, as DPS issuance would provide. */
+static void a_new_operational_certificate_replaces_a_kept_bootstrap_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 2, 0);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_OK);
+
+  g_multi.count[1] = 1;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "op-0.pem");
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(
+      last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED)->x509_index, 0);
+}
+
+/* No certificate at index 0: later indexes are not asked for. */
+static void no_index_0_certificate_asks_for_no_more(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  az_iot_connection_client_options opts = multi_cert_hub_options(&provider, 0, 0);
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(g_multi.max_index, 0);
+}
+
+/* DPS falls back through its bootstrap certificates the same way. */
+static void dps_falls_back_to_the_next_certificate(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_certificate_provider provider;
+  memset(&g_multi, 0, sizeof(g_multi));
+  g_multi.count[0] = 2;
+  provider.vtable = &k_multi_cert_vtable;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  opts.certificate_provider = &provider;
+  init_and_open(fx, &opts);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-0.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -2978,6 +3215,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         other_dps_registration_errors_do_not_fall_back, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_keys_and_tokens, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_certificate_falls_back_to_the_next_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_certificate_that_connected_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(at_most_max_certs_per_role_are_tried, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_hub_tries_its_operational_certificates, setup, teardown),
+    cmocka_unit_test_setup_teardown(dps_falls_back_to_the_next_certificate, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_operational_certificate_replaces_a_kept_bootstrap_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_index_0_certificate_asks_for_no_more, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -1371,8 +1371,13 @@ typedef struct fake_csr_provider
 static az_iot_result fake_csr_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   fake_csr_provider* f = (fake_csr_provider*)s;
   f->last_load_role = role;
   memset(out, 0, sizeof(*out));
@@ -2412,8 +2417,13 @@ typedef struct tls_provider
 static az_iot_result tls_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   tls_provider* p = (tls_provider*)s;
   p->load_calls++;
   memset(out, 0, sizeof(*out));
