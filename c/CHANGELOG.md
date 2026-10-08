@@ -32,6 +32,10 @@
   tries them in order when the service rejects one, before the SAS sources, and reports the index
   in `x509_index`. At most `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4) per role. A provider with
   one certificate per role must return `AZ_IOT_ERR_NOT_FOUND` for `index > 0`.
+- SAS token helpers (`az_iot_sas_token.h`): `az_iot_sas_token_string_to_sign()`,
+  `az_iot_sas_token_from_signature()` (token from an HMAC computed elsewhere, e.g. in an HSM),
+  `az_iot_sas_token_sign()` and `az_iot_sas_derive_device_key()`, for tokens supplied with
+  `az_iot_connection_client_update_sas_token()`.
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
   (a connected session then renews with it). At renewal the token is requested while the

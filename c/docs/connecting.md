@@ -293,6 +293,12 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   and a session whose token expires before its replacement arrives is ended, the reconnect
   waiting for the token. A new DPS assignment drops a hub token asked for or held before it; the
   next attempt asks again.
+- **Building a token.** [`az_iot_sas_token.h`](../inc/azure/iot/az_iot_sas_token.h) formats it
+  from the request's `resource_uri` and `key_name` and an expiry: `az_iot_sas_token_string_to_sign()`
+  gives what to sign, and `az_iot_sas_token_from_signature()` builds the token from its
+  HMAC-SHA256, so a key that never leaves a TPM, HSM or secure element can sign it.
+  `az_iot_sas_token_sign()` does both with a key in memory, through a crypto backend;
+  `az_iot_sas_derive_device_key()` derives a device key from an enrollment-group key.
 - **Renewal.** In `hub_auth.sas` and `dps_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
