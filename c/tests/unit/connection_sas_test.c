@@ -2537,6 +2537,29 @@ static void a_token_deadline_caps_the_other_sessions_wait(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* A provisioning session without a registration settles in IDLE when its
+ * token times out, so a token supplied late is dropped, not kept. */
+static void a_late_token_for_a_held_dps_session_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
+  init_and_open(fx, &opts);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  pump(fx, 1);
+  assert_int_not_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id, 0);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id, 0);
+  assert_false(user_token_left(fx));
+  az_iot_connection_client__dps_user_release(&fx->client);
+}
+
 /* A request past its deadline is not asked: the attempt fails with TIMEOUT. */
 static void a_token_after_the_deadline_is_not_used(void** state)
 {
@@ -2813,6 +2836,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_token_after_the_deadline_is_not_used, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_token_after_the_deadline_is_kept_for_the_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_late_token_for_a_held_dps_session_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_renewal_past_expiry_ends_the_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delivered_token_ages_from_delivery, setup, teardown),

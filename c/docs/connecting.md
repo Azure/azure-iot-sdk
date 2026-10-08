@@ -285,7 +285,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   anything else keeps it for the role's next attempt that uses a user-provided token, until the
   role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
   key-signed token, or the other role's token request). A token supplied after its attempt timed out
-  is kept for the retry. Call it from the `do_work()` thread or an SDK callback; it returns
+  is kept for the retry, unless the role settles in `IDLE` first: a provisioning session without a
+  registration (`provision_only`, or held by a feature client) does, and asks again. Call it from the `do_work()` thread or an SDK callback; it returns
   `AZ_IOT_ERR_BUSY` while a token is being handed to a CONNECT, or from the other role's callback.
   During a callback the resource URI shares the token area, so the token has less room then.
   `lifetime_seconds` counts from the call; a token that expired before use is asked for again,
