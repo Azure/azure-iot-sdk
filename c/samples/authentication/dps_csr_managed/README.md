@@ -153,7 +153,8 @@ fails with `unknown target`; the configure output must include
 
 - The operational key is loaded from `AZ_IOT_OPERATIONAL_KEY`. If the file is
   missing, unreadable or not a PEM private key, a new EC P-256 key is generated and
-  **overwrites** it.
+  **overwrites** it. If that path cannot be written, the sample prints
+  `managed certificate provider init failed` and exits 1.
 - Every run registers again, and DPS issues a new certificate over the same key;
   `AZ_IOT_OPERATIONAL_CERT` is overwritten.
 - To rotate the key, delete both files.
