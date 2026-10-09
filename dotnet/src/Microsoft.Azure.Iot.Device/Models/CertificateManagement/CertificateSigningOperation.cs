@@ -14,27 +14,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
     /// </summary>
     /// <remarks>
     /// If the operation fails at any point, both <see cref="Accepted"/> and <see cref="Completed"/> will
-    /// throw a <see cref="CertificateSigningRequestFailedException"/> when awaited. The exception contains
-    /// structured error details such as <see cref="CertificateSigningRequestFailedException.ErrorCode"/>,
-    /// <see cref="CertificateSigningRequestFailedException.RetryAfterSeconds"/>, and the full
-    /// <see cref="CertificateSigningRequestFailedException.Error"/> that IoT hub reported. A response from IoT hub that
-    /// cannot be read also fails the operation this way rather than leaving it pending.
-    /// <code>
-    /// try
-    /// {
-    ///     CertificateSigningRequestAccepted accepted = await operation.Accepted;
-    ///     CertificateSigningResponse completed = await operation.Completed;
-    /// }
-    /// catch (CertificateSigningRequestFailedException ex) when (ex.ErrorCode == 409005)
-    /// {
-    ///     // Conflict: another CSR operation is active. Use Replace = "*" to override.
-    /// }
-    /// catch (CertificateSigningRequestFailedException ex) when (ex.RetryAfterSeconds.HasValue)
-    /// {
-    ///     await Task.Delay(TimeSpan.FromSeconds(ex.RetryAfterSeconds.Value));
-    ///     // Retry the operation.
-    /// }
-    /// </code>
+    /// throw a <see cref="CertificateSigningRequestFailedException"/> when awaited.
     /// </remarks>
     public class CertificateSigningOperation
     {
@@ -49,7 +29,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// The result contains the correlation ID and operation expiration time.
         /// </summary>
         /// <exception cref="CertificateSigningRequestFailedException">
-        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestFailedException.ErrorCode"/>
+        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestFailedException.Error"/>
         /// for the specific failure reason (e.g., 400040 for CSR decode failure, 409005 for an active conflicting operation,
         /// 429002/429003 for throttling).
         /// </exception>
