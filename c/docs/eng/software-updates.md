@@ -125,7 +125,10 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
   terminal reports when the manifest has steps.
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
-rejected with `409 REPORT_CONFLICT`.
+rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
+An explicit conflict stops replay and raises `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the
+service diagnosis. The application requests current state with `az_iot_su_client_request_update()`;
+the SDK does not add an automatic recovery poll or change the application's polling cadence.
 
 ### Trust
 
@@ -145,17 +148,27 @@ carries no code (empty or unparseable) is classified by its status alone -- 429 
 | Case | Code / status | Device action |
 | --- | --- | --- |
 | No update | 200, `updateMetadata` omitted | Nothing to apply. Not an error. |
-| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured". Do not retry. |
+| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
+| Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The application re-polls for current state. |
+| Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
 | Service configuration stale | 400 `OUTDATED_SERVICE_CONFIG` | Retry without `serviceConfigEtag`. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
-| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
 | Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
 any accepted operation; it counts against the request timeout. Reports are durable writes,
-retried until acknowledged.
+retried until acknowledged or explicitly rejected permanently by the service.
+
+At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
+`info.aduErrorCode`, `trackingId`), not the internal ADR/ADU HTTP error envelope.
+A recognized string wins over numeric/status fallback. An **untyped** shared numeric `409000`
+retains the legacy operation-dependent interpretation (`PROCEED` on fetch,
+`ALREADY_REPORTED` on report); without an originating string it cannot reliably distinguish
+account linkage from a rejected report. That compatibility fallback does not prove that the
+reported payload was accepted. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
 
 ---
 
@@ -440,7 +453,8 @@ When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
 retires it once the channel's verdict is final: accepted, `ALREADY_REPORTED`,
 or refused by the service. A report abandoned for want of a session is kept, so
-it is re-sent after the next boot. A new `workflowId` replaces it.
+it is re-sent after the next boot. Retiring a permanently rejected record, including
+`REPORT_CONFLICT`, stops replay; it is not evidence of delivery. A new `workflowId` replaces it.
 
 ### Persistence & Resume Blob Format
 
