@@ -6,7 +6,7 @@
 # efuse_em is used only with sdkconfig.secure_virtual_efuse.
 #
 # Name,     Type, SubType,  Offset, Size,     Flags
-nvs,        data, nvs,      ,       0x6000,
+nvs,        data, nvs,      ,       0x9000,
 otadata,    data, ota,      ,       0x2000,
 phy_init,   data, phy,      ,       0x1000,
 nvs_keys,   data, nvs_keys, ,       0x1000,   encrypted

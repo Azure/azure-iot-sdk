@@ -242,10 +242,14 @@ static void result_overall_success(az_iot_su_client* client)
  *
  * Buffers: the chain decodes its base64url segments into a caller-supplied
  * scratch, not fixed stack arrays, because signing keys and their headers grow
- * as keys rotate. The managed client passes its persistence scratch, which holds
- * more than AZ_IOT_SU_REQUEST_BUFFER_SIZE, so any signature that fits the
- * request buffer decodes. az_iot_su_parse_update_request() uses
- * AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack. Values that do not fit are
+ * as keys rotate. Only the outer JWS header is decoded into it beside one of:
+ * the SJWK header (alg, kid), the manifest signature or the JWS payload; the
+ * SJWK signature, payload and signing key are decoded in place within the
+ * header. Decoding shrinks base64 by a quarter, so the managed client, which
+ * passes its persistence scratch (more than AZ_IOT_SU_REQUEST_BUFFER_SIZE),
+ * verifies any signature that fits the request buffer unless its SJWK header
+ * alone exceeds a quarter of that buffer. az_iot_su_parse_update_request()
+ * uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack. Values that do not fit are
  * logged as too large, not as invalid.
  */
 
@@ -302,70 +306,129 @@ typedef struct
   int32_t need;
 } su_scratch;
 
+/** @brief 6-bit value of base64url (or, if @p std, standard base64) character @p c; -1 if none. */
+static int32_t b64_value(uint8_t c, bool std)
+{
+  if (c >= 'A' && c <= 'Z')
+  {
+    return c - 'A';
+  }
+  if (c >= 'a' && c <= 'z')
+  {
+    return c - 'a' + 26;
+  }
+  if (c >= '0' && c <= '9')
+  {
+    return c - '0' + 52;
+  }
+  if (c == (std ? '+' : '-'))
+  {
+    return 62;
+  }
+  if (c == (std ? '/' : '_'))
+  {
+    return 63;
+  }
+  return -1;
+}
+
 /**
- * @brief Decode base64url @p src into the free part of @p s and claim the bytes written.
+ * @brief Decode unpadded base64url, or padded standard base64, from @p src into @p dst.
  *
- * @param s         Scratch.
+ * Writes never pass the input read so far, so @p dst may be az_span_ptr(@p src) (in place).
+ *
  * @param src       Encoded text.
- * @param allow_std Also accept standard (padded) base64: the service encodes the signing-key
- *                  modulus that way.
- * @param out       The decoded bytes, in @p s.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit; AZ_IOT_ERR_INVALID_ARG if
- *         @p src is empty or not valid.
+ * @param allow_std Also accept standard base64: the service encodes the signing-key modulus that
+ *                  way. Chosen when @p src has '+', '/' or '='.
+ * @param dst       Destination of at least (size of @p src) * 3 / 4 bytes.
+ * @param out_len   Bytes written.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG if @p src is empty or malformed.
+ */
+static az_iot_result b64_decode(az_span src, bool allow_std, uint8_t* dst, int32_t* out_len)
+{
+  const uint8_t* p = az_span_ptr(src);
+  int32_t len = az_span_size(src);
+  bool std = false;
+  for (int32_t i = 0; allow_std && i < len; ++i)
+  {
+    std = std || p[i] == '+' || p[i] == '/' || p[i] == '=';
+  }
+  if (std)
+  {
+    if (len % 4 != 0)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    for (int32_t pad = 0; pad < 2 && len > 0 && p[len - 1] == '='; ++pad)
+    {
+      --len;
+    }
+  }
+  if (len <= 0 || len % 4 == 1)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  uint32_t acc = 0;
+  int32_t bits = 0;
+  int32_t w = 0;
+  for (int32_t i = 0; i < len; ++i)
+  {
+    int32_t v = b64_value(p[i], std);
+    if (v < 0)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    acc = (acc << 6) | (uint32_t)v;
+    bits += 6;
+    if (bits >= 8)
+    {
+      bits -= 8;
+      dst[w++] = (uint8_t)(acc >> bits);
+      acc &= (1u << bits) - 1u;
+    }
+  }
+  *out_len = w;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Decode @p src (see b64_decode()) into the free part of @p s and claim the bytes written.
+ *
+ * @return AZ_IOT_OK with @p out in @p s; AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit;
+ *         AZ_IOT_ERR_INVALID_ARG if @p src is empty or malformed.
  */
 static az_iot_result scratch_b64_decode(su_scratch* s, az_span src, bool allow_std, az_span* out)
 {
   int32_t len = az_span_size(src);
-  /* Exact for unpadded base64url; an upper bound for padded base64. */
   s->need = (len / 4) * 3 + ((len % 4) * 3) / 4;
-  if (s->need <= 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
   if (s->need > s->cap - s->used)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  az_span dst = az_span_create(s->buf + s->used, s->cap - s->used);
   int32_t written = 0;
-  /* Check the alphabet first: azure-sdk-for-c shifts a negative value on a
-   * character outside it. */
-  bool std = false;
-  const uint8_t* p = az_span_ptr(src);
-  for (int32_t i = 0; i < len; ++i)
-  {
-    uint8_t c = p[i];
-    bool common = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-    if (common || c == '-' || c == '_')
-    {
-      continue;
-    }
-    /* Standard base64: '+', '/', and up to two trailing '='. */
-    if (!allow_std || (c != '+' && c != '/' && !(c == '=' && i >= len - 2 && p[len - 1] == '=')))
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    std = true;
-  }
-  if (std)
-  {
-    for (int32_t i = 0; i < len; ++i)
-    {
-      if (p[i] == '-' || p[i] == '_')
-      {
-        return AZ_IOT_ERR_INVALID_ARG;
-      }
-    }
-  }
-  az_result r = std
-      ? (len % 4 == 0 ? az_base64_decode(dst, src, &written) : AZ_ERROR_UNEXPECTED_END)
-      : az_base64_url_decode(dst, src, &written);
-  if (az_result_failed(r) || written <= 0)
+  if (b64_decode(src, allow_std, s->buf + s->used, &written) != AZ_IOT_OK)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   *out = az_span_create(s->buf + s->used, written);
   s->used += written;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Decode writable @p src (see b64_decode()) in place.
+ *
+ * @return AZ_IOT_OK with @p out at the start of @p src; AZ_IOT_ERR_INVALID_ARG if empty or
+ *         malformed.
+ */
+static az_iot_result b64_decode_in_place(az_span src, bool allow_std, az_span* out)
+{
+  int32_t written = 0;
+  if (b64_decode(src, allow_std, az_span_ptr(src), &written) != AZ_IOT_OK)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out = az_span_create(az_span_ptr(src), written);
   return AZ_IOT_OK;
 }
 
@@ -639,7 +702,8 @@ static int32_t verify_manifest_core(
     SU_VERIFY_FAIL("step 2: sjwk is not a valid 3-part token");
   }
 
-  /* Steps 2 and 3 release their scratch; step 4 keeps the signing key. */
+  /* Only the SJWK header is decoded beside the outer header; the SJWK signature
+   * and payload, and the signing key in it, are decoded in place within it. */
   int32_t after_hdr = s.used;
   const az_iot_su_root_key* root = NULL;
   {
@@ -679,8 +743,7 @@ static int32_t verify_manifest_core(
   /* 3. Verify the SJWK signature with the resolved root key. */
   {
     az_span s_sig;
-    SU_VERIFY_DECODED(
-        scratch_b64_decode(&s, s_sig_b64, false, &s_sig), &s, "step 3: sjwk signature");
+    SU_VERIFY_DECODED(b64_decode_in_place(s_sig_b64, false, &s_sig), &s, "step 3: sjwk signature");
     if (crypto->verify_rs256(
             crypto,
             root->modulus,
@@ -696,18 +759,17 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 3: sjwk signature does not verify against the root key");
     }
   }
-  s.used = after_hdr;
 
   /* 4. Parse the now-trusted SJWK payload as a JWK → signing key (n, e). The
-   *    modulus may be standard base64; the payload is unescaped in place, after
-   *    `e` is read. */
+   *    modulus may be standard base64; it is unescaped in place, after `e` is
+   *    copied out. The SJWK's signed bytes are no longer needed. */
   az_span n_raw;
   az_span e_raw;
+  char e_b64[64];
   {
     az_span spl;
-    SU_VERIFY_DECODED(scratch_b64_decode(&s, s_pl_b64, false, &spl), &s, "step 4: sjwk payload");
+    SU_VERIFY_DECODED(b64_decode_in_place(s_pl_b64, false, &spl), &s, "step 4: sjwk payload");
 
-    char e_b64[64];
     az_span e_field = AZ_SPAN_EMPTY;
     az_span n_field = AZ_SPAN_EMPTY;
     az_iot_result r
@@ -721,13 +783,12 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 4: signing JWK is missing modulus (n) or exponent (e)");
     }
     SU_VERIFY_DECODED(
-        scratch_b64_decode(&s, n_field, true, &n_raw), &s, "step 4: signing JWK modulus (n)");
+        b64_decode_in_place(n_field, true, &n_raw), &s, "step 4: signing JWK modulus (n)");
     SU_VERIFY_DECODED(
-        scratch_b64_decode(&s, e_field, true, &e_raw), &s, "step 4: signing JWK exponent (e)");
+        b64_decode_in_place(e_field, true, &e_raw), &s, "step 4: signing JWK exponent (e)");
   }
 
   /* 5. Verify the manifest JWS signature with the trusted signing key. */
-  int32_t after_key = s.used;
   {
     az_span m_sig;
     SU_VERIFY_DECODED(
@@ -747,7 +808,7 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 5: manifest signature does not verify against the signing key");
     }
   }
-  s.used = after_key;
+  s.used = after_hdr;
 
   /* 6. Bind the signed manifest to THIS deployment: the manifest JWS payload
    *    carries SHA-256(manifest body); recompute and compare. */
@@ -765,12 +826,9 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 6: manifest JWS payload has no sha256");
     }
 
-    uint8_t expected[32];
-    int32_t exp_written = 0;
-    if (r != AZ_IOT_OK
-        || az_result_failed(az_base64_decode(
-            az_span_create(expected, (int32_t)sizeof(expected)), hash_field, &exp_written))
-        || exp_written != 32)
+    az_span expected = AZ_SPAN_EMPTY;
+    if (r != AZ_IOT_OK || b64_decode_in_place(hash_field, true, &expected) != AZ_IOT_OK
+        || az_span_size(expected) != 32)
     {
       SU_VERIFY_FAIL("step 6: manifest sha256 field is not a 32-byte base64 hash");
     }
@@ -781,7 +839,7 @@ static int32_t verify_manifest_core(
     {
       SU_VERIFY_FAIL("step 6: SHA-256 failed over the manifest body");
     }
-    if (!az_span_is_content_equal(AZ_SPAN_FROM_BUFFER(expected), AZ_SPAN_FROM_BUFFER(actual)))
+    if (!az_span_is_content_equal(expected, AZ_SPAN_FROM_BUFFER(actual)))
     {
       SU_VERIFY_FAIL("step 6: computed manifest SHA-256 does not match the signed hash");
     }

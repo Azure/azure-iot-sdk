@@ -4676,6 +4676,27 @@ static void large_signature_is_verified(void** state)
       AZ_IOT_OK);
 }
 
+/* An offer near AZ_IOT_SU_REQUEST_BUFFER_SIZE whose size is almost all the
+ * signing JWK, nested in the SJWK in the outer header. Decoding the JWK beside
+ * the outer header would need more than the client's scratch. */
+static void near_limit_nested_signing_key_is_verified(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  size_t jwk_pad = (AZ_IOT_SU_REQUEST_BUFFER_SIZE - 1500) * 9 / 16;
+  build_jws_ex(jws, (int32_t)sizeof(jws), jwk_pad, 0, false);
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "near-limit", "1.1", jws);
+  assert_true(n > AZ_IOT_SU_REQUEST_BUFFER_SIZE * 7 / 8 && (size_t)n < sizeof(patch));
+
+  inject_patch(fx, patch);
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+}
+
 /* A signature part that does not fit the scratch is logged as too large; a
  * malformed one as not valid. */
 static void oversized_signature_is_reported_as_too_large(void** state)
@@ -6347,6 +6368,7 @@ int main(void)
         manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_jws_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(large_signature_is_verified, setup, teardown),
+    cmocka_unit_test_setup_teardown(near_limit_nested_signing_key_is_verified, setup, teardown),
     cmocka_unit_test_setup_teardown(oversized_signature_is_reported_as_too_large, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -295,7 +295,7 @@ void app_main(void)
   dp.installed_update_id.version = SU_UPDATE_VERSION;
 
   static AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
-  /* ~38 KB: too large for the 12 KB main task stack. */
+  /* ~22 KB: too large for the 12 KB main task stack. */
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;

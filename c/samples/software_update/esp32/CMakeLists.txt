@@ -18,4 +18,11 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# Applies to the SDK component and the app alike, as their struct layouts must
+# match. Halves the 16 KiB default: a one-file offer is about 5 KiB, and NVS
+# (partitions*.csv) must hold two generations of the largest checkpoint
+# (AZ_IOT_SU_STATE_BLOB_MAX_SIZE, about 8.6 KiB) while one replaces the other.
+idf_build_set_property(COMPILE_DEFINITIONS "AZ_IOT_SU_REQUEST_BUFFER_SIZE=8192" APPEND)
+
 project(su_esp32)
