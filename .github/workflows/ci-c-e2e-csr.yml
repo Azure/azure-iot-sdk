@@ -244,6 +244,13 @@ jobs:
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
           # Trusted CA for the DPS/hub SERVER TLS validation = the system bundle.
           Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+          # A self-signed certificate DPS and the hub refuse (CONNACK 5): the
+          # certificate fallback test offers it before the real one.
+          $rejectedCert = Join-Path $dir "rejected-cert.pem"
+          $rejectedKey  = Join-Path $dir "rejected-key.pem"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes `
+            -keyout $rejectedKey -out $rejectedCert -days 1 -subj "/CN=$regId" 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "openssl could not create the rejected certificate" }
 
           # Map onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
@@ -251,6 +258,8 @@ jobs:
           $env:AZ_IOT_CLIENT_CERT         = $certPath
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
+          $env:AZ_IOT_REJECTED_CLIENT_CERT = $rejectedCert
+          $env:AZ_IOT_REJECTED_CLIENT_KEY  = $rejectedKey
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
           # SAS suite: the symmetric-key group (provisioned, or the shared one),
           # linked to the certificate policy.
