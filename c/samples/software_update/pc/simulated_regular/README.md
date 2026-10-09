@@ -163,7 +163,7 @@ SU_SIM_REBOOT=1 ./az_iot_sample_simulated_regular
 
 ### Root keys
 
-Software updates verifies the manifest's JWS signature against one or more RSA root public
+The software updates client verifies the manifest's JWS signature against one or more RSA root public
 keys. The sample calls `az_iot_su_microsoft_root_keys()` — Microsoft's published
 Software updates production roots, compiled into the SDK (`src/features/su/su_root_keys_microsoft.c`)
 — so manifests signed under those roots can be verified. A manifest signed
