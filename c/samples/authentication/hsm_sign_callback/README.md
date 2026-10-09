@@ -19,6 +19,11 @@ implements `sign()`, and the MQTT adapter's TLS layer drives the handshake signa
 
 None. The sample does not connect.
 
+## Configure
+
+Nothing to configure: the sample reads no environment variables. The DPS ID scope and registration
+ID in `main()` are placeholders; the stand-in adapter fails the first connect after the signature.
+
 ## Build and run
 
 Build prerequisites (toolchain, CMake, OpenSSL) are listed in the
@@ -53,6 +58,14 @@ Exit code 0 when the adapter called `sign()` exactly once; otherwise 1. `open()`
 [hsm_sign_callback] sign() produced 32 bytes without the key ever leaving the element
 [hsm_sign_callback] open() returned AZ_IOT_ERR_NOT_SUPPORTED after 1 sign() call(s)
 ```
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| `open() returned AZ_IOT_ERR_CREDENTIAL_INCOMPLETE after 0 sign() call(s)`, exit 1 | The SDK saw no `sign()` hook: `.sign` is unset, or the provider vtable version is below 2. With no key in `load()`, the credential is then incomplete. |
+| `[hsm_sign_callback] sign() failed: <result>`, exit 1 | `sign()` returned an error, e.g. `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the signature buffer is too small. |
+| `AZ_IOT_ERR_NOT_SUPPORTED` with the Paho adapter in your application | Paho cannot use a `sign()`-only credential; use [`hsm_pkcs11`](../hsm_pkcs11/README.md) or your own adapter. |
 
 ## Where to look in `main.c`
 

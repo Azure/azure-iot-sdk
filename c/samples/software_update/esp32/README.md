@@ -39,28 +39,41 @@ sequenceDiagram
 - Optional [production security profile](#production-security-profile-optional),
   off by default.
 
-## Service Requirements
+### How the OTA flow works
+
+| Platform hook | ESP32 implementation |
+|---|---|
+| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition |
+| `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image |
+| `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
+| `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
+| `apply` | No-op; the new image is already running |
+| `restore` | Rollback to the running partition |
+| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot) |
+
+Once connected to its hub, the new image calls `su_esp32_ota_mark_valid()`
+(`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the
+bootloader returns to the previous slot (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
+
+### Update-check route
+
+A device that has never connected to its hub has no device record, so it asks on
+the onboarding route (`az_iot_su_client_request_onboarding_update()`). After its
+first hub connection it records that in NVS (namespace `su_app`, key `registered`)
+and asks on the regular route (`az_iot_su_client_request_update()`) from then on.
+`idf.py erase-flash` returns it to the onboarding route.
+
+An update is offered only on the route matching its job type. A check not
+answered within half the poll interval (at most 60 s) is abandoned and asked again
+at the next poll. No check is made while a deployment is in flight.
+
+## Service requirements
 - Azure Device Provisioning service, with an X.509 enrollment for the device and a
   linked Azure IoT Hub.
 - Azure Device Update, in the DPS-fronted model the [PC samples](../pc/simulated_onboarding/README.md)
   use.
 
-## Sample Termination
-
-It runs until powered off, like the agent it stands in for. It reboots
-(`esp_restart()`) when:
-
-| Cause | Log line |
-|---|---|
-| An update was installed; boots the new image | `rebooting into the new firmware to apply the update` |
-| Wi-Fi fails after 10 retries | `Wi-Fi connect failed; rebooting` |
-| No hub connection within about 120 s (twice `AZ_IOT_DPS_HOLD_TIMEOUT_MS`), or provisioning faulted | `could not connect; rebooting` |
-| The connection faults while no update is in flight | `connection faulted; rebooting` |
-| An SDK call fails at startup | `<call> failed` |
-
----
-
-## Configure the sample
+## Configure
 
 ### Device identity
 
@@ -109,8 +122,11 @@ Change them in [`main/app_main.c`](main/app_main.c).
 | `SU_UPDATE_NAME` | `ESP32-SU` |
 | `SU_UPDATE_VERSION` | `1.0.0` |
 
+### Root keys
 
----
+Manifests are verified against `az_iot_su_microsoft_root_keys()`, Microsoft's
+production software updates roots compiled into the SDK. See
+[Root keys](../pc/simulated_onboarding/README.md#root-keys) in the PC sample.
 
 ## Build and run
 
@@ -139,23 +155,9 @@ idf.py menuconfig        # settings above
 idf.py build flash monitor
 ```
 
-Add `-p <PORT>` to `flash` / `monitor` when more than one serial port is present.
-Leave the monitor running. Expected output (other log lines omitted):
+Leave the monitor running; see [Expected output](#expected-output).
 
-```
-I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.0)
-I (...) wifi: connecting to SSID 'my-ssid'
-I (...) wifi: got IP: 192.168.1.23
-I (...) su_esp32: checking for updates on the onboarding route
-I (...) su_esp32: connection: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_CONNECTING (reason=0x00000000)
-I (...) su_esp32: connection: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (reason=0x00000000)
-I (...) su_esp32: connected; reporting Espressif/ESP32-WROOM installedUpdateId=1.0.0
-I (...) su_esp32: checking for updates every 60 s
-```
-
----
-
-## Deploy an update
+### Deploy an update
 
 1. Raise `SU_UPDATE_VERSION` in [`main/su_version.h`](main/su_version.h).
 2. `idf.py build`, producing `build/su_esp32.bin`. For a device running the
@@ -167,23 +169,9 @@ I (...) su_esp32: checking for updates every 60 s
    `manufacturer=Espressif`, `model=ESP32-WROOM`, and deploy it to the device.
 4. Do not flash this image. The device finds the deployment at its next check
    (within `SU_POLL_INTERVAL_S`), downloads and installs it, reboots, and reports
-   the new version:
+   the new version (see [Expected output](#expected-output)).
 
-```
-I (...) su_ota: downloading <size> bytes -> partition 'ota_1' @0x001f0000
-I (...) su_ota: download complete: <size> bytes written
-I (...) su_ota: install step 0 complete; reboot required to apply
-I (...) su_esp32: rebooting into the new firmware to apply the update
-...
-I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.1)
-I (...) su_esp32: resumed persisted workflow at state: <state>
-I (...) su_ota: image confirmed valid; rollback cancelled
-```
-
-
----
-
-## Production security profile (optional)
+### Production security profile (optional)
 
 The default build enables no eFuse-burning feature and runs on any ESP32 chip
 revision. For production, layer these opt-in overlays on top of
@@ -282,9 +270,73 @@ v2, `idf.py flash` includes the bootloader (`CONFIG_SECURE_BOOT_FLASH_BOOTLOADER
 The profile follows ESP-IDF's
 [security guide](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/security/security.html).
 
----
+## How it ends
 
-## Additional Details
+It runs until powered off, like the agent it stands in for. It reboots
+(`esp_restart()`) when:
+
+| Cause | Log line |
+|---|---|
+| An update was installed; boots the new image | `rebooting into the new firmware to apply the update` |
+| Wi-Fi fails after 10 retries | `Wi-Fi connect failed; rebooting` |
+| No hub connection within about 120 s (twice `AZ_IOT_DPS_HOLD_TIMEOUT_MS`), or provisioning faulted | `could not connect; rebooting` |
+| The connection faults while no update is in flight | `connection faulted; rebooting` |
+| An SDK call fails at startup | `<call> failed` |
+
+## Expected output
+
+At startup (other log lines omitted):
+
+```
+I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.0)
+I (...) wifi: connecting to SSID 'my-ssid'
+I (...) wifi: got IP: 192.168.1.23
+I (...) su_esp32: checking for updates on the onboarding route
+I (...) su_esp32: connection: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_CONNECTING (reason=0x00000000)
+I (...) su_esp32: connection: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (reason=0x00000000)
+I (...) su_esp32: connected; reporting Espressif/ESP32-WROOM installedUpdateId=1.0.0
+I (...) su_esp32: checking for updates every 60 s
+```
+
+After an update is deployed: download, install, reboot, and the new version reported.
+
+```
+I (...) su_ota: downloading <size> bytes -> partition 'ota_1' @0x001f0000
+I (...) su_ota: download complete: <size> bytes written
+I (...) su_ota: install step 0 complete; reboot required to apply
+I (...) su_esp32: rebooting into the new firmware to apply the update
+...
+I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.1)
+I (...) su_esp32: resumed persisted workflow at state: <state>
+I (...) su_ota: image confirmed valid; rollback cancelled
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| `retrying Wi-Fi connect (n/10)`, then `Wi-Fi connect failed; rebooting` | Wrong `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`, or not a WPA2 network. |
+| `could not connect; rebooting` | DPS refused the device: certificate CN differs from `SU_DPS_REGISTRATION_ID`, no matching enrollment, or the placeholder certificate is still embedded. |
+| Connected, but no update is ever offered | Compatibility mismatch (`Espressif` / `ESP32-WROOM`), wrong route for the job type, or the update was deployed through the IoT-Hub-based model. |
+| `su_ota: http status ...` or `http open failed` | Download URL unreachable, or TLS to the storage host failed. |
+| `su_ota: esp_ota_write failed` | Image larger than the 1856 KB OTA slot. |
+| `NVS write failing; update reboot deferred` | NVS full or failing; the reboot waits until the workflow state is stored. |
+| New image boots, then the old version comes back | The new image crashed or never connected, so the bootloader rolled back. |
+
+The SDK logs at `INFO`; change the level in `app_main()` for more detail.
+
+## Where to look in `main/app_main.c`
+
+| What | Code |
+|------|------|
+| Embedded certificates | `az_iot_cert_embedded_init()` |
+| esp-mqtt transports (3.1.1 + 5) | `az_iot_esp_mqtt_factory_create_v3_1_1()`, `az_iot_esp_mqtt_factory_create_v5()` |
+| Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
+| OTA hooks, root keys | `su_esp32_ota_hooks()`, `az_iot_su_microsoft_root_keys()` |
+| Compatibility properties | `dp.manufacturer`, `dp.model` |
+| Resume after the OTA reboot | `az_iot_su_client_resume()` |
+| Route selection | `app_request_check()`, `app_is_registered()` |
+| Poll loop and reboot | the `for (;;)` loop at the end of `app_main()` |
 
 ### Layout
 
@@ -315,63 +367,3 @@ samples/software_update/esp32/
 SHA-256 over PSA Crypto) and [`adapters/su/esp32`](../../../adapters/su/esp32/)
 (OTA platform hooks).
 
-### How the OTA flow works
-
-| Platform hook | ESP32 implementation |
-|---|---|
-| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition |
-| `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image |
-| `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
-| `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
-| `apply` | No-op; the new image is already running |
-| `restore` | Rollback to the running partition |
-| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot) |
-
-Once connected to its hub, the new image calls `su_esp32_ota_mark_valid()`
-(`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the
-bootloader returns to the previous slot (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
-
-### Update-check route
-
-A device that has never connected to its hub has no device record, so it asks on
-the onboarding route (`az_iot_su_client_request_onboarding_update()`). After its
-first hub connection it records that in NVS (namespace `su_app`, key `registered`)
-and asks on the regular route (`az_iot_su_client_request_update()`) from then on.
-`idf.py erase-flash` returns it to the onboarding route.
-
-An update is offered only on the route matching its job type. A check not
-answered within half the poll interval (at most 60 s) is abandoned and asked again
-at the next poll. No check is made while a deployment is in flight.
-
-### Root keys
-
-Manifests are verified against `az_iot_su_microsoft_root_keys()`, Microsoft's
-production software updates roots compiled into the SDK. See
-[Root keys](../pc/simulated_onboarding/README.md#root-keys) in the PC sample.
-
-### Troubleshooting
-
-| Symptom | Likely cause |
-|---------|--------------|
-| `retrying Wi-Fi connect (n/10)`, then `Wi-Fi connect failed; rebooting` | Wrong `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`, or not a WPA2 network. |
-| `could not connect; rebooting` | DPS refused the device: certificate CN differs from `SU_DPS_REGISTRATION_ID`, no matching enrollment, or the placeholder certificate is still embedded. |
-| Connected, but no update is ever offered | Compatibility mismatch (`Espressif` / `ESP32-WROOM`), wrong route for the job type, or the update was deployed through the IoT-Hub-based model. |
-| `su_ota: http status ...` or `http open failed` | Download URL unreachable, or TLS to the storage host failed. |
-| `su_ota: esp_ota_write failed` | Image larger than the 1856 KB OTA slot. |
-| `NVS write failing; update reboot deferred` | NVS full or failing; the reboot waits until the workflow state is stored. |
-| New image boots, then the old version comes back | The new image crashed or never connected, so the bootloader rolled back. |
-
-The SDK logs at `INFO`; change the level in `app_main()` for more detail.
-
-### Where to look in `main/app_main.c`
-
-| What | Code |
-|------|------|
-| Embedded certificates | `az_iot_cert_embedded_init()` |
-| esp-mqtt transports (3.1.1 + 5) | `az_iot_esp_mqtt_factory_create_v3_1_1()`, `az_iot_esp_mqtt_factory_create_v5()` |
-| Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
-| OTA hooks, root keys | `su_esp32_ota_hooks()`, `az_iot_su_microsoft_root_keys()` |
-| Compatibility properties | `dp.manufacturer`, `dp.model` |
-| Resume after the OTA reboot | `az_iot_su_client_resume()` |
-| Route selection | `app_request_check()`, `app_is_registered()` |
-| Poll loop and reboot | the `for (;;)` loop at the end of `app_main()` |

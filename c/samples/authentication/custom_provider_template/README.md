@@ -22,6 +22,12 @@ does not connect: `main()` calls the provider interface so the wiring compiles a
 
 None. The sample does not connect.
 
+## Configure
+
+Nothing to configure: the sample reads no environment variables. The paths in `main()`
+(`bootstrap_cert.pem`, `bootstrap_key.pem`, `trusted_ca.pem`) are placeholders that the run never
+opens; replace them with your provider's own configuration.
+
 ## Build and run
 
 Build prerequisites (toolchain, CMake, OpenSSL) are listed in the
@@ -55,6 +61,13 @@ Exit code 0.
 [custom] get_csr produced: PLACEHOLDER-BASE64-DER-CSR
 [custom] persisting issued chain: 1 cert(s)
 ```
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| Exit 1 with no output | `get_csr()` failed. In the template only an allocation failure does that; once you fill it in, check what `my_get_csr()` returns. |
+| Build error in `main.c` after an SDK update | The provider interface changed; compare `s_my_vtable` with [az_iot_certificate_provider.h](../../../inc/azure/iot/az_iot_certificate_provider.h). The sample is always built to catch this. |
 
 ## Where to look in `main.c`
 
