@@ -339,12 +339,12 @@ extern "C"
        * 0 selects AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS. */
       uint32_t token_lifetime_seconds;
       /**
-       * @brief When to renew the hub session's token, as a percent of
+       * @brief When to renew the session's token, as a percent of
        * token_lifetime_seconds for key-signed tokens, or of
        * the lifetime_seconds given to az_iot_connection_client_update_sas_token()
        * for user-provided ones. 0
        * selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects values
-       * above 99. A provisioning session is not renewed.
+       * above 99.
        *
        * MQTT 3.1.1 cannot re-authenticate a live session, so renewal
        * disconnects and reconnects at once, with or without a
@@ -352,7 +352,14 @@ extern "C"
        * CONNECTED, all with az_iot_connection_state_event::is_credential_renewal
        * set and reason AZ_IOT_OK. The session resumes per session_continuity;
        * publishes awaiting a PUBACK complete with AZ_IOT_ERR_NOT_CONNECTED. A
-       * failed reconnect is reported and retried as any other failure. A
+       * failed reconnect is reported and retried as any other failure.
+       *
+       * A provisioning session kept open without a registration (provision_only,
+       * or held by a feature client) is renewed the same way: DISCONNECTING,
+       * SETTING_UP, CONNECTING, then CONNECTED, all flagged, reason AZ_IOT_OK;
+       * its users see DISCONNECTING as for any loss of the session. A
+       * registration in progress is not interrupted. A failed reconnect is
+       * handled as that session's other failures. A
        * user-provided token is asked for first (is_renewal), while the session
        * continues: the renewal starts once it is supplied. If none is there
        * when the current token expires, the session ends and the reconnect
@@ -989,7 +996,8 @@ extern "C"
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
     /** @brief The transition is a planned SAS token renewal, not a failure:
-     * the hub's RETRY_PENDING through CONNECTED (see
+     * the hub's RETRY_PENDING, or the provisioning session's DISCONNECTING,
+     * through CONNECTED (see
      * az_iot_auth::sas::renewal_percent). Only where renewal needs a reconnect
      * (MQTT); a transport that re-authenticates in session has no transition
      * to flag. */
@@ -1732,14 +1740,15 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
-    /* Hub SAS token renewal: when the current token is due (monotonic ms, and
-     * Unix seconds for a monotonic clock that stops in suspend; 0: none), the
-     * bound on the wait for the renewal disconnect (0: not waiting), and
-     * whether a renewal is in progress. */
-    uint64_t sas_token_renewal_due_ms;
-    uint64_t sas_token_renewal_due_unix_seconds;
+    /* SAS token renewal per scope: when the current token is due (monotonic
+     * ms, and Unix seconds for a monotonic clock that stops in suspend; 0:
+     * none) and whether a renewal is in progress. The disconnect deadline is
+     * the hub's: the bound on the wait for its renewal disconnect (0: not
+     * waiting). */
+    uint64_t sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_renewal_disconnect_deadline_ms;
-    bool sas_token_renewal_in_progress;
+    bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
     /* User-provided SAS token request per scope; request_id 0: none. The
      * callback is called from do_work() (asked); ready once the token is in
      * the token area (see sas_token_holder). */
@@ -1747,7 +1756,7 @@ extern "C"
     {
       uint32_t request_id;
       bool asked;
-      bool for_renewal; /* a hub renewal: the session stays up meanwhile */
+      bool for_renewal; /* a renewal: the session stays up meanwhile */
       bool held; /* supplied unasked: kept for the next attempt */
       bool ready;
       size_t token_len;
@@ -1756,13 +1765,13 @@ extern "C"
       uint64_t delivered_unix_seconds; /* the same in Unix time; 0: unknown */
       uint64_t deadline_ms; /* bound on the wait (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
-    /* When the hub's user-provided token expires: monotonic ms, and Unix
+    /* When each scope's user-provided token expires: monotonic ms, and Unix
      * seconds for a monotonic clock that stops in suspend; 0: none. */
-    uint64_t sas_token_expiry_ms;
-    uint64_t sas_token_expiry_unix_seconds;
-    /* The hub's next token request is not asked before this (monotonic ms):
-     * a renewal request that could not be asked. 0: none. */
-    uint64_t sas_token_ask_after_ms;
+    uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Each scope's next token request is not asked before this (monotonic
+     * ms): a renewal request that could not be asked. 0: none. */
+    uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint32_t sas_token_last_request_id;
     /* Bytes a delivered token may use now, terminator excluded. */
     size_t sas_token_capacity;
@@ -1912,8 +1921,9 @@ extern "C"
    * @brief Supplies a SAS token for @p scope, from az_iot_auth::sas::on_sas_token_required
    * or at any other time.
    *
-   * - A connect attempt or hub renewal waiting for one takes it.
-   * - Otherwise, for a hub session connected with a user-provided token:
+   * - A connect attempt or renewal waiting for one takes it.
+   * - Otherwise, for a session connected with a user-provided token (the hub,
+   *   or a provisioning session that is not registering):
    *   renews the session with it now. MQTT 3.1.1 cannot re-authenticate a live
    *   session, so the session disconnects and reconnects at once, as for any
    *   renewal (see az_iot_auth::sas::renewal_percent).

@@ -328,6 +328,26 @@ void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value)
   writer_append_decimal(writer, value, false);
 }
 
+void az_iot_span_writer_append_u64(az_iot_span_writer* writer, uint64_t value)
+{
+  uint8_t digits[20];
+  int32_t count = 0;
+  do
+  {
+    digits[count++] = (uint8_t)('0' + (value % 10u));
+    value /= 10u;
+  } while (value != 0u);
+  uint8_t* cursor = writer_reserve(writer, count);
+  if (cursor == NULL)
+  {
+    return;
+  }
+  while (count > 0)
+  {
+    *cursor++ = digits[--count];
+  }
+}
+
 void az_iot_span_writer_append_u32_padded(
     az_iot_span_writer* writer,
     uint32_t value,

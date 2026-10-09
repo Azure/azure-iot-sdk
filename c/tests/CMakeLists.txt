@@ -468,6 +468,12 @@ foreach(_backend openssl mbedtls)
         string(TOUPPER ${_backend} _backend_upper)
         target_compile_definitions(az_iot_tests_connection_sas_${_backend} PRIVATE
             AZ_IOT_TEST_CRYPTO_${_backend_upper})
+
+        # SAS token helpers over this backend.
+        az_iot_add_cmocka_test(az_iot_tests_sas_token_${_backend} unit/sas_token_test.c)
+        target_link_libraries(az_iot_tests_sas_token_${_backend} PRIVATE az_iot_crypto_${_backend})
+        target_compile_definitions(az_iot_tests_sas_token_${_backend} PRIVATE
+            AZ_IOT_TEST_CRYPTO_${_backend_upper})
     endif()
 endforeach()
 

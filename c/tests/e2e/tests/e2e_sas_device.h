@@ -27,6 +27,8 @@ typedef struct
   az_iot_auth_source dps_source;
   az_iot_auth_source hub_source;
   int hub_renewals; /**< Hub CONNECTED events flagged is_credential_renewal. */
+  int dps_renewals; /**< DPS CONNECTED events flagged is_credential_renewal. */
+  int dps_losses; /**< DPS DISCONNECTING events not flagged is_credential_renewal. */
   az_iot_connection_client* client; /**< The run's client while it exists; else NULL. */
 } e2e_sas_run;
 
@@ -53,6 +55,14 @@ void e2e_sas_connect_renew_and_send(
     e2e_sas_run* run,
     const az_iot_connection_client_options* copts,
     const char* label,
+    int renewals);
+
+/** @brief Opens a provision_only client with @p copts and holds its
+ * provisioning session until it has been renewed @p renewals times, with no
+ * other loss of the session, then closes it. Fills @p run. */
+void e2e_sas_hold_dps_and_renew(
+    e2e_sas_run* run,
+    const az_iot_connection_client_options* copts,
     int renewals);
 
 #endif /* E2E_SAS_DEVICE_H */
