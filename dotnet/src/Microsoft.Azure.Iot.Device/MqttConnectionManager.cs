@@ -185,6 +185,31 @@ namespace Microsoft.Azure.Iot.Device
 
             ArgumentNullException.ThrowIfNull(connect);
 
+            // Hold the disconnected-event lock for the whole initial connect. Each failed attempt raises the
+            // "Disconnected" callback, which would otherwise start a second retry loop alongside this one. Queued
+            // callbacks re-check their guards once this method completes and stand down (or reconnect, if the
+            // connection dropped right after being established).
+            await _disconnectedEventLock.WaitAsync(cancellationToken);
+
+            try
+            {
+                return await ConnectWhileHoldingEventLockAsync(connect, cancellationToken);
+            }
+            finally
+            {
+                try
+                {
+                    _disconnectedEventLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Dispose raced with this connect; there is nothing left to release.
+                }
+            }
+        }
+
+        private async Task<MqttConnectAck> ConnectWhileHoldingEventLockAsync(MqttConnect connect, CancellationToken cancellationToken)
+        {
             _mostRecentConnect = connect;
             _isClosing = false;
 
