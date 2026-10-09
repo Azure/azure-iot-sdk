@@ -136,7 +136,7 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 
 ### Simulation knobs
 
-All default off, except `AZ_IOT_SU_POLL_INTERVAL_S`. Set them in the shell that runs the sample:
+Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MISMATCH`, `SU_SIM_REBOOT`, `SU_SIM_DELAY_MS` and `AZ_IOT_PAHO_TRACE` are off by default; the other defaults are in the table:
 
 | Variable | Effect |
 |---|---|
