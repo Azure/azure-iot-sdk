@@ -4603,23 +4603,29 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       if (evt->status != AZ_IOT_OK)
       {
+        /* protocol_code 0 is "not reported": printed as "none" (precision 0 prints no digit). */
+        bool const has_code = evt->protocol_code != 0;
         if (matched)
         {
           AZ_IOT_LOG_WARNF(
               AZ_IOT_LOG_COMPONENT_CONNECTION,
-              "publish with packet id %u failed (%s, protocol code 0x%02X)",
+              "publish with packet id %u failed (%s, protocol code %s%.*X)",
               (unsigned)evt->packet_id,
               az_iot_result_to_string(evt->status),
+              has_code ? "0x" : "none",
+              has_code ? 2 : 0,
               (unsigned)evt->protocol_code);
         }
         else
         {
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_CONNECTION,
-              "publish with packet id %u failed (%s, protocol code 0x%02X); it had no "
+              "publish with packet id %u failed (%s, protocol code %s%.*X); it had no "
               "completion callback",
               (unsigned)evt->packet_id,
               az_iot_result_to_string(evt->status),
+              has_code ? "0x" : "none",
+              has_code ? 2 : 0,
               (unsigned)evt->protocol_code);
         }
       }

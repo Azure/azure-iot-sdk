@@ -340,8 +340,8 @@ static void a_failed_puback_reaches_the_callback_unchanged(void** state)
   connect_and_init(test);
 
   static const az_iot_result statuses[]
-      = { AZ_IOT_ERR_PUBLISH_REFUSED, AZ_IOT_ERR_BUSY, AZ_IOT_ERR_MQTT };
-  static const int32_t codes[] = { 0x87, 0x97, 0x80 };
+      = { AZ_IOT_ERR_PUBLISH_REFUSED, AZ_IOT_ERR_BUSY, AZ_IOT_ERR_MQTT, AZ_IOT_ERR_MQTT };
+  static const int32_t codes[] = { 0x87, 0x97, 0x80, 0 }; // 0: not reported by the adapter.
   static const uint8_t payload[] = "{}";
   az_iot_telemetry_message message = { .payload = payload, .payload_len = sizeof(payload) - 1 };
   for (size_t i = 0; i < sizeof(statuses) / sizeof(statuses[0]); ++i)
@@ -363,7 +363,14 @@ static void a_failed_puback_reaches_the_callback_unchanged(void** state)
     assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
     az_iot_log_set_global_sink(NULL);
     char code[32];
-    snprintf(code, sizeof(code), "protocol code 0x%02X", (unsigned)codes[i]);
+    if (codes[i] != 0)
+    {
+      snprintf(code, sizeof(code), "protocol code 0x%02X", (unsigned)codes[i]);
+    }
+    else
+    {
+      snprintf(code, sizeof(code), "protocol code none");
+    }
     assert_int_equal(cap.count, 1);
     assert_non_null(strstr(cap.last, code));
     assert_non_null(strstr(cap.last, az_iot_result_to_string(statuses[i])));
