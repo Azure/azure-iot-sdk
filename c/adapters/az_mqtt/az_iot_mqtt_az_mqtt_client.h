@@ -1225,20 +1225,16 @@ static az_iot_mqtt_client* _azm_create(void* factory_context)
   return NULL;
 }
 
-/** @brief The factory: static, returned by every call of _AZM_FACTORY_CREATE(). */
-static az_iot_mqtt_factory _azm_factory;
+/** @brief The factory: initialized when compiled, never written (no destroy: nothing to free);
+ * returned by every call of _AZM_FACTORY_CREATE(). */
+static az_iot_mqtt_factory _azm_factory = {
+  .version = _AZM_VERSION,
+  .create = _azm_create,
+  .factory_ctx = &_azm_factory,
+  .destroy = NULL,
+};
 
-/** @brief az_iot_mqtt_factory.destroy of the static factory: nothing to free. */
-static void _azm_factory_keep(void* factory_ctx) { (void)factory_ctx; }
-
-az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void)
-{
-  _azm_factory.version = _AZM_VERSION;
-  _azm_factory.create = _azm_create;
-  _azm_factory.factory_ctx = &_azm_factory;
-  _azm_factory.destroy = _azm_factory_keep;
-  return &_azm_factory;
-}
+az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void) { return &_azm_factory; }
 #else
 static az_iot_mqtt_client* _azm_create(void* factory_context)
 {

@@ -47,7 +47,11 @@ static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
 {
   assert_non_null(f);
   assert_int_equal(f->version, version);
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0
+  assert_null(f->destroy); // Static: nothing to free.
+#else
   assert_non_null(f->destroy);
+#endif
   az_iot_mqtt_client* c = f->create(f->factory_ctx);
   assert_non_null(c);
   assert_int_equal(c->iface->version, version);
