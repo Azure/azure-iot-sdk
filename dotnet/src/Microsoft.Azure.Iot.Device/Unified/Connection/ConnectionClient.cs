@@ -147,6 +147,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
                 CertificateSigningOperation? pendingCertificateSigningOperation = null;
+                string? requestId = null;
                 try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
@@ -156,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     }
 
                     string status = topicTokens[3];
-                    string requestId = topicTokens[4].Split(RequestId)[1];
+                    requestId = topicTokens[4].Split(RequestId)[1];
 
                     if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
                     {
@@ -183,17 +184,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
                         }
 
-                        // Certificate signing operation has ended successfully, so stop tracking it locally
-                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
-
                         pendingCertificateSigningOperation.SetCompleted(response);
                         return;
                     }
                     else
                     {
-                        // Certificate signing operation has ended in an error, so stop tracking it locally
-                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
-
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
                         pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
                         return;
@@ -214,6 +209,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 }
                 finally
                 {
+                    // Any terminal outcome (success, hub error, unreadable response, or a throwing user callback) ends the operation, so stop tracking it locally
+                    if (requestId != null && pendingCertificateSigningOperation != null && pendingCertificateSigningOperation.Completed.IsCompleted)
+                    {
+                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
+                    }
+
                     await args.AcknowledgeAsync(CancellationToken.None);
                 }
             }

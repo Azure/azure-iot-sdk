@@ -154,7 +154,57 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                     () => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
                 Assert.Same(callbackException, ex);
+                Assert.Equal(0, GetPendingOperationCount(client));
             }
+        }
+
+        [Fact]
+        public async Task CertificateSigningCompleteCallbackThrowingBeforeAcceptanceFailsBothTasksAndClearsCache()
+        {
+            InvalidOperationException callbackException = new("callback failed");
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(certs => throw callbackException);
+            using (client)
+            {
+                Assert.Equal(1, GetPendingOperationCount(client));
+
+                await DeliverCertificateSigningResponseAsync(mqtt, "200", requestId, "{\"certificates\":[\"cert1\"],\"correlationId\":\"someCorrelationId\"}");
+
+                var completedEx = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
+                var acceptedEx = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => operation.Accepted.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
+                Assert.Same(callbackException, completedEx);
+                Assert.Same(callbackException, acceptedEx);
+                Assert.Equal(0, GetPendingOperationCount(client));
+            }
+        }
+
+        [Fact]
+        public async Task CertificateSigningTerminalOutcomesClearPendingOperationCache()
+        {
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(certs => Task.FromResult(GetMockConnectionContext(false).AuthenticationProvider));
+            using (client)
+            {
+                await DeliverCertificateSigningResponseAsync(mqtt, "202", requestId, AcceptedPayload);
+                Assert.Equal(1, GetPendingOperationCount(client)); // Still in progress
+
+                await DeliverCertificateSigningResponseAsync(mqtt, "200", requestId, "{\"certificates\":[\"cert1\"],\"correlationId\":\"someCorrelationId\"}");
+                await operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken);
+                Assert.Equal(0, GetPendingOperationCount(client));
+
+                IotHubCertificateSigningRequest failing = new("someDeviceId", "c29tZWNzcg==");
+                CertificateSigningOperation failingOperation = await client.SendCertificateSigningRequestAsync(failing, TestContext.Current.CancellationToken);
+                Assert.Equal(1, GetPendingOperationCount(client));
+                await DeliverCertificateSigningResponseAsync(mqtt, "400", failing.RequestId, "{\"errorCode\":400040}");
+                await AssertFailsAsync(failingOperation.Completed);
+                Assert.Equal(0, GetPendingOperationCount(client));
+            }
+        }
+
+        private static int GetPendingOperationCount(ConnectionClient client)
+        {
+            var field = typeof(ConnectionClient).GetField("_pendingCertificateSigningOperations", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            return ((System.Collections.IDictionary)field.GetValue(client)!).Count;
         }
 
         [Fact]
