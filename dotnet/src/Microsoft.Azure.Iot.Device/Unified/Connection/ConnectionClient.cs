@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     else
                     {
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
-                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
+                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error, RequestId = requestId });
                         return;
                     }
                 }
@@ -200,6 +200,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     pendingCertificateSigningOperation?.SetFailed(new CertificateSigningRequestFailedException()
                     {
                         Error = new CertificateSigningRequestErrorResponse() { Message = "Failed to read the certificate signing response from IoT hub: " + ex.Message },
+                        RequestId = requestId,
                     });
                 }
                 catch (Exception ex) when (pendingCertificateSigningOperation != null)

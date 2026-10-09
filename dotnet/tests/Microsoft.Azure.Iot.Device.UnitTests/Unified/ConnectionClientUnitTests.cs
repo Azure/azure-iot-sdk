@@ -252,6 +252,44 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 TestContext.Current.CancellationToken));
         }
 
+        [Theory]
+        [InlineData("400", "{\"errorCode\":400040}")]
+        [InlineData("409", "{\"errorCode\":409005,\"message\":\"conflict\"}")]
+        [InlineData("429", "{}")]
+        [InlineData("400", "not json")]
+        [InlineData("202", "not json")]
+        [InlineData("200", "not json")]
+        public async Task CertificateSigningFailureCarriesRequestIdFromTopic(string status, string payload)
+        {
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync();
+            using (client)
+            {
+                await DeliverCertificateSigningResponseAsync(mqtt, status, requestId, payload);
+
+                var acceptedEx = await AssertFailsAsync(operation.Accepted);
+                var completedEx = await AssertFailsAsync(operation.Completed);
+                Assert.Equal(requestId, acceptedEx.RequestId);
+                Assert.Equal(requestId, completedEx.RequestId);
+            }
+        }
+
+        [Fact]
+        public async Task CertificateSigningFailureRequestIdMatchesTheFailingRequestWhenMultiplePending()
+        {
+            var (client, mqtt, firstOperation, firstId) = await StartCertificateSigningAsync();
+            using (client)
+            {
+                IotHubCertificateSigningRequest secondRequest = new("someDeviceId", "c29tZWNzcg==", "second-request-id");
+                CertificateSigningOperation secondOperation = await client.SendCertificateSigningRequestAsync(secondRequest, TestContext.Current.CancellationToken);
+
+                await DeliverCertificateSigningResponseAsync(mqtt, "409", secondRequest.RequestId, "{\"errorCode\":409005}");
+                await DeliverCertificateSigningResponseAsync(mqtt, "400", firstId, "{\"errorCode\":400040}");
+
+                Assert.Equal("second-request-id", (await AssertFailsAsync(secondOperation.Completed)).RequestId);
+                Assert.Equal(firstId, (await AssertFailsAsync(firstOperation.Completed)).RequestId);
+            }
+        }
+
         [Fact]
         public async Task ProvisionAndConnectUsesSeededConnectionContext()
         {
