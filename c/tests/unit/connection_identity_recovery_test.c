@@ -747,11 +747,12 @@ static void a_failed_registration_past_the_identity_deadline_faults_both_scopes(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  /* Request-level, so retriable: the retry is what lands past the deadline. */
-  static const char k_failed[] = "{\"errorCode\":500000,\"message\":\"x\"}";
+  static const char k_failed[]
+      = "{\"operationId\":\"op-1\",\"status\":\"failed\","
+        "\"registrationState\":{\"errorCode\":500000,\"errorMessage\":\"x\"}}";
   assert_true(az_iot_mock_mqtt_client_inject_message(
       dps,
-      "$dps/registrations/res/500/?$rid=1",
+      DPS_RESPONSE_TOPIC_ASSIGNED,
       (const uint8_t*)k_failed,
       strlen(k_failed),
       AZ_IOT_MQTT_QOS_1));

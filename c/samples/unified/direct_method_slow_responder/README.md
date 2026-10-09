@@ -105,7 +105,7 @@ On an mqttv5 hub each invocation is preceded by
 | Symptom | Likely cause |
 | --- | --- |
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
-| SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. A refused request is retried until the sample's run time ends; a `failed` or `disabled` registration faults at once with `AZ_IOT_ERR_DPS_REGISTRATION_FAILED`. |
+| SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 | `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
 

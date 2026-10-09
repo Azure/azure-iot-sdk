@@ -438,8 +438,6 @@ static bool reason_is_retriable(az_iot_result reason)
     case AZ_IOT_ERR_NOT_FOUND:
     case AZ_IOT_ERR_DETACHED:
     case AZ_IOT_ERR_PROTOCOL:
-    /* The registration operation itself ended failed or disabled. */
-    case AZ_IOT_ERR_DPS_REGISTRATION_FAILED:
       return false;
 
     /* Transport and service conditions that commonly clear on their own. */
@@ -1920,9 +1918,8 @@ static void retry_with_next_source(
 static bool dps_rejected_credential(const az_iot_connection_client* c, az_iot_result status)
 {
   return reason_is_identity_refusal(status)
-      || ((status == AZ_IOT_ERR_DPS || status == AZ_IOT_ERR_DPS_REGISTRATION_FAILED)
-          && c->error_scope == AZ_IOT_CONN_SCOPE_DPS && c->error_source == AZ_IOT_CONN_ERR_SRC_DPS
-          && c->error_code == DPS_ERROR_UNAUTHORIZED);
+      || (status == AZ_IOT_ERR_DPS && c->error_scope == AZ_IOT_CONN_SCOPE_DPS
+          && c->error_source == AZ_IOT_CONN_ERR_SRC_DPS && c->error_code == DPS_ERROR_UNAUTHORIZED);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -3287,10 +3284,6 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
           c->dps_pending_retry_after_secs = resp.retry_after_seconds;
-          /* An operationId means the operation itself ended failed/disabled:
-           * the same registration gets the same verdict, so it is terminal.
-           * Without one it is a request-level refusal, retried as before. */
-          bool operation_refused = az_span_size(resp.operation_id) > 0;
           /* The parsed verdict first, on its own line: the raw body below can
            * exceed AZ_IOT_LOG_MESSAGE_MAX and be cut before errorMessage. */
           /* An empty span may carry a NULL pointer, which %.*s must not get. */
@@ -3302,7 +3295,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               (int)az_span_size(err_msg),
               az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "",
               (int)az_span_size(resp.operation_id),
-              operation_refused ? (const char*)az_span_ptr(resp.operation_id) : "");
+              az_span_size(resp.operation_id) > 0 ? (const char*)az_span_ptr(resp.operation_id)
+                                                  : "");
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
               "register: provisioning failed/disabled; DPS response: %.*s",
@@ -3319,8 +3313,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               AZ_IOT_CONN_ERR_SRC_DPS,
               (int32_t)resp.registration_state.extended_error_code,
               resp.registration_state.error_message);
-          dps_finalize(
-              c, operation_refused ? AZ_IOT_ERR_DPS_REGISTRATION_FAILED : AZ_IOT_ERR_DPS, false);
+          dps_finalize(c, AZ_IOT_ERR_DPS, false);
           return;
         }
 
@@ -3769,9 +3762,7 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
  * the application has not closed the client, and transitions to FAULTED
  * otherwise. The profile failures (unsupported, or a mismatch with what the
  * attached feature clients require) stay terminal either way: a retry would
- * return the same answer, so they go through reject_assignment() instead. So
- * does AZ_IOT_ERR_DPS_REGISTRATION_FAILED, unless another credential source
- * remains to try.
+ * return the same answer, so they go through reject_assignment() instead.
  *
  * A session held by its USERS rather than by a registration ends here without
  * touching the public connection state at all -- see the guard below. Its
@@ -3896,15 +3887,8 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       retry_with_next_source(c, AZ_IOT_CONN_SCOPE_DPS, status);
       return;
     }
-    /* The operation ended failed/disabled: a retry gets the same verdict.
-     * reject_assignment() makes the next open() register again. */
-    if (status == AZ_IOT_ERR_DPS_REGISTRATION_FAILED)
-    {
-      reject_assignment(c, status);
-      return;
-    }
-    /* A registration refused at the request level, or that completed with no
-     * assignment, is the most transient failure a device meets: the enrollment may not have been
+    /* A registration that failed, or that completed with no assignment, is the
+     * most transient failure a device meets: the enrollment may not have been
      * created yet, the DPS may not have a linked IoT Hub yet, or the service
      * may simply have been unavailable. Every other failure path -- hub CONNACK
      * failures, unexpected drops, presence timeouts, subscription-gate timeouts

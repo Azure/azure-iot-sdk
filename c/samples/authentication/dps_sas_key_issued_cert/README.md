@@ -105,7 +105,7 @@ means the hub accepted the chain saved by a previous run.
 | `not connected: AZ_IOT_ERR_IDENTITY_REJECTED` before any `certificate issued` | DPS refused the token: wrong key or key kind (individual vs. group), no matching enrollment, or a wrong system clock. |
 | `not connected: AZ_IOT_ERR_IDENTITY_REJECTED` or `AZ_IOT_ERR_AUTH` after `certificate issued` | The hub refused the issued certificate, e.g. the policy CA is not synced to the hub. |
 | `not connected: AZ_IOT_ERR_NOT_FOUND` | DPS issued no certificate, so the hub has no credential: the enrollment has no credential policy. |
-| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `not connected: timeout` | DPS refused the registration. A refused request is retried until the sample's run time ends; a `failed` or `disabled` registration faults at once with `AZ_IOT_ERR_DPS_REGISTRATION_FAILED`. |
+| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `not connected: timeout` | DPS refused the registration. DPS verdicts are retried until the sample's run time ends. |
 | SDK warning `no Unix time yet; cannot sign a SAS token`, then `not connected: timeout` | The system clock is not set, so no DPS token can be signed. |
 | Repeated `paho: connect failed: ...`, then `not connected: timeout` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 

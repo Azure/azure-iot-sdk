@@ -1484,9 +1484,9 @@ static void dps_registration_error_401000_falls_back_to_the_secondary_key(void**
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
 }
 
-/* An operation-level failure with 401000 also tries the next key at once; only
- * when no source is left is it terminal. */
-static void dps_failed_operation_401000_falls_back_then_faults(void** state)
+/* An operation-level failure with 401000 (a body the fallback parser reads)
+ * also falls back to the secondary key at once. */
+static void dps_failed_operation_401000_falls_back_to_the_secondary_key(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = dps_registering_with_two_keys(fx, true);
@@ -1503,37 +1503,11 @@ static void dps_failed_operation_401000_falls_back_then_faults(void** state)
 
   const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_non_null(e);
-  assert_int_equal(e->reason, AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
+  assert_int_equal(e->reason, AZ_IOT_ERR_DPS);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
   assert_int_equal(e->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
   assert_int_equal(e->delay_ms, 0);
   assert_string_equal(last_connect(fx)->password, SECONDARY_DPS_TOKEN);
-  for (size_t i = 0; i < fx->log_count; ++i)
-  {
-    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_FAULTED);
-  }
-
-  /* The secondary key gets the same verdict: no source left, terminal. */
-  m = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
-  pump(fx, 1);
-  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
-  assert_non_null(sub);
-  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
-  pump(fx, 1);
-  assert_true(az_iot_mock_mqtt_client_inject_message(
-      m,
-      "$dps/registrations/res/200/?$rid=1",
-      (const uint8_t*)k_body,
-      strlen(k_body),
-      AZ_IOT_MQTT_QOS_1));
-  pump(fx, 4);
-
-  e = last_event(fx, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
-  assert_non_null(e);
-  assert_int_equal(e->reason, AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
-  assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
-  assert_int_equal(fx->client.reconnect_due_ms, 0);
 }
 
 /* A registration on a session a feature client already holds starts a pass
@@ -3649,7 +3623,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         dps_registration_error_401000_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        dps_failed_operation_401000_falls_back_then_faults, setup, teardown),
+        dps_failed_operation_401000_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_registration_on_a_held_session_falls_back, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_sas_token_is_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(
