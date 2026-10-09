@@ -40,3 +40,8 @@
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
   (a connected session then renews with it). At renewal the token is requested while the
   session stays up; once supplied, the session disconnects and reconnects with it. See [docs/connecting.md](docs/connecting.md#authentication).
+- PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An mqttv5
+  refusal the broker will repeat (`0x87`, `0x90`, `0x95`, `0x99`) is the new
+  `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
+  `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
+  connection client logs the code of a failed PUBACK.

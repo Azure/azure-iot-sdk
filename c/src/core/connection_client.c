@@ -426,8 +426,9 @@ static bool reason_is_retriable(az_iot_result reason)
      * Re-provisioning returns the same assignment. */
     case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
     case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
-    /* The broker refused the filter itself. */
+    /* The broker refused the filter, or the publish, itself. */
     case AZ_IOT_ERR_SUBSCRIPTION_REFUSED:
+    case AZ_IOT_ERR_PUBLISH_REFUSED:
     /* Caller, build or programming faults: retrying re-runs the same bad call. */
     case AZ_IOT_ERR_INVALID_ARG:
     case AZ_IOT_ERR_NOT_SUPPORTED:
@@ -4583,32 +4584,48 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_PUBLISH_ACK:
     {
       bool matched = false;
+      az_iot_publish_ack_callback cb = NULL;
+      void* ctx = NULL;
       for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
       {
         /* cb == NULL: reserved by a publish still in progress; not yet matchable. */
         if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].cb != NULL
             && c->pending_pubacks[i].packet_id == evt->packet_id)
         {
-          az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
-          void* ctx = c->pending_pubacks[i].user_ctx;
+          cb = c->pending_pubacks[i].cb;
+          ctx = c->pending_pubacks[i].user_ctx;
           c->pending_pubacks[i].in_use = false;
           c->pending_pubacks[i].cb = NULL;
           c->pending_pubacks[i].user_ctx = NULL;
           matched = true;
-          if (cb)
-          {
-            cb(evt->status, ctx);
-          }
           break;
         }
       }
-      if (!matched && evt->status != AZ_IOT_OK)
+      if (evt->status != AZ_IOT_OK)
       {
-        AZ_IOT_LOG_ERRORF(
-            AZ_IOT_LOG_COMPONENT_CONNECTION,
-            "publish with packet id %u failed (%s); it had no completion callback",
-            (unsigned)evt->packet_id,
-            az_iot_result_to_string(evt->status));
+        if (matched)
+        {
+          AZ_IOT_LOG_WARNF(
+              AZ_IOT_LOG_COMPONENT_CONNECTION,
+              "publish with packet id %u failed (%s, protocol code 0x%02X)",
+              (unsigned)evt->packet_id,
+              az_iot_result_to_string(evt->status),
+              (unsigned)evt->protocol_code);
+        }
+        else
+        {
+          AZ_IOT_LOG_ERRORF(
+              AZ_IOT_LOG_COMPONENT_CONNECTION,
+              "publish with packet id %u failed (%s, protocol code 0x%02X); it had no "
+              "completion callback",
+              (unsigned)evt->packet_id,
+              az_iot_result_to_string(evt->status),
+              (unsigned)evt->protocol_code);
+        }
+      }
+      if (cb)
+      {
+        cb(evt->status, ctx);
       }
       break;
     }

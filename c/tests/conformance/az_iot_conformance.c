@@ -2429,6 +2429,19 @@ static void a_refused_publish_is_reported(void** state)
   assert_true(wait_until(c, &rec, saw_publish_ack_error, k_step_timeout_ms));
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
+  /* An adapter that reports the code (0: not reported) reports it verbatim, classified by
+   * az_iot_mqtt_puback_result(). */
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_PUBLISH_ACK && rec.protocol_codes[i] != 0)
+    {
+      assert_int_equal(rec.packet_ids[i], pub_pid);
+      assert_int_equal(rec.protocol_codes[i], puback.bytes[4]);
+      assert_int_equal(
+          rec.statuses[i], az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, rec.protocol_codes[i]));
+    }
+  }
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);

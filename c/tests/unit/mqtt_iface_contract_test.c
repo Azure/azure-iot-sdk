@@ -384,6 +384,81 @@ static void suback_unknown_version_never_fails_the_session(void** state)
   assert_int_equal(az_iot_mqtt_suback_result(bogus, 1), AZ_IOT_OK);
 }
 
+/* ---- PUBACK code mapping -------------------------------------------------- */
+
+static void puback_v5_success_codes_map_to_ok(void** state)
+{
+  (void)state;
+  /* 0x10 no matching subscribers is a success: the broker accepted the message. */
+  static const int codes[] = { 0x00, 0x10, 0x7F };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_OK);
+  }
+}
+
+static void puback_v5_permanent_codes_map_to_publish_refused(void** state)
+{
+  (void)state;
+  /* 0x87 not authorized, 0x90 topic name invalid, 0x95 packet too large, 0x99 payload format
+   * invalid. */
+  static const int codes[] = { 0x87, 0x90, 0x95, 0x99 };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(
+        az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_PUBLISH_REFUSED);
+  }
+}
+
+static void puback_v5_quota_exceeded_maps_to_busy(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, 0x97), AZ_IOT_ERR_BUSY);
+}
+
+static void puback_v5_other_failures_map_to_mqtt(void** state)
+{
+  (void)state;
+  /* 0x80 unspecified, 0x83 implementation specific, 0x91 packet identifier in use, and codes
+   * this SDK does not name. */
+  static const int codes[] = { 0x80, 0x83, 0x91, 0x9A, 0xFF, 0x100 };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_MQTT);
+  }
+}
+
+static void puback_v3_maps_only_zero_to_ok(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
+  /* No reason code exists in MQTT 3.1.1: v5 meanings must not leak in. */
+  static const int codes[] = { 0x10, 0x80, 0x87, 0x97 };
+  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
+  {
+    assert_int_equal(
+        az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_3_1_1, codes[i]), AZ_IOT_ERR_MQTT);
+  }
+}
+
+static void puback_negative_codes_and_unknown_version_map_to_mqtt(void** state)
+{
+  (void)state;
+  const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
+  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_puback_result(bogus, 0x87), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_puback_result(bogus, 0x10), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_puback_result(bogus, 0), AZ_IOT_OK);
+}
+
+static void publish_refused_has_a_name(void** state)
+{
+  (void)state;
+  assert_string_equal(
+      az_iot_result_to_string(AZ_IOT_ERR_PUBLISH_REFUSED), "AZ_IOT_ERR_PUBLISH_REFUSED");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -407,6 +482,13 @@ int main(void)
     cmocka_unit_test(suback_v5_transient_codes_map_to_mqtt),
     cmocka_unit_test(suback_negative_codes_map_to_mqtt),
     cmocka_unit_test(suback_unknown_version_never_fails_the_session),
+    cmocka_unit_test(puback_v5_success_codes_map_to_ok),
+    cmocka_unit_test(puback_v5_permanent_codes_map_to_publish_refused),
+    cmocka_unit_test(puback_v5_quota_exceeded_maps_to_busy),
+    cmocka_unit_test(puback_v5_other_failures_map_to_mqtt),
+    cmocka_unit_test(puback_v3_maps_only_zero_to_ok),
+    cmocka_unit_test(puback_negative_codes_and_unknown_version_map_to_mqtt),
+    cmocka_unit_test(publish_refused_has_a_name),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

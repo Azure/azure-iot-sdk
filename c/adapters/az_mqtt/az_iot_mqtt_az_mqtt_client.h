@@ -406,7 +406,11 @@ static void _azm_emit_publish_ack(_azm_client* m, _AZM(ack_data) const* ack)
   event.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
   event.packet_id = ack->packet_id;
   event.protocol_code = code;
-  event.status = (az_result_failed(ack->status) || code >= 0x80) ? AZ_IOT_ERR_MQTT : AZ_IOT_OK;
+  event.status = az_iot_mqtt_puback_result(_AZM_VERSION, (int)code);
+  if (event.status == AZ_IOT_OK && az_result_failed(ack->status))
+  {
+    event.status = AZ_IOT_ERR_MQTT;
+  }
   _azm_emit(m, &event);
 }
 

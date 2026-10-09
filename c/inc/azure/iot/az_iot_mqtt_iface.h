@@ -280,7 +280,7 @@ extern "C"
      * event kind. */
     bool session_present;
     /* The code that came off the wire, verbatim, for the ack this event carries
-     * (a CONNACK return/reason code, a SUBACK return/reason code). A non-zero
+     * (a CONNACK return/reason code, a SUBACK return/reason code, a PUBACK reason code). A non-zero
      * value is always that code, including the granted QoS on a SUBACK that
      * succeeded -- a grant is diagnostic too. Only 0 is ambiguous: it means
      * either "no code applies here" or "a producer that does not populate this
@@ -419,6 +419,21 @@ extern "C"
    * v3.1.1 has no DISCONNECT reason code; pass 0. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code);
+
+  /**
+   * @brief Map a PUBACK code onto the status an adapter reports with
+   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters route every PUBACK through it.
+   *
+   * @param version Selects the code scheme.
+   * @param puback_code MQTT 5 reason code; MQTT 3.1.1: 0. Negative: the adapter's own failure.
+   *
+   * @retval AZ_IOT_OK 0; MQTT 5: any code below 0x80 (0x10 included).
+   * @retval AZ_IOT_ERR_PUBLISH_REFUSED MQTT 5: 0x87, 0x90, 0x95, 0x99; the broker will repeat it.
+   * @retval AZ_IOT_ERR_BUSY MQTT 5: 0x97 (quota exceeded).
+   * @retval AZ_IOT_ERR_MQTT Any other code, or an unknown @p version.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_puback_result(az_iot_mqtt_version version, int puback_code);
 
 #ifdef __cplusplus
 }

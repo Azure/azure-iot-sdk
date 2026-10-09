@@ -333,6 +333,45 @@ static void send_uses_the_v5_wire_shape_and_waits_for_puback(void** state)
   assert_int_equal(record.status, AZ_IOT_OK);
 }
 
+/* A PUBACK failure reaches the callback as the adapter classified it. */
+static void a_failed_puback_reaches_the_callback_unchanged(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  static const az_iot_result statuses[]
+      = { AZ_IOT_ERR_PUBLISH_REFUSED, AZ_IOT_ERR_BUSY, AZ_IOT_ERR_MQTT };
+  static const int32_t codes[] = { 0x87, 0x97, 0x80 };
+  static const uint8_t payload[] = "{}";
+  az_iot_telemetry_message message = { .payload = payload, .payload_len = sizeof(payload) - 1 };
+  for (size_t i = 0; i < sizeof(statuses) / sizeof(statuses[0]); ++i)
+  {
+    send_record record = { 0 };
+    az_iot_mock_mqtt_client_clear_calls(test->mock);
+    assert_int_equal(
+        az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, on_send, &record),
+        AZ_IOT_OK);
+    const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+    az_iot_mqtt_event ack = { 0 };
+    ack.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+    ack.packet_id = publish->packet_id;
+    ack.status = statuses[i];
+    ack.protocol_code = codes[i];
+    assert_true(az_iot_mock_mqtt_client_inject_event(test->mock, &ack));
+    log_capture cap;
+    install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+    assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
+    az_iot_log_set_global_sink(NULL);
+    char code[32];
+    snprintf(code, sizeof(code), "protocol code 0x%02X", (unsigned)codes[i]);
+    assert_int_equal(cap.count, 1);
+    assert_non_null(strstr(cap.last, code));
+    assert_non_null(strstr(cap.last, az_iot_result_to_string(statuses[i])));
+    assert_true(record.fired);
+    assert_int_equal(record.status, statuses[i]);
+  }
+}
+
 static void metadata_uses_native_v5_fields(void** state)
 {
   fixture* test = (fixture*)*state;
@@ -692,6 +731,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(
         send_uses_the_v5_wire_shape_and_waits_for_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_puback_reaches_the_callback_unchanged, setup, teardown),
     cmocka_unit_test_setup_teardown(metadata_uses_native_v5_fields, setup, teardown),
     cmocka_unit_test_setup_teardown(every_system_property_reaches_the_wire, setup, teardown),
     cmocka_unit_test_setup_teardown(
