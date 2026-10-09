@@ -145,6 +145,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
+                CertificateSigningOperation? pendingCertificateSigningOperation = null;
                 try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
@@ -156,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     string status = topicTokens[3];
                     string requestId = topicTokens[4].Split(RequestId)[1];
 
-                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
+                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
                     {
                         return;
                     }
@@ -180,15 +181,35 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         {
                             Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
                         }
+
+                        // Certificate signing operation has ended, so stop tracking it locally
+                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
+
                         pendingCertificateSigningOperation.SetCompleted(response);
                         return;
                     }
                     else
                     {
+                        // Certificate signing operation has ended, so stop tracking it locally
+                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
+
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
                         pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
                         return;
                     }
+                }
+                catch (JsonException ex)
+                {
+                    // An unreadable response must fail the operation rather than leave it pending forever
+                    pendingCertificateSigningOperation?.SetFailed(new CertificateSigningRequestFailedException()
+                    {
+                        Error = new CertificateSigningRequestErrorResponse() { Message = "Failed to read the certificate signing response from IoT hub: " + ex.Message },
+                    });
+                }
+                catch (Exception ex) when (pendingCertificateSigningOperation != null)
+                {
+                    // Includes the user's HandleCertificateSigningCompleteAsync callback throwing
+                    pendingCertificateSigningOperation.SetFailed(ex);
                 }
                 finally
                 {
