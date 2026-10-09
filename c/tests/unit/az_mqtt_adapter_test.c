@@ -224,7 +224,9 @@ static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state
   o.lwt.topic = text;
   o.lwt.payload = (const uint8_t*)text;
   o.lwt.payload_len = sizeof(text) - 1;
-  connect_fails_before_any_io(o, 5 * sizeof(text), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  // Copies: host, 4 strings with their NULs, the will payload.
+  size_t const copied = sizeof("broker.example") + 4 * sizeof(text) + (sizeof(text) - 1);
+  connect_fails_before_any_io(o, copied, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
@@ -235,7 +237,9 @@ static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
   o.lwt.topic = "will";
   o.lwt.payload = will;
   o.lwt.payload_len = sizeof(will);
-  connect_fails_before_any_io(o, sizeof(will), AZ_IOT_ERR_INVALID_ARG);
+  // Copies: host, client ID, will topic, will payload.
+  size_t const copied = sizeof("broker.example") + sizeof("c") + sizeof("will") + sizeof(will);
+  connect_fails_before_any_io(o, copied, AZ_IOT_ERR_INVALID_ARG);
 }
 
 // ──────────────────────── PUBACK, against an in-process server ──────────────────

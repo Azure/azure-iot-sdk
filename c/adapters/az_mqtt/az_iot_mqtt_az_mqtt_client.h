@@ -21,6 +21,7 @@
  */
 
 #include "az_iot_mqtt_az_mqtt_internal.h"
+#include "internal/crypto.h" // az_iot_crypto__wipe()
 
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_log.h"
@@ -59,8 +60,8 @@
 #define _AZM_INFLIGHT_ENTRIES AZ_IOT_AZ_MQTT_INFLIGHT_MAX
 #endif
 
-/** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. 0: a session
- * that outlives the connection is refused. */
+/** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. 0: a connect with
+ * clean_start false (MQTT 5: and session_expiry_seconds > 0) is refused. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
   (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
@@ -111,6 +112,7 @@ typedef struct
   size_t connect_strings_used;
 #else
   char* owned[_AZM_OWNED_MAX];
+  size_t owned_size[_AZM_OWNED_MAX];
   int owned_count;
 #endif
   uint8_t* send_buffer;
@@ -491,7 +493,12 @@ static void _azm_on_unsuback(az_mqtt3_client* client, az_mqtt3_ack_data const* u
 // ──────────────────────── Connect ────────────────────────────
 
 #if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0
-static void _azm_release_owned(_azm_client* m) { m->connect_strings_used = 0; }
+/** @brief Wipes the connect strings (credentials) and makes their room free. */
+static void _azm_release_owned(_azm_client* m)
+{
+  az_iot_crypto__wipe(m->connect_strings, m->connect_strings_used);
+  m->connect_strings_used = 0;
+}
 
 /** @brief Copy of @p size bytes of @p data (plus a NUL when @p nul) in the slot's connect strings,
  * or NULL when they do not fit. */
@@ -512,10 +519,12 @@ static char* _azm_copy(_azm_client* m, void const* data, size_t size, bool nul)
   return copy;
 }
 #else
+/** @brief Wipes the connect strings (credentials) and frees them. */
 static void _azm_release_owned(_azm_client* m)
 {
   for (int i = 0; i < m->owned_count; i++)
   {
+    az_iot_crypto__wipe(m->owned[i], m->owned_size[i]);
     free(m->owned[i]);
   }
   m->owned_count = 0;
@@ -536,6 +545,7 @@ static char* _azm_copy(_azm_client* m, void const* data, size_t size, bool nul)
     {
       copy[size] = '\0';
     }
+    m->owned_size[m->owned_count] = size + (nul ? 1u : 0u);
     m->owned[m->owned_count++] = copy;
   }
   return copy;
@@ -782,7 +792,7 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_AZ_MQTT,
-        "connect: a session that outlives the connection needs "
+        "connect: clean_start false (MQTT 5: with session_expiry_seconds > 0) needs "
         "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -1153,8 +1163,12 @@ static void _azm_destroy(az_iot_mqtt_client* self)
   }
   _azm_release_owned(m);
 #if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0
-  ((_azm_slot*)(void*)m)->in_use = false; // The client is the slot's first member.
+  // The slot outlives the client: nothing it held (CONNECT, credentials, messages) stays.
+  _azm_slot* slot = (_azm_slot*)(void*)m; // The client is the slot's first member.
+  az_iot_crypto__wipe(slot, offsetof(_azm_slot, in_use));
+  slot->in_use = false;
 #else
+  az_iot_crypto__wipe(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE); // The CONNECT: credentials.
   free(m->message_storage);
   free(m->send_buffer); // The block of _azm_create().
   free(m);

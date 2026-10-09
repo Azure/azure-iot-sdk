@@ -713,7 +713,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
             az_iot_tests_az_mqtt_adapter_static az_iot_tests_az_mqtt_adapter_static_tiny)
         target_include_directories(${_t} PRIVATE
             ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
-            ${CMAKE_CURRENT_SOURCE_DIR}/support)
+            ${PROJECT_SOURCE_DIR}/src/core ${CMAKE_CURRENT_SOURCE_DIR}/support)
         target_link_libraries(${_t} PRIVATE az_mqttv3 az_mqttv5)
         if(WIN32)
             target_link_libraries(${_t} PRIVATE ws2_32)

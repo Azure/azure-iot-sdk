@@ -114,6 +114,8 @@ static void connect_strings_must_fit(void** state)
   }
 }
 
+/** @brief Without a message store: clean_start false (MQTT 5: with an expiry) is refused; clean
+ * start with an expiry is accepted (nothing to resume or resend). */
 static void a_session_outliving_the_connection_needs_a_message_store(void** state)
 {
   (void)state;
@@ -128,6 +130,9 @@ static void a_session_outliving_the_connection_needs_a_message_store(void** stat
     o.clean_start = false;
     o.session_expiry_seconds = 60;
     assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_NOT_SUPPORTED);
+    o.clean_start = true;
+    assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
+    (void)c->iface->disconnect(c);
     c->iface->destroy(c);
     az_iot_az_mqtt_factory_destroy(f);
   }

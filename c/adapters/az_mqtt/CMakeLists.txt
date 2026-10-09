@@ -28,7 +28,7 @@ set(AZ_IOT_AZ_MQTT_TRANSPORT_SIZE "" CACHE STRING
 set(AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE "" CACHE STRING
     "az_mqtt adapter, static clients: bytes for a connect's strings (empty: 8 KiB)")
 set(AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE "" CACHE STRING
-    "az_mqtt adapter: store of unacknowledged QoS 1/2 PUBLISH; 0: no session outliving the connection (empty: send size + 18)")
+    "az_mqtt adapter: store of unacknowledged QoS 1/2 PUBLISH; 0: refuse clean_start false (MQTT 5: with session expiry > 0) (empty: send size + 18)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
     "az_mqtt adapter: header with size definitions, as written in a quoted #include (empty: none)")
 
@@ -77,6 +77,8 @@ add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
 target_include_directories(az_iot_adapter_az_mqtt
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core # internal/crypto.h: az_iot_crypto__wipe()
 )
 target_link_libraries(az_iot_adapter_az_mqtt
     PUBLIC
