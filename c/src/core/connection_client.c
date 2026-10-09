@@ -438,6 +438,8 @@ static bool reason_is_retriable(az_iot_result reason)
     case AZ_IOT_ERR_NOT_FOUND:
     case AZ_IOT_ERR_DETACHED:
     case AZ_IOT_ERR_PROTOCOL:
+    /* The registration operation itself ended failed or disabled. */
+    case AZ_IOT_ERR_DPS_REGISTRATION_FAILED:
       return false;
 
     /* Transport and service conditions that commonly clear on their own. */
@@ -1918,8 +1920,9 @@ static void retry_with_next_source(
 static bool dps_rejected_credential(const az_iot_connection_client* c, az_iot_result status)
 {
   return reason_is_identity_refusal(status)
-      || (status == AZ_IOT_ERR_DPS && c->error_scope == AZ_IOT_CONN_SCOPE_DPS
-          && c->error_source == AZ_IOT_CONN_ERR_SRC_DPS && c->error_code == DPS_ERROR_UNAUTHORIZED);
+      || ((status == AZ_IOT_ERR_DPS || status == AZ_IOT_ERR_DPS_REGISTRATION_FAILED)
+          && c->error_scope == AZ_IOT_CONN_SCOPE_DPS && c->error_source == AZ_IOT_CONN_ERR_SRC_DPS
+          && c->error_code == DPS_ERROR_UNAUTHORIZED);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2617,6 +2620,140 @@ static az_iot_result dps_enter_registration_state(az_json_reader* jr, az_span pa
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/**
+ * @brief Read an operation-level "failed" or "disabled" registration verdict.
+ *
+ * Fallback for bodies azure-sdk-for-c rejects: its parser fails a
+ * registrationState that has deviceId but no assignedHub, which is how the
+ * service reports e.g. a failed reprovisioning.
+ *
+ * @param payload Response body (non-empty).
+ * @param[out] out On success, operation_id, operation_status and
+ * registration_state (extended_error_code, error_message) are set; spans point
+ * into @p payload.
+ * @return true if @p payload is a JSON object with a string operationId and a
+ * "failed" or "disabled" status, and every field read is well formed.
+ */
+static bool dps_parse_operation_refusal(
+    az_span payload,
+    az_iot_provisioning_client_register_response* out)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+
+  az_span operation_id = AZ_SPAN_EMPTY;
+  bool have_status = false;
+  az_iot_provisioning_client_operation_status status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+  uint32_t error_code = 0;
+  az_span error_message = AZ_SPAN_EMPTY;
+
+  for (;;)
+  {
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      break;
+    }
+    bool is_operation_id = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("operationId"));
+    bool is_status = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("status"));
+    bool is_state
+        = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_REGISTRATION_STATE));
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (is_operation_id)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      operation_id = jr.token.slice;
+    }
+    else if (is_status)
+    {
+      if (jr.token.kind == AZ_JSON_TOKEN_STRING
+          && az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("failed")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+      }
+      else if (
+          jr.token.kind == AZ_JSON_TOKEN_STRING
+          && az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("disabled")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_DISABLED;
+      }
+      else
+      {
+        return false;
+      }
+      have_status = true;
+    }
+    else if (is_state && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      for (;;)
+      {
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+        {
+          break;
+        }
+        bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
+        bool is_message = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorMessage"));
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (is_code)
+        {
+          if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
+          {
+            return false;
+          }
+        }
+        else if (is_message)
+        {
+          if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+          {
+            return false;
+          }
+          error_message = jr.token.slice;
+        }
+        else if (az_result_failed(az_json_reader_skip_children(&jr)))
+        {
+          return false;
+        }
+      }
+    }
+    else if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
+      return false;
+    }
+  }
+  if (!have_status || az_span_size(operation_id) <= 0)
+  {
+    return false;
+  }
+
+  out->operation_id = operation_id;
+  out->operation_status = status;
+  out->registration_state = (az_iot_provisioning_client_registration_state){ 0 };
+  out->registration_state.extended_error_code = error_code;
+  out->registration_state.error_message = error_message;
+  return true;
+}
+
 /* Record the connection profile from its verbatim wire form. The raw string is
  * always stored -- an unrecognised profile is exactly the case where the text
  * matters -- and only the enum degrades to UNKNOWN. A value too long for the
@@ -2989,6 +3126,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_provisioning_client_register_response resp = { 0 };
       az_result ar = az_iot_provisioning_client_parse_received_topic_and_payload(
           &c->dps_prov, topic_span, payload_span, &resp);
+      /* ITEM_NOT_FOUND only comes from the body, so the topic (status,
+       * retry-after) was parsed. A failed/disabled verdict the SDK parser
+       * rejects is still a verdict. */
+      if (ar == AZ_ERROR_ITEM_NOT_FOUND && dps_parse_operation_refusal(payload_span, &resp))
+      {
+        ar = AZ_OK;
+      }
       if (az_result_failed(ar))
       {
         /* A registration response we cannot parse is not something waiting
@@ -3082,16 +3226,22 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
            * throttle or a server error it is the one authoritative statement
            * about when this device may come back. */
           c->dps_pending_retry_after_secs = resp.retry_after_seconds;
+          /* An operationId means the operation itself ended failed/disabled:
+           * the same registration gets the same verdict, so it is terminal.
+           * Without one it is a request-level refusal, retried as before. */
+          bool operation_refused = az_span_size(resp.operation_id) > 0;
           /* The parsed verdict first, on its own line: the raw body below can
            * exceed AZ_IOT_LOG_MESSAGE_MAX and be cut before errorMessage. */
           /* An empty span may carry a NULL pointer, which %.*s must not get. */
           az_span err_msg = resp.registration_state.error_message;
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
-              "register: errorCode=%ld errorMessage=%.*s",
+              "register: errorCode=%ld errorMessage=%.*s operationId=%.*s",
               (long)resp.registration_state.extended_error_code,
               (int)az_span_size(err_msg),
-              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
+              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "",
+              (int)az_span_size(resp.operation_id),
+              operation_refused ? (const char*)az_span_ptr(resp.operation_id) : "");
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
               "register: provisioning failed/disabled; DPS response: %.*s",
@@ -3108,7 +3258,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               AZ_IOT_CONN_ERR_SRC_DPS,
               (int32_t)resp.registration_state.extended_error_code,
               resp.registration_state.error_message);
-          dps_finalize(c, AZ_IOT_ERR_DPS, false);
+          dps_finalize(
+              c, operation_refused ? AZ_IOT_ERR_DPS_REGISTRATION_FAILED : AZ_IOT_ERR_DPS, false);
           return;
         }
 
@@ -3557,7 +3708,9 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
  * the application has not closed the client, and transitions to FAULTED
  * otherwise. The profile failures (unsupported, or a mismatch with what the
  * attached feature clients require) stay terminal either way: a retry would
- * return the same answer, so they go through reject_assignment() instead.
+ * return the same answer, so they go through reject_assignment() instead. So
+ * does AZ_IOT_ERR_DPS_REGISTRATION_FAILED, unless another credential source
+ * remains to try.
  *
  * A session held by its USERS rather than by a registration ends here without
  * touching the public connection state at all -- see the guard below. Its
@@ -3682,8 +3835,15 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       retry_with_next_source(c, AZ_IOT_CONN_SCOPE_DPS, status);
       return;
     }
-    /* A registration that failed, or that completed with no assignment, is the
-     * most transient failure a device meets: the enrollment may not have been
+    /* The operation ended failed/disabled: a retry gets the same verdict.
+     * reject_assignment() makes the next open() register again. */
+    if (status == AZ_IOT_ERR_DPS_REGISTRATION_FAILED)
+    {
+      reject_assignment(c, status);
+      return;
+    }
+    /* A registration refused at the request level, or that completed with no
+     * assignment, is the most transient failure a device meets: the enrollment may not have been
      * created yet, the DPS may not have a linked IoT Hub yet, or the service
      * may simply have been unavailable. Every other failure path -- hub CONNACK
      * failures, unexpected drops, presence timeouts, subscription-gate timeouts

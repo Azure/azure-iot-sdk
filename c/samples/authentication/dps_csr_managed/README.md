@@ -191,7 +191,7 @@ The chain length depends on the credential policy.
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | `provisioning failed: AZ_IOT_ERR_NOT_FOUND` | DPS assigned the device but returned no certificate: the enrollment group has no credential policy. |
 | `provisioning failed: AZ_IOT_ERR_AUTH` | DPS refused the bootstrap certificate: it does not chain to the group's CA. |
-| Repeated `DPS code 401...` lines, then `timed out` (last dps error `AZ_IOT_ERR_DPS`) | DPS rejected the registration, e.g. the certificate CN differs from `AZ_IOT_DPS_REGISTRATION_ID` or no enrollment matches. DPS verdicts are retried, so the sample runs into the timeout. |
+| Repeated `DPS code 401...` lines, then `timed out` (last dps error `AZ_IOT_ERR_DPS`) | DPS rejected the registration, e.g. the certificate CN differs from `AZ_IOT_DPS_REGISTRATION_ID` or no enrollment matches. A refused request is retried, so the sample runs into the timeout. |
 | `hub connection failed: AZ_IOT_ERR_AUTH` | IoT Hub refused the operational certificate: the policy CA is not synced to the hub (`az iot adr ns credential sync`). |
 | `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an mqttv5 hub. This sample connects to mqttv3 hubs only (MQTT 3.1.1). |
 | `open failed` immediately, after an SDK error `registration_payload must be a single well-formed JSON object` | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |

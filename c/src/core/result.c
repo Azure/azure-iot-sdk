@@ -55,6 +55,8 @@ const char* az_iot_result_to_string(az_iot_result r)
       return "AZ_IOT_ERR_CREDENTIAL_INCOMPLETE";
     case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
       return "AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH";
+    case AZ_IOT_ERR_DPS_REGISTRATION_FAILED:
+      return "AZ_IOT_ERR_DPS_REGISTRATION_FAILED";
     default:
       return "AZ_IOT_ERR_UNKNOWN";
   }

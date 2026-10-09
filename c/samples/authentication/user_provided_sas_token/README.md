@@ -98,7 +98,7 @@ SDK log lines and state lines omitted:
 | `[user_provided_sas_token] set AZ_IOT_DPS_ID_SCOPE, ...`, exit 1 | A required variable is missing, or the key is not valid base64 or is longer than 64 bytes. |
 | `[user_provided_sas_token] AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, a group key instead of the derived device key, no matching enrollment, a wrong system clock, or an mqttv5 hub, which does not accept SAS yet. |
 | `[user_provided_sas_token] timeout` with no `DPS token:` line | The system clock is not set (`time()` fails or returns 0); token requests wait for it. |
-| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `timeout` | DPS refused the registration. DPS verdicts are retried until the sample's run time ends. |
+| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `timeout` | DPS refused the registration. A refused request is retried until the sample's run time ends; a `failed` or `disabled` registration faults at once with `AZ_IOT_ERR_DPS_REGISTRATION_FAILED`. |
 | Repeated `paho: connect failed: ...`, then `timeout` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 | `resource URI too long for this sample` | The request does not fit the sample's buffers; the attempt times out and is retried. |
 

@@ -102,7 +102,7 @@ reconnect end with `(token renewal)`.
 | `[dps_sas_key] set AZ_IOT_DPS_ID_SCOPE, ...`, exit 1 | A required variable is missing, or both or neither of the two keys are set. |
 | `AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT must be 1-99`, exit 1 | The renewal point is not a whole number from 1 to 99. |
 | `not connected: AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, or wrong key kind (individual vs. group), no matching enrollment, a wrong system clock, or an mqttv5 hub, which does not accept SAS yet. |
-| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `not connected: timeout` | DPS refused the registration. DPS verdicts are retried until the sample's run time ends. |
+| SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `not connected: timeout` | DPS refused the registration. A refused request is retried until the sample's run time ends; a `failed` or `disabled` registration faults at once with `AZ_IOT_ERR_DPS_REGISTRATION_FAILED`. |
 | SDK warning `no Unix time yet; cannot sign a SAS token`, then `not connected: timeout` | The system clock is not set, so no token can be signed. |
 | Repeated `paho: connect failed: ...`, then `not connected: timeout` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 | `not connected: AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a connection profile this SDK version does not know. |

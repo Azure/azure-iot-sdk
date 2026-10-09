@@ -106,9 +106,10 @@ stateDiagram-v2
 ```
 
 Every failure in a DPS phase is handled by the same backoff path as a hub failure, and a retry
-restarts provisioning from `DPS_CONNECTING` — a rejected registration included. What does not retry
-is an assignment the client cannot use: `reject_assignment()` faults on an unsupported
-`connectionProfile` or one that contradicts the attached feature clients. See §5.2 for the split.
+restarts provisioning from `DPS_CONNECTING` — a refused registration request included. What does
+not retry is a registration operation that ended `failed` or `disabled`, or an assignment the
+client cannot use: `reject_assignment()` faults on those, on an unsupported `connectionProfile`,
+or on one that contradicts the attached feature clients. See §5.2 for the split.
 
 ---
 
@@ -445,7 +446,7 @@ CONNACK; the `DPS` counter only when registration succeeds.
   for the SUBACK and re-armed after the birth PUBLISH for the birth-ack, each
   `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` (60 s), and checked in `do_work()`.
 
-- **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
+- **A refused registration request, or one with no assignment.** `dps_apply_deferred()` sets
   `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is
   a re-registration on the DPS ladder rather than an ordinary connect — which would have no host on
   a DPS client. It faults only when no policy is configured or the application has closed.
@@ -463,6 +464,9 @@ Not triggers, because they fault instead:
   it also forces the next `open()` back through DPS so the stale cached host cannot be reused. When
   the registration was a retry after a hub failure, the waiting HUB scope faults with the same
   reason (`fault_retry_scopes()`).
+- **A registration operation that ended `failed` or `disabled`.** `reject_assignment()` faults
+  with `AZ_IOT_ERR_DPS_REGISTRATION_FAILED`, the same way: a retry gets the same verdict. Only an
+  unauthorized `errorCode` with another credential source left moves to that source first.
 
 A hub identity refusal is a special case. `schedule_reconnect()` hands it to
 `schedule_identity_recovery()`, which schedules the next attempt on the identity ladder. The refusal
@@ -813,7 +817,7 @@ connection failure path:
 | `AZ_IOT_ERR_TIMEOUT` | A deadline expired — birth-ack, CSR operation. |
 | `AZ_IOT_ERR_PROTOCOL` | A service payload could not be parsed. |
 | `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every failed PUBACK. |
-| `AZ_IOT_ERR_DPS` | Registration returned a failed or disabled status. |
+| `AZ_IOT_ERR_DPS` | DPS refused the registration request (a 4xx/5xx response, such as throttling or an unknown enrollment). Retried. |
 | `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
 | `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight, or the service is throttling. |
 | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | A compile-time buffer bound was exceeded. |
@@ -824,6 +828,7 @@ connection failure path:
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned material the adapter cannot use — a certificate with no key, or a key URI with no engine or provider to resolve it. Caught before the connect, so the device gets this instead of an opaque TLS failure seconds later. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a `connectionProfile` this build does not know. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | A feature client of one generation was attached to a connection of the other. |
+| `AZ_IOT_ERR_DPS_REGISTRATION_FAILED` | The registration operation ended with status `failed` or `disabled`. Terminal; the error detail carries DPS `errorCode` and `errorMessage`. |
 
 `AZ_IOT_ERR_TLS` is produced only by the Paho adapter's key-custody path, for key material that
 cannot be expressed to the TLS stack — not by a handshake, certificate, chain or cipher failure.
@@ -968,7 +973,8 @@ connection client itself, or a feature client.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Registering | Registration status is failed or disabled | `AZ_IOT_ERR_DPS` | connection client | `needs_reprovision = true`, `schedule_reconnect(SCOPE_DPS)`; `FAULTED` only with no policy or after `close()` | A service-supplied `retry-after` raises the deadline as a floor over the policy's backoff, uncapped by `max_delay_ms`. |
+| Registering | Registration request refused (4xx/5xx response topic; body has `errorCode`/`message`, no `operationId`) | `AZ_IOT_ERR_DPS` | connection client | `needs_reprovision = true`, `schedule_reconnect(SCOPE_DPS)`; `FAULTED` only with no policy or after `close()` | A service-supplied `retry-after` raises the deadline as a floor over the policy's backoff, uncapped by `max_delay_ms`. |
+| Registering | Registration operation status is `failed` or `disabled` | `AZ_IOT_ERR_DPS_REGISTRATION_FAILED` | connection client | `reject_assignment()`: `FAULTED` regardless of policy, `needs_reprovision = true` so the next `open()` registers again | Error detail: source `DPS`, `code` = `registrationState.errorCode`, `message` = `errorMessage`; `operationId` is logged. A body the dependency parser rejects only for having `deviceId` without `assignedHub` (a failed reprovisioning) is read by `dps_parse_operation_refusal()`. An unauthorized `errorCode` still tries the next credential source first. |
 | Registering | Response payload empty | `AZ_IOT_ERR_PROTOCOL` | connection client | `dps_finalize()`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Checked **before** calling the parser: the dependency's precondition on an empty span would spin, because this build ships with precondition checking on and no handler installed. |
 | Registering | Response payload unparsable | `AZ_IOT_ERR_PROTOCOL` | dependency parser | as above | The body is logged. `reason_is_retriable()` classifies `AZ_IOT_ERR_PROTOCOL` non-retriable, so the event reports `is_retriable = false` while the SDK retries. |
 | Registering | Assigned hostname or device id longer than its 128-byte buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |

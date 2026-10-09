@@ -63,6 +63,21 @@ static const char k_failed_body[]
     = "{\"operationId\":\"op-1\",\"status\":\"failed\","
       "\"registrationState\":{\"errorCode\":400207,\"errorMessage\":\"Custom allocation failed\"}}";
 static const char k_disabled_body[] = "{\"operationId\":\"op-1\",\"status\":\"disabled\"}";
+/* A failed reprovisioning as the service sends it: deviceId without
+ * assignedHub, which azure-sdk-for-c's parser rejects. */
+static const char k_failed_reprovision_body[]
+    = "{\"operationId\":\"5.d4efd58e18727f30.2b209797-336b-4390-a470-1ae47878bd73\","
+      "\"status\":\"failed\",\"registrationState\":{\"x509\":{},"
+      "\"registrationId\":\"ut-device\",\"createdDateTimeUtc\":\"2026-10-08T22:51:05.7162705Z\","
+      "\"connectionProfile\":\"classic\",\"deviceId\":\"ut-device\",\"status\":\"failed\","
+      "\"substatus\":\"reprovisionedToInitialAssignment\",\"errorCode\":403,"
+      "\"errorMessage\":\"Unauthorized\",\"lastUpdatedDateTimeUtc\":\"2026-10-09T02:10:32."
+      "6294082Z\","
+      "\"etag\":\"IjU0MDBkZWNhLTAwMDAtMzMwMC0wMDAwLTZhYzg0ZDE4MDAwMCI=\"}}";
+/* A request-level refusal: no operation, so retried under the policy. */
+#define DPS_RESPONSE_TOPIC_REFUSED "$dps/registrations/res/401/?$rid=1"
+static const char k_refused_body[]
+    = "{\"errorCode\":401002,\"message\":\"Unauthorized\",\"trackingId\":\"t-1\"}";
 
 /* connectionProfile variants. The property is a readOnly string on
  * DeviceRegistrationResult (api-version 2026-11-02-preview) and an extensible
@@ -905,10 +920,8 @@ static void dps_session_reaches_connected_after_assignment(void** state)
 /* failure paths                                                             */
 /* ------------------------------------------------------------------------- */
 
-/* With no reconnection policy there is no retry to carry a re-registration, so
- * the failure is terminal. The retrying counterpart is
- * dps_failed_status_retries_under_the_policy(). */
-static void dps_failed_status_faults_with_a_dps_error(void** state)
+/* The operation itself ended failed: terminal, with the service's verdict. */
+static void dps_failed_status_faults_as_a_registration_failure(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
@@ -920,10 +933,12 @@ static void dps_failed_status_faults_with_a_dps_error(void** state)
   }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
 }
 
-static void dps_disabled_status_faults_with_a_dps_error(void** state)
+static void dps_disabled_status_faults_as_a_registration_failure(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
@@ -935,19 +950,151 @@ static void dps_disabled_status_faults_with_a_dps_error(void** state)
   }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_DPS);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED),
+      AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
 }
 
-/* A registration failure is the most transient failure a device meets: the
- * enrollment may not exist yet, or the DPS may have no linked hub yet. It must
- * go through the reconnection policy like every other failure, not straight to
- * a terminal fault -- a device configured to retry forever must retry. */
-static void dps_failed_status_retries_under_the_policy(void** state)
+/* Inject @p body as the registration response; return the DPS FAULTED index,
+ * asserting there was no retry. */
+static size_t fault_without_retry(az_iot_test_conn* fx, const char* topic, const char* body)
+{
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(m, topic, body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  /* Past the policy's delay, so a scheduled retry would have fired. */
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING));
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+  assert_null(fx->client->dps_mqtt);
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_not_equal(i, SIZE_MAX);
+  return i;
+}
+
+/* A "failed" operation is the service's answer, not a transient fault: the
+ * reconnection policy does not retry it. */
+static void dps_failed_status_is_not_retried_under_the_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(fx, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body);
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
+  assert_false(fx->log.is_retriable[i]);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_DPS);
+  assert_int_equal(fx->log.error_codes[i], 400207);
+  assert_string_equal(fx->log.error_message[i], "Custom allocation failed");
+  assert_true(fx->client->needs_reprovision);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+}
+
+static void dps_disabled_status_is_not_retried_under_the_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(fx, DPS_RESPONSE_TOPIC_ASSIGNED, k_disabled_body);
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
+  assert_false(fx->log.is_retriable[i]);
+}
+
+/* The body azure-sdk-for-c rejects (deviceId without assignedHub) is still a
+ * verdict: it used to fault as AZ_IOT_ERR_PROTOCOL and be retried in a loop. */
+static void a_failed_reprovisioning_is_a_registration_failure_not_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(fx, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_reprovision_body);
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
+  assert_false(fx->log.is_retriable[i]);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_DPS);
+  assert_int_equal(fx->log.error_codes[i], 403);
+  assert_string_equal(fx->log.error_message[i], "Unauthorized");
+  assert_null(fx->client->opts.host);
+}
+
+/* After fixing the cause, close() and open() register again. */
+static void a_registration_failure_registers_again_on_reopen(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  (void)fault_without_retry(fx, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_reprovision_body);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(next);
+  assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
+}
+
+/* A failed/disabled body that is not well formed has no knowable verdict. */
+static void a_malformed_failed_body_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  /* errorCode must be a number. */
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":\"403\"}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_truncated_failed_body_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":403}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+/* A request-level refusal (4xx topic, no operation) carries the service's
+ * errorCode and message and stays retriable. */
+static void a_request_level_refusal_carries_the_service_error(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
 
-  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS);
+  assert_true(fx->log.is_retriable[i]);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_DPS);
+  assert_int_equal(fx->log.error_codes[i], 401002);
+  assert_string_equal(fx->log.error_message[i], "Unauthorized");
+}
+
+/* A request-level refusal is the most transient failure a device meets: the
+ * enrollment may not exist yet, or the service may be throttling. It must go
+ * through the reconnection policy like every other failure, not straight to a
+ * terminal fault -- a device configured to retry forever must retry. */
+static void dps_refusal_retries_under_the_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -961,12 +1108,12 @@ static void dps_failed_status_retries_under_the_policy(void** state)
 
 /* And the retry is a re-REGISTRATION, not a connect to a host the client was
  * never assigned. */
-static void dps_failed_status_retries_against_dps(void** state)
+static void dps_refusal_retries_against_dps(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
 
-  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1001,7 +1148,7 @@ static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
   assert_null(fx->client->opts.host);
 
   /* Registration fails -> retry scheduled on the DPS ladder. */
-  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1025,14 +1172,14 @@ static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
   assert_string_equal(last_connect_host(next), "global.azure-devices-provisioning.net");
 }
 
-static void dps_failed_status_still_honors_max_attempts(void** state)
+static void dps_refusal_still_honors_max_attempts(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
 
   for (int i = 0; i < 6 && !az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED); ++i)
   {
-    assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+    assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
     for (int j = 0; j < 3; ++j)
     {
       (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1308,7 +1455,7 @@ static void a_pending_retry_refuses_a_new_session(void** state)
 
   /* A registration failure schedules a DPS retry. */
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -3725,7 +3872,7 @@ static void a_dps_failure_carries_the_service_error_code_and_message(void** stat
   }
   assert_int_not_equal(i_fault, SIZE_MAX);
 
-  assert_int_equal(fx->log.reasons[i_fault], AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->log.reasons[i_fault], AZ_IOT_ERR_DPS_REGISTRATION_FAILED);
   assert_true(fx->log.error_present[i_fault]);
   assert_int_equal(fx->log.error_sources[i_fault], AZ_IOT_CONN_ERR_SRC_DPS);
   assert_int_equal(fx->log.error_codes[i_fault], 400207);
@@ -4163,7 +4310,7 @@ static void every_failed_registration_setup_is_reported_with_its_step(void** sta
   assert_non_null(fx->factory);
 
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -4340,7 +4487,7 @@ static void close_from_dps_setting_up_cancels_the_retry(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -4610,7 +4757,7 @@ static void open_during_a_pending_registration_retry_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -5005,14 +5152,32 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         dps_session_reaches_connected_after_assignment, setup, teardown),
     /* failure paths */
-    cmocka_unit_test_setup_teardown(dps_failed_status_faults_with_a_dps_error, setup, teardown),
-    cmocka_unit_test_setup_teardown(dps_disabled_status_faults_with_a_dps_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        dps_failed_status_retries_under_the_policy, setup_with_reconnect, teardown),
+        dps_failed_status_faults_as_a_registration_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        dps_failed_status_retries_against_dps, setup_with_reconnect, teardown),
+        dps_disabled_status_faults_as_a_registration_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        dps_failed_status_still_honors_max_attempts, setup_with_reconnect, teardown),
+        dps_failed_status_is_not_retried_under_the_policy, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_disabled_status_is_not_retried_under_the_policy, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_reprovisioning_is_a_registration_failure_not_a_protocol_error,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_registration_failure_registers_again_on_reopen, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_malformed_failed_body_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_truncated_failed_body_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_level_refusal_carries_the_service_error, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_refusal_retries_under_the_policy, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_refusal_retries_against_dps, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_refusal_still_honors_max_attempts, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_dps_retry_stays_on_dps_when_no_hub_is_known, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

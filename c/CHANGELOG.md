@@ -40,3 +40,8 @@
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
   (a connected session then renews with it). At renewal the token is requested while the
   session stays up; once supplied, the session disconnects and reconnects with it. See [docs/connecting.md](docs/connecting.md#authentication).
+- Breaking: a DPS registration that ends `failed` or `disabled` faults with the new
+  `AZ_IOT_ERR_DPS_REGISTRATION_FAILED` and is not retried; the state event's error detail carries
+  the DPS `errorCode` and `errorMessage`. A failed reprovisioning response (`deviceId` without
+  `assignedHub`) is no longer reported as `AZ_IOT_ERR_PROTOCOL`. A refused registration request
+  (4xx/5xx) stays `AZ_IOT_ERR_DPS` and is retried. See [docs/connecting.md](docs/connecting.md#common-results).

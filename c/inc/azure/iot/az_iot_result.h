@@ -65,7 +65,19 @@ extern "C"
     AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
     /* A generation-specific feature client was initialized against a
      * connection resolved to the other profile. */
-    AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+    AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH,
+    /**
+     * @brief The provisioning service completed the registration with status
+     * "failed" or "disabled".
+     *
+     * Terminal: not retried by the reconnection policy, since the same
+     * registration gets the same verdict. The state event's error detail
+     * (source AZ_IOT_CONN_ERR_SRC_DPS) carries the service's errorCode and
+     * errorMessage. After fixing the cause, close() and open() register again.
+     * A request-level refusal (a 4xx/5xx response, e.g. throttling or an
+     * unknown enrollment) stays AZ_IOT_ERR_DPS and is retried.
+     */
+    AZ_IOT_ERR_DPS_REGISTRATION_FAILED
   } az_iot_result;
 
   const char* az_iot_result_to_string(az_iot_result r);

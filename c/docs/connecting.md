@@ -98,8 +98,9 @@ when:
 - the hub rejects the device identity at CONNACK and `identity_recovery.mode` is
   `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`,
 - `dps.max_hub_connect_attempts_before_reprovision` consecutive hub connects fail (default 50),
-- a registration fails or returns no assignment, or
-- the client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
+- a registration request is refused or returns no assignment, or
+- the registration ended `failed` or `disabled` (`AZ_IOT_ERR_DPS_REGISTRATION_FAILED`), or the
+  client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
   `_MISMATCH`). The next `open()` registers again instead of reusing the cached hub.
 
 ## Reconnection
@@ -356,6 +357,8 @@ no crypto can leave `crypto` NULL.
 | `AZ_IOT_ERR_AUTH` | The hub ended an mqttv5 session as `Not authorized`. Retried on `identity_recovery`. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support. The next `open()` re-provisions. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
+| `AZ_IOT_ERR_DPS_REGISTRATION_FAILED` | DPS completed the registration as `failed` or `disabled`. Not retried; the event's `error` has the DPS `errorCode` and `errorMessage`. Fix the enrollment, then `close()` and `open()`. |
+| `AZ_IOT_ERR_DPS` | DPS refused the registration request (for example throttling or an unknown enrollment). Retried on `reconnection_policy`. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
