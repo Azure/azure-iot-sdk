@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/base64.h"
 #include "internal/crypto.h"
 #include "internal/json_string.h"
 #include "internal/mono_time.h"
@@ -306,130 +307,34 @@ typedef struct
   int32_t need;
 } su_scratch;
 
-/** @brief 6-bit value of base64url (or, if @p std, standard base64) character @p c; -1 if none. */
-static int32_t b64_value(uint8_t c, bool std)
-{
-  if (c >= 'A' && c <= 'Z')
-  {
-    return c - 'A';
-  }
-  if (c >= 'a' && c <= 'z')
-  {
-    return c - 'a' + 26;
-  }
-  if (c >= '0' && c <= '9')
-  {
-    return c - '0' + 52;
-  }
-  if (c == (std ? '+' : '-'))
-  {
-    return 62;
-  }
-  if (c == (std ? '/' : '_'))
-  {
-    return 63;
-  }
-  return -1;
-}
-
 /**
- * @brief Decode unpadded base64url, or padded standard base64, from @p src into @p dst.
+ * @brief Decode @p src (see az_iot_base64_decode()) into the free part of @p s and claim it.
  *
- * Writes never pass the input read so far, so @p dst may be az_span_ptr(@p src) (in place).
- *
- * @param src       Encoded text.
- * @param allow_std Also accept standard base64: the service encodes the signing-key modulus that
- *                  way. Chosen when @p src has '+', '/' or '='.
- * @param dst       Destination of at least (size of @p src) * 3 / 4 bytes.
- * @param out_len   Bytes written.
- * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG if @p src is empty or malformed.
- */
-static az_iot_result b64_decode(az_span src, bool allow_std, uint8_t* dst, int32_t* out_len)
-{
-  const uint8_t* p = az_span_ptr(src);
-  int32_t len = az_span_size(src);
-  bool std = false;
-  for (int32_t i = 0; allow_std && i < len; ++i)
-  {
-    std = std || p[i] == '+' || p[i] == '/' || p[i] == '=';
-  }
-  if (std)
-  {
-    if (len % 4 != 0)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    for (int32_t pad = 0; pad < 2 && len > 0 && p[len - 1] == '='; ++pad)
-    {
-      --len;
-    }
-  }
-  if (len <= 0 || len % 4 == 1)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  uint32_t acc = 0;
-  int32_t bits = 0;
-  int32_t w = 0;
-  for (int32_t i = 0; i < len; ++i)
-  {
-    int32_t v = b64_value(p[i], std);
-    if (v < 0)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    acc = (acc << 6) | (uint32_t)v;
-    bits += 6;
-    if (bits >= 8)
-    {
-      bits -= 8;
-      dst[w++] = (uint8_t)(acc >> bits);
-      acc &= (1u << bits) - 1u;
-    }
-  }
-  *out_len = w;
-  return AZ_IOT_OK;
-}
-
-/**
- * @brief Decode @p src (see b64_decode()) into the free part of @p s and claim the bytes written.
- *
- * @return AZ_IOT_OK with @p out in @p s; AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit;
+ * @return AZ_IOT_OK with @p out in @p s; AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit;
  *         AZ_IOT_ERR_INVALID_ARG if @p src is empty or malformed.
  */
 static az_iot_result scratch_b64_decode(su_scratch* s, az_span src, bool allow_std, az_span* out)
 {
   int32_t len = az_span_size(src);
   s->need = (len / 4) * 3 + ((len % 4) * 3) / 4;
-  if (s->need > s->cap - s->used)
+  az_iot_result r = az_iot_base64_decode(
+      src, allow_std, az_span_create(s->buf + s->used, s->cap - s->used), out);
+  if (r == AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    s->used += az_span_size(*out);
   }
-  int32_t written = 0;
-  if (b64_decode(src, allow_std, s->buf + s->used, &written) != AZ_IOT_OK)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  *out = az_span_create(s->buf + s->used, written);
-  s->used += written;
-  return AZ_IOT_OK;
+  return r;
 }
 
 /**
- * @brief Decode writable @p src (see b64_decode()) in place.
+ * @brief Decode writable @p src (see az_iot_base64_decode()) in place.
  *
  * @return AZ_IOT_OK with @p out at the start of @p src; AZ_IOT_ERR_INVALID_ARG if empty or
  *         malformed.
  */
 static az_iot_result b64_decode_in_place(az_span src, bool allow_std, az_span* out)
 {
-  int32_t written = 0;
-  if (b64_decode(src, allow_std, az_span_ptr(src), &written) != AZ_IOT_OK)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  *out = az_span_create(az_span_ptr(src), written);
-  return AZ_IOT_OK;
+  return az_iot_base64_decode(src, allow_std, src, out);
 }
 
 /**

@@ -270,6 +270,14 @@ typedef struct
   int download_calls;
   char download_file_ids[MAX_OPS][32];
   char download_urls[MAX_OPS][64];
+
+  /* Key, exponent and signature of the last verify_rs256 call. */
+  uint8_t verify_mod[8];
+  size_t verify_mod_len;
+  uint8_t verify_exp[8];
+  size_t verify_exp_len;
+  uint8_t verify_sig[8];
+  size_t verify_sig_len;
 } hook_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
@@ -391,15 +399,16 @@ static az_iot_result mock_verify_rs256(
     const uint8_t* sig,
     size_t sig_len)
 {
-  (void)mod;
-  (void)mod_len;
-  (void)exp;
-  (void)exp_len;
   (void)signed_data;
   (void)signed_len;
-  (void)sig;
-  (void)sig_len;
   hook_log* l = mock_log(self);
+  /* Truncated copies; the length is kept whole so a wrong decode still shows. */
+  memcpy(l->verify_mod, mod, mod_len < sizeof(l->verify_mod) ? mod_len : sizeof(l->verify_mod));
+  l->verify_mod_len = mod_len;
+  memcpy(l->verify_exp, exp, exp_len < sizeof(l->verify_exp) ? exp_len : sizeof(l->verify_exp));
+  l->verify_exp_len = exp_len;
+  memcpy(l->verify_sig, sig, sig_len < sizeof(l->verify_sig) ? sig_len : sizeof(l->verify_sig));
+  l->verify_sig_len = sig_len;
   log_op(l, OP_VERIFY, 0);
   return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
 }
@@ -4659,6 +4668,20 @@ static const char* large_signature_patch(void)
   return patch;
 }
 
+/* The last verify_rs256 (the manifest's) got the escaped standard-base64
+ * modulus "\/\/\/\/" as FF FF FF, the exponent and the signature decoded. */
+static void assert_signing_key_decoded(const hook_log* l)
+{
+  static const uint8_t ff[] = { 0xFF, 0xFF, 0xFF };
+  static const uint8_t sig[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+  assert_int_equal(l->verify_mod_len, sizeof(ff));
+  assert_memory_equal(l->verify_mod, ff, sizeof(ff));
+  assert_int_equal(l->verify_exp_len, sizeof(k_root_exp));
+  assert_memory_equal(l->verify_exp, k_root_exp, sizeof(k_root_exp));
+  assert_int_equal(l->verify_sig_len, sizeof(sig));
+  assert_memory_equal(l->verify_sig, sig, sizeof(sig));
+}
+
 static void large_signature_is_verified(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4668,12 +4691,15 @@ static void large_signature_is_verified(void** state)
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_signing_key_decoded(&fx->log);
 
   az_iot_su_client_update_request req;
   az_iot_su_client_update_manifest manifest;
+  memset(&fx->log.verify_mod, 0, sizeof(fx->log.verify_mod));
   assert_int_equal(
       parse_with_roots(&fx->log, large_signature_patch(), k_root_keys, 1, &req, &manifest),
       AZ_IOT_OK);
+  assert_signing_key_decoded(&fx->log);
 }
 
 /* An offer near AZ_IOT_SU_REQUEST_BUFFER_SIZE whose size is almost all the
@@ -4695,6 +4721,8 @@ static void near_limit_nested_signing_key_is_verified(void** state)
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.verify_mod_len, sizeof(k_root_mod));
+  assert_memory_equal(fx->log.verify_mod, k_root_mod, sizeof(k_root_mod));
 }
 
 /* A signature part that does not fit the scratch is logged as too large; a
