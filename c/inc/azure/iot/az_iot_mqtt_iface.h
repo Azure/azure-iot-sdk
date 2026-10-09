@@ -282,7 +282,9 @@ extern "C"
     /* The code that came off the wire, verbatim, for the ack this event carries
      * (a CONNACK return/reason code, a SUBACK return/reason code, a PUBACK reason code). A non-zero
      * value is always that code, including the granted QoS on a SUBACK that
-     * succeeded -- a grant is diagnostic too. Only 0 is ambiguous: it means
+     * succeeded -- a grant is diagnostic too. Exception: for a publish the client
+     * dropped unacknowledged, no PUBACK arrived and the code is the client's own
+     * (az_mqtt: 0x80, or 0x95 over the server's Maximum Packet Size). Only 0 is ambiguous: it means
      * either "no code applies here" or "a producer that does not populate this
      * field", and nothing can tell those apart, which is the reason no decision
      * may rest on it.
@@ -433,7 +435,7 @@ extern "C"
    *         which a client reports for a publish over the server's Maximum Packet Size (not a
    *         PUBACK code on the wire).
    * @retval AZ_IOT_ERR_BUSY MQTT 5: 0x97 (quota exceeded).
-   * @retval AZ_IOT_ERR_MQTT Any other code, or an unknown @p version.
+   * @retval AZ_IOT_ERR_MQTT Any other code, or a non-zero code with an unknown @p version.
    */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_puback_result(az_iot_mqtt_version version, int puback_code);
