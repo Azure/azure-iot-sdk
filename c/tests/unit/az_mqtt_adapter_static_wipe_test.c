@@ -4,8 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter with static clients (az_mqtt_static_config.h): credentials copied by connect()
- * are wiped from the static slot when released (the next connect) and when the client is
- * destroyed. Includes the MQTT 5 client to inspect its slots. */
+ * are wiped from the static slot when released (the next connect, even refused) and when the
+ * client is destroyed. Includes the MQTT 5 client to inspect its slots. */
 #include "az_mqtt_static_config.h"
 
 #include "az_iot_mqtt_az_mqtt_v5.c"
@@ -30,14 +30,15 @@ static bool holds(void const* data, size_t size, char const* text)
   return false;
 }
 
-static az_iot_result connect_with(az_iot_mqtt_client* c, char const* password)
+static az_iot_result connect_with(az_iot_mqtt_client* c, char const* password, bool clean_start)
 {
   az_iot_mqtt_connect_options o = { 0 };
   o.host = "h";
   o.client_id = "c";
   o.username = "u";
   o.password = password;
-  o.clean_start = true;
+  o.clean_start = clean_start;
+  o.session_expiry_seconds = clean_start ? 0 : 60;
   return c->iface->connect(c, &o);
 }
 
@@ -50,15 +51,19 @@ static void credentials_are_wiped_when_released_and_destroyed(void** state)
   _azm_slot const* slot = (_azm_slot const*)(void const*)c;
   size_t const used = offsetof(_azm_slot, in_use);
 
-  assert_int_equal(connect_with(c, "FIRST-SECRET"), AZ_IOT_OK);
+  assert_int_equal(connect_with(c, "FIRST-SECRET", true), AZ_IOT_OK);
   assert_true(holds(slot, used, "FIRST-SECRET"));
   (void)c->iface->disconnect(c);
 
   // The next connect releases the previous copies; a shorter password does not overwrite them.
-  assert_int_equal(connect_with(c, "2nd"), AZ_IOT_OK);
+  assert_int_equal(connect_with(c, "2nd", true), AZ_IOT_OK);
   assert_false(holds(slot, used, "-SECRET"));
   assert_true(holds(slot, used, "2nd"));
   (void)c->iface->disconnect(c);
+
+  // A refused connect (no message store for a resumable session) releases them too.
+  assert_int_equal(connect_with(c, "3rd", false), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_false(holds(slot, used, "2nd"));
 
   // destroy() leaves nothing of the client in the slot.
   c->iface->destroy(c);

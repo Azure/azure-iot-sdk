@@ -783,6 +783,8 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   {
     return AZ_IOT_ERR_BUSY;
   }
+  // The previous connect's copies are unused from here: released even if this one is refused.
+  _azm_release_owned(m);
   az_iot_result rc = _azm_check_options(o);
   if (rc != AZ_IOT_OK)
   {
@@ -810,7 +812,6 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   }
 #endif
 
-  _azm_release_owned(m);
   _AZM(client_options) options;
   memset(&options, 0, sizeof(options));
   if (!_azm_copy_options(m, o, &options))
