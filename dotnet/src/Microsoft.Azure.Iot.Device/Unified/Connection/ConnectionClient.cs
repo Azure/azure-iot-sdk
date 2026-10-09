@@ -182,7 +182,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
                         }
 
-                        // Certificate signing operation has ended, so stop tracking it locally
+                        // Certificate signing operation has ended successfully, so stop tracking it locally
                         _pendingCertificateSigningOperations.TryRemove(requestId, out _);
 
                         pendingCertificateSigningOperation.SetCompleted(response);
@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     }
                     else
                     {
-                        // Certificate signing operation has ended, so stop tracking it locally
+                        // Certificate signing operation has ended in an error, so stop tracking it locally
                         _pendingCertificateSigningOperations.TryRemove(requestId, out _);
 
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
