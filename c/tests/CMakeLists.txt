@@ -709,8 +709,13 @@ if(AZ_IOT_WITH_AZ_MQTT)
     endforeach()
     target_compile_definitions(az_iot_tests_az_mqtt_adapter_static_tiny PRIVATE
         AZ_MQTT_STATIC_TINY_TRANSPORT)
+    # Static clients: credentials wiped from the slot (inspects the MQTT 5 client's slots).
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_static_wipe
+        unit/az_mqtt_adapter_static_wipe_test.c
+        support/az_mqtt_static_common.c)
     foreach(_t az_iot_tests_az_mqtt_adapter_sizes az_iot_tests_az_mqtt_adapter_sizes_static
-            az_iot_tests_az_mqtt_adapter_static az_iot_tests_az_mqtt_adapter_static_tiny)
+            az_iot_tests_az_mqtt_adapter_static az_iot_tests_az_mqtt_adapter_static_tiny
+            az_iot_tests_az_mqtt_adapter_static_wipe)
         target_include_directories(${_t} PRIVATE
             ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
             ${PROJECT_SOURCE_DIR}/src/core ${CMAKE_CURRENT_SOURCE_DIR}/support)
