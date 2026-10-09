@@ -73,6 +73,9 @@
 #error \
     "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must be 0 or hold one packet of AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE"
 #endif
+#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE > 2147483647
+#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must be at most 2147483647 (an az_span size)"
+#endif
 
 /** @brief Room for the strings of one received PUBLISH: its bytes, plus one NUL per string. */
 #define _AZM_STRINGS_SIZE \
