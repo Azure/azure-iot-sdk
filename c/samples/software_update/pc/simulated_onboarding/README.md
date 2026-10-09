@@ -138,7 +138,7 @@ Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MIS
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
-| `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
+| `AZ_IOT_PAHO_TRACE=<level>` | Enable the Paho MQTT library's trace logging (`error`, `protocol`, `min`, `medium`, `max`; any other value means `min`). The lines are logged at `TRACE` by the `paho` component, so also set `AZ_IOT_SU_LOG_LEVEL=trace`. Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
 
 ```bash
 # Force step 1 install to fail -> reverse-order rollback, failure reported.
@@ -341,7 +341,7 @@ startup lines are all it prints.
 | No update offered, no error | Nothing is deployed, the deployment is not an `OnboardingUpdate` job, it was created after the startup check, or `AZ_IOT_SU_MANUFACTURER` / `AZ_IOT_SU_MODEL` do not match the update's compatibility. |
 | `Update workflow: ... -> Failed` | A manifest signature not under the Microsoft root keys (see [Root keys](#root-keys)), a payload hash mismatch, or an install failure; `SU_SIM_FAIL_STEP` and `SU_SIM_HASH_MISMATCH` force the last two. |
 | Repeating `TCP/TLS connect failure` | DPS is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `connection lost: (unknown)` | Set `AZ_IOT_PAHO_TRACE=1` to see the cause. |
+| `connection lost: (unknown)` | Set `AZ_IOT_PAHO_TRACE=protocol` and `AZ_IOT_SU_LOG_LEVEL=trace` to see the cause. |
 | `The connection faulted and will not recover on its own.`, exit 1 | A connection lifecycle settled at `Faulted`; see the SDK log lines before it. |
 
 ## Where to look in `main.c`
