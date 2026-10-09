@@ -4,12 +4,13 @@
 
 /* SPDX-License-Identifier: MIT */
 /**
- * @file az_mqtt_asymmetric_sizes.h
- * @brief az_mqtt adapter sizes of az_mqtt_adapter_sizes_test.c: receive larger than send.
- * Included first; replaces any size from the build.
+ * @file az_mqtt_static_config.h
+ * @brief az_mqtt adapter configuration of az_mqtt_adapter_static_test.c: static clients. Included
+ * first; replaces any adapter configuration from the build. AZ_MQTT_STATIC_TINY_TRANSPORT: a
+ * transport area smaller than any transport.
  */
-#ifndef AZ_MQTT_ASYMMETRIC_SIZES_H
-#define AZ_MQTT_ASYMMETRIC_SIZES_H
+#ifndef AZ_MQTT_STATIC_CONFIG_H
+#define AZ_MQTT_STATIC_CONFIG_H
 
 #undef AZ_IOT_AZ_MQTT_CONFIG_FILE
 #undef AZ_IOT_AZ_MQTT_FOOTPRINT
@@ -23,9 +24,12 @@
 #undef AZ_IOT_AZ_MQTT_TRANSPORT_SIZE
 #undef AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE
 #define AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE 1024
-#define AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE 8192
-#ifdef AZ_MQTT_ASYMMETRIC_STATIC
-#define AZ_IOT_AZ_MQTT_STATIC_CLIENTS 1 // One client of each version, in static storage.
+#define AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE 1024
+#define AZ_IOT_AZ_MQTT_STATIC_CLIENTS 2
+#define AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE 64
+#define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE 0
+#ifdef AZ_MQTT_STATIC_TINY_TRANSPORT
+#define AZ_IOT_AZ_MQTT_TRANSPORT_SIZE 16
 #endif
 
-#endif // AZ_MQTT_ASYMMETRIC_SIZES_H
+#endif // AZ_MQTT_STATIC_CONFIG_H

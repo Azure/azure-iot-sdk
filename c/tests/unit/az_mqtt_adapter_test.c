@@ -168,8 +168,12 @@ static void record_connect(const az_iot_mqtt_event* evt, void* ctx)
 }
 
 /** @brief connect() accepts @p o; the first process_loop() reports @p expected; then a new
- * connect() is accepted. */
-static void connect_fails_before_any_io(az_iot_mqtt_connect_options o, az_iot_result expected)
+ * connect() is accepted. Static clients: connect() refuses @p o when its @p copied bytes of strings
+ * do not fit AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE. */
+static void connect_fails_before_any_io(
+    az_iot_mqtt_connect_options o,
+    size_t copied,
+    az_iot_result expected)
 {
   az_iot_mqtt_factory* fs[]
       = { az_iot_az_mqtt_factory_create_v3_1_1(), az_iot_az_mqtt_factory_create_v5() };
@@ -179,8 +183,21 @@ static void connect_fails_before_any_io(az_iot_mqtt_connect_options o, az_iot_re
     assert_non_null(c);
     connect_result r = { 0 };
     c->iface->set_inbound_cb(c, record_connect, &r);
-    assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
-    assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0
+    if (copied > AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE)
+    {
+      assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      r.connected_events = 1;
+      r.status = expected;
+    }
+    else
+#else
+    (void)copied;
+#endif
+    {
+      assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
+      assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
+    }
     assert_int_equal(r.connected_events, 1);
     assert_int_equal(r.status, expected);
     // The attempt is over: a new one is accepted.
@@ -207,7 +224,7 @@ static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state
   o.lwt.topic = text;
   o.lwt.payload = (const uint8_t*)text;
   o.lwt.payload_len = sizeof(text) - 1;
-  connect_fails_before_any_io(o, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  connect_fails_before_any_io(o, 5 * sizeof(text), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
@@ -218,7 +235,7 @@ static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
   o.lwt.topic = "will";
   o.lwt.payload = will;
   o.lwt.payload_len = sizeof(will);
-  connect_fails_before_any_io(o, AZ_IOT_ERR_INVALID_ARG);
+  connect_fails_before_any_io(o, sizeof(will), AZ_IOT_ERR_INVALID_ARG);
 }
 
 // ──────────────────────── PUBACK, against an in-process server ──────────────────

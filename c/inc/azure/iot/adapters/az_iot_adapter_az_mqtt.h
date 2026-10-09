@@ -14,7 +14,9 @@
  *
  * Register one or both factories with the connection client; the SDK picks one by MQTT
  * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its
- * buffers, sized at build time (see the AZ_IOT_AZ_MQTT_* CMake cache variables).
+ * buffers, sized at build time (see the AZ_IOT_AZ_MQTT_* CMake cache variables). Built with
+ * AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0, the adapter allocates nothing: the factory is static and
+ * create() returns NULL when all clients are in use.
  *
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows. Non-extractable keys:
  * az_iot_mqtt_tls_options.client_key_uri + crypto_engine_id (an OpenSSL 3 provider), OpenSSL
@@ -34,15 +36,15 @@ extern "C"
 
   /**
    * @brief Create a factory of MQTT 3.1.1 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
+   * @return The factory, or NULL when out of memory (static clients: always the same factory).
+   * Release it with az_iot_az_mqtt_factory_destroy().
    */
   az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v3_1_1(void);
 
   /**
    * @brief Create a factory of MQTT 5 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
+   * @return The factory, or NULL when out of memory (static clients: always the same factory).
+   * Release it with az_iot_az_mqtt_factory_destroy().
    */
   az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v5(void);
 

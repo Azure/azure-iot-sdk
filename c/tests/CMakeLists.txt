@@ -668,7 +668,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter's sizes: its az_iot_az_mqtt_config.h, with the same definitions.
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
-    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|SEND_|RECEIVE_|INFLIGHT_|USER_PROPERTIES_)")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|SEND_|RECEIVE_|INFLIGHT_|USER_PROPERTIES_|STATIC_|TRANSPORT_|CONNECT_STRINGS_|MESSAGE_STORAGE_)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
@@ -688,19 +688,37 @@ if(AZ_IOT_WITH_AZ_MQTT)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
 
-    # The adapter with a receive buffer larger than its send buffer, against an in-process server.
-    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes
-        unit/az_mqtt_adapter_sizes_test.c
-        support/az_mqtt_asymmetric_common.c
-        support/az_mqtt_asymmetric_v3.c
-        support/az_mqtt_asymmetric_v5.c)
-    target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
-        ${CMAKE_CURRENT_SOURCE_DIR}/support)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
-    if(WIN32)
-        target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
-    endif()
+    # The adapter with a receive buffer larger than its send buffer, against an in-process server;
+    # its clients allocated, then static.
+    foreach(_t az_iot_tests_az_mqtt_adapter_sizes az_iot_tests_az_mqtt_adapter_sizes_static)
+        az_iot_add_cmocka_test(${_t}
+            unit/az_mqtt_adapter_sizes_test.c
+            support/az_mqtt_asymmetric_common.c
+            support/az_mqtt_asymmetric_v3.c
+            support/az_mqtt_asymmetric_v5.c)
+    endforeach()
+    target_compile_definitions(az_iot_tests_az_mqtt_adapter_sizes_static PRIVATE
+        AZ_MQTT_ASYMMETRIC_STATIC)
+    # Static clients: limits, connect strings, message store; then a transport area too small.
+    foreach(_t az_iot_tests_az_mqtt_adapter_static az_iot_tests_az_mqtt_adapter_static_tiny)
+        az_iot_add_cmocka_test(${_t}
+            unit/az_mqtt_adapter_static_test.c
+            support/az_mqtt_static_common.c
+            support/az_mqtt_static_v3.c
+            support/az_mqtt_static_v5.c)
+    endforeach()
+    target_compile_definitions(az_iot_tests_az_mqtt_adapter_static_tiny PRIVATE
+        AZ_MQTT_STATIC_TINY_TRANSPORT)
+    foreach(_t az_iot_tests_az_mqtt_adapter_sizes az_iot_tests_az_mqtt_adapter_sizes_static
+            az_iot_tests_az_mqtt_adapter_static az_iot_tests_az_mqtt_adapter_static_tiny)
+        target_include_directories(${_t} PRIVATE
+            ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+            ${CMAKE_CURRENT_SOURCE_DIR}/support)
+        target_link_libraries(${_t} PRIVATE az_mqttv3 az_mqttv5)
+        if(WIN32)
+            target_link_libraries(${_t} PRIVATE ws2_32)
+        endif()
+    endforeach()
 
     # The adapter compiled in, so its az_mqtt callbacks can be called directly.
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_ack

@@ -11,7 +11,8 @@
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows; WebSockets, HTTP CONNECT proxy, and
   key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
   without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
-  config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
+  config header. With `AZ_IOT_AZ_MQTT_STATIC_CLIENTS` the adapter allocates nothing: a fixed number
+  of clients in static storage. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.

@@ -22,21 +22,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-char* az_iot_az_mqtt_strdup(const char* s)
-{
-  if (s == NULL)
-  {
-    return NULL;
-  }
-  size_t const n = strlen(s) + 1;
-  char* copy = (char*)malloc(n);
-  if (copy != NULL)
-  {
-    memcpy(copy, s, n);
-  }
-  return copy;
-}
-
 bool az_iot_az_mqtt_has_text(const char* s) { return s != NULL && s[0] != '\0'; }
 
 az_iot_result az_iot_az_mqtt_request_result(az_result rc)
@@ -141,7 +126,9 @@ const char* az_iot_az_mqtt_string_writer_add(az_iot_az_mqtt_string_writer* w, az
   return out;
 }
 
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS == 0
 void az_iot_az_mqtt_factory_free(void* factory_ctx) { free(factory_ctx); }
+#endif
 
 void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory)
 {
