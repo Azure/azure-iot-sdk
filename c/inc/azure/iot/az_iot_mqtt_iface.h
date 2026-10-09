@@ -422,13 +422,16 @@ extern "C"
 
   /**
    * @brief Map a PUBACK code onto the status an adapter reports with
-   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters route every PUBACK through it.
+   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters should route every PUBACK through it; of the bundled
+   * adapters, only az_mqtt does.
    *
    * @param version Selects the code scheme.
    * @param puback_code MQTT 5 reason code; MQTT 3.1.1: 0. Negative: the adapter's own failure.
    *
    * @retval AZ_IOT_OK 0; MQTT 5: any code below 0x80 (0x10 included).
-   * @retval AZ_IOT_ERR_PUBLISH_REFUSED MQTT 5: 0x87, 0x90, 0x95, 0x99; the broker will repeat it.
+   * @retval AZ_IOT_ERR_PUBLISH_REFUSED MQTT 5: 0x87, 0x90, 0x99, which the broker repeats; 0x95,
+   *         which a client reports for a publish over the server's Maximum Packet Size (not a
+   *         PUBACK code on the wire).
    * @retval AZ_IOT_ERR_BUSY MQTT 5: 0x97 (quota exceeded).
    * @retval AZ_IOT_ERR_MQTT Any other code, or an unknown @p version.
    */

@@ -400,8 +400,8 @@ static void puback_v5_success_codes_map_to_ok(void** state)
 static void puback_v5_permanent_codes_map_to_publish_refused(void** state)
 {
   (void)state;
-  /* 0x87 not authorized, 0x90 topic name invalid, 0x95 packet too large, 0x99 payload format
-   * invalid. */
+  /* 0x87 not authorized, 0x90 topic name invalid, 0x99 payload format invalid; 0x95 packet too
+   * large, which az_mqtt reports for a publish over the server's Maximum Packet Size. */
   static const int codes[] = { 0x87, 0x90, 0x95, 0x99 };
   for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
   {

@@ -289,25 +289,25 @@ static void send_all(test_sock s, const uint8_t* p, size_t n)
 /** @brief Runs @p c until @p s has a connection to accept; returns it. */
 static test_sock accept_client(az_iot_mqtt_client* c, test_sock s)
 {
-  for (int step = 0; step < STEPS; step++)
+  test_sock conn = TEST_INVALID_SOCK;
+  for (int step = 0; step < STEPS && conn == TEST_INVALID_SOCK; step++)
   {
     assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
     if (readable(s))
     {
-      test_sock conn = accept(s, NULL, NULL);
-      assert_true(conn != TEST_INVALID_SOCK);
-      return conn;
+      conn = accept(s, NULL, NULL);
     }
   }
-  fail_msg("no connection");
-  return TEST_INVALID_SOCK;
+  assert_true(conn != TEST_INVALID_SOCK);
+  return conn;
 }
 
 /** @brief One whole packet (remaining length under 128) from the client, running it meanwhile. */
 static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size_t size)
 {
   size_t have = 0;
-  for (int step = 0; step < STEPS; step++)
+  size_t packet_len = 0;
+  for (int step = 0; step < STEPS && packet_len == 0; step++)
   {
     if (have >= 2)
     {
@@ -315,7 +315,8 @@ static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size
       if (have >= 2u + buf[1])
       {
         assert_int_equal(have, 2u + buf[1]);
-        return have;
+        packet_len = have;
+        break;
       }
     }
     assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
@@ -327,8 +328,8 @@ static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size
       have += (size_t)got;
     }
   }
-  fail_msg("no packet");
-  return 0;
+  assert_true(packet_len > 0);
+  return packet_len;
 }
 
 /** @brief Accepts the client's connection, answers its CONNECT, and waits for CONNECTED. */

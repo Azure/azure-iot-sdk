@@ -188,7 +188,8 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version
 
 /* MQTT 5 PUBACK reason codes (spec 3.4.2.1) the broker will repeat for the same
  * PUBLISH. 0x97 quota exceeded is transient; 0x80, 0x83, 0x91 and the rest are
- * read as transient too. */
+ * read as transient too. 0x95 is not a PUBACK code on the wire: az_mqtt reports
+ * it for a publish it dropped as over the server's Maximum Packet Size. */
 #define PUBACK_V5_FAILURE_MIN 0x80
 #define PUBACK_V5_NOT_AUTHORIZED 0x87
 #define PUBACK_V5_TOPIC_NAME_INVALID 0x90
