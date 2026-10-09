@@ -124,8 +124,9 @@ static void destination_bounds_are_checked(void** state)
   assert_int_equal(decode("AQID", false, out, 3, &got), AZ_IOT_OK);
   assert_int_equal(decode("AQ", false, out, 1, &got), AZ_IOT_OK);
   assert_int_equal(decode("AQ==", true, out, 1, &got), AZ_IOT_OK);
-  assert_int_equal(az_iot_base64_decode(span_of("AQID"), false, AZ_SPAN_FROM_BUFFER(out), NULL),
-                   AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_base64_decode(span_of("AQID"), false, AZ_SPAN_FROM_BUFFER(out), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* Lengths around the 64-character block, decoded into a separate buffer and in place. */

@@ -42,11 +42,7 @@ extern "C"
    * alphabet, misplaced padding, a bad length or nonzero trailing bits;
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out is too small.
    */
-  az_iot_result az_iot_base64_decode(
-      az_span in,
-      bool allow_std,
-      az_span out,
-      az_span* out_decoded);
+  az_iot_result az_iot_base64_decode(az_span in, bool allow_std, az_span out, az_span* out_decoded);
 
 #ifdef __cplusplus
 }
