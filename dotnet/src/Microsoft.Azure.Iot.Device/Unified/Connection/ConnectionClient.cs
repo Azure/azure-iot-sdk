@@ -116,6 +116,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
+            //TODO how does hub respond if device loses connection at any point during this process?
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             if (CurrentConnectionContext == null)
