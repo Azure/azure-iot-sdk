@@ -8,12 +8,13 @@
  * client is destroyed. Includes the MQTT 5 client to inspect its slots. */
 #include "az_mqtt_static_config.h"
 
-#include "az_iot_mqtt_az_mqtt_v5.c"
-
 #include <setjmp.h>
 #include <stdarg.h>
+#include <stddef.h>
 
 #include <cmocka.h>
+
+#include "az_iot_mqtt_az_mqtt_v5.c"
 
 /** @brief Whether @p size bytes at @p data hold @p text. */
 static bool holds(void const* data, size_t size, char const* text)

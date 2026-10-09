@@ -22,6 +22,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0 && defined(__GNUC__)
+// Static clients allocate nothing: a heap call below fails to compile.
+#pragma GCC poison malloc calloc realloc free
+#endif
+
 bool az_iot_az_mqtt_has_text(const char* s) { return s != NULL && s[0] != '\0'; }
 
 az_iot_result az_iot_az_mqtt_request_result(az_result rc)

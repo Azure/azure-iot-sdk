@@ -51,6 +51,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS > 0 && defined(__GNUC__)
+// Static clients allocate nothing: a heap call below fails to compile.
+#pragma GCC poison malloc calloc realloc free
+#endif
+
 #if AZ_IOT_AZ_MQTT_V == 5
 /** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
 #define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
