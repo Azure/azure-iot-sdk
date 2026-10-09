@@ -148,6 +148,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             {
                 CertificateSigningOperation? pendingCertificateSigningOperation = null;
                 string? requestId = null;
+                bool hasRequestFinished = false;
                 try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
@@ -172,6 +173,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     }
                     else if (status.Equals("200"))
                     {
+                        hasRequestFinished = true;
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
                         if (HandleCertificateSigningCompleteAsync != null)
                         {
@@ -189,6 +191,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     }
                     else
                     {
+                        hasRequestFinished = true;
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
                         pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error, RequestId = requestId });
                         return;
@@ -211,7 +214,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 finally
                 {
                     // Any terminal outcome (success, hub error, unreadable response, or a throwing user callback) ends the operation, so stop tracking it locally
-                    if (requestId != null && pendingCertificateSigningOperation != null && pendingCertificateSigningOperation.Completed.IsCompleted)
+                    if (requestId != null && hasRequestFinished)
                     {
                         _pendingCertificateSigningOperations.TryRemove(requestId, out _);
                     }
