@@ -1062,6 +1062,44 @@ static void a_truncated_failed_body_faults_with_a_protocol_error(void** state)
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
 }
 
+/* The fallback accepts only deviceId without assignedHub; every other body the
+ * dependency parser rejects stays a protocol error. */
+static void a_failed_body_with_only_assigned_hub_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"assignedHub\":\"h\",\"errorCode\":403}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_failed_body_with_a_non_string_device_id_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":7,\"errorCode\":403}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_failed_body_with_trailing_content_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":403}} {}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
 /* A request-level refusal (4xx topic, no operation) carries the service's
  * errorCode and message and stays retriable. */
 static void a_request_level_refusal_carries_the_service_error(void** state)
@@ -5170,6 +5208,12 @@ int main(void)
         a_malformed_failed_body_faults_with_a_protocol_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_truncated_failed_body_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_only_assigned_hub_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_a_non_string_device_id_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_trailing_content_faults_with_a_protocol_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_level_refusal_carries_the_service_error, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

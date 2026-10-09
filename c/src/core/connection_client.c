@@ -2620,19 +2620,29 @@ static az_iot_result dps_enter_registration_state(az_json_reader* jr, az_span pa
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/** @brief Whether the current token is the property name @p name. */
+static bool dps_json_key_is(const az_json_reader* jr, const char* name)
+{
+  return jr->token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+      && az_json_token_is_text_equal(&jr->token, az_span_create_from_str((char*)(uintptr_t)name));
+}
+
 /**
  * @brief Read an operation-level "failed" or "disabled" registration verdict.
  *
- * Fallback for bodies azure-sdk-for-c rejects: its parser fails a
- * registrationState that has deviceId but no assignedHub, which is how the
- * service reports e.g. a failed reprovisioning.
+ * Fallback for the one body shape azure-sdk-for-c rejects that is still a
+ * verdict: a registrationState with deviceId but no assignedHub, which is how
+ * the service reports e.g. a failed reprovisioning. Every field that parser
+ * type-checks is checked the same way here, so any other malformed body is
+ * still rejected.
  *
  * @param payload Response body (non-empty).
  * @param[out] out On success, operation_id, operation_status and
  * registration_state (extended_error_code, error_message) are set; spans point
  * into @p payload.
- * @return true if @p payload is a JSON object with a string operationId and a
- * "failed" or "disabled" status, and every field read is well formed.
+ * @return true if @p payload is exactly one JSON object with a string
+ * operationId, a "failed" or "disabled" status, and a registrationState object
+ * with a string deviceId and no assignedHub.
  */
 static bool dps_parse_operation_refusal(
     az_span payload,
@@ -2648,6 +2658,7 @@ static bool dps_parse_operation_refusal(
 
   az_span operation_id = AZ_SPAN_EMPTY;
   bool have_status = false;
+  bool have_device_id = false;
   az_iot_provisioning_client_operation_status status = AZ_IOT_PROVISIONING_STATUS_FAILED;
   uint32_t error_code = 0;
   az_span error_message = AZ_SPAN_EMPTY;
@@ -2662,10 +2673,12 @@ static bool dps_parse_operation_refusal(
     {
       break;
     }
-    bool is_operation_id = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("operationId"));
-    bool is_status = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("status"));
-    bool is_state
-        = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(DPS_JSON_REGISTRATION_STATE));
+    bool is_operation_id = dps_json_key_is(&jr, "operationId");
+    bool is_status = dps_json_key_is(&jr, "status");
+    bool is_state = dps_json_key_is(&jr, DPS_JSON_REGISTRATION_STATE);
+    bool is_code = dps_json_key_is(&jr, "errorCode");
+    bool is_text = dps_json_key_is(&jr, "trackingId") || dps_json_key_is(&jr, "message")
+        || dps_json_key_is(&jr, "timestampUtc");
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
       return false;
@@ -2680,14 +2693,15 @@ static bool dps_parse_operation_refusal(
     }
     else if (is_status)
     {
-      if (jr.token.kind == AZ_JSON_TOKEN_STRING
-          && az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("failed")))
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("failed")))
       {
         status = AZ_IOT_PROVISIONING_STATUS_FAILED;
       }
-      else if (
-          jr.token.kind == AZ_JSON_TOKEN_STRING
-          && az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("disabled")))
+      else if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("disabled")))
       {
         status = AZ_IOT_PROVISIONING_STATUS_DISABLED;
       }
@@ -2697,8 +2711,26 @@ static bool dps_parse_operation_refusal(
       }
       have_status = true;
     }
-    else if (is_state && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    else if (is_code)
     {
+      if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
+      {
+        return false;
+      }
+    }
+    else if (is_text)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+    }
+    else if (is_state)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
+        return false;
+      }
       for (;;)
       {
         if (az_result_failed(az_json_reader_next_token(&jr)))
@@ -2709,26 +2741,43 @@ static bool dps_parse_operation_refusal(
         {
           break;
         }
-        bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorCode"));
-        bool is_message = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("errorMessage"));
+        if (dps_json_key_is(&jr, "assignedHub"))
+        {
+          return false;
+        }
+        bool is_device_id = dps_json_key_is(&jr, "deviceId");
+        bool is_state_code = dps_json_key_is(&jr, "errorCode");
+        bool is_message = dps_json_key_is(&jr, "errorMessage");
+        bool is_state_text = dps_json_key_is(&jr, "lastUpdatedDateTimeUtc");
+        bool is_payload = dps_json_key_is(&jr, "payload");
         if (az_result_failed(az_json_reader_next_token(&jr)))
         {
           return false;
         }
-        if (is_code)
+        if (is_state_code)
         {
           if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
           {
             return false;
           }
         }
-        else if (is_message)
+        else if (is_device_id || is_message || is_state_text)
         {
           if (jr.token.kind != AZ_JSON_TOKEN_STRING)
           {
             return false;
           }
-          error_message = jr.token.slice;
+          have_device_id = have_device_id || is_device_id;
+          if (is_message)
+          {
+            error_message = jr.token.slice;
+          }
+        }
+        else if (
+            is_payload && jr.token.kind != AZ_JSON_TOKEN_NULL
+            && jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+        {
+          return false;
         }
         else if (az_result_failed(az_json_reader_skip_children(&jr)))
         {
@@ -2741,9 +2790,21 @@ static bool dps_parse_operation_refusal(
       return false;
     }
   }
-  if (!have_status || az_span_size(operation_id) <= 0)
+  if (!have_status || !have_device_id || az_span_size(operation_id) <= 0)
   {
     return false;
+  }
+  /* Only insignificant whitespace may follow the object. */
+  az_span end_token = jr.token.slice;
+  uint8_t* begin = az_span_ptr(payload);
+  int32_t consumed = (int32_t)(az_span_ptr(end_token) - begin) + az_span_size(end_token);
+  for (int32_t i = consumed; i < az_span_size(payload); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return false;
+    }
   }
 
   out->operation_id = operation_id;
