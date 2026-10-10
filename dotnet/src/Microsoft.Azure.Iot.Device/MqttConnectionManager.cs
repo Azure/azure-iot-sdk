@@ -158,7 +158,7 @@ namespace Microsoft.Azure.Iot.Device
                     }
                     catch (Exception e)
                     {
-                        Trace.TraceError("The connected handler threw while being notified of a publish. {0}", e);
+                        Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
                     }
                 });
             }
@@ -189,7 +189,7 @@ namespace Microsoft.Azure.Iot.Device
                     }
                     catch (Exception e)
                     {
-                        Trace.TraceError("The disconnected handler threw while being notified of a publish. {0}", e);
+                        Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
                     }
                 });
             }
