@@ -12,7 +12,8 @@
 #
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, E2E_MQTTV5_SHARED_RESOURCE_GROUP,
 #            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
-#            E2E_MQTTV5_SHARED_ADR_NAMESPACE
+#            E2E_MQTTV5_SHARED_ADR_NAMESPACE,
+#            E2E_MQTTV5_SHARED_ADR_API_VERSION (optional; default 2026-11-02-preview)
 #   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC). On the resource group the
 #            identity needs Contributor, and role assignment write for
 #            Contributor, IoT Hub Data Contributor and Azure Device Registry
@@ -70,7 +71,10 @@ jobs:
           HUB_NAME: ${{ vars.E2E_MQTTV5_SHARED_HUB_NAME }}
           DPS_NAME: ${{ vars.E2E_MQTTV5_SHARED_DPS_NAME }}
           ADR_NAMESPACE: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE }}
+          ADR_API_VERSION: ${{ vars.E2E_MQTTV5_SHARED_ADR_API_VERSION }}
         run: |
+          $extra = @{}
+          if ($env:ADR_API_VERSION) { $extra.AdrApiVersion = $env:ADR_API_VERSION }
           ./c/eng/e2e-mqttv5-adr-namespace.ps1 -SubscriptionId $env:SUBSCRIPTION_ID `
             -ResourceGroup $env:RESOURCE_GROUP -HubName $env:HUB_NAME `
-            -DpsName $env:DPS_NAME -NamespaceName $env:ADR_NAMESPACE
+            -DpsName $env:DPS_NAME -NamespaceName $env:ADR_NAMESPACE @extra

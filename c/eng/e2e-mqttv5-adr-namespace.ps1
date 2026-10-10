@@ -28,6 +28,8 @@ param(
     [Parameter(Mandatory)][string]$HubName,
     [Parameter(Mandatory)][string]$DpsName,
     [Parameter(Mandatory)][string]$NamespaceName,
+    # Use the version the namespace was linked with: the namespace principalId differs per
+    # api-version, so grants and link must share one. 2026-11-01-preview where 11-02 is not enabled.
     [string]$AdrApiVersion = '2026-11-02-preview',
     [string]$HubApiVersion = '2026-10-01-preview',
     # Empty: the first of 2026-11-02-preview / 2026-03-01-preview that ARM serves, else its newest.

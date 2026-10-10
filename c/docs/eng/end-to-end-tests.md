@@ -243,7 +243,8 @@ can disappear from ARM, removing its role assignments; DPS registrations then fa
 (same name, hub region), re-grants the 8 role assignments, re-links hub and DPS, and pushes the
 namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
-and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job). The OIDC identity needs Contributor
+and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
+(default `2026-11-02-preview`) must match the version the namespace was linked with. The OIDC identity needs Contributor
 and role assignment write on the resource group.
 
 > **Software updates e2e** runs in its own workflow
