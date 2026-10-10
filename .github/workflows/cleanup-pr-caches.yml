@@ -45,7 +45,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           REF: refs/pull/${{ github.event.pull_request.number }}/merge
         run: |
-          gh cache list --ref "$REF" --limit 1000
+          gh cache list --ref "$REF" --limit 1000 --json id,key,sizeInBytes --jq '.[] | "\(.id) \(.key) \(.sizeInBytes)"'
           gh cache delete --all --ref "$REF" --succeed-on-no-caches
 
   sweep:
@@ -71,7 +71,7 @@ jobs:
             echo "#$pr: $state"
             [ "$state" = OPEN ] && continue
             if [ "$DRY_RUN" = true ]; then
-              gh cache list --ref "refs/pull/$pr/merge" --limit 1000
+              gh cache list --ref "refs/pull/$pr/merge" --limit 1000 --json id,key,sizeInBytes --jq '.[] | "\(.id) \(.key) \(.sizeInBytes)"'
             else
               gh cache delete --all --ref "refs/pull/$pr/merge" --succeed-on-no-caches
             fi
