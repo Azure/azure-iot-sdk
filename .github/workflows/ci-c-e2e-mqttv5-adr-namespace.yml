@@ -35,6 +35,11 @@ jobs:
     name: ensure ADR namespace
     if: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE != '' }}
     runs-on: ubuntu-24.04
+    # One repair at a time across schedule, dispatch and callers. GitHub keeps
+    # one pending run per group; a third queued run cancels the pending one.
+    concurrency:
+      group: mqttv5-adr-namespace
+      cancel-in-progress: false
     # Above the script's worst case: namespace 10 + role grants 14 + 4 link
     # attempts x 13 + DPS 5 = 81 min, plus ARM latency.
     timeout-minutes: 100

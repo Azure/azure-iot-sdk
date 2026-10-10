@@ -184,6 +184,8 @@ for ($attempt = 1; ; $attempt++) {
 }
 
 # 4. Push the namespace to the DPS data plane (tags-only update).
+# Fresh read: recovery can take over an hour and the PATCH replaces the whole tag map.
+$dps = Invoke-Arm get $DpsUrl
 $dpsTags = @{}
 if ($dps.tags) { $dps.tags.PSObject.Properties | ForEach-Object { $dpsTags[$_.Name] = $_.Value } }
 $dpsTags['adrNamespaceRestored'] = [DateTime]::UtcNow.ToString('o')
