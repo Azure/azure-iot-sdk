@@ -63,6 +63,21 @@ static const char k_failed_body[]
     = "{\"operationId\":\"op-1\",\"status\":\"failed\","
       "\"registrationState\":{\"errorCode\":400207,\"errorMessage\":\"Custom allocation failed\"}}";
 static const char k_disabled_body[] = "{\"operationId\":\"op-1\",\"status\":\"disabled\"}";
+/* A failed reprovisioning as the service sends it: deviceId without
+ * assignedHub, which azure-sdk-for-c's parser rejects. */
+static const char k_failed_reprovision_body[]
+    = "{\"operationId\":\"5.d4efd58e18727f30.2b209797-336b-4390-a470-1ae47878bd73\","
+      "\"status\":\"failed\",\"registrationState\":{\"x509\":{},"
+      "\"registrationId\":\"ut-device\",\"createdDateTimeUtc\":\"2026-10-08T22:51:05.7162705Z\","
+      "\"connectionProfile\":\"classic\",\"deviceId\":\"ut-device\",\"status\":\"failed\","
+      "\"substatus\":\"reprovisionedToInitialAssignment\",\"errorCode\":403,"
+      "\"errorMessage\":\"Unauthorized\",\"lastUpdatedDateTimeUtc\":\"2026-10-09T02:10:32."
+      "6294082Z\","
+      "\"etag\":\"IjU0MDBkZWNhLTAwMDAtMzMwMC0wMDAwLTZhYzg0ZDE4MDAwMCI=\"}}";
+/* A request-level refusal (no operation). */
+#define DPS_RESPONSE_TOPIC_REFUSED "$dps/registrations/res/401/?$rid=1"
+static const char k_refused_body[]
+    = "{\"errorCode\":401002,\"message\":\"Unauthorized\",\"trackingId\":\"t-1\"}";
 
 /* connectionProfile variants. The property is a readOnly string on
  * DeviceRegistrationResult (api-version 2026-11-02-preview) and an extensible
@@ -1833,6 +1848,206 @@ static void dps_disconnect_midflow_faults(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* The body azure-sdk-for-c rejects (deviceId without assignedHub) is a DPS
+ * verdict: it used to be reported as AZ_IOT_ERR_PROTOCOL. */
+static void a_failed_reprovisioning_is_a_dps_verdict_not_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_reprovision_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS);
+  assert_true(fx->log.is_retriable[i]);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_DPS);
+  assert_int_equal(fx->log.error_codes[i], 403);
+  assert_string_equal(fx->log.error_message[i], "Unauthorized");
+}
+
+/* Inject @p body as the registration response; return the DPS FAULTED index,
+ * asserting there was no retry. */
+static size_t fault_without_retry(az_iot_test_conn* fx, const char* topic, const char* body)
+{
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(m, topic, body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  /* Past the policy's delay, so a scheduled retry would have fired. */
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING));
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+  assert_null(fx->client->dps_mqtt);
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_not_equal(i, SIZE_MAX);
+  return i;
+}
+
+static void a_malformed_failed_body_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  /* errorCode must be a number. */
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":\"403\"}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_truncated_failed_body_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":403}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_failed_body_with_only_assigned_hub_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"assignedHub\":\"h\",\"errorCode\":403}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_failed_body_with_a_non_string_device_id_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":7,\"errorCode\":403}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+static void a_failed_body_with_trailing_content_faults_with_a_protocol_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\","
+      "\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":403}} {}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
+}
+
+/* Top-level errorCode/message are kept when registrationState has none, and
+ * registrationState's own values win when it has them. */
+static void a_failed_reprovisioning_keeps_the_top_level_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\",\"errorCode\":401002,"
+      "\"message\":\"top\",\"registrationState\":{\"deviceId\":\"d\"}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->log.error_codes[i], 401002);
+  assert_string_equal(fx->log.error_message[i], "top");
+}
+
+static void a_failed_reprovisioning_prefers_the_registration_state_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  size_t i = fault_without_retry(
+      fx,
+      DPS_RESPONSE_TOPIC_ASSIGNED,
+      "{\"operationId\":\"op-1\",\"status\":\"failed\",\"errorCode\":401002,"
+      "\"message\":\"top\",\"registrationState\":{\"deviceId\":\"d\",\"errorCode\":403,"
+      "\"errorMessage\":\"nested\"}}");
+
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->log.error_codes[i], 403);
+  assert_string_equal(fx->log.error_message[i], "nested");
+}
+
+static void capture_register_error(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  char* out = (char*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && strcmp(component, AZ_IOT_LOG_COMPONENT_DPS) == 0
+      && strncmp(msg, "register: errorCode=", 20) == 0)
+  {
+    size_t n = strlen(msg);
+    n = n < 255u ? n : 255u;
+    memcpy(out, msg, n);
+    out[n] = '\0';
+  }
+}
+
+/* The failure log line carries the operationId with the service's verdict. */
+static void a_failed_registration_logs_its_operation_id(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  char logged[256] = { 0 };
+  az_iot_log_sink sink
+      = { .sink = capture_register_error, .user_ctx = logged, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  az_iot_log_set_global_sink(&sink);
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_log_set_global_sink(NULL);
+
+  assert_string_equal(
+      logged, "register: errorCode=400207 errorMessage=Custom allocation failed operationId=op-1");
+}
+
+static void a_request_level_refusal_carries_the_service_error(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_REFUSED, k_refused_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t i = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(i, SIZE_MAX);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_DPS);
+  assert_true(fx->log.is_retriable[i]);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_DPS);
+  assert_int_equal(fx->log.error_codes[i], 401002);
+  assert_string_equal(fx->log.error_message[i], "Unauthorized");
 }
 
 /* A registration response the SDK cannot parse has no knowable outcome, and
@@ -5062,6 +5277,27 @@ int main(void)
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_malformed_response_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_reprovisioning_is_a_dps_verdict_not_a_protocol_error,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_malformed_failed_body_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_truncated_failed_body_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_only_assigned_hub_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_a_non_string_device_id_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_body_with_trailing_content_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_request_level_refusal_carries_the_service_error, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_reprovisioning_keeps_the_top_level_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_reprovisioning_prefers_the_registration_state_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_registration_logs_its_operation_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_empty_response_body_faults_without_a_null_deref, setup, teardown),
     /* identity validation */
