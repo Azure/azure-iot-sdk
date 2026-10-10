@@ -731,7 +731,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+        ${PROJECT_SOURCE_DIR}/src/core)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
