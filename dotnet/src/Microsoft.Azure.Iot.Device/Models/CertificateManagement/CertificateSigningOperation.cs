@@ -13,8 +13,10 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
     /// Phase 2 (Completed): IoT Hub delivers the issued certificate with a 200 response.
     /// </summary>
     /// <remarks>
-    /// If the operation fails at any point, both <see cref="Accepted"/> and <see cref="Completed"/> will
-    /// throw a <see cref="CertificateSigningRequestFailedException"/> when awaited.
+    /// If the operation fails before <see cref="Accepted"/> completes successfully, both tasks fault with the
+    /// operation's exception. If <see cref="Accepted"/> has already completed successfully, a later failure
+    /// affects only <see cref="Completed"/>. If the completion callback throws, <see cref="Completed"/> faults
+    /// with the callback's exception. Cancellation cancels each task that has not already completed.
     /// </remarks>
     public class CertificateSigningOperation
     {
@@ -41,10 +43,9 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// </summary>
         /// <exception cref="CertificateSigningRequestFailedException">
         /// Thrown when the certificate issuance fails after acceptance, or when IoT hub's issued certificate response
-        /// could not be read. This can also be thrown if the initial request was rejected, since a failure at any phase
-        /// propagates to both <see cref="Accepted"/> and <see cref="Completed"/> tasks. If the
-        /// <see cref="AbstractConnectionClient.HandleCertificateSigningCompleteAsync"/> callback throws, this task fails
-        /// with that exception instead.
+        /// could not be read. It can also be thrown if the request is rejected before <see cref="Accepted"/> completes.
+        /// If the <see cref="AbstractConnectionClient.HandleCertificateSigningCompleteAsync"/> callback throws, this
+        /// task fails with that exception instead.
         /// </exception>
         public Task<CertificateSigningResponse> Completed => _completed.Task;
 
