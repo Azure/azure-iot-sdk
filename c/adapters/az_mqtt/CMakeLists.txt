@@ -21,6 +21,14 @@ set(AZ_IOT_AZ_MQTT_INFLIGHT_MAX "" CACHE STRING
     "az_mqtt adapter: requests in flight at once, 1-32767; MQTT 5: also the Receive Maximum advertised (empty: footprint's)")
 set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "" CACHE STRING
     "az_mqtt adapter: MQTT 5 user properties per packet (empty: footprint's)")
+set(AZ_IOT_AZ_MQTT_STATIC_CLIENTS "" CACHE STRING
+    "az_mqtt adapter: clients of each MQTT version in static storage, no heap; 0 or empty: allocated when created")
+set(AZ_IOT_AZ_MQTT_TRANSPORT_SIZE "" CACHE STRING
+    "az_mqtt adapter, static clients: bytes for the transport (empty: 200 KiB on Windows, 8 KiB elsewhere)")
+set(AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE "" CACHE STRING
+    "az_mqtt adapter, static clients: bytes for a connect's strings (empty: 8 KiB)")
+set(AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE "" CACHE STRING
+    "az_mqtt adapter: store of unacknowledged QoS 1/2 PUBLISH; 0: refuse clean_start false (MQTT 5: with session expiry > 0) (empty: send size + 18)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
     "az_mqtt adapter: header with size definitions, as written in a quoted #include (empty: none)")
 
@@ -69,6 +77,8 @@ add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
 target_include_directories(az_iot_adapter_az_mqtt
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core # internal/crypto.h: az_iot_crypto__wipe()
 )
 target_link_libraries(az_iot_adapter_az_mqtt
     PUBLIC
@@ -86,7 +96,8 @@ elseif(NOT _az_mqtt_footprint STREQUAL "")
         "AZ_IOT_AZ_MQTT_FOOTPRINT must be DEFAULT or CONSTRAINED (got '${AZ_IOT_AZ_MQTT_FOOTPRINT}')")
 endif()
 unset(_az_mqtt_footprint)
-foreach(_v SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX USER_PROPERTIES_MAX)
+foreach(_v SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX USER_PROPERTIES_MAX STATIC_CLIENTS
+        TRANSPORT_SIZE CONNECT_STRINGS_SIZE MESSAGE_STORAGE_SIZE)
     if(NOT AZ_IOT_AZ_MQTT_${_v} STREQUAL "")
         target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
             AZ_IOT_AZ_MQTT_${_v}=${AZ_IOT_AZ_MQTT_${_v}})

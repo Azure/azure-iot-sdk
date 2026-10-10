@@ -22,7 +22,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
+| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE`, `AZ_IOT_AZ_MQTT_STATIC_CLIENTS`, `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE`, `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter, and static clients (no heap). Empty: the macro's default: the footprint's value (`DEFAULT` or `CONSTRAINED`) for the send and receive sizes, in-flight and user-property limits; send size + 18 for the message store; 0 static clients; 200 KiB (Windows) or 8 KiB transport area; 8 KiB connect strings. Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
 | `AZ_IOT_WITH_RUST_MQTT` | `OFF` | Build the Rust MQTT adapter shell: a C adapter that forwards to a Rust MQTT client the application installs at run time. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
@@ -51,7 +51,7 @@ comes from, in order:
 | `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
 | `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties per packet. |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. Macro only. |
+| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. 0: a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
 messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
@@ -63,6 +63,32 @@ transport. On its first connect whose session outlives the connection (`clean_st
 also `session_expiry_seconds` > 0) it also allocates the message store, kept until the client is
 destroyed. Per client: about 792 KiB with `DEFAULT` (1,056 KiB with such a session), 272 KiB with
 `CONSTRAINED` (280 KiB).
+
+#### Static clients
+
+With `AZ_IOT_AZ_MQTT_STATIC_CLIENTS` N > 0 the adapter allocates nothing: each MQTT version has N
+clients in static storage, and its factory is static.
+
+| Macro | Default | Effect |
+| --- | --- | --- |
+| `AZ_IOT_AZ_MQTT_STATIC_CLIENTS` | 0 | Clients of each MQTT version. 0: allocated when created, as above. Otherwise `create()` returns NULL when all N are in use. |
+| `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE` | 204800 (200 KiB) on Windows, 8192 elsewhere | Bytes reserved for the transport. `create()` returns NULL, with an error log, when the transport needs more: under 1 KiB with OpenSSL, about 4-5 KiB with mbedTLS (depends on its version and configuration), about 197 KiB with Schannel. |
+| `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE` | 8192 | Bytes for the copies of a connect's strings, each with a NUL: host, client ID, credentials, TLS paths or PEM, proxy, will, user properties, WebSocket path. A connect whose copies do not fit returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+
+- Each client takes, in `.bss`, for each MQTT version linked: send size + receive size + strings
+  buffer + `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE` + `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` +
+  `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE`, plus the client's state and padding: about 1.5-2 KiB
+  (MQTT 3.1.1) or 2-4 KiB (MQTT 5) on 64-bit Linux, growing with `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
+  `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`. For example `CONSTRAINED` on Linux, with an 8 KiB transport
+  area and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE=0`: 297,072 bytes (290 KiB) per MQTT 5 client.
+- `create()` and `destroy()` must not run concurrently (the connection client calls them from its
+  own calls).
+- Every `az_iot_az_mqtt_factory_create_*()` call returns the same factory; destroying it does
+  nothing.
+- The copied connect strings are wiped when released (each connect, and `destroy()`), and
+  `destroy()` wipes the whole client.
+- The TLS library still allocates: OpenSSL and Schannel always; mbedTLS unless built with
+  `MBEDTLS_MEMORY_BUFFER_ALLOC_C` and given a static pool (`mbedtls_memory_buffer_alloc_init()`).
 
 The values apply where the adapter sources are compiled; defining them only for the application
 has no effect. Without CMake, compile the adapter with them:

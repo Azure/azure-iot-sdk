@@ -25,11 +25,10 @@
 /** @brief Events raised outside process_loop() and held until it runs. */
 #define AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX 4
 
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS == 0
 /** @brief az_iot_mqtt_factory.destroy: frees the factory (its own factory_ctx). */
 void az_iot_az_mqtt_factory_free(void* factory_ctx);
-
-/** @brief Copy of @p s (NUL-terminated), or NULL when out of memory. NULL in, NULL out. */
-char* az_iot_az_mqtt_strdup(const char* s);
+#endif
 
 /** @brief Whether @p s is non-NULL and not empty. */
 bool az_iot_az_mqtt_has_text(const char* s);

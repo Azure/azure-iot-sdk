@@ -6,7 +6,8 @@
 /* az_mqtt adapter built with a receive buffer larger than its send buffer
  * (az_mqtt_asymmetric_sizes.h), against an in-process server: CONNECT advertises the receive size
  * (MQTT 5 Maximum Packet Size), and a PUBLISH whose payload, topic and user property value each
- * exceed the send size arrives whole. */
+ * exceed the send size arrives whole. Then, with a session that outlives the connection, a QoS 1
+ * PUBLISH is stored (message store) and sent. */
 #include "az_mqtt_asymmetric_sizes.h"
 
 #include <stdarg.h>
@@ -247,7 +248,7 @@ static uint32_t connect_maximum_packet_size(const uint8_t* p, size_t n)
   return 0;
 }
 
-static void run_client(az_iot_mqtt_factory* f)
+static void run_client(az_iot_mqtt_factory* f, bool persistent)
 {
   bool const v5 = f->version == AZ_IOT_MQTT_VERSION_5;
   uint16_t port = 0;
@@ -262,7 +263,8 @@ static void run_client(az_iot_mqtt_factory* f)
   o.host = "127.0.0.1";
   o.port = port;
   o.client_id = "sizes";
-  o.clean_start = true;
+  o.clean_start = !persistent;
+  o.session_expiry_seconds = persistent ? 60 : 0;
   assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
 
   test_sock conn = TEST_INVALID_SOCK;
@@ -348,6 +350,19 @@ static void run_client(az_iot_mqtt_factory* f)
     assert_string_equal(r->value, value);
   }
 
+  if (persistent)
+  {
+    // Kept in the message store until acknowledged: refused without one.
+    az_iot_mqtt_message out = { 0 };
+    out.topic = "t";
+    out.payload = (uint8_t const*)"q";
+    out.payload_len = 1;
+    out.qos = AZ_IOT_MQTT_QOS_1;
+    assert_int_equal(c->iface->publish(c, &out, NULL), AZ_IOT_OK);
+    (void)read_packet(c, conn, packet, sizeof(packet));
+    assert_int_equal(packet[0], 0x32); // PUBLISH, QoS 1.
+  }
+
   (void)c->iface->disconnect(c);
   c->iface->destroy(c);
   test_closesock(conn);
@@ -359,7 +374,16 @@ static void receives_more_than_it_can_send_v3(void** state)
   (void)state;
   az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
   assert_non_null(f);
-  run_client(f);
+  run_client(f, false);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
+static void a_persistent_session_stores_qos1_publish_v3(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
+  assert_non_null(f);
+  run_client(f, true);
   az_iot_az_mqtt_factory_destroy(f);
 }
 
@@ -368,7 +392,16 @@ static void receives_more_than_it_can_send_and_advertises_it_v5(void** state)
   (void)state;
   az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
   assert_non_null(f);
-  run_client(f);
+  run_client(f, false);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
+static void a_persistent_session_stores_qos1_publish_v5(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
+  assert_non_null(f);
+  run_client(f, true);
   az_iot_az_mqtt_factory_destroy(f);
 }
 
@@ -384,6 +417,8 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(receives_more_than_it_can_send_v3),
     cmocka_unit_test(receives_more_than_it_can_send_and_advertises_it_v5),
+    cmocka_unit_test(a_persistent_session_stores_qos1_publish_v3),
+    cmocka_unit_test(a_persistent_session_stores_qos1_publish_v5),
   };
   int const failed = cmocka_run_group_tests_name("az_mqtt_adapter_sizes", tests, NULL, NULL);
 #if defined(_WIN32)
