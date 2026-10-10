@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Iot.Device
     /// </summary>
     /// <remarks>
     /// Broadly, this class is responsible for connection management, managing when to try connecting to IoT Hub vs falling back to provisioning the device. It is also
-    /// responsbile for locally queueing all feature client traffic while the device re-establishes its presence with IoT Hub.
+    /// responsible for locally queueing all feature client traffic while the device re-establishes its presence with IoT Hub.
     /// 
     /// Specific connection clients that inherit from this should only implement the specific connection needs for that client (for example, choosing CONNECT packet details, subscribing
     /// to topics that are relevant for each Hub type, etc).
