@@ -235,6 +235,18 @@ CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally set
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
 
+The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
+[`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
+(hourly, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
+can disappear from ARM, removing its role assignments; DPS registrations then fail.
+[`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
+(same name, hub region), re-grants the 8 role assignments, re-links hub and DPS, and pushes the
+namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
+and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
+(default `2026-11-02-preview`) must match the version the namespace was linked with. The OIDC identity needs Contributor
+and role assignment write on the resource group.
+
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
 
