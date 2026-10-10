@@ -65,7 +65,11 @@ extern "C"
     AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
     /* A generation-specific feature client was initialized against a
      * connection resolved to the other profile. */
-    AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+    AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH,
+    /** @brief A QoS 1 PUBLISH that would be refused again if resent: an MQTT 5 PUBACK of 0x87,
+     * 0x90 or 0x99, or 0x95 for one over the server's Maximum Packet Size. See
+     * az_iot_mqtt_puback_result(). */
+    AZ_IOT_ERR_PUBLISH_REFUSED
   } az_iot_result;
 
   const char* az_iot_result_to_string(az_iot_result r);

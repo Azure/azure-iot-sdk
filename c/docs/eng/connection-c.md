@@ -812,7 +812,7 @@ connection failure path:
 | `AZ_IOT_ERR_NOT_CONNECTED` | Substituted as the reason when a disconnect carries no status of its own. |
 | `AZ_IOT_ERR_TIMEOUT` | A deadline expired — birth-ack, CSR operation. |
 | `AZ_IOT_ERR_PROTOCOL` | A service payload could not be parsed. |
-| `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every failed PUBACK. |
+| `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every PUBACK failure that is not `AZ_IOT_ERR_PUBLISH_REFUSED` or quota exceeded. |
 | `AZ_IOT_ERR_DPS` | Registration returned a failed or disabled status. |
 | `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
 | `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight, or the service is throttling. |
@@ -824,6 +824,7 @@ connection failure path:
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned material the adapter cannot use — a certificate with no key, or a key URI with no engine or provider to resolve it. Caught before the connect, so the device gets this instead of an opaque TLS failure seconds later. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a `connectionProfile` this build does not know. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | A feature client of one generation was attached to a connection of the other. |
+| `AZ_IOT_ERR_PUBLISH_REFUSED` | A PUBACK carried a code the broker will repeat (`az_iot_mqtt_puback_result()`). Delivered to the publish callback; the connection is unaffected. |
 
 `AZ_IOT_ERR_TLS` is produced only by the Paho adapter's key-custody path, for key material that
 cannot be expressed to the TLS stack — not by a handshake, certificate, chain or cipher failure.
@@ -1029,6 +1030,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | PUBACK | v5 PUBACK `< 0x80`, including `0x10 No matching subscribers` | `AZ_IOT_OK` | `paho_publish_success5` | the ack callback fires with success | Correct — `0x10` is a success. Paho routes reason codes `>= 0x80` to the failure callback, so success5 only sees grants. |
 | PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with the failure; the connection survives | Correctly **Contained**, but the reason code is **flattened**: `response->reasonCode` is not inspected, so a caller cannot tell a deterministic refusal from a quota it should back off on. |
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
+| PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK` below `0x80`; `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`, and `0x95` (reported by az_mqtt for a publish over the server's Maximum Packet Size, not a wire PUBACK code); `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_puback_result()` | the ack callback fires with that status; the connection logs `protocol_code` and survives | Correct. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
 | DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RETRY_PENDING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
@@ -1105,9 +1107,9 @@ or null, so an actual wire value always wins.
   retried until the policy is exhausted.
 - **Reason-code fidelity.** CONNACK and SUBACK have mappers that keep the wire code. A server
   DISCONNECT keeps its wire code in `error->code`, but only `0x87` maps to its own result
-  (`AZ_IOT_ERR_AUTH`); `0x8E Session taken over` is not distinguished. PUBACK failures collapse
-  to one result, so a caller cannot tell a refusal it must not retry from a quota it should back
-  off on.
+  (`AZ_IOT_ERR_AUTH`); `0x8E Session taken over` is not distinguished. The Paho adapter
+  collapses PUBACK failures to one result, so a caller cannot tell a refusal it must not retry
+  from a quota it should back off on; the az_mqtt adapter uses `az_iot_mqtt_puback_result()`.
 - **No mqttv5 file-upload or cloud-to-device client.** Both features are mqttv3 only.
 - **One software updates channel.** `su_channel_dps.c` carries both the onboarding and the
   operational flow over DPS; there is no hub channel.
