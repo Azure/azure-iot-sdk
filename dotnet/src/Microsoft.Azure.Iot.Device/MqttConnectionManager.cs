@@ -584,7 +584,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
         /// and never reach here.
         /// </remarks>
-        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
+        private Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
         {
             Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
 
@@ -594,7 +594,7 @@ namespace Microsoft.Azure.Iot.Device
             if (handler == null)
             {
                 Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
-                return;
+                return Task.CompletedTask;
             }
 
             var args = new MqttConnectionFaultedEventArgs()
@@ -604,19 +604,29 @@ namespace Microsoft.Azure.Iot.Device
                 ReprovisionRequired = reprovisionRequired,
             };
 
-            // Run callback in unmonitored but uncrashable task to avoid deadlock issues
-            _ = Task.Run(async () =>
+            try
             {
-                try
-                {
-                    await handler.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    // This may run on an unmonitored reconnection task, so a misbehaving handler must not crash the process.
-                    Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
-                }
-            });
+                _ = ObserveConnectionFaultHandlerAsync(handler.Invoke(args));
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static async Task ObserveConnectionFaultHandlerAsync(Task handlerTask)
+        {
+            try
+            {
+                await handlerTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                // This may run on an unmonitored reconnection task, so a misbehaving handler must not crash the process.
+                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+            }
         }
 
         /// <summary>
