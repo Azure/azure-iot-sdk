@@ -167,15 +167,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
                     if (status.Equals("202"))
                     {
-                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
+                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing completion response was null.");
                         pendingCertificateSigningOperation.SetAccepted(accepted);
                         return;
                     }
                     else if (status.Equals("200"))
                     {
                         hasRequestFinished = true;
-CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
-    ?? throw new JsonException("Certificate signing completion response was null.");
+                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing completion response was null.");
                         if (HandleCertificateSigningCompleteAsync != null)
                         {
                             //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
@@ -193,7 +194,8 @@ CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSign
                     else
                     {
                         hasRequestFinished = true;
-                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
+                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing completion response was null.");
                         pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error, RequestId = requestId });
                         return;
                     }
