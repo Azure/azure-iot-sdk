@@ -2658,8 +2658,13 @@ static bool dps_parse_operation_refusal(
   bool have_status = false;
   bool have_device_id = false;
   az_iot_provisioning_client_operation_status status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+  /* registrationState values take precedence over top-level ones. */
   uint32_t error_code = 0;
+  uint32_t state_error_code = 0;
+  bool have_state_error_code = false;
   az_span error_message = AZ_SPAN_EMPTY;
+  az_span state_error_message = AZ_SPAN_EMPTY;
+  bool have_state_error_message = false;
 
   for (;;)
   {
@@ -2675,8 +2680,9 @@ static bool dps_parse_operation_refusal(
     bool is_status = dps_json_key_is(&jr, "status");
     bool is_state = dps_json_key_is(&jr, DPS_JSON_REGISTRATION_STATE);
     bool is_code = dps_json_key_is(&jr, "errorCode");
-    bool is_text = dps_json_key_is(&jr, "trackingId") || dps_json_key_is(&jr, "message")
-        || dps_json_key_is(&jr, "timestampUtc");
+    bool is_message = dps_json_key_is(&jr, "message");
+    bool is_text
+        = is_message || dps_json_key_is(&jr, "trackingId") || dps_json_key_is(&jr, "timestampUtc");
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
       return false;
@@ -2722,6 +2728,10 @@ static bool dps_parse_operation_refusal(
       {
         return false;
       }
+      if (is_message)
+      {
+        error_message = jr.token.slice;
+      }
     }
     else if (is_state)
     {
@@ -2745,7 +2755,7 @@ static bool dps_parse_operation_refusal(
         }
         bool is_device_id = dps_json_key_is(&jr, "deviceId");
         bool is_state_code = dps_json_key_is(&jr, "errorCode");
-        bool is_message = dps_json_key_is(&jr, "errorMessage");
+        bool is_state_message = dps_json_key_is(&jr, "errorMessage");
         bool is_state_text = dps_json_key_is(&jr, "lastUpdatedDateTimeUtc");
         bool is_payload = dps_json_key_is(&jr, "payload");
         if (az_result_failed(az_json_reader_next_token(&jr)))
@@ -2754,21 +2764,23 @@ static bool dps_parse_operation_refusal(
         }
         if (is_state_code)
         {
-          if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
+          if (az_result_failed(az_json_token_get_uint32(&jr.token, &state_error_code)))
           {
             return false;
           }
+          have_state_error_code = true;
         }
-        else if (is_device_id || is_message || is_state_text)
+        else if (is_device_id || is_state_message || is_state_text)
         {
           if (jr.token.kind != AZ_JSON_TOKEN_STRING)
           {
             return false;
           }
           have_device_id = have_device_id || is_device_id;
-          if (is_message)
+          if (is_state_message)
           {
-            error_message = jr.token.slice;
+            state_error_message = jr.token.slice;
+            have_state_error_message = true;
           }
         }
         else if (
@@ -2808,8 +2820,10 @@ static bool dps_parse_operation_refusal(
   out->operation_id = operation_id;
   out->operation_status = status;
   out->registration_state = (az_iot_provisioning_client_registration_state){ 0 };
-  out->registration_state.extended_error_code = error_code;
-  out->registration_state.error_message = error_message;
+  out->registration_state.extended_error_code
+      = have_state_error_code ? state_error_code : error_code;
+  out->registration_state.error_message
+      = have_state_error_message ? state_error_message : error_message;
   return true;
 }
 
