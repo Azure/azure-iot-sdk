@@ -21,6 +21,7 @@
 #include "crypto_contract.h"
 #include "internal/crypto.h"
 #include "su_crypto_vectors.h"
+#include "su_root_key_package_vectors.h"
 
 #define SU_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -361,6 +362,50 @@ static void rs256_accepts_known_good_vectors(void** state)
     {
       fail_msg("verify_rs256 rejected good vector '%s'", k_su_rs256_good[i].name);
     }
+  }
+}
+
+/* Each compiled-in Microsoft root verifies its signature on the published root key
+ * package, so a wrong modulus byte fails here. */
+static void microsoft_root_keys_verify_the_root_key_package(void** state)
+{
+  (void)state;
+  size_t count = 0;
+  const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
+  assert_int_equal(count, SU_ARRAY_LEN(k_su_root_key_package_signatures));
+  for (size_t i = 0; i < count; ++i)
+  {
+    const su_root_key_package_signature* s = &k_su_root_key_package_signatures[i];
+    assert_string_equal(keys[i].kid, s->kid);
+    assert_int_equal(
+        g_crypto->verify_rs256(
+            g_crypto,
+            keys[i].modulus,
+            keys[i].modulus_len,
+            keys[i].exponent,
+            keys[i].exponent_len,
+            k_su_root_key_package_signed,
+            sizeof(k_su_root_key_package_signed),
+            s->signature,
+            s->signature_len),
+        AZ_IOT_OK);
+
+    uint8_t modulus[512];
+    assert_true(keys[i].modulus_len <= sizeof(modulus));
+    memcpy(modulus, keys[i].modulus, keys[i].modulus_len);
+    modulus[keys[i].modulus_len - 1] ^= 0x02;
+    assert_int_not_equal(
+        g_crypto->verify_rs256(
+            g_crypto,
+            modulus,
+            keys[i].modulus_len,
+            keys[i].exponent,
+            keys[i].exponent_len,
+            k_su_root_key_package_signed,
+            sizeof(k_su_root_key_package_signed),
+            s->signature,
+            s->signature_len),
+        AZ_IOT_OK);
   }
 }
 
@@ -733,6 +778,7 @@ int crypto_contract_run(const char* group_name, const az_iot_crypto* crypto)
     cmocka_unit_test(hmac_sha256_matches_known_answers),
     cmocka_unit_test(hmac_sha256_rejects_bad_arguments),
     cmocka_unit_test(rs256_accepts_known_good_vectors),
+    cmocka_unit_test(microsoft_root_keys_verify_the_root_key_package),
     cmocka_unit_test(rs256_rejects_known_bad_vectors),
     cmocka_unit_test(rs256_rejects_missing_inputs),
     cmocka_unit_test(rs256_rejects_oversized_keys_safely),

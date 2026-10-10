@@ -1241,7 +1241,7 @@ capacity is compile-time configurable:
 
 ```c
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 4
+#define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 ```
 

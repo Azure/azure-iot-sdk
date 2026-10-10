@@ -2205,9 +2205,8 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 }
 
 /* az_iot_su_microsoft_root_keys() — Microsoft's compiled-in software updates production
- * root public keys — is defined in su_root_keys_microsoft.c (generated from the
- * official agent's hardcoded key list). Kept in a separate translation unit so
- * the large key blobs live apart from the state machine. */
+ * root public keys — is defined in su_root_keys_microsoft.c. Kept in a separate
+ * translation unit so the large key blobs live apart from the state machine. */
 
 /* ------------------------------------------------------------------------- */
 /* persistence & resume (Phase 5)                                            */

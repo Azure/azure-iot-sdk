@@ -125,13 +125,19 @@ static void pad_property(char* dst, size_t cap, const char* name, size_t len)
 }
 
 /* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
- * (itself a JWS over a JWK signing key, signed by the root key `testkid`); the
+ * (itself a JWS over a JWK signing key, signed by the root key `root_kid`); the
  * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
  * are arbitrary because the mock backend does not validate them.
  * `jwk_pad` and `hdr_pad` add that many bytes of an unknown property to the
  * signing JWK and to the manifest JWS header. `escaped_n` encodes the modulus as
  * standard base64 with JSON-escaped slashes, as some serializers emit it. */
-static void build_jws_ex(char* out, int32_t out_cap, size_t jwk_pad, size_t hdr_pad, bool escaped_n)
+static void build_jws_ex(
+    char* out,
+    int32_t out_cap,
+    size_t jwk_pad,
+    size_t hdr_pad,
+    bool escaped_n,
+    const char* root_kid)
 {
   static char pad[16384];
 
@@ -150,7 +156,8 @@ static void build_jws_ex(char* out, int32_t out_cap, size_t jwk_pad, size_t hdr_
   char pl_b64[256];
   b64url_str(pl_json, (int32_t)strlen(pl_json), pl_b64, (int32_t)sizeof(pl_b64));
 
-  static const char sjwk_hdr[] = "{\"alg\":\"RS256\",\"kid\":\"testkid\"}";
+  char sjwk_hdr[64];
+  snprintf(sjwk_hdr, sizeof(sjwk_hdr), "{\"alg\":\"RS256\",\"kid\":\"%s\"}", root_kid);
   char shdr_b64[128];
   b64url_str(sjwk_hdr, (int32_t)strlen(sjwk_hdr), shdr_b64, (int32_t)sizeof(shdr_b64));
 
@@ -190,7 +197,10 @@ static void build_jws_ex(char* out, int32_t out_cap, size_t jwk_pad, size_t hdr_
   assert_true(n > 0 && n < out_cap);
 }
 
-static void build_jws(char* out, int32_t out_cap) { build_jws_ex(out, out_cap, 0, 0, false); }
+static void build_jws(char* out, int32_t out_cap)
+{
+  build_jws_ex(out, out_cap, 0, 0, false, "testkid");
+}
 
 /* Build a single-step payload with a caller-chosen workflow `id` and manifest
  * `version`. Returns a static buffer, valid until the next call. */
@@ -272,6 +282,7 @@ typedef struct
   char download_urls[MAX_OPS][64];
 
   /* Key, exponent and signature of the last verify_rs256 call. */
+  const uint8_t* first_verify_modulus; /* modulus of the first RS256 verify (the root key) */
   uint8_t verify_mod[8];
   size_t verify_mod_len;
   uint8_t verify_exp[8];
@@ -403,6 +414,10 @@ static az_iot_result mock_verify_rs256(
   (void)signed_len;
   hook_log* l = mock_log(self);
   /* Truncated copies; the length is kept whole so a wrong decode still shows. */
+  if (l->first_verify_modulus == NULL)
+  {
+    l->first_verify_modulus = mod;
+  }
   memcpy(l->verify_mod, mod, mod_len < sizeof(l->verify_mod) ? mod_len : sizeof(l->verify_mod));
   l->verify_mod_len = mod_len;
   memcpy(l->verify_exp, exp, exp_len < sizeof(l->verify_exp) ? exp_len : sizeof(l->verify_exp));
@@ -2674,12 +2689,15 @@ static void microsoft_root_keys_are_embedded(void** state)
   size_t count = 0;
   const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
   assert_non_null(keys);
-  assert_true(count >= 2);
+  static const char* const kids[] = { "ADU.200702.R", "ADU.200703.R", "ADU.241112.R" };
+  assert_int_equal(count, sizeof(kids) / sizeof(kids[0]));
+  assert_true(count <= AZ_IOT_SU_MAX_ROOT_KEYS);
   for (size_t i = 0; i < count; i++)
   {
-    assert_non_null(keys[i].kid);
+    assert_string_equal(keys[i].kid, kids[i]);
     assert_non_null(keys[i].modulus);
-    assert_true(keys[i].modulus_len > 0);
+    /* 3072-bit modulus with a leading zero byte. */
+    assert_int_equal(keys[i].modulus_len, 385);
     assert_non_null(keys[i].exponent);
     assert_true(keys[i].exponent_len > 0);
     assert_false(keys[i].disabled);
@@ -4610,6 +4628,25 @@ static void manifest_signed_by_an_unknown_root_key_is_rejected(void** state)
       parse_with_roots(&fx->log, signed_patch(), strangers, 1, &req, &manifest), AZ_IOT_ERR_AUTH);
 }
 
+static void manifest_under_root_adu_241112_r_resolves_to_that_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  char jws[2048];
+  build_jws_ex(jws, (int32_t)sizeof(jws), 0, 0, false, "ADU.241112.R");
+  static char patch[4096];
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "wf-241112", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+
+  size_t count = 0;
+  const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+  fx->log.first_verify_modulus = NULL;
+  assert_int_equal(parse_with_roots(&fx->log, patch, keys, count, &req, &manifest), AZ_IOT_OK);
+  assert_ptr_equal(fx->log.first_verify_modulus, keys[2].modulus);
+}
+
 /* The public parser accepts the software updates updateMetadata shape too. */
 static void public_parser_accepts_update_metadata(void** state)
 {
@@ -4662,7 +4699,7 @@ static const char* large_signature_patch(void)
 {
   static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
   static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
-  build_jws_ex(jws, (int32_t)sizeof(jws), 2400, 600, true);
+  build_jws_ex(jws, (int32_t)sizeof(jws), 2400, 600, true, "testkid");
   int n = snprintf(patch, sizeof(patch), k_patch_fmt, "large-signature", "1.1", jws);
   assert_true(n > 4096 && (size_t)n < sizeof(patch));
   return patch;
@@ -4713,7 +4750,7 @@ static void near_limit_nested_signing_key_is_verified(void** state)
   static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
   static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
   size_t jwk_pad = (AZ_IOT_SU_REQUEST_BUFFER_SIZE - 1500) * 9 / 16;
-  build_jws_ex(jws, (int32_t)sizeof(jws), jwk_pad, 0, false);
+  build_jws_ex(jws, (int32_t)sizeof(jws), jwk_pad, 0, false, "testkid");
   int n = snprintf(patch, sizeof(patch), k_patch_fmt, "near-limit", "1.1", jws);
   assert_true(n > AZ_IOT_SU_REQUEST_BUFFER_SIZE * 7 / 8 && (size_t)n < sizeof(patch));
 
@@ -4735,7 +4772,7 @@ static void oversized_signature_is_reported_as_too_large(void** state)
   az_iot_su_client_update_request req;
   az_iot_su_client_update_manifest manifest;
 
-  build_jws_ex(jws, (int32_t)sizeof(jws), 0, AZ_IOT_SU_VERIFY_SCRATCH_SIZE, false);
+  build_jws_ex(jws, (int32_t)sizeof(jws), 0, AZ_IOT_SU_VERIFY_SCRATCH_SIZE, false, "testkid");
   int n = snprintf(patch, sizeof(patch), k_patch_fmt, "too-large", "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   su_error_log_capture too_large = { .needle = "manifest JWS header too large", .count = 0 };
@@ -6394,6 +6431,8 @@ int main(void)
     cmocka_unit_test(build_report_with_too_small_a_buffer_is_rejected),
     cmocka_unit_test_setup_teardown(
         manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        manifest_under_root_adu_241112_r_resolves_to_that_key, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_jws_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(large_signature_is_verified, setup, teardown),
     cmocka_unit_test_setup_teardown(near_limit_nested_signing_key_is_verified, setup, teardown),
