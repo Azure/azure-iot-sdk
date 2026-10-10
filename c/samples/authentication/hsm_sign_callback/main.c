@@ -60,8 +60,13 @@ static const char k_device_cert_pem[] = "-----BEGIN CERTIFICATE-----\n"
 static az_iot_result sign_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));

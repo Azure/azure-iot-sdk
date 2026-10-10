@@ -22,7 +22,7 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 ## Choosing how each role authenticates
 
-Further provider certificates are proposed and not implemented yet; see
+A provider may offer several certificates per role (`load()` index 0, 1, ...); see
 [connecting.md](../../docs/connecting.md#authentication).
 
 Each role (DPS, hub) uses whichever of these sources are configured, tried in this order:

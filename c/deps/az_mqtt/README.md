@@ -96,6 +96,7 @@ az_result rc = az_mqtt5_client_init(&client, &options);
 | `AZ_MQTT_BUILD_SAMPLES` | `ON`; `OFF` as a subproject | |
 | `AZ_MQTT_BUILD_TESTS` | `ON`; `OFF` as a subproject | |
 | `AZ_MQTT_WARNINGS_AS_ERRORS` | `OFF` | |
+| `AZ_MQTT_BUILD_FUZZERS` | `OFF` | libFuzzer targets and their drop folder ([tests/fuzz](tests/fuzz/README.md)): clang (ASan, UBSan) or MSVC (ASan) |
 
 In another CMake project, `add_subdirectory()` this directory and link `az_mqtt::mqttv3` and/or
 `az_mqtt::mqttv5`. If the project already builds azure-sdk-for-c (target `az_core`), az_mqtt uses
@@ -117,6 +118,12 @@ it instead of `deps/azure-sdk-for-c`.
   - removed: `buffers`, `on_disconnect`, properties, AUTH.
 - mqttv3: `az_mqtt3_codec_decode_ack` rejects bytes after the packet identifier. An AUTH packet (reserved in 3.1.1) is a protocol error.
 - mqttv5: a received AUTH packet is a protocol error (enhanced authentication is not implemented).
+- mqttv5: `options.buffers` (7 spans) is replaced by `options.decode_user_properties`
+  (`az_mqtt5_user_property[]`) and `options.decode_codes` (`int32_t[]`: subscription identifiers or
+  reason codes), each shared by every received packet type.
+- `az_mqttN_client_process_loop` called from a callback of a received packet of the same session
+  returns `AZ_MQTT_ERROR_INVALID_STATE` (that packet is still being handled). Reconnecting from a
+  callback is unaffected.
 - `az_mqtt_inflight_entry` is 6 B (was 4 B): it keeps the filter count of a SUBSCRIBE or
   UNSUBSCRIBE. A SUBACK (MQTT 5: or UNSUBACK) with a different number of codes is a protocol error.
 - Transport failures that were `AZ_MQTT_ERROR_TRANSPORT` may now be one of the specific results

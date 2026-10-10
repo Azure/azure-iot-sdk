@@ -87,7 +87,7 @@ are the reference.
 
 | Slot | Since | Purpose |
 | --- | --- | --- |
-| `load(self, role, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3). |
+| `load(self, role, index, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3), certificate `index` of the role (0 first; `AZ_IOT_ERR_NOT_FOUND` past the last). |
 | `release`, `deinit` | v1 | Release material; tear down the provider. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
@@ -254,7 +254,7 @@ model (D9).
    cert. Explicit flag; return `AZ_IOT_ERR_NOT_SUPPORTED` when the provider lacks
    `get_csr`.
 3. **`load()` — single method with an explicit role argument (not dual-return).**
-   `load(self, role, &out)` where `role` is `AZ_IOT_CRED_BOOTSTRAP` or
+   `load(self, role, index, &out)` where `role` is `AZ_IOT_CRED_BOOTSTRAP` or
    `AZ_IOT_CRED_OPERATIONAL`. Hidden phase-state forces every provider (incl. simple
    file/in-image ones) to track "which identity"; an explicit role keeps one slot and is
    stateless-friendly (a file provider maps both to the same material, or returns
@@ -278,7 +278,7 @@ model (D9).
    managed provider runs without a bootstrap identity. TPM *attestation* is out of scope: DPS
    does not support it over MQTT.
 
-   **Multiple certificates per role (proposed).** `load()` gains an index:
+   **Multiple certificates per role (implemented).** `load()` takes an index:
    `load(self, role, index, out_material)`. Index 0 is today's certificate; a provider returns
    `AZ_IOT_ERR_NOT_FOUND` past its last one (or for a role it has no certificate for). The
    client remembers the index that connected, so the provider stays stateless. No count()
@@ -287,7 +287,8 @@ model (D9).
    provider that never returns it. Covers a
    `selfSigned` identity's primary and secondary thumbprints, and keeping the previous issued
    certificate as a rollback after renewal. The library is unreleased, so this changes the
-   existing signature; the vtable version is not bumped.
+   existing signature; the vtable version is not bumped. The built-in PEM and managed providers
+   offer one certificate per role (index 0); the managed provider does not keep a rollback yet.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
