@@ -218,6 +218,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 }
                 catch (JsonException ex)
                 {
+                    hasRequestFinished = pendingCertificateSigningOperation != null;
                     // An unreadable response must fail the operation rather than leave it pending forever
                     pendingCertificateSigningOperation?.SetFailed(new CertificateSigningRequestFailedException()
                     {
