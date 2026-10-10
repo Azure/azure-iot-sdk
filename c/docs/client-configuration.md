@@ -75,10 +75,12 @@ clients in static storage, and its factory is static.
 | `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE` | 204800 (200 KiB) on Windows, 8192 elsewhere | Bytes reserved for the transport. `create()` returns NULL, with an error log, when the transport needs more: under 1 KiB with OpenSSL, about 4-5 KiB with mbedTLS (depends on its version and configuration), about 197 KiB with Schannel. |
 | `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE` | 8192 | Bytes for the copies of a connect's strings, each with a NUL: host, client ID, credentials, TLS paths or PEM, proxy, will, user properties, WebSocket path. A connect whose copies do not fit returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 
-- Each client takes send size + receive size + strings buffer + `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE` +
-  `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` + `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE`, in `.bss`, for
-  each MQTT version linked. For example `CONSTRAINED` on Linux, with
-  `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE=0`: about 290 KiB per MQTT 5 client.
+- Each client takes, in `.bss`, for each MQTT version linked: send size + receive size + strings
+  buffer + `AZ_IOT_AZ_MQTT_TRANSPORT_SIZE` + `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` +
+  `AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE`, plus the client's state and padding: about 1.5-2 KiB
+  (MQTT 3.1.1) or 2-4 KiB (MQTT 5) on 64-bit Linux, growing with `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
+  `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`. For example `CONSTRAINED` on Linux, with an 8 KiB transport
+  area and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE=0`: 297,072 bytes (290 KiB) per MQTT 5 client.
 - `create()` and `destroy()` must not run concurrently (the connection client calls them from its
   own calls).
 - Every `az_iot_az_mqtt_factory_create_*()` call returns the same factory; destroying it does
