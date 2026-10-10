@@ -817,6 +817,15 @@ static void hub_mqtt_v5_birth_advertises_configured_twin_push(void** state)
   assert_memory_equal(birth->payload, expect_body, sizeof(expect_body));
 }
 
+/* Twin push is opt-in: by default the birth requests no desired or reported push. */
+static void options_default_leaves_twin_push_off(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  assert_false(opts.twin_push.push_desired);
+  assert_false(opts.twin_push.push_reported);
+}
+
 /* The connection nonce must be a well-formed RFC 4122 version 4 UUID: the
  * service treats it as a UUID, and the .NET client produces one via
  * Guid.NewGuid(). */
@@ -2792,6 +2801,7 @@ int main(void)
         hub_mqtt_v5_birth_reports_session_present, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_advertises_configured_twin_push, setup_mqtt_v5_twin_push, teardown),
+    cmocka_unit_test(options_default_leaves_twin_push_off),
     cmocka_unit_test_setup_teardown(hub_mqtt_v5_connect_nonce_is_uuid_v4, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_records_twin_versions, setup_mqtt_v5, teardown),

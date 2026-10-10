@@ -736,9 +736,9 @@ static void adopt_session(az_iot_mqttv5_twin_client* t)
 /**
  * @brief Hub CONNECTED: requests can now be published, so catch up.
  *
- * `twin_push.push_desired` only replaces the birth-ack fetch. A replaced twin
- * not yet settled by a pushed snapshot, or a gap a patch or probe showed before
- * CONNECTED, is still fetched.
+ * With `twin_push.push_desired` the service pushes the snapshot, so the birth-ack
+ * fetch is skipped; a replaced twin not yet settled by a pushed snapshot, or a
+ * gap a patch or probe showed before CONNECTED, is still fetched.
  */
 static void on_hub_connected(az_iot_mqttv5_twin_client* t)
 {
