@@ -116,6 +116,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
+            //TODO how does hub respond if device loses connection at any point during this process?
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             if (CurrentConnectionContext == null)
@@ -123,20 +124,37 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             CertificateSigningOperation operation = new();
 
             _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
 
-            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
+            // The signing operation spans multiple messages from IoT hub, so the user's cancellation token must cancel
+            // whichever of the operation's tasks are still pending even after this method has returned
+            operation.WatchForCancellation(cancellationToken, () => _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)));
 
-            MqttPublish certificateSigningRequestPublish = new()
+            try
             {
-                Topic = CertificateSigningRequestTopic + request.RequestId,
-                Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-            };
+                await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                MqttPublish certificateSigningRequestPublish = new()
+                {
+                    Topic = CertificateSigningRequestTopic + request.RequestId,
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                };
+
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            }
+            catch (Exception)
+            {
+                // The request was never successfully sent, so the caller never receives this operation to observe
+                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+
+                operation.StopWatchingForCancellation();
+                throw;
+            }
 
             return operation;
         }
@@ -145,6 +163,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
+                CertificateSigningOperation? pendingCertificateSigningOperation = null;
+                string? requestId = null;
+                bool hasRequestFinished = false;
                 try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
@@ -154,22 +175,25 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     }
 
                     string status = topicTokens[3];
-                    string requestId = topicTokens[4].Split(RequestId)[1];
+                    requestId = topicTokens[4].Split(RequestId)[1];
 
-                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
+                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
                     {
                         return;
                     }
 
                     if (status.Equals("202"))
                     {
-                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
+                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing acceptance response was null.");
                         pendingCertificateSigningOperation.SetAccepted(accepted);
                         return;
                     }
                     else if (status.Equals("200"))
                     {
-                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
+                        hasRequestFinished = true;
+                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing completion response was null.");
                         if (HandleCertificateSigningCompleteAsync != null)
                         {
                             //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
@@ -180,18 +204,42 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         {
                             Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
                         }
+
                         pendingCertificateSigningOperation.SetCompleted(response);
                         return;
                     }
                     else
                     {
-                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
-                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
+                        hasRequestFinished = true;
+                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("Certificate signing error response was null.");
+                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error, RequestId = requestId });
                         return;
                     }
                 }
+                catch (JsonException ex)
+                {
+                    hasRequestFinished = pendingCertificateSigningOperation != null;
+                    // An unreadable response must fail the operation rather than leave it pending forever
+                    pendingCertificateSigningOperation?.SetFailed(new CertificateSigningRequestFailedException()
+                    {
+                        Error = new CertificateSigningRequestErrorResponse() { Message = "Failed to read the certificate signing response from IoT hub: " + ex.Message },
+                        RequestId = requestId,
+                    });
+                }
+                catch (Exception ex) when (pendingCertificateSigningOperation != null)
+                {
+                    // Includes the user's HandleCertificateSigningCompleteAsync callback throwing
+                    pendingCertificateSigningOperation.SetFailed(ex);
+                }
                 finally
                 {
+                    // Any terminal outcome (success, hub error, unreadable response, or a throwing user callback) ends the operation, so stop tracking it locally
+                    if (requestId != null && hasRequestFinished && pendingCertificateSigningOperation != null)
+                    {
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                    }
+
                     await args.AcknowledgeAsync(CancellationToken.None);
                 }
             }
