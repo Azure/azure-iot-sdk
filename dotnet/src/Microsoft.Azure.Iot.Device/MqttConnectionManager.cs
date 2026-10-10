@@ -193,6 +193,11 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
+                if (_isDesiredConnected)
+                {
+                    throw new InvalidOperationException("The client is already managing the connection.");
+                }
+
                 return await ConnectWhileHoldingEventLockAsync(connect, cancellationToken);
             }
             finally
