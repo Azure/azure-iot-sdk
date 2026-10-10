@@ -77,7 +77,7 @@ extern "C"
 
 /* Maximum number of RSA root public keys the core trust store holds. */
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 4
+#define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 
 /* Scratch buffer (in-struct) that holds a COPY of the `updateMetadata`
