@@ -123,24 +123,35 @@ namespace Microsoft.Azure.Iot.Device
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
         }
 
-        private Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
+
             if (PublishReceivedAsync != null)
             {
-                _ = PublishReceivedAsync.Invoke(args);
+                try
+                {
+                    await PublishReceivedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
-        private Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
+        private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
             if (ConnectedAsync != null)
             {
-                _ = ConnectedAsync.Invoke(args);
+                try
+                {
+                    await ConnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
         private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
@@ -153,14 +164,19 @@ namespace Microsoft.Azure.Iot.Device
             return connect;
         }
 
-        private Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
             if (DisconnectedAsync != null)
             {
-                _ = DisconnectedAsync.Invoke(args);
+                try
+                {
+                    await DisconnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -185,6 +201,36 @@ namespace Microsoft.Azure.Iot.Device
 
             ArgumentNullException.ThrowIfNull(connect);
 
+            // Hold the disconnected-event lock for the whole initial connect. Each failed attempt raises the
+            // "Disconnected" callback, which would otherwise start a second retry loop alongside this one. Queued
+            // callbacks re-check their guards once this method completes and stand down (or reconnect, if the
+            // connection dropped right after being established).
+            await _disconnectedEventLock.WaitAsync(cancellationToken);
+
+            try
+            {
+                if (_isDesiredConnected)
+                {
+                    throw new InvalidOperationException("The client is already managing the connection.");
+                }
+
+                return await ConnectWhileHoldingEventLockAsync(connect, cancellationToken);
+            }
+            finally
+            {
+                try
+                {
+                    _disconnectedEventLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Dispose raced with this connect; there is nothing left to release.
+                }
+            }
+        }
+
+        private async Task<MqttConnectAck> ConnectWhileHoldingEventLockAsync(MqttConnect connect, CancellationToken cancellationToken)
+        {
             _mostRecentConnect = connect;
             _isClosing = false;
 
@@ -538,7 +584,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
         /// and never reach here.
         /// </remarks>
-        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
+        private Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
         {
             Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
 
@@ -548,7 +594,7 @@ namespace Microsoft.Azure.Iot.Device
             if (handler == null)
             {
                 Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
-                return;
+                return Task.CompletedTask;
             }
 
             var args = new MqttConnectionFaultedEventArgs()
@@ -560,7 +606,21 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
-                await handler.Invoke(args);
+                _ = ObserveConnectionFaultHandlerAsync(handler.Invoke(args));
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static async Task ObserveConnectionFaultHandlerAsync(Task handlerTask)
+        {
+            try
+            {
+                await handlerTask.ConfigureAwait(false);
             }
             catch (Exception e)
             {
