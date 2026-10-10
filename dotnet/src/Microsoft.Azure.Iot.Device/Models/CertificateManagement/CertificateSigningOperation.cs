@@ -86,8 +86,8 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
 
             _cancellationRegistration = cancellationToken.Register(() =>
             {
-                SetCanceled(cancellationToken);
                 onCanceled?.Invoke();
+                SetCanceled(cancellationToken);
             });
         }
 
