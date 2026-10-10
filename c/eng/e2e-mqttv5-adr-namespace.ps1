@@ -188,11 +188,13 @@ for ($attempt = 1; ; $attempt++) {
 $dps = Invoke-Arm get $DpsUrl
 $dpsTags = @{}
 if ($dps.tags) { $dps.tags.PSObject.Properties | ForEach-Object { $dpsTags[$_.Name] = $_.Value } }
-$dpsTags['adrNamespaceRestored'] = [DateTime]::UtcNow.ToString('o')
+$marker = [guid]::NewGuid().ToString('N')
+$dpsTags['adrNamespaceRestored'] = $marker
 [void](Invoke-Arm patch $DpsUrl @{ tags = $dpsTags })
 [void](Wait-For 'DPS update' 5 {
         $d = Invoke-Arm get $DpsUrl
-        @{ Done = ($d.properties.provisioningState -eq 'Succeeded' -and $d.properties.state -eq 'Active'); Detail = "$($d.properties.provisioningState) / $($d.properties.state)" } })
+        # Succeeded/Active is also the pre-update state; require the new marker.
+        @{ Done = ($d.tags.adrNamespaceRestored -eq $marker -and $d.properties.provisioningState -eq 'Succeeded' -and $d.properties.state -eq 'Active'); Detail = "$($d.properties.provisioningState) / $($d.properties.state)" } })
 
 Write-Host "ADR namespace $NamespaceName rebuilt and linked."
 if ($env:GITHUB_STEP_SUMMARY) { "ADR namespace ``$NamespaceName`` was rebuilt and re-linked by this run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }

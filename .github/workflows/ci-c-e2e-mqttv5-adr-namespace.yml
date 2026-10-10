@@ -23,6 +23,11 @@ name: ci-c-e2e-mqttv5-adr-namespace
 on:
   workflow_dispatch:
   workflow_call:
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
   schedule:
     - cron: '17 * * * *'
 
