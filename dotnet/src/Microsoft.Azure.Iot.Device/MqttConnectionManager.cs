@@ -123,47 +123,35 @@ namespace Microsoft.Azure.Iot.Device
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
         }
 
-        private Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
 
             if (PublishReceivedAsync != null)
             {
-                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await PublishReceivedAsync.Invoke(args);
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
-                    }
-                });
+                    await PublishReceivedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
-        private Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
+        private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
             if (ConnectedAsync != null)
             {
-                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await ConnectedAsync.Invoke(args);
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
-                    }
-                });
+                    await ConnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
         private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
@@ -176,25 +164,19 @@ namespace Microsoft.Azure.Iot.Device
             return connect;
         }
 
-        private Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
             if (DisconnectedAsync != null)
             {
-                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await DisconnectedAsync.Invoke(args);
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
-                    }
-                });
+                    await DisconnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>
