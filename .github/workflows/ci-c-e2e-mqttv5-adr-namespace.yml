@@ -1,0 +1,80 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Keeps the shared mqttv5 e2e environment's ADR namespace present and linked.
+#
+# Workaround: the namespace can disappear from ARM (taking its role assignments
+# with it), after which DPS registrations fail. c/eng/e2e-mqttv5-adr-namespace.ps1
+# rebuilds and re-links it; when it is healthy the run is one ARM read.
+#
+# Runs hourly, on demand, and as the first job of the mqttv5 e2e workflow
+# (workflow_call), so tests start against a linked namespace.
+#
+#   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, E2E_MQTTV5_SHARED_RESOURCE_GROUP,
+#            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
+#            E2E_MQTTV5_SHARED_ADR_NAMESPACE,
+#            E2E_MQTTV5_SHARED_ADR_API_VERSION (optional; default 2026-11-02-preview)
+#   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC). On the resource group the
+#            identity needs Contributor, and role assignment write for
+#            Contributor, IoT Hub Data Contributor and Azure Device Registry
+#            Contributor.
+
+name: ci-c-e2e-mqttv5-adr-namespace
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+  id-token: write   # azure/login OIDC
+
+jobs:
+  ensure:
+    name: ensure ADR namespace
+    if: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE != '' }}
+    runs-on: ubuntu-24.04
+    # One repair at a time across schedule, dispatch and callers. GitHub keeps
+    # one pending run per group; a third queued run cancels the pending one.
+    concurrency:
+      group: mqttv5-adr-namespace
+      cancel-in-progress: false
+    # Above the script's worst case: delete wait 15 + namespace 10 + role
+    # grants 14 + 4 link attempts x 13 + 3 settle waits x 5 + reconcile 5 +
+    # DPS 5 = 116 min, plus ARM latency.
+    timeout-minutes: 135
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: c/eng
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
+
+      - name: Ensure ADR namespace
+        shell: pwsh
+        env:
+          SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
+          RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
+          HUB_NAME: ${{ vars.E2E_MQTTV5_SHARED_HUB_NAME }}
+          DPS_NAME: ${{ vars.E2E_MQTTV5_SHARED_DPS_NAME }}
+          ADR_NAMESPACE: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE }}
+          ADR_API_VERSION: ${{ vars.E2E_MQTTV5_SHARED_ADR_API_VERSION }}
+        run: |
+          $extra = @{}
+          if ($env:ADR_API_VERSION) { $extra.AdrApiVersion = $env:ADR_API_VERSION }
+          ./c/eng/e2e-mqttv5-adr-namespace.ps1 -SubscriptionId $env:SUBSCRIPTION_ID `
+            -ResourceGroup $env:RESOURCE_GROUP -HubName $env:HUB_NAME `
+            -DpsName $env:DPS_NAME -NamespaceName $env:ADR_NAMESPACE @extra
