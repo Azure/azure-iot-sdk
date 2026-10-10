@@ -85,11 +85,23 @@ extern "C"
  * valid during the subscriber callback, but the workflow is processed
  * asynchronously across many do_work() calls; the upstream parser stores spans
  * that point INTO this payload (and unescapes the manifest in place), so it must
- * outlive the callback. Sized for a v5 manifest with the upstream's bounded
- * step/file counts plus the JWS signature. Override if your deployments are
- * larger. No heap is used. */
+ * outlive the callback. Holds the escaped manifest, its JWS signature and the
+ * file URLs; a one-file offer is about 5 KiB. Override if your deployments are
+ * larger. It also bounds the scratch the client verifies the signature in (see
+ * AZ_IOT_SU_PERSIST_BLOB_SIZE). No heap is used. */
 #ifndef AZ_IOT_SU_REQUEST_BUFFER_SIZE
-#define AZ_IOT_SU_REQUEST_BUFFER_SIZE 4096
+#define AZ_IOT_SU_REQUEST_BUFFER_SIZE 16384
+#endif
+
+/**
+ * @brief Stack scratch az_iot_su_parse_update_request() decodes the manifest signature into.
+ *
+ * Holds the decoded JWS header (which embeds the signing key), the signing key and the
+ * signatures. A signature that does not fit is rejected with AZ_IOT_ERR_AUTH and an error
+ * log naming the part that is too large. The managed client does not use it.
+ */
+#ifndef AZ_IOT_SU_VERIFY_SCRATCH_SIZE
+#define AZ_IOT_SU_VERIFY_SCRATCH_SIZE 8192
 #endif
 
 /** @brief Capacity of the packed applied update id (provider, name, version). */
@@ -1141,7 +1153,8 @@ extern "C"
    *
    * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
    * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * non-NULL outputs are zeroed on every error.
+   * non-NULL outputs are zeroed on every error. Uses
+   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack for the decoded signature.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The

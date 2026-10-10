@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/base64.h"
 #include "internal/crypto.h"
 #include "internal/json_string.h"
 #include "internal/mono_time.h"
@@ -240,10 +241,17 @@ static void result_overall_success(az_iot_su_client* client)
  * backend only for the two RSA signature checks and the binding SHA-256 (see
  * design doc section 6). The backend remains pure primitives.
  *
- * Stack note: the chain decodes several base64url segments into local scratch
- * buffers (the largest is the manifest protected header, which embeds the whole
- * SJWK). The frame is a few KiB; acceptable for the Linux/desktop OpenSSL target.
- * Constrained backends should mind the per-task stack budget.
+ * Buffers: the chain decodes its base64url segments into a caller-supplied
+ * scratch, not fixed stack arrays, because signing keys and their headers grow
+ * as keys rotate. Only the outer JWS header is decoded into it beside one of:
+ * the SJWK header (alg, kid), the manifest signature or the JWS payload; the
+ * SJWK signature, payload and signing key are decoded in place within the
+ * header. Decoding shrinks base64 by a quarter, so the managed client, which
+ * passes its persistence scratch (more than AZ_IOT_SU_REQUEST_BUFFER_SIZE),
+ * verifies any signature that fits the request buffer unless its SJWK header
+ * alone exceeds a quarter of that buffer. az_iot_su_parse_update_request()
+ * uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack. Values that do not fit are
+ * logged as too large, not as invalid.
  */
 
 /* Split a compact JWS "header.payload.signature" (exactly two '.'). On success
@@ -289,55 +297,59 @@ static bool jws_split(
   return true;
 }
 
-/* base64url-decode `src` into `buf`; returns the decoded span, or AZ_SPAN_EMPTY
- * on any error (including insufficient capacity). */
-static az_span jws_b64url(az_span src, uint8_t* buf, int32_t cap)
+/** @brief Bump allocator over the scratch manifest verification decodes into. */
+typedef struct
 {
-  int32_t written = 0;
-  if (az_span_size(src) <= 0
-      || az_result_failed(az_base64_url_decode(az_span_create(buf, cap), src, &written))
-      || written <= 0)
+  uint8_t* buf;
+  int32_t cap;
+  int32_t used;
+  /** Bytes the last scratch_b64_decode() needed; logged when they did not fit. */
+  int32_t need;
+} su_scratch;
+
+/**
+ * @brief Decode @p src (see az_iot_base64_decode()) into the free part of @p s and claim it.
+ *
+ * @return AZ_IOT_OK with @p out in @p s; AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit;
+ *         AZ_IOT_ERR_INVALID_ARG if @p src is empty or malformed.
+ */
+static az_iot_result scratch_b64_decode(su_scratch* s, az_span src, bool allow_std, az_span* out)
+{
+  int32_t len = az_span_size(src);
+  s->need = (len / 4) * 3 + ((len % 4) * 3) / 4;
+  az_iot_result r = az_iot_base64_decode(
+      src, allow_std, az_span_create(s->buf + s->used, s->cap - s->used), out);
+  if (r == AZ_IOT_OK)
   {
-    return AZ_SPAN_EMPTY;
+    s->used += az_span_size(*out);
   }
-  return az_span_create(buf, written);
+  return r;
 }
 
-/* Decode a JWK field that may be encoded as either base64url (RFC 7515) or
- * standard base64. The software updates service emits the signing-key modulus (n) as
- * standard base64 (with '+'/'/'), while the surrounding JWS segments are
- * base64url; az_base64_url_decode rejects '+'/'/' outright, so try base64url
- * first and fall back to standard base64. */
-static az_span jws_b64_any(az_span src, uint8_t* buf, int32_t cap)
+/**
+ * @brief Decode writable @p src (see az_iot_base64_decode()) in place.
+ *
+ * @return AZ_IOT_OK with @p out at the start of @p src; AZ_IOT_ERR_INVALID_ARG if empty or
+ *         malformed.
+ */
+static az_iot_result b64_decode_in_place(az_span src, bool allow_std, az_span* out)
 {
-  int32_t written = 0;
-  if (az_span_size(src) <= 0)
-  {
-    return AZ_SPAN_EMPTY;
-  }
-  if (az_result_succeeded(az_base64_url_decode(az_span_create(buf, cap), src, &written))
-      && written > 0)
-  {
-    return az_span_create(buf, written);
-  }
-  if (az_result_succeeded(az_base64_decode(az_span_create(buf, cap), src, &written)) && written > 0)
-  {
-    return az_span_create(buf, written);
-  }
-  return AZ_SPAN_EMPTY;
+  return az_iot_base64_decode(src, allow_std, src, out);
 }
 
-/* Read a top-level string property `name` from JSON object `obj`, copying its
- * (unescaped) value into `out_buf`. Returns the value span, or AZ_SPAN_EMPTY if
- * the property is absent or not a string. */
-static az_span jws_json_str(az_span obj, az_span name, char* out_buf, int32_t cap)
+/**
+ * @brief Find top-level property @p name of JSON object @p obj.
+ *
+ * @return true with @p out on its value token; false if absent or @p obj is not an object.
+ */
+static bool jws_json_find(az_span obj, az_span name, az_json_token* out)
 {
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, obj, NULL))
       || az_result_failed(az_json_reader_next_token(&jr))
       || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
   {
-    return AZ_SPAN_EMPTY;
+    return false;
   }
   while (az_result_succeeded(az_json_reader_next_token(&jr))
          && jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
@@ -349,31 +361,88 @@ static az_span jws_json_str(az_span obj, az_span name, char* out_buf, int32_t ca
     bool match = az_json_token_is_text_equal(&jr.token, name);
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
-      return AZ_SPAN_EMPTY;
+      return false;
     }
     if (match)
     {
-      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
-      {
-        return AZ_SPAN_EMPTY;
-      }
-      int32_t len = 0;
-      if (az_result_failed(az_json_token_get_string(&jr.token, out_buf, cap, &len)))
-      {
-        return AZ_SPAN_EMPTY;
-      }
-      return az_span_create((uint8_t*)out_buf, len);
+      *out = jr.token;
+      return true;
     }
     /* Skip a non-matching object/array value so we stay at object scope. */
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
       if (az_result_failed(az_json_reader_skip_children(&jr)))
       {
-        return AZ_SPAN_EMPTY;
+        return false;
       }
     }
   }
-  return AZ_SPAN_EMPTY;
+  return false;
+}
+
+/**
+ * @brief Copy the unescaped value of top-level string property @p name of @p obj to @p out_buf.
+ *
+ * @return AZ_IOT_OK with @p out on it; AZ_IOT_ERR_NOT_FOUND if absent, empty or not a string;
+ *         AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit @p cap with a terminator;
+ *         AZ_IOT_ERR_INVALID_ARG if it cannot be unescaped.
+ */
+static az_iot_result jws_json_str(
+    az_span obj,
+    az_span name,
+    char* out_buf,
+    int32_t cap,
+    az_span* out)
+{
+  az_json_token t;
+  if (!jws_json_find(obj, name, &t) || t.kind != AZ_JSON_TOKEN_STRING)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  int32_t len = 0;
+  az_result r = az_json_token_get_string(&t, out_buf, cap, &len);
+  if (r == AZ_ERROR_NOT_ENOUGH_SPACE)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  if (az_result_failed(r))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (len <= 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  *out = az_span_create((uint8_t*)out_buf, len);
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Unescape the value of top-level string property @p name in place in @p obj.
+ *
+ * Avoids copying a value nearly as large as @p obj. @p obj must be writable; if the value had
+ * escapes it is no longer valid JSON afterwards, so read other properties first.
+ *
+ * @return As jws_json_str(), except AZ_IOT_ERR_NOT_ENOUGH_SPACE.
+ */
+static az_iot_result jws_json_str_in_place(az_span obj, az_span name, az_span* out)
+{
+  az_json_token t;
+  if (!jws_json_find(obj, name, &t) || t.kind != AZ_JSON_TOKEN_STRING)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  az_span value;
+  if (az_iot_json_string_decode(t.slice, t.slice, &value) != AZ_IOT_OK)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (az_span_size(value) <= 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  *out = value;
+  return AZ_IOT_OK;
 }
 
 static const az_span k_alg_rs256 = AZ_SPAN_LITERAL_FROM_STR("RS256");
@@ -426,12 +495,63 @@ static const az_iot_su_root_key* resolve_root_key(
     return AZ_IOT_SU_RESULT_FAILURE;                                                       \
   } while (0)
 
+/**
+ * @brief Log why a scratch_b64_decode() of @p what failed.
+ *
+ * @param s    The scratch it decoded into.
+ * @param r    Its result, not AZ_IOT_OK.
+ * @param what The decoded part, for the log.
+ */
+static void log_decode_failure(const su_scratch* s, az_iot_result r, const char* what)
+{
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "manifest verification failed: %s too large (%ld bytes, %ld of %ld free)",
+        what,
+        (long)s->need,
+        (long)(s->cap - s->used),
+        (long)s->cap);
+  }
+  else
+  {
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "manifest verification failed: %s not valid", what);
+  }
+}
+
+/* Fail verification unless scratch_b64_decode() result `r` is AZ_IOT_OK. */
+#define SU_VERIFY_DECODED(r, s, what)      \
+  do                                       \
+  {                                        \
+    az_iot_result r_ = (r);                \
+    if (r_ != AZ_IOT_OK)                   \
+    {                                      \
+      log_decode_failure((s), r_, (what)); \
+      return AZ_IOT_SU_RESULT_FAILURE;     \
+    }                                      \
+  } while (0)
+
+/**
+ * @brief Verify the manifest signature chain (design doc section 6).
+ *
+ * @param crypto         Crypto backend; needs verify_rs256.
+ * @param root_keys      Trusted root keys.
+ * @param root_key_count Entries in @p root_keys.
+ * @param manifest       The unescaped manifest body.
+ * @param jws            The compact updateManifestSignature.
+ * @param scratch        Decoded segments are written here; not read before.
+ * @param scratch_size   Size of @p scratch.
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE, with the reason logged.
+ */
 static int32_t verify_manifest_core(
     const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
     az_span manifest,
-    az_span jws)
+    az_span jws,
+    uint8_t* scratch,
+    size_t scratch_size)
 {
   if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || crypto->verify_rs256 == NULL)
   {
@@ -449,32 +569,32 @@ static int32_t verify_manifest_core(
     SU_VERIFY_FAIL("empty updateManifest or updateManifestSignature");
   }
 
-  /* 1. Split the manifest JWS and decode + parse its protected header. */
+  su_scratch s = { scratch, (int32_t)(scratch_size > INT32_MAX ? INT32_MAX : scratch_size), 0, 0 };
+
+  /* 1. Split the manifest JWS and decode + parse its protected header. The
+   *    header, and the sjwk unescaped within it, stay in scratch through step 4. */
   az_span m_hdr_b64, m_pl_b64, m_sig_b64, m_signed;
   if (!jws_split(jws, &m_hdr_b64, &m_pl_b64, &m_sig_b64, &m_signed))
   {
     SU_VERIFY_FAIL("step 1: manifest JWS is not a valid 3-part token");
   }
 
-  uint8_t sjwk_buf[2048]; /* outlives steps 2-6: SJWK segments point into it */
   az_span sjwk;
   {
-    uint8_t hdr_buf[2048];
-    az_span hdr = jws_b64url(m_hdr_b64, hdr_buf, (int32_t)sizeof(hdr_buf));
-    if (az_span_size(hdr) <= 0)
-    {
-      SU_VERIFY_FAIL("step 1: manifest JWS header is not valid base64url");
-    }
+    az_span hdr;
+    SU_VERIFY_DECODED(
+        scratch_b64_decode(&s, m_hdr_b64, false, &hdr), &s, "step 1: manifest JWS header");
 
     char alg_buf[16];
-    az_span alg = jws_json_str(hdr, AZ_SPAN_FROM_STR("alg"), alg_buf, (int32_t)sizeof(alg_buf));
-    if (!az_span_is_content_equal(alg, k_alg_rs256))
+    az_span alg = AZ_SPAN_EMPTY;
+    if (jws_json_str(hdr, AZ_SPAN_FROM_STR("alg"), alg_buf, (int32_t)sizeof(alg_buf), &alg)
+            != AZ_IOT_OK
+        || !az_span_is_content_equal(alg, k_alg_rs256))
     {
       SU_VERIFY_FAIL("step 1: manifest JWS alg is not RS256");
     }
 
-    sjwk = jws_json_str(hdr, AZ_SPAN_FROM_STR("sjwk"), (char*)sjwk_buf, (int32_t)sizeof(sjwk_buf));
-    if (az_span_size(sjwk) <= 0)
+    if (jws_json_str_in_place(hdr, AZ_SPAN_FROM_STR("sjwk"), &sjwk) != AZ_IOT_OK)
     {
       SU_VERIFY_FAIL("step 1: manifest JWS header has no sjwk");
     }
@@ -487,25 +607,32 @@ static int32_t verify_manifest_core(
     SU_VERIFY_FAIL("step 2: sjwk is not a valid 3-part token");
   }
 
+  /* Only the SJWK header is decoded beside the outer header; the SJWK signature
+   * and payload, and the signing key in it, are decoded in place within it. */
+  int32_t after_hdr = s.used;
   const az_iot_su_root_key* root = NULL;
   {
-    uint8_t shdr_buf[512];
-    az_span shdr = jws_b64url(s_hdr_b64, shdr_buf, (int32_t)sizeof(shdr_buf));
-    if (az_span_size(shdr) <= 0)
-    {
-      SU_VERIFY_FAIL("step 2: sjwk header is not valid base64url");
-    }
+    az_span shdr;
+    SU_VERIFY_DECODED(scratch_b64_decode(&s, s_hdr_b64, false, &shdr), &s, "step 2: sjwk header");
 
     char salg_buf[16];
-    az_span salg = jws_json_str(shdr, AZ_SPAN_FROM_STR("alg"), salg_buf, (int32_t)sizeof(salg_buf));
-    if (!az_span_is_content_equal(salg, k_alg_rs256))
+    az_span salg = AZ_SPAN_EMPTY;
+    if (jws_json_str(shdr, AZ_SPAN_FROM_STR("alg"), salg_buf, (int32_t)sizeof(salg_buf), &salg)
+            != AZ_IOT_OK
+        || !az_span_is_content_equal(salg, k_alg_rs256))
     {
       SU_VERIFY_FAIL("step 2: sjwk alg is not RS256");
     }
 
     char kid_buf[128];
-    az_span kid = jws_json_str(shdr, AZ_SPAN_FROM_STR("kid"), kid_buf, (int32_t)sizeof(kid_buf));
-    if (az_span_size(kid) <= 0)
+    az_span kid = AZ_SPAN_EMPTY;
+    az_iot_result r
+        = jws_json_str(shdr, AZ_SPAN_FROM_STR("kid"), kid_buf, (int32_t)sizeof(kid_buf), &kid);
+    if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+    {
+      SU_VERIFY_FAIL("step 2: sjwk kid too large (127 bytes max)");
+    }
+    if (r != AZ_IOT_OK)
     {
       SU_VERIFY_FAIL("step 2: sjwk header has no kid");
     }
@@ -516,15 +643,12 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 2: sjwk kid does not match any known (enabled) root key");
     }
   }
+  s.used = after_hdr;
 
   /* 3. Verify the SJWK signature with the resolved root key. */
   {
-    uint8_t s_sig_buf[1024];
-    az_span s_sig = jws_b64url(s_sig_b64, s_sig_buf, (int32_t)sizeof(s_sig_buf));
-    if (az_span_size(s_sig) <= 0)
-    {
-      SU_VERIFY_FAIL("step 3: sjwk signature is not valid base64url");
-    }
+    az_span s_sig;
+    SU_VERIFY_DECODED(b64_decode_in_place(s_sig_b64, false, &s_sig), &s, "step 3: sjwk signature");
     if (crypto->verify_rs256(
             crypto,
             root->modulus,
@@ -541,46 +665,39 @@ static int32_t verify_manifest_core(
     }
   }
 
-  /* 4. Parse the now-trusted SJWK payload as a JWK → signing key (n, e).
-   * Buffers are sized for up to 4096-bit RSA keys: the base64 modulus of a
-   * 3072-bit key is already 512 chars, and az_json_token_get_string needs the
-   * destination strictly larger than the string to fit its NUL terminator. */
-  uint8_t n_buf[1024];
-  uint8_t e_buf[16];
+  /* 4. Parse the now-trusted SJWK payload as a JWK → signing key (n, e). The
+   *    modulus may be standard base64; it is unescaped in place, after `e` is
+   *    copied out. The SJWK's signed bytes are no longer needed. */
   az_span n_raw;
   az_span e_raw;
+  char e_b64[64];
   {
-    uint8_t spl_buf[2048];
-    az_span spl = jws_b64url(s_pl_b64, spl_buf, (int32_t)sizeof(spl_buf));
-    if (az_span_size(spl) <= 0)
-    {
-      SU_VERIFY_FAIL("step 4: sjwk payload is not valid base64url");
-    }
+    az_span spl;
+    SU_VERIFY_DECODED(b64_decode_in_place(s_pl_b64, false, &spl), &s, "step 4: sjwk payload");
 
-    char n_b64[1024];
-    char e_b64[64];
-    az_span n_field = jws_json_str(spl, AZ_SPAN_FROM_STR("n"), n_b64, (int32_t)sizeof(n_b64));
-    az_span e_field = jws_json_str(spl, AZ_SPAN_FROM_STR("e"), e_b64, (int32_t)sizeof(e_b64));
-    if (az_span_size(n_field) <= 0 || az_span_size(e_field) <= 0)
+    az_span e_field = AZ_SPAN_EMPTY;
+    az_span n_field = AZ_SPAN_EMPTY;
+    az_iot_result r
+        = jws_json_str(spl, AZ_SPAN_FROM_STR("e"), e_b64, (int32_t)sizeof(e_b64), &e_field);
+    if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+    {
+      SU_VERIFY_FAIL("step 4: signing JWK exponent (e) too large (63 bytes max)");
+    }
+    if (r != AZ_IOT_OK || jws_json_str_in_place(spl, AZ_SPAN_FROM_STR("n"), &n_field) != AZ_IOT_OK)
     {
       SU_VERIFY_FAIL("step 4: signing JWK is missing modulus (n) or exponent (e)");
     }
-    n_raw = jws_b64_any(n_field, n_buf, (int32_t)sizeof(n_buf));
-    e_raw = jws_b64_any(e_field, e_buf, (int32_t)sizeof(e_buf));
-    if (az_span_size(n_raw) <= 0 || az_span_size(e_raw) <= 0)
-    {
-      SU_VERIFY_FAIL("step 4: signing JWK n/e are not valid base64url");
-    }
+    SU_VERIFY_DECODED(
+        b64_decode_in_place(n_field, true, &n_raw), &s, "step 4: signing JWK modulus (n)");
+    SU_VERIFY_DECODED(
+        b64_decode_in_place(e_field, true, &e_raw), &s, "step 4: signing JWK exponent (e)");
   }
 
   /* 5. Verify the manifest JWS signature with the trusted signing key. */
   {
-    uint8_t m_sig_buf[1024];
-    az_span m_sig = jws_b64url(m_sig_b64, m_sig_buf, (int32_t)sizeof(m_sig_buf));
-    if (az_span_size(m_sig) <= 0)
-    {
-      SU_VERIFY_FAIL("step 5: manifest signature is not valid base64url");
-    }
+    az_span m_sig;
+    SU_VERIFY_DECODED(
+        scratch_b64_decode(&s, m_sig_b64, false, &m_sig), &s, "step 5: manifest signature");
     if (crypto->verify_rs256(
             crypto,
             az_span_ptr(n_raw),
@@ -596,30 +713,27 @@ static int32_t verify_manifest_core(
       SU_VERIFY_FAIL("step 5: manifest signature does not verify against the signing key");
     }
   }
+  s.used = after_hdr;
 
   /* 6. Bind the signed manifest to THIS deployment: the manifest JWS payload
    *    carries SHA-256(manifest body); recompute and compare. */
   {
-    uint8_t pl_buf[256];
-    az_span pl = jws_b64url(m_pl_b64, pl_buf, (int32_t)sizeof(pl_buf));
-    if (az_span_size(pl) <= 0)
-    {
-      SU_VERIFY_FAIL("step 6: manifest JWS payload is not valid base64url");
-    }
+    az_span pl;
+    SU_VERIFY_DECODED(
+        scratch_b64_decode(&s, m_pl_b64, false, &pl), &s, "step 6: manifest JWS payload");
 
     char hash_b64[128];
-    az_span hash_field
-        = jws_json_str(pl, AZ_SPAN_FROM_STR("sha256"), hash_b64, (int32_t)sizeof(hash_b64));
-    if (az_span_size(hash_field) <= 0)
+    az_span hash_field = AZ_SPAN_EMPTY;
+    az_iot_result r = jws_json_str(
+        pl, AZ_SPAN_FROM_STR("sha256"), hash_b64, (int32_t)sizeof(hash_b64), &hash_field);
+    if (r == AZ_IOT_ERR_NOT_FOUND)
     {
       SU_VERIFY_FAIL("step 6: manifest JWS payload has no sha256");
     }
 
-    uint8_t expected[32];
-    int32_t exp_written = 0;
-    if (az_result_failed(az_base64_decode(
-            az_span_create(expected, (int32_t)sizeof(expected)), hash_field, &exp_written))
-        || exp_written != 32)
+    az_span expected = AZ_SPAN_EMPTY;
+    if (r != AZ_IOT_OK || b64_decode_in_place(hash_field, true, &expected) != AZ_IOT_OK
+        || az_span_size(expected) != 32)
     {
       SU_VERIFY_FAIL("step 6: manifest sha256 field is not a 32-byte base64 hash");
     }
@@ -630,7 +744,7 @@ static int32_t verify_manifest_core(
     {
       SU_VERIFY_FAIL("step 6: SHA-256 failed over the manifest body");
     }
-    if (!az_span_is_content_equal(AZ_SPAN_FROM_BUFFER(expected), AZ_SPAN_FROM_BUFFER(actual)))
+    if (!az_span_is_content_equal(expected, AZ_SPAN_FROM_BUFFER(actual)))
     {
       SU_VERIFY_FAIL("step 6: computed manifest SHA-256 does not match the signed hash");
     }
@@ -640,7 +754,8 @@ static int32_t verify_manifest_core(
 }
 
 /* Thin wrapper: verify the current deployment's manifest using the client's
- * crypto backend + root-key store. */
+ * crypto backend + root-key store. The persistence scratch is free here: it
+ * only holds data within one persist or resume call. */
 static int32_t verify_manifest(az_iot_su_client* client)
 {
   return verify_manifest_core(
@@ -648,7 +763,9 @@ static int32_t verify_manifest(az_iot_su_client* client)
       SU_I(client).root_keys,
       SU_I(client).root_key_count,
       SU_I(client).manifest_text,
-      SU_I(client).current_request.update_manifest_signature);
+      SU_I(client).current_request.update_manifest_signature,
+      SU_I(client).persist_scratch,
+      sizeof(SU_I(client).persist_scratch));
 }
 
 /* Verify a downloaded file's SHA-256 against the signed manifest by streaming
@@ -3435,8 +3552,15 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
+  uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
   if (verify_manifest_core(
-          crypto, root_keys, root_key_count, manifest_text, req.update_manifest_signature)
+          crypto,
+          root_keys,
+          root_key_count,
+          manifest_text,
+          req.update_manifest_signature,
+          scratch,
+          sizeof(scratch))
       != AZ_IOT_SU_RESULT_SUCCESS)
   {
     return AZ_IOT_ERR_AUTH;

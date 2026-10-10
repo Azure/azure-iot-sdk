@@ -48,3 +48,11 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
+  4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
+  decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
+  signature that fits the request buffer verifies unless its SJWK header alone exceeds a quarter
+  of it, and the verifier's stack drops from about 6.5 KiB to under 1 KiB.
+  `az_iot_su_parse_update_request()` uses `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` (8192) bytes of stack
+  instead. A part that does not fit is logged as too large, not as invalid. The ESP32 sample sets
+  the request buffer to 8192 and its NVS partition to 36 KB (erase the flash to move to it).

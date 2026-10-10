@@ -110,12 +110,31 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
   dst[out] = '\0';
 }
 
+/* Write `"name":"aaa...",` with `len` filler bytes into `dst`, or "" when `len` is 0. */
+static void pad_property(char* dst, size_t cap, const char* name, size_t len)
+{
+  dst[0] = '\0';
+  if (len == 0)
+  {
+    return;
+  }
+  int n = snprintf(dst, cap, "\"%s\":\"", name);
+  assert_true(n > 0 && (size_t)n + len + 3 < cap);
+  memset(dst + n, 'a', len);
+  memcpy(dst + (size_t)n + len, "\",", 3);
+}
+
 /* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
  * (itself a JWS over a JWK signing key, signed by the root key `testkid`); the
  * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
- * are arbitrary because the mock backend does not validate them. */
-static void build_jws(char* out, int32_t out_cap)
+ * are arbitrary because the mock backend does not validate them.
+ * `jwk_pad` and `hdr_pad` add that many bytes of an unknown property to the
+ * signing JWK and to the manifest JWS header. `escaped_n` encodes the modulus as
+ * standard base64 with JSON-escaped slashes, as some serializers emit it. */
+static void build_jws_ex(char* out, int32_t out_cap, size_t jwk_pad, size_t hdr_pad, bool escaped_n)
 {
+  static char pad[16384];
+
   uint8_t fixed_hash[32];
   memset(fixed_hash, SU_TEST_HASH_BYTE, sizeof(fixed_hash));
   char hash_b64[64];
@@ -135,30 +154,43 @@ static void build_jws(char* out, int32_t out_cap)
   char shdr_b64[128];
   b64url_str(sjwk_hdr, (int32_t)strlen(sjwk_hdr), shdr_b64, (int32_t)sizeof(shdr_b64));
 
-  char n_b64[16];
+  char n_b64[32];
   char e_b64[16];
   b64url_str(k_root_mod, (int32_t)sizeof(k_root_mod), n_b64, (int32_t)sizeof(n_b64));
   b64url_str(k_root_exp, (int32_t)sizeof(k_root_exp), e_b64, (int32_t)sizeof(e_b64));
-  char sp_json[128];
-  snprintf(sp_json, sizeof(sp_json), "{\"kty\":\"RSA\",\"n\":\"%s\",\"e\":\"%s\"}", n_b64, e_b64);
-  char sp_b64[256];
+  if (escaped_n)
+  {
+    /* Standard base64 of FF FF FF is "////". */
+    snprintf(n_b64, sizeof(n_b64), "\\/\\/\\/\\/");
+  }
+  pad_property(pad, sizeof(pad), "x5t", jwk_pad);
+  static char sp_json[16384];
+  int n = snprintf(
+      sp_json, sizeof(sp_json), "{\"kty\":\"RSA\",%s\"n\":\"%s\",\"e\":\"%s\"}", pad, n_b64, e_b64);
+  assert_true(n > 0 && (size_t)n < sizeof(sp_json));
+  static char sp_b64[24576];
   b64url_str(sp_json, (int32_t)strlen(sp_json), sp_b64, (int32_t)sizeof(sp_b64));
 
   const uint8_t dummy_sig[] = { 0xDE, 0xAD, 0xBE, 0xEF };
   char sig_b64[16];
   b64url_str(dummy_sig, (int32_t)sizeof(dummy_sig), sig_b64, (int32_t)sizeof(sig_b64));
 
-  char sjwk[800];
-  snprintf(sjwk, sizeof(sjwk), "%s.%s.%s", shdr_b64, sp_b64, sig_b64);
+  static char sjwk[24576];
+  n = snprintf(sjwk, sizeof(sjwk), "%s.%s.%s", shdr_b64, sp_b64, sig_b64);
+  assert_true(n > 0 && (size_t)n < sizeof(sjwk));
 
-  char mhdr_json[1024];
-  snprintf(mhdr_json, sizeof(mhdr_json), "{\"alg\":\"RS256\",\"sjwk\":\"%s\"}", sjwk);
-  char mhdr_b64[1536];
+  pad_property(pad, sizeof(pad), "x5c", hdr_pad);
+  static char mhdr_json[49152];
+  n = snprintf(mhdr_json, sizeof(mhdr_json), "{\"alg\":\"RS256\",%s\"sjwk\":\"%s\"}", pad, sjwk);
+  assert_true(n > 0 && (size_t)n < sizeof(mhdr_json));
+  static char mhdr_b64[65536];
   b64url_str(mhdr_json, (int32_t)strlen(mhdr_json), mhdr_b64, (int32_t)sizeof(mhdr_b64));
 
-  int n = snprintf(out, (size_t)out_cap, "%s.%s.%s", mhdr_b64, pl_b64, sig_b64);
+  n = snprintf(out, (size_t)out_cap, "%s.%s.%s", mhdr_b64, pl_b64, sig_b64);
   assert_true(n > 0 && n < out_cap);
 }
+
+static void build_jws(char* out, int32_t out_cap) { build_jws_ex(out, out_cap, 0, 0, false); }
 
 /* Build a single-step payload with a caller-chosen workflow `id` and manifest
  * `version`. Returns a static buffer, valid until the next call. */
@@ -238,6 +270,14 @@ typedef struct
   int download_calls;
   char download_file_ids[MAX_OPS][32];
   char download_urls[MAX_OPS][64];
+
+  /* Key, exponent and signature of the last verify_rs256 call. */
+  uint8_t verify_mod[8];
+  size_t verify_mod_len;
+  uint8_t verify_exp[8];
+  size_t verify_exp_len;
+  uint8_t verify_sig[8];
+  size_t verify_sig_len;
 } hook_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
@@ -359,15 +399,16 @@ static az_iot_result mock_verify_rs256(
     const uint8_t* sig,
     size_t sig_len)
 {
-  (void)mod;
-  (void)mod_len;
-  (void)exp;
-  (void)exp_len;
   (void)signed_data;
   (void)signed_len;
-  (void)sig;
-  (void)sig_len;
   hook_log* l = mock_log(self);
+  /* Truncated copies; the length is kept whole so a wrong decode still shows. */
+  memcpy(l->verify_mod, mod, mod_len < sizeof(l->verify_mod) ? mod_len : sizeof(l->verify_mod));
+  l->verify_mod_len = mod_len;
+  memcpy(l->verify_exp, exp, exp_len < sizeof(l->verify_exp) ? exp_len : sizeof(l->verify_exp));
+  l->verify_exp_len = exp_len;
+  memcpy(l->verify_sig, sig, sig_len < sizeof(l->verify_sig) ? sig_len : sizeof(l->verify_sig));
+  l->verify_sig_len = sig_len;
   log_op(l, OP_VERIFY, 0);
   return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
 }
@@ -4614,6 +4655,111 @@ static void malformed_jws_is_rejected(void** state)
   }
 }
 
+/* A signing key and JWS header larger than 2 KiB, as the service sends after a
+ * key rotation, in an offer larger than 4 KiB. The modulus is standard base64
+ * with JSON-escaped slashes. */
+static const char* large_signature_patch(void)
+{
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  build_jws_ex(jws, (int32_t)sizeof(jws), 2400, 600, true);
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "large-signature", "1.1", jws);
+  assert_true(n > 4096 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* The last verify_rs256 (the manifest's) got the escaped standard-base64
+ * modulus "\/\/\/\/" as FF FF FF, the exponent and the signature decoded. */
+static void assert_signing_key_decoded(const hook_log* l)
+{
+  static const uint8_t ff[] = { 0xFF, 0xFF, 0xFF };
+  static const uint8_t sig[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+  assert_int_equal(l->verify_mod_len, sizeof(ff));
+  assert_memory_equal(l->verify_mod, ff, sizeof(ff));
+  assert_int_equal(l->verify_exp_len, sizeof(k_root_exp));
+  assert_memory_equal(l->verify_exp, k_root_exp, sizeof(k_root_exp));
+  assert_int_equal(l->verify_sig_len, sizeof(sig));
+  assert_memory_equal(l->verify_sig, sig, sizeof(sig));
+}
+
+static void large_signature_is_verified(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, large_signature_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_signing_key_decoded(&fx->log);
+
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+  memset(&fx->log.verify_mod, 0, sizeof(fx->log.verify_mod));
+  assert_int_equal(
+      parse_with_roots(&fx->log, large_signature_patch(), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_signing_key_decoded(&fx->log);
+}
+
+/* An offer near AZ_IOT_SU_REQUEST_BUFFER_SIZE whose size is almost all the
+ * signing JWK, nested in the SJWK in the outer header. Decoding the JWK beside
+ * the outer header would need more than the client's scratch. */
+static void near_limit_nested_signing_key_is_verified(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  size_t jwk_pad = (AZ_IOT_SU_REQUEST_BUFFER_SIZE - 1500) * 9 / 16;
+  build_jws_ex(jws, (int32_t)sizeof(jws), jwk_pad, 0, false);
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "near-limit", "1.1", jws);
+  assert_true(n > AZ_IOT_SU_REQUEST_BUFFER_SIZE * 7 / 8 && (size_t)n < sizeof(patch));
+
+  inject_patch(fx, patch);
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.verify_mod_len, sizeof(k_root_mod));
+  assert_memory_equal(fx->log.verify_mod, k_root_mod, sizeof(k_root_mod));
+}
+
+/* A signature part that does not fit the scratch is logged as too large; a
+ * malformed one as not valid. */
+static void oversized_signature_is_reported_as_too_large(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+
+  build_jws_ex(jws, (int32_t)sizeof(jws), 0, AZ_IOT_SU_VERIFY_SCRATCH_SIZE, false);
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "too-large", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  su_error_log_capture too_large = { .needle = "manifest JWS header too large", .count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &too_large, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  az_iot_result r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_ERR_AUTH);
+  assert_int_equal(too_large.count, 1);
+
+  build_jws(jws, (int32_t)sizeof(jws));
+  jws[0] = '!';
+  n = snprintf(patch, sizeof(patch), k_patch_fmt, "not-valid", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  su_error_log_capture invalid = { .needle = "manifest JWS header not valid", .count = 0 };
+  sink.user_ctx = &invalid;
+  az_iot_log_set_global_sink(&sink);
+  r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_ERR_AUTH);
+  assert_int_equal(invalid.count, 1);
+}
+
 static void malformed_manifest_json_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -6249,6 +6395,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_jws_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(large_signature_is_verified, setup, teardown),
+    cmocka_unit_test_setup_teardown(near_limit_nested_signing_key_is_verified, setup, teardown),
+    cmocka_unit_test_setup_teardown(oversized_signature_is_reported_as_too_large, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),

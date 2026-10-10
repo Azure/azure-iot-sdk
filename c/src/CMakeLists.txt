@@ -16,6 +16,7 @@ add_library(az_iot_core
     core/proto3.c
     core/span_writer.c
     core/json_string.c
+    core/base64.c
     core/message.c
     core/certificate_provider_pem.c
     core/crypto.c

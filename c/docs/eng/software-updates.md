@@ -1124,7 +1124,7 @@ updates core owns all orchestration**:
 
 | Responsibility | Owner |
 |----------------|-------|
-| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links) |
+| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links; base64 through `az_iot_base64_decode()`) |
 | SJWK extraction, JWK `n`/`e` parsing | **core** |
 | Root-key store, `kid` resolution | **core** (see §7) |
 | Revocation enforcement (disabled kids) | **core** |
@@ -1463,6 +1463,7 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
 | `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
+| `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)
