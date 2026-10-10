@@ -2004,6 +2004,9 @@ static void a_ready_user_token_connects_the_hub(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  /* A fixed wall clock: a second boundary between delivery and use would age the
+   * token by 1 s and move the renewal 1 s earlier. */
+  opts.unix_time.get_time = fixed_time;
   init_and_open(fx, &opts);
   assert_int_equal(g_fake.calls, 0);
   assert_true(no_connect_pending(fx));
