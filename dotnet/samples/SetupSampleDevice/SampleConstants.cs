@@ -9,11 +9,33 @@ namespace SetupSampleDevice
 {
     public class SampleConstants
     {
-        public const string CertificatePath = outputPath + $"certificate.cer";
-        public const string PfxPath = outputPath + $"certificate.pfx";
+        // Every sample resolves the credential files against the samples root rather than the working directory, so the
+        // files that SetupSampleDevice saves are the same ones the other samples load, regardless of how each is launched.
+        private static readonly string outputPath = FindSamplesRoot();
+
+        public static readonly string CertificatePath = outputPath + "certificate.cer";
+        public static readonly string PfxPath = outputPath + "certificate.pfx";
         public const string TestCertificatesPassword = "Some dummy certificate password";
 
-        private const string outputPath = "../../../../../../";
+        private static string FindSamplesRoot()
+        {
+            foreach (string start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                DirectoryInfo? directory = new(start);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, "SetupSampleDevice", "SetupSampleDevice.csproj")))
+                    {
+                        return directory.FullName + Path.DirectorySeparatorChar;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "Could not locate the samples root directory (the one containing the SetupSampleDevice project).");
+        }
 
         public static void ClearSavedCredentials()
         {

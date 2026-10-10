@@ -53,13 +53,17 @@ internal class Program
         // This will attempt to connect directly to IoT Hub if any persisted credentials were loaded above. If no credentials
         // were loaded, or those credentials failed to open a connection to IoT Hub, then this call will fall back to provisioning the device
         // again
+        Console.WriteLine("Establishing connection with IoT Hub credentials, but provisioning if they are not present or no longer work...");
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, forceProvisioning: false, cancellationToken: cts.Token);
+        Console.WriteLine("Connected to IoT Hub.");
 
         // Persist the newest provisioning result so that the next time you run the sample, it connects directly to IoT Hub without provisioning
+        Console.WriteLine("Saving device credentials to disk so that this sample can be run again using them rather than provisioning");
         SampleConstants.SaveIotHubHostName(connectionContext.IotHubHostName);
         SampleConstants.SaveDeviceId(connectionContext.DeviceId);
         SampleConstants.SaveConnectionProfile(connectionContext.ConnectionProfile);
 
+        Console.WriteLine("Closing the connection client");
         await connectionClient.DisconnectAsync();
     }
 }
