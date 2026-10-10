@@ -124,20 +124,36 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             CertificateSigningOperation operation = new();
 
             _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
 
-            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
+            // The signing operation spans multiple messages from IoT hub, so the user's cancellation token must cancel
+            // whichever of the operation's tasks are still pending even after this method has returned
+            operation.WatchForCancellation(cancellationToken, () => _pendingCertificateSigningOperations.TryRemove(request.RequestId, out _));
 
-            MqttPublish certificateSigningRequestPublish = new()
+            try
             {
-                Topic = CertificateSigningRequestTopic + request.RequestId,
-                Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-            };
+                await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                MqttPublish certificateSigningRequestPublish = new()
+                {
+                    Topic = CertificateSigningRequestTopic + request.RequestId,
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                };
+
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            }
+            catch (Exception)
+            {
+                // The request was never successfully sent, so the caller never receives this operation to observe
+                _pendingCertificateSigningOperations.TryRemove(request.RequestId, out _);
+                operation.StopWatchingForCancellation();
+                throw;
+            }
 
             return operation;
         }

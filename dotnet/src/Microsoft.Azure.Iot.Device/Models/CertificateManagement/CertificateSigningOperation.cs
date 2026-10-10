@@ -26,6 +26,8 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         private readonly TaskCompletionSource<CertificateSigningResponse> _completed
             = new TaskCompletionSource<CertificateSigningResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private CancellationTokenRegistration _cancellationRegistration;
+
         /// <summary>
         /// A task that completes when IoT Hub accepts the certificate signing request (202 Accepted).
         /// The result contains the correlation ID and operation expiration time.
@@ -51,18 +53,49 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
 
         internal void SetAccepted(CertificateSigningRequestAccepted response) => _accepted.TrySetResult(response);
 
-        internal void SetCompleted(CertificateSigningResponse response) => _completed.TrySetResult(response);
+        internal void SetCompleted(CertificateSigningResponse response)
+        {
+            _completed.TrySetResult(response);
+            StopWatchingForCancellation();
+        }
 
         internal void SetFailed(Exception ex)
         {
             _accepted.TrySetException(ex);
             _completed.TrySetException(ex);
+            StopWatchingForCancellation();
         }
 
         internal void SetCanceled(CancellationToken cancellationToken)
         {
             _accepted.TrySetCanceled(cancellationToken);
             _completed.TrySetCanceled(cancellationToken);
+        }
+
+        /// <summary>
+        /// Cancel whichever of this operation's tasks are still pending once the provided token is canceled.
+        /// </summary>
+        /// <param name="cancellationToken">The token the caller provided when starting the operation.</param>
+        /// <param name="onCanceled">An optional action to run when the operation is canceled, such as releasing local state tracking this operation.</param>
+        internal void WatchForCancellation(CancellationToken cancellationToken, Action? onCanceled = null)
+        {
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return;
+            }
+
+            _cancellationRegistration = cancellationToken.Register(() =>
+            {
+                SetCanceled(cancellationToken);
+                onCanceled?.Invoke();
+            });
+        }
+
+        internal void StopWatchingForCancellation()
+        {
+            // Once the operation has a terminal outcome, the token no longer needs to be watched
+            _cancellationRegistration.Dispose();
+            _cancellationRegistration = default;
         }
     }
 }

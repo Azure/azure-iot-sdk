@@ -30,7 +30,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private static readonly TimeSpan s_certSigningTimeout = TimeSpan.FromSeconds(10);
 
         private static async Task<(ConnectionClient Client, MockMqttClient Mqtt, CertificateSigningOperation Operation, string RequestId)> StartCertificateSigningAsync(
-            Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? completeCallback = null)
+            Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? completeCallback = null,
+            CancellationToken? cancellationToken = null)
         {
             MockMqttClient mockMqttClient = new(false);
             ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
@@ -38,7 +39,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             IotHubCertificateSigningRequest request = new("someDeviceId", "c29tZWNzcg==");
-            CertificateSigningOperation operation = await connectionClient.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            CertificateSigningOperation operation = await connectionClient.SendCertificateSigningRequestAsync(request, cancellationToken ?? TestContext.Current.CancellationToken);
             return (connectionClient, mockMqttClient, operation, request.RequestId);
         }
 
@@ -228,6 +229,76 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await Assert.ThrowsAnyAsync<Exception>(() => connectionClient.SendCertificateSigningRequestAsync(
                 new IotHubCertificateSigningRequest("someDeviceId", "c29tZWNzcg=="),
                 TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
+        public async Task CertificateSigningCancellationCancelsBothPendingTasks()
+        {
+            using CancellationTokenSource cts = new();
+            var (client, _, operation, _) = await StartCertificateSigningAsync(cancellationToken: cts.Token);
+            using (client)
+            {
+                Assert.Equal(1, GetPendingOperationCount(client));
+
+                await cts.CancelAsync();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Accepted.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
+                Assert.Equal(0, GetPendingOperationCount(client));
+            }
+        }
+
+        [Fact]
+        public async Task CertificateSigningCancellationAfterAcceptanceOnlyCancelsCompletedTask()
+        {
+            using CancellationTokenSource cts = new();
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(cancellationToken: cts.Token);
+            using (client)
+            {
+                await DeliverCertificateSigningResponseAsync(mqtt, "202", requestId, AcceptedPayload);
+                await operation.Accepted.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken);
+
+                await cts.CancelAsync();
+
+                Assert.True(operation.Accepted.IsCompletedSuccessfully);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
+            }
+        }
+
+        [Fact]
+        public async Task CertificateSigningCancellationAfterCompletionLeavesTasksIntact()
+        {
+            using CancellationTokenSource cts = new();
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(
+                certs => Task.FromResult(GetMockConnectionContext(false).AuthenticationProvider),
+                cts.Token);
+            using (client)
+            {
+                await DeliverCertificateSigningResponseAsync(mqtt, "202", requestId, AcceptedPayload);
+                await DeliverCertificateSigningResponseAsync(mqtt, "200", requestId, "{\"certificates\":[\"cert1\"],\"correlationId\":\"someCorrelationId\"}");
+                await operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken);
+
+                await cts.CancelAsync();
+
+                Assert.True(operation.Accepted.IsCompletedSuccessfully);
+                Assert.True(operation.Completed.IsCompletedSuccessfully);
+            }
+        }
+
+        [Fact]
+        public async Task CertificateSigningWithAlreadyCanceledTokenThrows()
+        {
+            MockMqttClient mockMqttClient = new(false);
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
+
+            using CancellationTokenSource cts = new();
+            await cts.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connectionClient.SendCertificateSigningRequestAsync(
+                new IotHubCertificateSigningRequest("someDeviceId", "c29tZWNzcg=="),
+                cts.Token));
+            Assert.Equal(0, GetPendingOperationCount(connectionClient));
         }
 
         [Theory]
