@@ -174,7 +174,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     else if (status.Equals("200"))
                     {
                         hasRequestFinished = true;
-                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
+CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+    ?? throw new JsonException("Certificate signing completion response was null.");
                         if (HandleCertificateSigningCompleteAsync != null)
                         {
                             //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
