@@ -235,9 +235,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 finally
                 {
                     // Any terminal outcome (success, hub error, unreadable response, or a throwing user callback) ends the operation, so stop tracking it locally
-                    if (requestId != null && hasRequestFinished)
+                    if (requestId != null && hasRequestFinished && pendingCertificateSigningOperation != null)
                     {
-                        _pendingCertificateSigningOperations.TryRemove(requestId, out _);
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
                     }
 
                     await args.AcknowledgeAsync(CancellationToken.None);
