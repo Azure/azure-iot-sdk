@@ -54,8 +54,9 @@ extern "C"
    * @param callback Required. Called once, only if this returns AZ_IOT_OK: with the broker's
    *                 acknowledgement result, or with AZ_IOT_ERR_NOT_CONNECTED if the session ends
    *                 first (also on az_iot_connection_client_close()); the message may then not
-   *                 have arrived, so resend if needed. Not called after
-   *                 az_iot_connection_client_deinit().
+   *                 have arrived, so resend if needed. AZ_IOT_ERR_PUBLISH_REFUSED: refused, and
+   *                 will be again if resent unchanged. AZ_IOT_ERR_BUSY: over the hub's quota.
+   *                 Not called after az_iot_connection_client_deinit().
    *
    * @return AZ_IOT_OK if handed to the transport.
    * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments.

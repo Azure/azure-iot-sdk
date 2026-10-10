@@ -677,6 +677,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
             $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
         target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
     endforeach()
+    if(WIN32)
+        # The PUBACK cases run an in-process server.
+        target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE ws2_32)
+    endif()
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
@@ -693,6 +697,18 @@ if(AZ_IOT_WITH_AZ_MQTT)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
+    endif()
+
+    # The adapter compiled in, so its az_mqtt callbacks can be called directly.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_ack
+        unit/az_mqtt_adapter_ack_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
     endif()
 
     # Each footprint, a user's definition over it, and a config file: resolved as documented.
