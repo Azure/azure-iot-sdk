@@ -45,10 +45,10 @@ jobs:
     concurrency:
       group: mqttv5-adr-namespace
       cancel-in-progress: false
-    # Above the script's worst case: namespace 10 + role grants 14 + 4 link
-    # attempts x 13 + 3 settle waits x 5 + reconcile 5 + DPS 5 = 101 min,
-    # plus ARM latency.
-    timeout-minutes: 120
+    # Above the script's worst case: delete wait 15 + namespace 10 + role
+    # grants 14 + 4 link attempts x 13 + 3 settle waits x 5 + reconcile 5 +
+    # DPS 5 = 116 min, plus ARM latency.
+    timeout-minutes: 135
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

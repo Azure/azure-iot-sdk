@@ -162,6 +162,14 @@ $linkBody = @{
     }
 }
 
+# A namespace being deleted is waited out, then created again.
+if ($ns -and $ns.properties.provisioningState -eq 'Deleting') {
+    [void](Wait-For 'namespace delete' 15 {
+            $n = Invoke-Arm get $NsUrl
+            @{ Done = (-not $n); Detail = if ($n) { $n.properties.provisioningState } else { 'absent' } } })
+    $ns = $null
+}
+
 # 1. Namespace. A bare create fails with EndpointUsedByNestedDevices when ADR still holds it; then re-assert its endpoints.
 if (-not $ns) {
     try { [void](Invoke-Arm put $NsUrl @{ location = $location; identity = @{ type = 'SystemAssigned' }; tags = $tags }) }
@@ -174,7 +182,9 @@ if (-not $ns) {
 $ns = (Wait-For 'namespace' 10 {
         $n = Invoke-Arm get $NsUrl
         $ps = if ($n) { $n.properties.provisioningState } else { 'absent' }
-        @{ Done = ($ps -in 'Succeeded', 'Failed' -and $n.identity.principalId); Detail = $ps; Ns = $n } }).Ns
+        # Any terminal state with an identity can go on: the link PUT below re-drives the namespace.
+        $terminal = $ps -in 'Succeeded', 'Failed', 'Canceled'
+        @{ Done = ($terminal -and $n.identity.principalId); Failed = ($terminal -and -not $n.identity.principalId); Detail = $ps; Ns = $n } }).Ns
 $nsPid = $ns.identity.principalId
 
 # 2. Role assignments (removed with the namespace; the namespace identity may be new).
