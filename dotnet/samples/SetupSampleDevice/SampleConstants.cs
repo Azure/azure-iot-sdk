@@ -10,7 +10,7 @@ namespace SetupSampleDevice
     public class SampleConstants
     {
         // Every sample resolves the credential files against the samples root rather than the working directory, so the
-        // files that SetupSampleDevice saves are the same ones the other samples load, however each is launched.
+        // files that SetupSampleDevice saves are the same ones the other samples load, regardless of how each is launched.
         private static readonly string outputPath = FindSamplesRoot();
 
         public static readonly string CertificatePath = outputPath + "certificate.cer";
