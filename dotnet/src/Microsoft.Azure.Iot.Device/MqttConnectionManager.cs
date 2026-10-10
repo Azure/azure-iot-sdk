@@ -125,9 +125,21 @@ namespace Microsoft.Azure.Iot.Device
 
         private Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
+
             if (PublishReceivedAsync != null)
             {
-                _ = PublishReceivedAsync.Invoke(args);
+                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await PublishReceivedAsync.Invoke(args);
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+                    }
+                });
             }
 
             return Task.CompletedTask;
@@ -137,7 +149,18 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (ConnectedAsync != null)
             {
-                _ = ConnectedAsync.Invoke(args);
+                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await ConnectedAsync.Invoke(args);
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceError("The connected handler threw while being notified of a publish. {0}", e);
+                    }
+                });
             }
 
             return Task.CompletedTask;
@@ -157,7 +180,18 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (DisconnectedAsync != null)
             {
-                _ = DisconnectedAsync.Invoke(args);
+                // Run callback in unmonitored but uncrashable task to avoid deadlock issues
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await DisconnectedAsync.Invoke(args);
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceError("The disconnected handler threw while being notified of a publish. {0}", e);
+                    }
+                });
             }
 
             return Task.CompletedTask;
@@ -588,15 +622,19 @@ namespace Microsoft.Azure.Iot.Device
                 ReprovisionRequired = reprovisionRequired,
             };
 
-            try
+            // Run callback in unmonitored but uncrashable task to avoid deadlock issues
+            _ = Task.Run(async () =>
             {
-                await handler.Invoke(args);
-            }
-            catch (Exception e)
-            {
-                // This may run on an unmonitored reconnection task, so a misbehaving handler must not crash the process.
-                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
-            }
+                try
+                {
+                    await handler.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    // This may run on an unmonitored reconnection task, so a misbehaving handler must not crash the process.
+                    Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+                }
+            });
         }
 
         /// <summary>
