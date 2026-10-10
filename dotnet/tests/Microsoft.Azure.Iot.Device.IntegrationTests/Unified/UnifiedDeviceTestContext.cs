@@ -72,6 +72,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     }
                 }
             }
+
+            GC.SuppressFinalize(this);
         }
     }
 }

@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using System.Globalization;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -65,7 +66,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
             //TODO fill in content type, encoding, etc from message user properties
             var mqttMessage = new MqttPublish
             {
-                Topic = string.Format(ClassicTelemetryTopicFormat, deviceId),
+                Topic = string.Format(CultureInfo.InvariantCulture, ClassicTelemetryTopicFormat, deviceId),
                 PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
@@ -123,6 +124,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         {
             _connection.Dispose();
             _isDisposed = true;
+            GC.SuppressFinalize(this);
         }
     }
 }

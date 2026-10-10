@@ -219,7 +219,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix, StringComparison.Ordinal))
                 {
                     RegistrationRequestPayload = JsonSerializer.Deserialize<RegistrationRequestPayload>(
                         publish.Payload, JsonSerializationSettings.Options);
@@ -230,7 +230,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         Status = ProvisioningRegistrationStatus.Assigning,
                     });
                 }
-                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix))
+                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix, StringComparison.Ordinal))
                 {
                     await RespondAsync(new RegistrationOperationStatus()
                     {
@@ -283,7 +283,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix, StringComparison.Ordinal))
                 {
                     await _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
                     {

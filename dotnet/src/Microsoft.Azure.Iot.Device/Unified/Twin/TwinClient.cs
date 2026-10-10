@@ -111,7 +111,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             MqttPublish publish = new MqttPublish()
             {
-                Topic = string.Format(ClassicTwinGetTopicFormat, requestId.ToString()),
+                Topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinGetTopicFormat, requestId.ToString()),
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
@@ -185,7 +185,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("$iothub/twin/"))
+            if (!args.Publish.Topic.StartsWith("$iothub/twin/", StringComparison.Ordinal))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -351,6 +351,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;
+            GC.SuppressFinalize(this);
         }
     }
 }

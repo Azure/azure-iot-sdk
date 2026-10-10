@@ -610,7 +610,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     int featurePublishAttempts = 0;
                     mockMqttClient.OnPublish = publish =>
                     {
-                        if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                        if (publish.Topic.StartsWith(ProvisioningTopicPrefix, StringComparison.Ordinal))
                         {
                             return handleProvisioningPublishAsync.Invoke(publish);
                         }
@@ -641,7 +641,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     int featureSubscribeAttempts = 0;
                     mockMqttClient.OnSubscribe = subscribe =>
                     {
-                        if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic.StartsWith(ProvisioningTopicPrefix)))
+                        if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic.StartsWith(ProvisioningTopicPrefix, StringComparison.Ordinal)))
                         {
                             return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
                         }
@@ -715,7 +715,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             int devicePresenceFlowsCompletedWhenPublishWasSent = -1;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix, StringComparison.Ordinal))
                 {
                     return handleProvisioningPublishAsync.Invoke(publish);
                 }
@@ -1391,7 +1391,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix, StringComparison.Ordinal))
                 {
                     int registrationCount = Interlocked.Increment(ref _registrationCount);
 
@@ -1406,7 +1406,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         Status = ProvisioningRegistrationStatus.Assigning,
                     });
                 }
-                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix))
+                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix, StringComparison.Ordinal))
                 {
                     DeviceRegistrationResult registrationState =
                         TerminalRegistrationResultSelector?.Invoke(RegistrationCount)
