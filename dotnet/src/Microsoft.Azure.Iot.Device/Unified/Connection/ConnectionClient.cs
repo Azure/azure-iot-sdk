@@ -132,7 +132,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             // The signing operation spans multiple messages from IoT hub, so the user's cancellation token must cancel
             // whichever of the operation's tasks are still pending even after this method has returned
-            operation.WatchForCancellation(cancellationToken, () => _pendingCertificateSigningOperations.TryRemove(request.RequestId, out _));
+            operation.WatchForCancellation(cancellationToken, () => _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)));
 
             try
             {
@@ -150,7 +150,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             catch (Exception)
             {
                 // The request was never successfully sent, so the caller never receives this operation to observe
-                _pendingCertificateSigningOperations.TryRemove(request.RequestId, out _);
+                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+
                 operation.StopWatchingForCancellation();
                 throw;
             }
