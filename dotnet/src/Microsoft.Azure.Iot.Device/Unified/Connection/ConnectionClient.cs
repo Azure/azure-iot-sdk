@@ -195,7 +195,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     {
                         hasRequestFinished = true;
                         CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
-                            ?? throw new JsonException("Certificate signing completion response was null.");
+                            ?? throw new JsonException("Certificate signing error response was null.");
                         pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error, RequestId = requestId });
                         return;
                     }
