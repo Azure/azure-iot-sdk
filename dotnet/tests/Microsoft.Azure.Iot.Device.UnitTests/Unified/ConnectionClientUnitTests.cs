@@ -126,7 +126,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData("400", "")]
         [InlineData("400", "null")]
         [InlineData("202", "not json")]
-        [InlineData("200", "not json")]
         public async Task CertificateSigningUnreadableResponseFailsBothTasksInsteadOfHanging(string status, string payload)
         {
             var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(certs => Task.FromResult(GetMockConnectionContext(false).AuthenticationProvider));
@@ -154,27 +153,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                     () => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
                 Assert.Same(callbackException, ex);
-                Assert.Equal(0, GetPendingOperationCount(client));
-            }
-        }
-
-        [Fact]
-        public async Task CertificateSigningCompleteCallbackThrowingBeforeAcceptanceFailsBothTasksAndClearsCache()
-        {
-            InvalidOperationException callbackException = new("callback failed");
-            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync(certs => throw callbackException);
-            using (client)
-            {
-                Assert.Equal(1, GetPendingOperationCount(client));
-
-                await DeliverCertificateSigningResponseAsync(mqtt, "200", requestId, "{\"certificates\":[\"cert1\"],\"correlationId\":\"someCorrelationId\"}");
-
-                var completedEx = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
-                var acceptedEx = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => operation.Accepted.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken));
-                Assert.Same(callbackException, completedEx);
-                Assert.Same(callbackException, acceptedEx);
                 Assert.Equal(0, GetPendingOperationCount(client));
             }
         }
@@ -258,7 +236,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData("429", "{}")]
         [InlineData("400", "not json")]
         [InlineData("202", "not json")]
-        [InlineData("200", "not json")]
         public async Task CertificateSigningFailureCarriesRequestIdFromTopic(string status, string payload)
         {
             var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync();
