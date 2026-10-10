@@ -2618,6 +2618,215 @@ static az_iot_result dps_enter_registration_state(az_json_reader* jr, az_span pa
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/** @brief Whether the current token is the property name @p name. */
+static bool dps_json_key_is(const az_json_reader* jr, const char* name)
+{
+  return jr->token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+      && az_json_token_is_text_equal(&jr->token, az_span_create_from_str((char*)(uintptr_t)name));
+}
+
+/**
+ * @brief Read an operation-level "failed" or "disabled" registration verdict.
+ *
+ * Fallback for the one body shape azure-sdk-for-c rejects that is still a
+ * verdict: a registrationState with deviceId but no assignedHub, which is how
+ * the service reports e.g. a failed reprovisioning. Every field that parser
+ * type-checks is checked the same way here, so any other malformed body is
+ * still rejected.
+ *
+ * @param payload Response body (non-empty).
+ * @param[out] out On success, operation_id, operation_status and
+ * registration_state (extended_error_code, error_message) are set; spans point
+ * into @p payload.
+ * @return true if @p payload is exactly one JSON object with a string
+ * operationId, a "failed" or "disabled" status, and a registrationState object
+ * with a string deviceId and no assignedHub.
+ */
+static bool dps_parse_operation_refusal(
+    az_span payload,
+    az_iot_provisioning_client_register_response* out)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+
+  az_span operation_id = AZ_SPAN_EMPTY;
+  bool have_status = false;
+  bool have_device_id = false;
+  az_iot_provisioning_client_operation_status status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+  /* registrationState values take precedence over top-level ones. */
+  uint32_t error_code = 0;
+  uint32_t state_error_code = 0;
+  bool have_state_error_code = false;
+  az_span error_message = AZ_SPAN_EMPTY;
+  az_span state_error_message = AZ_SPAN_EMPTY;
+  bool have_state_error_message = false;
+
+  for (;;)
+  {
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      break;
+    }
+    bool is_operation_id = dps_json_key_is(&jr, "operationId");
+    bool is_status = dps_json_key_is(&jr, "status");
+    bool is_state = dps_json_key_is(&jr, DPS_JSON_REGISTRATION_STATE);
+    bool is_code = dps_json_key_is(&jr, "errorCode");
+    bool is_message = dps_json_key_is(&jr, "message");
+    bool is_text
+        = is_message || dps_json_key_is(&jr, "trackingId") || dps_json_key_is(&jr, "timestampUtc");
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (is_operation_id)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      operation_id = jr.token.slice;
+    }
+    else if (is_status)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("failed")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+      }
+      else if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("disabled")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_DISABLED;
+      }
+      else
+      {
+        return false;
+      }
+      have_status = true;
+    }
+    else if (is_code)
+    {
+      if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
+      {
+        return false;
+      }
+    }
+    else if (is_text)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      if (is_message)
+      {
+        error_message = jr.token.slice;
+      }
+    }
+    else if (is_state)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
+        return false;
+      }
+      for (;;)
+      {
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+        {
+          break;
+        }
+        if (dps_json_key_is(&jr, "assignedHub"))
+        {
+          return false;
+        }
+        bool is_device_id = dps_json_key_is(&jr, "deviceId");
+        bool is_state_code = dps_json_key_is(&jr, "errorCode");
+        bool is_state_message = dps_json_key_is(&jr, "errorMessage");
+        bool is_state_text = dps_json_key_is(&jr, "lastUpdatedDateTimeUtc");
+        bool is_payload = dps_json_key_is(&jr, "payload");
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (is_state_code)
+        {
+          if (az_result_failed(az_json_token_get_uint32(&jr.token, &state_error_code)))
+          {
+            return false;
+          }
+          have_state_error_code = true;
+        }
+        else if (is_device_id || is_state_message || is_state_text)
+        {
+          if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+          {
+            return false;
+          }
+          have_device_id = have_device_id || is_device_id;
+          if (is_state_message)
+          {
+            state_error_message = jr.token.slice;
+            have_state_error_message = true;
+          }
+        }
+        else if (
+            is_payload && jr.token.kind != AZ_JSON_TOKEN_NULL
+            && jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+        {
+          return false;
+        }
+        else if (az_result_failed(az_json_reader_skip_children(&jr)))
+        {
+          return false;
+        }
+      }
+    }
+    else if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
+      return false;
+    }
+  }
+  if (!have_status || !have_device_id || az_span_size(operation_id) <= 0)
+  {
+    return false;
+  }
+  /* Only insignificant whitespace may follow the object. */
+  az_span end_token = jr.token.slice;
+  uint8_t* begin = az_span_ptr(payload);
+  int32_t consumed = (int32_t)(az_span_ptr(end_token) - begin) + az_span_size(end_token);
+  for (int32_t i = consumed; i < az_span_size(payload); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return false;
+    }
+  }
+
+  out->operation_id = operation_id;
+  out->operation_status = status;
+  out->registration_state = (az_iot_provisioning_client_registration_state){ 0 };
+  out->registration_state.extended_error_code
+      = have_state_error_code ? state_error_code : error_code;
+  out->registration_state.error_message
+      = have_state_error_message ? state_error_message : error_message;
+  return true;
+}
+
 /* Record the connection profile from its verbatim wire form. The raw string is
  * always stored -- an unrecognised profile is exactly the case where the text
  * matters -- and only the enum degrades to UNKNOWN. A value too long for the
@@ -2990,6 +3199,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_provisioning_client_register_response resp = { 0 };
       az_result ar = az_iot_provisioning_client_parse_received_topic_and_payload(
           &c->dps_prov, topic_span, payload_span, &resp);
+      /* ITEM_NOT_FOUND only comes from the body, so the topic (status,
+       * retry-after) was parsed. A failed/disabled verdict the SDK parser
+       * rejects is still a verdict. */
+      if (ar == AZ_ERROR_ITEM_NOT_FOUND && dps_parse_operation_refusal(payload_span, &resp))
+      {
+        ar = AZ_OK;
+      }
       if (az_result_failed(ar))
       {
         /* A registration response we cannot parse is not something waiting
@@ -3089,10 +3305,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           az_span err_msg = resp.registration_state.error_message;
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
-              "register: errorCode=%ld errorMessage=%.*s",
+              "register: errorCode=%ld errorMessage=%.*s operationId=%.*s",
               (long)resp.registration_state.extended_error_code,
               (int)az_span_size(err_msg),
-              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
+              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "",
+              (int)az_span_size(resp.operation_id),
+              az_span_size(resp.operation_id) > 0 ? (const char*)az_span_ptr(resp.operation_id)
+                                                  : "");
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
               "register: provisioning failed/disabled; DPS response: %.*s",
