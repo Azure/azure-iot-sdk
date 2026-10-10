@@ -82,10 +82,14 @@ function Get-EndpointStates($Ns) {
     }
 }
 
+# Healthy only if hub-1 and dps-1 are Succeeded and point at this hub and DPS.
 function Test-Linked($Ns) {
     if (-not $Ns -or $Ns.properties.provisioningState -ne 'Succeeded') { return $false }
-    $s = @(Get-EndpointStates $Ns)
-    $s.Count -ge 2 -and -not ($s | Where-Object State -ne 'Succeeded')
+    foreach ($e in @(@($Ns.properties.messaging.endpoints.'hub-1', $HubId), @($Ns.properties.provisioning.endpoints.'dps-1', $DpsId))) {
+        if (-not $e[0] -or $e[0].linkingState -ne 'Succeeded') { return $false }
+        if ($e[0].resourceId -and $e[0].resourceId -ne $e[1]) { return $false }
+    }
+    $true
 }
 
 function Wait-For([string]$What, [int]$Minutes, [scriptblock]$Probe) {

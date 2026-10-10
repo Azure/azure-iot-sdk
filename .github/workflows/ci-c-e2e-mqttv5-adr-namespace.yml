@@ -35,8 +35,9 @@ jobs:
     name: ensure ADR namespace
     if: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE != '' }}
     runs-on: ubuntu-24.04
-    # Namespace create + role replication + link (up to 4 attempts).
-    timeout-minutes: 75
+    # Above the script's worst case: namespace 10 + role grants 14 + 4 link
+    # attempts x 13 + DPS 5 = 81 min, plus ARM latency.
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
