@@ -30,7 +30,8 @@ param(
     [Parameter(Mandatory)][string]$NamespaceName,
     [string]$AdrApiVersion = '2026-11-02-preview',
     [string]$HubApiVersion = '2026-10-01-preview',
-    [string]$DpsApiVersion = '2026-11-02-preview',
+    # Empty: the first of 2026-11-02-preview / 2026-03-01-preview that ARM serves, else its newest.
+    [string]$DpsApiVersion = '',
     [int]$LinkTimeoutMinutes = 12,
     [int]$LinkAttempts = 4
 )
@@ -43,7 +44,6 @@ $HubId = "$Rg/providers/Microsoft.Devices/IotHubs/$HubName"
 $DpsId = "$Rg/providers/Microsoft.Devices/provisioningServices/$DpsName"
 $NsId = "$Rg/providers/Microsoft.DeviceRegistry/namespaces/$NamespaceName"
 $HubUrl = "$Arm${HubId}?api-version=$HubApiVersion"
-$DpsUrl = "$Arm${DpsId}?api-version=$DpsApiVersion"
 $NsUrl = "$Arm${NsId}?api-version=$AdrApiVersion"
 $RoleContributor = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 $RoleHubData = '4fc6c259-987e-4a07-842e-c321cc9d413f'
@@ -133,6 +133,14 @@ $ns = Invoke-Arm get $NsUrl
 if (Test-Linked $ns) { Write-Host "ADR namespace $NamespaceName present and linked."; return }
 Write-Host "::warning::ADR namespace $NamespaceName $(if ($ns) { 'not linked' } else { 'missing from ARM' }); rebuilding it."
 
+if (-not $DpsApiVersion) {
+    $served = @(((& az provider show --namespace Microsoft.Devices -o json 2>$null) | Out-String | ConvertFrom-Json).resourceTypes |
+        Where-Object resourceType -eq 'provisioningServices' | ForEach-Object apiVersions)
+    if (-not $served) { throw 'Could not read the Microsoft.Devices/provisioningServices api-versions.' }
+    $DpsApiVersion = @(@('2026-11-02-preview', '2026-03-01-preview') | Where-Object { $_ -in $served }) + @($served | Sort-Object -Descending) | Select-Object -First 1
+}
+Write-Host "  DPS api-version: $DpsApiVersion"
+$DpsUrl = "$Arm${DpsId}?api-version=$DpsApiVersion"
 $hub = Invoke-Arm get $HubUrl
 $dps = Invoke-Arm get $DpsUrl
 if (-not $hub -or -not $dps) { throw 'Hub or DPS not found.' }
