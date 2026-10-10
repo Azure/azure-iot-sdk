@@ -50,6 +50,10 @@ $RoleHubData = '4fc6c259-987e-4a07-842e-c321cc9d413f'
 $RoleAdr = 'a5c3590a-3a1a-4cd4-9648-ea0a32b15137'
 # Link failures that clear once new role assignments replicate.
 $PropagationCodes = 'AdrMiNotAuthorized|LinkableResourceNotReady|AuthorizationFailed|LinkInitiateFailed|NamespaceMiTokenAcquisitionFailed|OutboundIdentityUnavailable'
+# Link submissions that may be rejected outright yet succeed on a later attempt.
+$RetryableSubmit = "$PropagationCodes|ResourceProvisioningInProgress|Service ?Unavailable|Gateway ?Timeout|Bad ?Gateway|Too ?Many ?Requests|Internal ?Server ?Error|ServerTimeout|ServerBusy"
+# ADR feature flag: without it the link takes another path and reports the linked resource as unreadable.
+$FeatureTags = @{ useMiSdk = 'true' }
 
 # Returns $null on 404. Response bodies are not logged: DPS reads can carry keys.
 function Invoke-Arm([string]$Method, [string]$Url, $Body) {
@@ -82,14 +86,23 @@ function Get-EndpointStates($Ns) {
     }
 }
 
-# Healthy only if hub-1 and dps-1 are Succeeded and point at this hub and DPS.
-function Test-Linked($Ns) {
-    if (-not $Ns -or $Ns.properties.provisioningState -ne 'Succeeded') { return $false }
+# hub-1 and dps-1 Succeeded and pointing at this hub and DPS.
+function Test-EndpointsLinked($Ns) {
+    if (-not $Ns) { return $false }
     foreach ($e in @(@($Ns.properties.messaging.endpoints.'hub-1', $HubId), @($Ns.properties.provisioning.endpoints.'dps-1', $DpsId))) {
         if (-not $e[0] -or $e[0].linkingState -ne 'Succeeded') { return $false }
         if ($e[0].resourceId -and $e[0].resourceId -ne $e[1]) { return $false }
     }
     $true
+}
+
+function Test-Linked($Ns) { $Ns -and $Ns.properties.provisioningState -eq 'Succeeded' -and (Test-EndpointsLinked $Ns) }
+
+function Get-NsTags($Ns) {
+    $t = @{}
+    if ($Ns -and $Ns.tags) { $Ns.tags.PSObject.Properties | ForEach-Object { $t[$_.Name] = $_.Value } }
+    $FeatureTags.GetEnumerator() | ForEach-Object { $t[$_.Key] = $_.Value }
+    $t
 }
 
 function Wait-For([string]$What, [int]$Minutes, [scriptblock]$Probe) {
@@ -128,7 +141,9 @@ if (-not $hubPid -or -not $dpsPid) { throw 'Hub and DPS need system-assigned ide
 # ADR requires the namespace in the hub's region.
 $location = $hub.location
 
-$tags = @{ purpose = 'mqttv5-e2e'; restoredBy = 'e2e-mqttv5-adr-namespace' }
+# Full PUTs replace tags: keep existing ones, re-assert the feature flag.
+$tags = Get-NsTags $ns
+$tags['restoredBy'] = 'e2e-mqttv5-adr-namespace'
 $linkBody = @{
     location = $location; identity = @{ type = 'SystemAssigned' }; tags = $tags
     properties = @{
@@ -167,16 +182,41 @@ Grant-Role $HubId $nsPid $RoleHubData 'namespace -> hub (IoT Hub Data Contributo
 # 3. Link hub + DPS in one write (ADR refuses a messaging endpoint alone).
 for ($attempt = 1; ; $attempt++) {
     Start-Sleep -Seconds 60   # role assignment replication
+    if ($attempt -gt 1) {
+        # ARM rejects writes (ResourceProvisioningInProgress) until a failed link settles.
+        try { [void](Wait-For 'namespace settle' 5 {
+                    $ps = (Invoke-Arm get $NsUrl).properties.provisioningState
+                    @{ Done = (-not $ps -or $ps -in 'Succeeded', 'Failed', 'Canceled'); Detail = $ps } }) }
+        catch { Write-Host "  $($_.Exception.Message)" }
+    }
     Write-Host "  link attempt $attempt/$LinkAttempts"
-    [void](Invoke-Arm put $NsUrl $linkBody)
+    try { [void](Invoke-Arm put $NsUrl $linkBody) }
+    catch {
+        $msg = $_.Exception.Message
+        if ($msg -notmatch $RetryableSubmit -or $attempt -ge $LinkAttempts) { throw }
+        Write-Host "  link rejected, retrying: $msg"
+        continue
+    }
     $r = Wait-For 'link' $LinkTimeoutMinutes {
         $n = Invoke-Arm get $NsUrl
         $s = @(if ($n) { Get-EndpointStates $n })
         $failed = @($s | Where-Object State -eq 'Failed')
         $done = (Test-Linked $n) -or $failed.Count -gt 0 -or ($n -and $n.properties.provisioningState -in 'Failed', 'Canceled')
-        @{ Done = $done; Linked = (Test-Linked $n); Failed = $false; States = $failed
+        @{ Done = $done; Linked = (Test-Linked $n); Failed = $false; States = $failed; Ns = $n
            Detail = if ($s) { ($s | ForEach-Object { "$($_.Name)=$($_.State)" }) -join ', ' } else { '<no endpoints>' } } }
     if ($r.Linked) { break }
+    # Endpoints linked but namespace Failed: a tags-only update re-runs reconciliation
+    # (re-sending endpoints is rejected as immutable). Failed can persist briefly after it is accepted.
+    if ((Test-EndpointsLinked $r.Ns) -and $r.Ns.properties.provisioningState -eq 'Failed') {
+        Write-Host '  endpoints linked, namespace Failed; reconciling (tags-only update)'
+        $t = Get-NsTags $r.Ns
+        $t['adrReconcile'] = [guid]::NewGuid().ToString('N')
+        [void](Invoke-Arm patch $NsUrl @{ tags = $t })
+        [void](Wait-For 'namespace reconcile' 5 {
+                $ps = (Invoke-Arm get $NsUrl).properties.provisioningState
+                @{ Done = ($ps -eq 'Succeeded'); Detail = $ps } })
+        break
+    }
     $why = ($r.States | ForEach-Object { "$($_.Name): $($_.Code) $($_.Message)" }) -join '; '
     $retryable = $r.States.Count -gt 0 -and -not ($r.States | Where-Object { $_.Code -notmatch "^($PropagationCodes)$" })
     if (-not $retryable -or $attempt -ge $LinkAttempts) { throw "ADR link failed: $(if ($why) { $why } else { 'namespace Failed' })" }
