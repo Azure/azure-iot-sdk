@@ -104,9 +104,18 @@ static int export_key_pem(NCRYPT_KEY_HANDLE hKey, const char* path)
   rc = 0;
 
 done:
+  /* A deferred write error surfaces only on flush or close. */
   if (f)
   {
-    fclose(f);
+    int flushed = fflush(f);
+    if (fclose(f) != 0 || flushed != 0)
+    {
+      rc = 1;
+    }
+    if (rc != 0)
+    {
+      (void)remove(path); /* never leave a partial key to be committed */
+    }
   }
   if (b64)
   {
