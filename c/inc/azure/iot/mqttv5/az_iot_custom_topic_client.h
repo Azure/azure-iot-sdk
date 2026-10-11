@@ -18,7 +18,6 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
-#include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -54,6 +53,14 @@ extern "C"
     size_t user_properties_count;
     uint32_t message_expiry_seconds; /**< 0: none. */
   } az_iot_mqttv5_custom_topic_message;
+
+  /**
+   * @brief Completion of az_iot_mqttv5_custom_topic_client_publish().
+   *
+   * @param status   Outcome; see az_iot_mqttv5_custom_topic_client_publish().
+   * @param user_ctx Context passed to az_iot_mqttv5_custom_topic_client_publish().
+   */
+  typedef void (*az_iot_mqttv5_custom_topic_publish_callback)(az_iot_result status, void* user_ctx);
 
   /** @brief Custom topic client. Caller-allocated; opaque. */
   typedef struct az_iot_mqttv5_custom_topic_client
@@ -131,7 +138,7 @@ extern "C"
   AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_publish(
       az_iot_mqttv5_custom_topic_client* client,
       const az_iot_mqttv5_custom_topic_message* message,
-      az_iot_telemetry_send_callback callback,
+      az_iot_mqttv5_custom_topic_publish_callback callback,
       void* user_ctx);
 
 #ifdef __cplusplus

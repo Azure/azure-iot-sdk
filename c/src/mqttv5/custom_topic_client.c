@@ -16,6 +16,32 @@
 /** @brief First topic level the SDK's own mqttv5 traffic uses; never a custom topic. */
 #define RESERVED_FIRST_LEVEL "ih"
 
+/**
+ * @brief Append the literal @p length bytes at @p literal.
+ *
+ * @return false, appending nothing, when they cannot fit @p out_size (at most INT32_MAX), which
+ *         also keeps @p length within the int32_t az_span_create() takes.
+ */
+static bool append_literal(
+    az_iot_span_writer* writer,
+    const char* literal,
+    size_t length,
+    size_t out_size);
+
+/**
+ * @brief Length of the well-formed UTF-8 sequence at @p s, or 0 if it is malformed.
+ *
+ * Rejects overlong forms, surrogates and code points above U+10FFFF.
+ */
+static size_t utf8_sequence_length(const uint8_t* s);
+
+/**
+ * @brief Whether @p topic can be published to a custom topic.
+ *
+ * Catches locally what the hub would refuse anyway, some of it by closing the connection.
+ */
+static bool is_valid_topic(const char* topic);
+
 AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_init(
     az_iot_mqttv5_custom_topic_client* client,
     az_iot_connection_client* conn)
@@ -45,27 +71,6 @@ void az_iot_mqttv5_custom_topic_client_deinit(az_iot_mqttv5_custom_topic_client*
     az_iot_connection_client__release_profile(client->_internal.conn);
     memset(client, 0, sizeof(*client));
   }
-}
-
-/**
- * @brief Append the literal @p length bytes at @p literal.
- *
- * @return false, appending nothing, when they cannot fit @p out_size (at most INT32_MAX), which
- *         also keeps @p length within the int32_t az_span_create() takes.
- */
-static bool append_literal(
-    az_iot_span_writer* writer,
-    const char* literal,
-    size_t length,
-    size_t out_size)
-{
-  if (length >= out_size)
-  {
-    return false;
-  }
-  az_iot_span_writer_append_span(
-      writer, az_span_create((uint8_t*)(uintptr_t)literal, (int32_t)length));
-  return true;
 }
 
 AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_format_topic(
@@ -133,11 +138,67 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_format_topic(
   return az_iot_span_writer_end_str(&writer, out_len);
 }
 
-/**
- * @brief Length of the well-formed UTF-8 sequence at @p s, or 0 if it is malformed.
- *
- * Rejects overlong forms, surrogates and code points above U+10FFFF.
- */
+AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_publish(
+    az_iot_mqttv5_custom_topic_client* client,
+    const az_iot_mqttv5_custom_topic_message* message,
+    az_iot_mqttv5_custom_topic_publish_callback callback,
+    void* user_ctx)
+{
+  if (client == NULL || message == NULL || callback == NULL
+      || (message->payload_len > 0 && message->payload == NULL)
+      || (message->user_properties_count > 0 && message->user_properties == NULL)
+      || (message->qos != AZ_IOT_MQTT_QOS_0 && message->qos != AZ_IOT_MQTT_QOS_1))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->_internal.conn == NULL)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (!is_valid_topic(message->topic))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_CUSTOM_TOPIC,
+        "publish: invalid topic; see az_iot_mqttv5_custom_topic_message::topic");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < message->user_properties_count; ++i)
+  {
+    if (!is_nonempty_cstr(message->user_properties[i].key)
+        || message->user_properties[i].value == NULL)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+
+  az_iot_mqtt_message mqtt_message = { 0 };
+  mqtt_message.topic = message->topic;
+  mqtt_message.payload = message->payload;
+  mqtt_message.payload_len = message->payload_len;
+  mqtt_message.qos = message->qos;
+  mqtt_message.content_type = message->content_type;
+  mqtt_message.user_properties = message->user_properties;
+  mqtt_message.user_properties_count = message->user_properties_count;
+  mqtt_message.message_expiry_seconds = message->message_expiry_seconds;
+  return az_iot_connection_client__publish(
+      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
+}
+
+static bool append_literal(
+    az_iot_span_writer* writer,
+    const char* literal,
+    size_t length,
+    size_t out_size)
+{
+  if (length >= out_size)
+  {
+    return false;
+  }
+  az_iot_span_writer_append_span(
+      writer, az_span_create((uint8_t*)(uintptr_t)literal, (int32_t)length));
+  return true;
+}
+
 static size_t utf8_sequence_length(const uint8_t* s)
 {
   if (s[0] < 0x80)
@@ -185,11 +246,6 @@ static size_t utf8_sequence_length(const uint8_t* s)
   return len;
 }
 
-/**
- * @brief Whether @p topic can be published to a custom topic.
- *
- * Catches locally what the hub would refuse anyway, some of it by closing the connection.
- */
 static bool is_valid_topic(const char* topic)
 {
   if (!is_nonempty_cstr(topic) || topic[0] == '$')
@@ -230,50 +286,4 @@ static bool is_valid_topic(const char* topic)
     }
   }
   return levels <= AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEVELS;
-}
-
-AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_publish(
-    az_iot_mqttv5_custom_topic_client* client,
-    const az_iot_mqttv5_custom_topic_message* message,
-    az_iot_telemetry_send_callback callback,
-    void* user_ctx)
-{
-  if (client == NULL || message == NULL || callback == NULL
-      || (message->payload_len > 0 && message->payload == NULL)
-      || (message->user_properties_count > 0 && message->user_properties == NULL)
-      || (message->qos != AZ_IOT_MQTT_QOS_0 && message->qos != AZ_IOT_MQTT_QOS_1))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (client->_internal.conn == NULL)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  if (!is_valid_topic(message->topic))
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_MQTTV5_CUSTOM_TOPIC,
-        "publish: invalid topic; see az_iot_mqttv5_custom_topic_message::topic");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  for (size_t i = 0; i < message->user_properties_count; ++i)
-  {
-    if (!is_nonempty_cstr(message->user_properties[i].key)
-        || message->user_properties[i].value == NULL)
-    {
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-  }
-
-  az_iot_mqtt_message mqtt_message = { 0 };
-  mqtt_message.topic = message->topic;
-  mqtt_message.payload = message->payload;
-  mqtt_message.payload_len = message->payload_len;
-  mqtt_message.qos = message->qos;
-  mqtt_message.content_type = message->content_type;
-  mqtt_message.user_properties = message->user_properties;
-  mqtt_message.user_properties_count = message->user_properties_count;
-  mqtt_message.message_expiry_seconds = message->message_expiry_seconds;
-  return az_iot_connection_client__publish(
-      client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }
