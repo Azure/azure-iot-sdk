@@ -261,9 +261,10 @@ model (D9).
    file/in-image ones) to track "which identity"; an explicit role keeps one slot and is
    stateless-friendly (a file provider maps both to the same material, or returns
   `AZ_IOT_ERR_NOT_FOUND` for OPERATIONAL until one is stored).
-4. **App callback — `az_iot_connection_client_set_operational_cert_callback()` (optional).** Needed where
-   the *app* owns persistence (OS keystore, remote key, data-in/out per D9) or must react
-   (inventory, trigger reconnect). Decoupled from provider storage.
+4. **App callback — `az_iot_connection_client_set_operational_cert_callback()` (optional).** Observes
+   an issued chain and the result of storing it in the provider (inventory, logging, an early
+   reconnect). Persistence is always the provider's (D9); the callback runs inside message
+   processing, so it must not call `close()` or `_deinit()`.
 5. **Reference provider — ship both: hooks in core, OpenSSL `managed` provider as an
    optional adapter.** The legacy SDK's lesson is that the fork-me reference is what gets
    used; ship a real one for a correctness baseline, but gate it on OpenSSL so

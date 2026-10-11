@@ -1063,6 +1063,9 @@ extern "C"
    * @param issued The chain; valid only during the callback.
    * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
    * chain is stored. On failure the registration fails.
+   *
+   * Runs while the provisioning message is being processed: do not call
+   * az_iot_connection_client_close() or _deinit() from it.
    */
   typedef void (*az_iot_operational_cert_callback)(
       const az_iot_issued_certificate* issued,

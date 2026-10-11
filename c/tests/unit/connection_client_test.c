@@ -1509,7 +1509,6 @@ static void drive_dps_csr_assignment(
   assert_int_equal(
       az_iot_connection_client_set_operational_cert_callback(client, on_dps_op_cert, prov),
       AZ_IOT_OK);
-
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
@@ -1553,7 +1552,8 @@ static void dps_store_failure_still_delivers_the_chain_with_the_error(void** sta
   assert_int_equal((int)g_dps_op_cert_chain, 2);
   assert_int_equal(g_dps_op_cert_store_result, AZ_IOT_ERR_INTERNAL);
   assert_int_equal(
-      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
   assert_null(az_iot_connection_client_get_iothub_address(&client));
   az_iot_connection_client_deinit(&client);
 }
@@ -1576,7 +1576,8 @@ static void dps_a_truncated_assignment_is_not_stored(void** state)
   assert_int_equal(prov.store_calls, 0);
   assert_int_equal(g_dps_op_cert_count, 0);
   assert_int_equal(
-      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
   assert_null(az_iot_connection_client_get_iothub_address(&client));
   az_iot_connection_client_deinit(&client);
 }
