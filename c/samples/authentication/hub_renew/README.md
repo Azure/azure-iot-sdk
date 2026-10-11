@@ -4,7 +4,7 @@
 # Certificate renewal over IoT Hub
 
 Connects to the IoT Hub DPS assigns, requests a renewed operational certificate **from the hub**
-with a certificate signing request (CSR), saves the new chain, and reconnects with it. Renewal over
+with a certificate signing request (CSR), and reconnects with the new chain. Renewal over
 the hub is an **mqttv3** feature.
 
 ## Sample features
@@ -12,8 +12,8 @@ the hub is an **mqttv3** feature.
 - Hub generation: renewal needs an mqttv3 hub. On an mqttv5 hub the sample prints `runtime renewal is not available on this hub generation` and exits 1.
 - Uses the OpenSSL-backed managed certificate provider for the operational key, the CSR and the files.
 - Connects with the operational certificate when the files hold one (for example from a previous [`dps_csr_managed`](../dps_csr_managed/README.md) run with the same files), otherwise with the bootstrap certificate.
-- `az_iot_connection_client_send_csr()` is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
-- The SDK does not store the renewed chain or reconnect: the sample saves it through the provider, then calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
+- `az_iot_connection_client_send_csr()` gets the CSR from the provider and is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
+- The SDK stores the renewed chain in the provider before the callback, which reports the result in `store_status`. It does not reconnect: the sample calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -113,7 +113,7 @@ The chain length depends on the credential policy.
 | --- | --- |
 | Provider setup | `az_iot_certificate_provider_managed_init()` |
 | Request the renewal | `az_iot_connection_client_send_csr()` |
-| Two-phase result; save the chain | `on_csr_event()` → `store_issued_certificate()` |
+| Two-phase result and store status | `on_csr_event()` |
 | Apply the new certificate | `az_iot_connection_client_close()` then `az_iot_connection_client_open()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md#hub-side-renewal-mqttv3).

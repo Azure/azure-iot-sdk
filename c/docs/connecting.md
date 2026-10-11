@@ -206,14 +206,16 @@ Operational certificates:
 
 - **Issued at provisioning.** Set `dps.request_operational_certificate` and provide
   `csr_payload_buffer` (`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes is enough for any CSR the service
-  accepts). The device sends a CSR with its registration. The issued chain goes to the provider's
-  `store_issued_certificate()`, if it has one, and then to the callback set with
-  `az_iot_connection_client_set_operational_cert_callback()`, if set. At least one must be
-  present. If storage fails, the callback is skipped and the registration fails.
+  accepts). The provider must implement `get_csr()`, `release_csr()` and
+  `store_issued_certificate()`. The device sends the provider's CSR with its registration. The
+  issued chain is stored with the provider's `store_issued_certificate()`, then passed with the
+  store result to the callback set with `az_iot_connection_client_set_operational_cert_callback()`,
+  if set. If storage fails, the registration fails.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
-  `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
-  copy or persist it in the callback (it is valid only there), for example through the
-  provider, then `close()` and `open()` to use it. See
+  `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
+  at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
+  the callback, which reports the result in `store_status`; the session is kept, and `close()`
+  then `open()` connects with it. See
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.

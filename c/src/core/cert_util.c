@@ -48,6 +48,21 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
   (void)result;
 }
 
+bool az_iot_cert_util_json_is_complete(az_span payload)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL)))
+  {
+    return false;
+  }
+  az_result r;
+  do
+  {
+    r = az_json_reader_next_token(&jr);
+  } while (az_result_succeeded(r));
+  return r == AZ_ERROR_JSON_READER_DONE;
+}
+
 az_iot_result az_iot_cert_util_collect_chain_spans(
     az_json_reader* jr,
     az_span* certs,
@@ -55,9 +70,16 @@ az_iot_result az_iot_cert_util_collect_chain_spans(
     size_t* out_count)
 {
   size_t count = 0;
-  while (az_result_succeeded(az_json_reader_next_token(jr))
-         && jr->token.kind != AZ_JSON_TOKEN_END_ARRAY)
+  for (;;)
   {
+    if (az_result_failed(az_json_reader_next_token(jr)))
+    {
+      return AZ_IOT_ERR_PROTOCOL; /* the array never closed */
+    }
+    if (jr->token.kind == AZ_JSON_TOKEN_END_ARRAY)
+    {
+      break;
+    }
     if (jr->token.kind != AZ_JSON_TOKEN_STRING)
     {
       return AZ_IOT_ERR_PROTOCOL;
