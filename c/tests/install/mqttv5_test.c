@@ -5,6 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* azure::iot::mqttv5: a feature client attaches to a connection client. */
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/mqttv5/az_iot_custom_topic_client.h"
 #include "azure/iot/mqttv5/az_iot_telemetry_client.h"
 
 #include "install_test.h"
@@ -22,6 +23,10 @@ int main(void)
   az_iot_mqttv5_telemetry_client telemetry;
   CHECK(az_iot_mqttv5_telemetry_client_init(&telemetry, &g_conn) == AZ_IOT_OK);
   az_iot_mqttv5_telemetry_client_deinit(&telemetry);
+
+  az_iot_mqttv5_custom_topic_client custom;
+  CHECK(az_iot_mqttv5_custom_topic_client_init(&custom, &g_conn) == AZ_IOT_OK);
+  az_iot_mqttv5_custom_topic_client_deinit(&custom);
 
   az_iot_connection_client_deinit(&g_conn);
   return 0;

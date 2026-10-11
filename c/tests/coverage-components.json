@@ -29,7 +29,7 @@
         "line": 70,
         "branch": 55,
         "function": 100,
-        "comment": "MQTT v5 generation clients. The telemetry suite covers the flat topic, native content type, user properties, lifecycle and profile mismatch."
+        "comment": "MQTT v5 generation clients. The telemetry suite covers the flat topic, native content type, user properties, lifecycle and profile mismatch. The custom topic suite covers topic validation, {deviceId} expansion and publish completion."
     },
     {
         "name": "adapter-paho",

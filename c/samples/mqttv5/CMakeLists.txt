@@ -6,6 +6,7 @@ foreach(sample
         telemetry
         twin_get_patch
         direct_method_responder
-        direct_method_slow_responder)
+        direct_method_slow_responder
+        custom_topic_publisher)
     az_iot_add_sample(mqttv5 ${sample} az_iot_mqttv5)
 endforeach()
