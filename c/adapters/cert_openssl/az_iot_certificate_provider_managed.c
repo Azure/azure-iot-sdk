@@ -765,11 +765,18 @@ static bool recover_staged_key(const char* staged, void* vctx)
   return true;
 }
 
-/* Roll back: a staged chain certifying the key in place is the previous chain. */
+/* Roll back: a staged chain certifying the key in place is the previous chain.
+ * A key file that exists but does not load cannot be matched yet: block, so the
+ * staged chain is kept. A missing key file leaves nothing to pair it with. */
 static bool recover_staged_chain(const char* staged, void* vctx)
 {
   recovery_ctx* c = (recovery_ctx*)vctx;
-  if (!c->key || !operational_cert_is_valid(staged, c->key))
+  if (!c->key)
+  {
+    c->blocked = !file_is_missing(c->key_path);
+    return c->blocked;
+  }
+  if (!operational_cert_is_valid(staged, c->key))
   {
     return false;
   }
@@ -792,8 +799,9 @@ static bool recover_staged_chain(const char* staged, void* vctx)
  *
  * @return true when the staged files are spent and may be deleted: the pair
  * already matched, was recovered, or no staged file could recover it. false
- * when a recovery rename failed or a directory could not be listed; the staged
- * files must then be kept so a later init() can retry.
+ * when a recovery rename failed, a directory could not be listed, or a staged
+ * chain exists while the key file does not load; the staged files must then be
+ * kept so a later init() can retry.
  */
 static bool recover_rotation(const char* key_path, const char* cert_path, EVP_PKEY** key)
 {

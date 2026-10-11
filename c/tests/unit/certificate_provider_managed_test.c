@@ -1893,6 +1893,63 @@ static void managed_init_undoes_a_rotation_it_cannot_finish(void** state)
   remove_test_files();
 }
 
+/* A staged previous chain is kept while the key file exists but does not load:
+ * no key is generated over it, and once the key loads again the pair is
+ * restored. With the key file missing, nothing can pair with it: it is
+ * discarded and a new key is generated. */
+static void managed_init_keeps_a_staged_chain_while_the_key_does_not_load(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = rotation_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  EVP_PKEY* old_key = EVP_PKEY_dup((EVP_PKEY*)prov.operational_key);
+  assert_non_null(old_key);
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* renewed = make_cert_base64(csr_key, 2);
+  write_chain_file(OP_CERT, renewed);
+  write_chain_file(STAGED_1(OP_CERT), first);
+  write_chain_file(OP_KEY, renewed); /* exists, but is not a key */
+
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  assert_null(prov2.operational_key);
+  assert_int_equal(1, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  write_key_pem(OP_KEY, old_key);
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov2.operational_key, old_key));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, first);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  write_chain_file(OP_CERT, renewed);
+  write_chain_file(STAGED_1(OP_CERT), first);
+  assert_int_equal(0, remove(OP_KEY));
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_non_null(prov2.operational_key);
+  assert_int_not_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov2.operational_key, old_key));
+  assert_false(prov2.has_operational);
+  assert_int_equal(0, count_temp_files());
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(renewed);
+  free(first);
+  EVP_PKEY_free(csr_key);
+  EVP_PKEY_free(old_key);
+  remove_test_files();
+}
+
 /* Recovery that cannot complete keeps the staged files, and the next init()
  * finishes it. A directory at the chain path stops the first attempt. */
 static void managed_init_keeps_staged_files_until_recovery_succeeds(void** state)
@@ -2049,6 +2106,7 @@ int main(void)
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
     cmocka_unit_test(managed_init_finishes_a_rotation_stopped_after_the_chain),
     cmocka_unit_test(managed_init_undoes_a_rotation_it_cannot_finish),
+    cmocka_unit_test(managed_init_keeps_a_staged_chain_while_the_key_does_not_load),
     cmocka_unit_test(managed_init_keeps_staged_files_until_recovery_succeeds),
     cmocka_unit_test(managed_init_stays_bootstrap_only_while_recovery_is_blocked),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
