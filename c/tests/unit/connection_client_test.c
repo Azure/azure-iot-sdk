@@ -2049,8 +2049,8 @@ static void send_csr_returns_the_get_csr_error(void** state)
       az_iot_connection_client_send_csr(fx->client, NULL, NULL, on_csr_evt, &tc), AZ_IOT_OK);
 }
 
-/* A truncated, unbalanced or trailing-text 200 is a failed renewal: nothing
- * reaches the provider and the session is kept. */
+/* A truncated, unbalanced, trailing-text, two-value or empty 200 is a failed
+ * renewal: nothing reaches the provider and the session is kept. */
 static void a_malformed_credentials_response_is_not_stored(void** state)
 {
   fixture* fx = *state;
@@ -2059,6 +2059,8 @@ static void a_malformed_credentials_response_is_not_stored(void** state)
     "{\"certificates\":[\"TEEF\"",
     "{\"certificates\":[\"TEEF\"]",
     "{\"certificates\":[\"TEEF\"]}x",
+    "{\"certificates\":[\"TEEF\"]}{}",
+    "",
   };
 
   csr_test_ctx tc = { 0 };
@@ -2785,6 +2787,28 @@ static void cert_util_an_unclosed_chain_array_is_a_protocol_error(void** state)
       az_iot_cert_util_collect_chain_spans(&jr, certs, 4, &count), AZ_IOT_ERR_PROTOCOL);
 }
 
+/* Exactly one complete JSON object or array, optionally followed by whitespace.
+ * An empty or NULL span is refused before az_core sees it. */
+static void cert_util_json_is_complete_accepts_one_value_only(void** state)
+{
+  (void)state;
+  static const char* const k_good[] = { "{}", "{\"a\":[1,2]} \r\n\t", "[]" };
+  static const char* const k_bad[] = {
+    "", "   ", "{", "{\"a\":[1}", "{}x", "{}{}", "{} {}", "[] []", "1", "\"x\"",
+  };
+  for (size_t i = 0; i < sizeof(k_good) / sizeof(k_good[0]); ++i)
+  {
+    assert_true(
+        az_iot_cert_util_json_is_complete(az_span_create_from_str((char*)(uintptr_t)k_good[i])));
+  }
+  for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); ++i)
+  {
+    assert_false(
+        az_iot_cert_util_json_is_complete(az_span_create_from_str((char*)(uintptr_t)k_bad[i])));
+  }
+  assert_false(az_iot_cert_util_json_is_complete(AZ_SPAN_EMPTY));
+}
+
 /* send_csr() generates a request id when the caller does not supply one. It has
  * to be fresh every time: repeating one would make the service treat a new
  * renewal as a duplicate of the previous request. */
@@ -3362,6 +3386,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_while_disconnected_is_refused, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         a_csr_larger_than_the_service_cap_is_refused, setup_csr, teardown),
+    cmocka_unit_test(cert_util_json_is_complete_accepts_one_value_only),
     cmocka_unit_test(cert_util_generates_a_distinct_request_id),
     cmocka_unit_test(cert_util_an_unclosed_chain_array_is_a_protocol_error),
     cmocka_unit_test(open_without_a_certificate_provider_is_refused),

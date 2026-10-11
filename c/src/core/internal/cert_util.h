@@ -24,8 +24,8 @@ bool az_iot_cert_util_is_base64(const char* s, size_t* out_len);
 void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap);
 
 /**
- * @brief True when @p payload is one complete JSON value: nothing truncated,
- * unbalanced or trailing.
+ * @brief True when @p payload is one complete JSON object or array: not empty,
+ * truncated or unbalanced, and followed by whitespace only.
  */
 bool az_iot_cert_util_json_is_complete(az_span payload);
 
