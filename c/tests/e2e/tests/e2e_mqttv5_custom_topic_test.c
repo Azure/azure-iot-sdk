@@ -38,25 +38,54 @@
 
 typedef struct
 {
+  int done;
+  az_iot_result status;
+} publish_record;
+
+#define E2E_MAX_PUBLISHES 16
+
+typedef struct
+{
   e2e_device dev;
   az_iot_e2e_service* service;
   az_iot_mqttv5_custom_topic_client custom;
   bool custom_ok;
+  /* Callback contexts live as long as the connection: a late PUBACK may still complete one. */
+  publish_record records[E2E_MAX_PUBLISHES];
+  size_t records_used;
 } fixture;
 
 static fixture g_fx;
-
-typedef struct
-{
-  int done;
-  az_iot_result status;
-} publish_record;
 
 static void on_publish(az_iot_result status, void* user_ctx)
 {
   publish_record* record = (publish_record*)user_ctx;
   record->status = status;
   record->done = 1;
+}
+
+static publish_record* new_record(fixture* fx)
+{
+  assert_true(fx->records_used < E2E_MAX_PUBLISHES);
+  return &fx->records[fx->records_used++];
+}
+
+/* Set while the hub does not route custom topic messages to the events endpoint: the routed
+ * cases then skip instead of failing when nothing arrives. */
+static bool routing_check_skipped(void)
+{
+  const char* skip_routing = getenv("AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING");
+  return skip_routing != NULL && skip_routing[0] != '\0' && strcmp(skip_routing, "0") != 0;
+}
+
+static void assert_routed(bool seen)
+{
+  if (!seen && routing_check_skipped())
+  {
+    printf("[e2e] not routed; skipped (AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING)\n");
+    skip();
+  }
+  assert_true(seen);
 }
 
 static void pump(fixture* fx) { e2e_device_do_work(&fx->dev, E2E_PUMP_MS); }
@@ -191,9 +220,11 @@ static bool publish_and_watch(
     const char* topic_template,
     az_iot_mqtt_qos qos,
     int timeout_s,
-    publish_record* record)
+    publish_record** out_record)
 {
   assert_true(wait_connected(fx));
+  publish_record* record = new_record(fx);
+  *out_record = record;
   char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
   assert_int_equal(
       az_iot_mqttv5_custom_topic_client_format_topic(
@@ -215,7 +246,6 @@ static bool publish_and_watch(
   message.content_type = "application/json";
   message.user_properties = properties;
   message.user_properties_count = sizeof(properties) / sizeof(properties[0]);
-  memset(record, 0, sizeof(*record));
   assert_int_equal(
       az_iot_mqttv5_custom_topic_client_publish(&fx->custom, &message, on_publish, record),
       AZ_IOT_OK);
@@ -247,68 +277,68 @@ static void baseline_telemetry_is_routed(void** state)
   az_iot_telemetry_message message = { 0 };
   message.payload = (const uint8_t*)payload;
   message.payload_len = strlen(payload);
-  publish_record record = { 0 };
+  publish_record* record = new_record(fx);
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&telemetry, &message, on_publish, &record), AZ_IOT_OK);
-  const bool seen = wait_routed(fx, marker, E2E_ROUTE_TIMEOUT_S, &record);
+      az_iot_mqttv5_telemetry_client_send(&telemetry, &message, on_publish, record), AZ_IOT_OK);
+  const bool seen = wait_routed(fx, marker, E2E_ROUTE_TIMEOUT_S, record);
   az_iot_mqttv5_telemetry_client_deinit(&telemetry);
 
-  assert_true(record.done);
-  assert_int_equal(record.status, AZ_IOT_OK);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
   assert_true(seen);
 }
 
 static void qos1_to_a_device_template_is_routed(void** state)
 {
-  publish_record record;
+  publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state,
       "e2e/{deviceId}/telemetry",
       AZ_IOT_MQTT_QOS_1,
       E2E_ROUTE_TIMEOUT_S,
       &record);
-  assert_true(record.done);
-  assert_int_equal(record.status, AZ_IOT_OK);
-  assert_true(seen);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+  assert_routed(seen);
 }
 
 static void qos0_to_a_shared_template_is_routed(void** state)
 {
-  publish_record record;
+  publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state, "e2e/shared/alerts", AZ_IOT_MQTT_QOS_0, E2E_ROUTE_TIMEOUT_S, &record);
-  assert_true(record.done);
-  assert_int_equal(record.status, AZ_IOT_OK);
-  assert_true(seen);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+  assert_routed(seen);
 }
 
 /* The hub refuses the PUBACK (0x87). Adapters that do not report reason codes give
  * AZ_IOT_ERR_MQTT, so only the failure is asserted. */
 static void a_topic_no_template_allows_is_refused(void** state)
 {
-  publish_record record;
+  publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state,
       "e2e-unlisted/telemetry",
       AZ_IOT_MQTT_QOS_1,
       E2E_NOT_ROUTED_WAIT_S,
       &record);
-  assert_true(record.done);
-  assert_int_not_equal(record.status, AZ_IOT_OK);
+  assert_true(record->done);
+  assert_int_not_equal(record->status, AZ_IOT_OK);
   assert_false(seen);
 }
 
 static void another_device_id_is_refused(void** state)
 {
-  publish_record record;
+  publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state,
       "e2e/not-{deviceId}/telemetry",
       AZ_IOT_MQTT_QOS_1,
       E2E_NOT_ROUTED_WAIT_S,
       &record);
-  assert_true(record.done);
-  assert_int_not_equal(record.status, AZ_IOT_OK);
+  assert_true(record->done);
+  assert_int_not_equal(record->status, AZ_IOT_OK);
   assert_false(seen);
 }
 
@@ -317,10 +347,10 @@ static void publishing_continues_after_a_refusal(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
-  publish_record record;
+  publish_record* record;
   (void)publish_and_watch(fx, "e2e/{deviceId}/after", AZ_IOT_MQTT_QOS_1, 1, &record);
-  assert_true(record.done);
-  assert_int_equal(record.status, AZ_IOT_OK);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
 }
 
 int main(void)
