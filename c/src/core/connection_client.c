@@ -3240,6 +3240,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         case AZ_IOT_PROVISIONING_STATUS_ASSIGNED:
         {
+          /* An issued chain is stored only from a complete payload; check it
+           * before any assignment field is read or cached, so a rejected
+           * payload leaves nothing (hub, profile) behind for the retry. */
+          if (c->dps_enrolling && !az_iot_cert_util_json_is_complete(payload_span))
+          {
+            dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+            return;
+          }
           int32_t hub_n = az_span_size(resp.registration_state.assigned_hub_hostname);
           int32_t dev_n = az_span_size(resp.registration_state.device_id);
           if (hub_n < 0 || (size_t)hub_n + 1 > sizeof(c->dps_assigned_hub) || dev_n < 0

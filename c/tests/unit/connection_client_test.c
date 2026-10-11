@@ -1581,6 +1581,28 @@ static void dps_a_truncated_assignment_is_not_stored(void** state)
   az_iot_connection_client_deinit(&client);
 }
 
+/* A rejected payload caches nothing from the assignment: its connection
+ * profile must not outlive it into the next registration. */
+static void dps_a_rejected_assignment_leaves_the_profile_alone(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  const char trailing[] = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+                          "\"registrationState\":{\"registrationId\":\"ut-device\","
+                          "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+                          "\"connectionProfile\":\"mqttV5\","
+                          "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}x";
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, trailing);
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(client.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+  az_iot_connection_client_deinit(&client);
+}
+
 /* DPS enrollment needs a provider that also releases the CSR and stores the
  * issued chain: the client never keeps the chain itself. */
 static void open_rejects_operational_cert_without_release_or_store(void** state)
@@ -3183,6 +3205,7 @@ int main(void)
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
+    cmocka_unit_test(dps_a_rejected_assignment_leaves_the_profile_alone),
     cmocka_unit_test(open_rejects_operational_cert_without_release_or_store),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup_csr, teardown),
