@@ -121,6 +121,7 @@ static void managed_init_generates_key_and_valid_csr(void** state)
   az_iot_certificate_provider_managed prov;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
   assert_non_null(prov.base.vtable);
+  assert_int_equal(AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION, prov.base.vtable->version);
 
   /* CSR carries the requested CN and is self-consistent (verifies with its
    * own public key). */
