@@ -16,6 +16,8 @@
 #include "sample_csr_backend.h"
 #include "sample_utils.h"
 
+#include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -255,8 +257,21 @@ static az_iot_result commit_chain(sample_cert_provider* p, const char* tmp)
   if (staged)
   {
     (void)fclose(staged);
-    int had_key = sample_replace_file(p->operational_key_path, previous);
-    if (!sample_replace_file(pending, p->operational_key_path))
+    errno = 0;
+    FILE* current = fopen(p->operational_key_path, "rb");
+    bool had_key = current != NULL || errno != ENOENT; /* exists, even if unreadable */
+    if (current)
+    {
+      (void)fclose(current);
+    }
+    /* A key that exists but cannot be set aside could not be put back: change
+     * nothing. */
+    bool set_aside = had_key && sample_replace_file(p->operational_key_path, previous);
+    if (had_key && !set_aside)
+    {
+      rc = AZ_IOT_ERR_INTERNAL;
+    }
+    else if (!sample_replace_file(pending, p->operational_key_path))
     {
       rc = AZ_IOT_ERR_INTERNAL;
     }
@@ -265,11 +280,11 @@ static az_iot_result commit_chain(sample_cert_provider* p, const char* tmp)
       rc = AZ_IOT_ERR_INTERNAL;
       (void)remove(p->operational_key_path);
     }
-    if (rc != AZ_IOT_OK && had_key)
+    if (set_aside && rc != AZ_IOT_OK)
     {
       (void)sample_replace_file(previous, p->operational_key_path);
     }
-    else if (had_key)
+    else if (set_aside)
     {
       (void)remove(previous);
     }

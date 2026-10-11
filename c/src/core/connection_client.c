@@ -2944,6 +2944,10 @@ static az_iot_result dps_apply_connection_profile_override(az_iot_connection_cli
  * already recorded and readable when it does. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
+  /* Each assignment starts from the default: an absent profile must not keep
+   * the one an earlier, failed assignment recorded. */
+  connection_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+
   az_json_reader jr;
   az_iot_result r = dps_enter_registration_state(&jr, payload);
   if (r != AZ_IOT_OK)
@@ -8691,7 +8695,8 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
   *out_code = 0;
   *out_retry = 0;
   az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+  if (az_span_size(payload) <= 0 /* az_json_reader_init() would spin on it */
+      || az_result_failed(az_json_reader_init(&jr, payload, NULL))
       || az_result_failed(az_json_reader_next_token(&jr))
       || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
   {
@@ -8848,7 +8853,10 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 
   az_iot_csr_callback cb = c->csr_op.cb;
   void* uc = c->csr_op.user_ctx;
-  az_span payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
+  /* An empty message may carry a NULL payload: az_span_create() must not see it. */
+  az_span payload = (msg->payload != NULL && msg->payload_len > 0)
+      ? az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len)
+      : AZ_SPAN_EMPTY;
   az_iot_csr_event evt;
   memset(&evt, 0, sizeof(evt));
 
