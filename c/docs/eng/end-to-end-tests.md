@@ -263,7 +263,7 @@ that environment, one job per client, after the namespace job. Each job issues a
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS`, `_EVENTHUB_CS` (`service` policy) and
 `_SAS_GROUP_KEY`, and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
 `_DPS_HOST`. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
-workflow; nightly; manual. Pull requests from forks skip.
+workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).

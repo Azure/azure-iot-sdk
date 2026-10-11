@@ -6,9 +6,8 @@
 /* End-to-end: az_iot_mqttv5_custom_topic_client on an mqttv5 hub.
  *
  * The hub must have the custom topic templates e2e/{deviceId}/# and e2e/shared/#.
- * The device provisions through DPS (or connects directly), as e2e_device.h describes;
- * DPS must assign it to that mqttv5 hub. Routed messages are read from the hub's
- * events endpoint (IOTHUB_* variables, see az_iot_e2e_service.h).
+ * The device provisions through DPS (e2e_device.h), which must assign it to that mqttv5 hub. Routed
+ * messages are read from the hub's events endpoint (IOTHUB_* variables, see az_iot_e2e_service.h).
  */
 #include <setjmp.h>
 #include <stdarg.h>
@@ -30,7 +29,6 @@
 #include "e2e_log.h"
 
 #define E2E_ROUTE_TIMEOUT_S 90
-#define E2E_NOT_ROUTED_WAIT_S 30
 #define E2E_ACK_TIMEOUT_S 30
 #define E2E_CONNECT_TIMEOUT_S 60
 #define E2E_SERVICE_CONNECT_TIMEOUT_S 45
@@ -327,11 +325,7 @@ static void a_topic_no_template_allows_is_refused(void** state)
 {
   publish_record* record;
   const bool seen = publish_and_watch(
-      (fixture*)*state,
-      "e2e-unlisted/telemetry",
-      AZ_IOT_MQTT_QOS_1,
-      E2E_NOT_ROUTED_WAIT_S,
-      &record);
+      (fixture*)*state, "e2e-unlisted/telemetry", AZ_IOT_MQTT_QOS_1, E2E_ROUTE_TIMEOUT_S, &record);
   assert_refused(record);
   assert_false(seen);
 }
@@ -343,7 +337,7 @@ static void another_device_id_is_refused(void** state)
       (fixture*)*state,
       "e2e/not-{deviceId}/telemetry",
       AZ_IOT_MQTT_QOS_1,
-      E2E_NOT_ROUTED_WAIT_S,
+      E2E_ROUTE_TIMEOUT_S,
       &record);
   assert_refused(record);
   assert_false(seen);

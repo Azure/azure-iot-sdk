@@ -16,7 +16,7 @@
 #            E2E_MQTTV5_SHARED_EVENTHUB_CS, E2E_MQTTV5_SHARED_SAS_GROUP_KEY,
 #            AZURE_CLIENT_ID, AZURE_TENANT_ID
 #
-# Pull requests from forks get no secrets, so they skip.
+# Pull requests from forks and from Dependabot get no secrets, so they skip.
 
 name: ci-c-e2e-mqttv5
 
@@ -51,7 +51,8 @@ jobs:
     if: >-
       ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
           (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository) }}
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
     permissions:
       contents: read
       id-token: write
