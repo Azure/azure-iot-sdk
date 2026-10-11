@@ -58,9 +58,10 @@ extern "C"
     const char* bootstrap_key_pem_path; /* set with cert, or NULL with cert */
     /* Trusted CA presented to both bootstrap and operational connections. */
     const char* trusted_ca_pem_path; /* may be NULL */
-    /* Operational private key. Loaded if the file exists, otherwise a new key
-     * is generated and written here (unencrypted PEM, owner-only). The mode of
-     * an existing file is not changed. Required. */
+    /* Operational private key. Loaded if the file holds a valid key, which is
+     * then left as is (mode included). Otherwise -- missing, unreadable or
+     * malformed -- a new key is generated and written here (unencrypted PEM,
+     * owner-only), replacing the file. Required. */
     const char* operational_key_pem_path; /* required */
     /* Where the issued operational certificate chain is persisted. Written by
      * store_issued_certificate(); read back on load() and on restart, and used

@@ -69,8 +69,9 @@ static X509_REQ* decode_csr(const char* b64)
 
 /* Build a certificate for @p subject_key, signed by a throwaway issuer key, as
  * base64 DER (heap; caller frees) - the on-the-wire form the store hook
- * receives. @p serial makes two certificates for the same key differ. */
-static char* make_cert_base64(EVP_PKEY* subject_key, long serial)
+ * receives. @p serial makes two certificates for the same key differ.
+ * @p trailing junk bytes are appended to the DER before encoding. */
+static char* make_cert_base64_with_trailing(EVP_PKEY* subject_key, long serial, size_t trailing)
 {
   EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
   assert_non_null(key);
@@ -92,17 +93,28 @@ static char* make_cert_base64(EVP_PKEY* subject_key, long serial)
   unsigned char* der = NULL;
   int der_len = i2d_X509(x, &der);
   assert_true(der_len > 0);
-  size_t cap = (((size_t)der_len + 2) / 3) * 4 + 1;
+  unsigned char* buf = malloc((size_t)der_len + trailing);
+  assert_non_null(buf);
+  memcpy(buf, der, (size_t)der_len);
+  memset(buf + der_len, 0x05, trailing);
+  int total = der_len + (int)trailing;
+  size_t cap = (((size_t)total + 2) / 3) * 4 + 1;
   char* b64 = malloc(cap);
   assert_non_null(b64);
-  int b64_len = EVP_EncodeBlock((unsigned char*)b64, der, der_len);
+  int b64_len = EVP_EncodeBlock((unsigned char*)b64, buf, total);
   assert_true(b64_len > 0);
   b64[b64_len] = '\0';
 
+  free(buf);
   OPENSSL_free(der);
   X509_free(x);
   EVP_PKEY_free(key);
   return b64;
+}
+
+static char* make_cert_base64(EVP_PKEY* subject_key, long serial)
+{
+  return make_cert_base64_with_trailing(subject_key, serial, 0);
 }
 
 static void managed_init_generates_key_and_valid_csr(void** state)
@@ -763,6 +775,47 @@ static char* base64_of(const char* text)
   return out;
 }
 
+/* A DER certificate followed by more bytes is not a certificate: refused at
+ * store, and not used when found in the persisted file. */
+static void managed_a_certificate_with_trailing_bytes_is_refused(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain1[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  char* padded = make_cert_base64_with_trailing((EVP_PKEY*)prov.operational_key, 2, 4);
+  az_span chain2[1] = { az_span_create_from_str(padded) };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  /* The same block written to the file directly is not used at init. */
+  FILE* f = fopen(OP_CERT, "wb");
+  assert_non_null(f);
+  assert_true(fputs("-----BEGIN CERTIFICATE-----\n", f) >= 0);
+  assert_true(fputs(padded, f) >= 0);
+  assert_true(fputs("\n-----END CERTIFICATE-----\n", f) >= 0);
+  assert_int_equal(0, fclose(f));
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_false(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(padded);
+  free(good);
+  remove_test_files();
+}
+
 /* Text after the chain that is not a certificate is refused, whether it rides
  * in an issued entry or is appended to the persisted file. */
 static void managed_a_chain_followed_by_other_text_is_refused(void** state)
@@ -1253,6 +1306,7 @@ int main(void)
     cmocka_unit_test(managed_store_refuses_a_chain_with_an_empty_entry),
     cmocka_unit_test(managed_a_persisted_chain_with_a_truncated_entry_is_not_used),
     cmocka_unit_test(managed_a_chain_followed_by_other_text_is_refused),
+    cmocka_unit_test(managed_a_certificate_with_trailing_bytes_is_refused),
     cmocka_unit_test(managed_a_persisted_chain_with_trailing_whitespace_is_used),
     cmocka_unit_test(managed_an_oversized_persisted_chain_is_not_used),
     cmocka_unit_test(managed_store_refuses_an_oversized_chain),

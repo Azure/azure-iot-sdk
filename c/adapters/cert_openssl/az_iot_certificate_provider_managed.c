@@ -349,8 +349,8 @@ static size_t count_pem_certificates(const char* data, size_t len)
 
 /**
  * @brief True when @p data is a PEM chain of at least one certificate with
- * nothing else in it, every certificate parses, and the first (the leaf)
- * certifies @p key.
+ * nothing else in it, every block is exactly one DER certificate (no trailing
+ * bytes), and the first (the leaf) certifies @p key.
  *
  * @param[out] out_count Certificates parsed; may be NULL.
  */
@@ -360,15 +360,29 @@ static bool chain_matches_key(const char* data, size_t len, EVP_PKEY* key, size_
   size_t blocks = (data && len <= INT_MAX) ? count_pem_certificates(data, len) : 0;
   BIO* b = blocks > 0 ? BIO_new_mem_buf(data, (int)len) : NULL;
   bool ok = b != NULL && key != NULL;
-  X509* cert = NULL;
-  while (ok && (cert = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
+  char* name = NULL;
+  char* header = NULL;
+  unsigned char* der = NULL;
+  long der_len = 0;
+  while (ok && PEM_read_bio(b, &name, &header, &der, &der_len) == 1)
   {
-    if (count == 0 && X509_check_private_key(cert, key) != 1)
+    const unsigned char* p = der;
+    X509* cert = (strcmp(name, PEM_STRING_X509) == 0 && header[0] == '\0' && der_len > 0)
+        ? d2i_X509(NULL, &p, der_len)
+        : NULL;
+    ok = cert != NULL && p == der + der_len;
+    if (ok && count == 0 && X509_check_private_key(cert, key) != 1)
     {
       ok = false;
     }
     X509_free(cert);
-    count++;
+    OPENSSL_free(name);
+    OPENSSL_free(header);
+    OPENSSL_free(der);
+    name = NULL;
+    header = NULL;
+    der = NULL;
+    count += ok ? 1u : 0u;
   }
   BIO_free(b);
   ERR_clear_error();
