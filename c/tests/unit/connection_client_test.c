@@ -2021,8 +2021,8 @@ static void send_csr_without_a_csr_capable_provider_is_not_supported(void** stat
   assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_ERR_NOT_FOUND);
 }
 
-/* The provider's get_csr() error is returned as is; nothing is published and
- * the renewal slot stays free. */
+/* The provider's get_csr() error is returned as is, and a success without a CSR
+ * is released and fails; nothing is published and the renewal slot stays free. */
 static void send_csr_returns_the_get_csr_error(void** state)
 {
   fixture* fx = *state;
@@ -2035,7 +2035,16 @@ static void send_csr_returns_the_get_csr_error(void** state)
   assert_null(last_csr_publish(m));
   assert_int_equal(g_csr_prov.release_csr_calls, 0);
 
+  /* AZ_IOT_OK without a CSR: released, then reported as an internal error. */
   g_csr_prov.get_csr_rc = AZ_IOT_OK;
+  g_csr_prov.csr_null = true;
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, NULL, NULL, on_csr_evt, &tc),
+      AZ_IOT_ERR_INTERNAL);
+  assert_null(last_csr_publish(m));
+  assert_int_equal(g_csr_prov.release_csr_calls, 1);
+
+  g_csr_prov.csr_null = false;
   assert_int_equal(
       az_iot_connection_client_send_csr(fx->client, NULL, NULL, on_csr_evt, &tc), AZ_IOT_OK);
 }

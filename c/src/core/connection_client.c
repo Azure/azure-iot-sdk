@@ -2512,11 +2512,17 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
           = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
       if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
       {
-        AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
         if (csr_result == AZ_IOT_OK)
         {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr returned no CSR");
           provider->vtable->release_csr(provider, &csr);
           csr_result = AZ_IOT_ERR_INTERNAL;
+        }
+        else
+        {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
         }
         stage_local_error(
             c, AZ_IOT_CONN_SCOPE_DPS, csr_result, "certificate provider get_csr() failed");
@@ -9100,17 +9106,20 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   }
   az_iot_certificate_signing_request csr = { 0 };
   az_iot_result r = provider->vtable->get_csr(provider, device_id, &csr);
-  if (r != AZ_IOT_OK || !csr.csr_base64)
+  if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "send_csr: certificate provider get_csr failed (%s)",
         az_iot_result_to_string(r));
-    if (r == AZ_IOT_OK)
-    {
-      provider->vtable->release_csr(provider, &csr);
-    }
-    return (r != AZ_IOT_OK) ? r : AZ_IOT_ERR_INTERNAL;
+    return r;
+  }
+  if (!csr.csr_base64)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "send_csr: certificate provider get_csr returned no CSR");
+    provider->vtable->release_csr(provider, &csr);
+    return AZ_IOT_ERR_INTERNAL;
   }
 
   client->csr_op.cb = cb;

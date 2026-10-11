@@ -6,9 +6,10 @@
 /* Windows CNG/NCrypt CSR backend for sample_cert_provider. Generates an EC
  * P-256 operational key with CNG, produces a PKCS#10 CSR via
  * CryptSignAndEncodeCertificate(X509_CERT_REQUEST_TO_BE_SIGNED), and exports the
- * private key as a PKCS#8 PEM at key_path so the (OpenSSL-based) Paho TLS layer
- * can load it. Each call mints a fresh key + CSR (a renewal re-enrolls), which
- * keeps the sample free of PEM->CNG key import.
+ * private key as a PKCS#8 PEM so the (OpenSSL-based) Paho TLS layer can load
+ * it. Each call mints a fresh key + CSR, which keeps the sample free of PEM->CNG
+ * key import. The key is written to key_path + SAMPLE_CSR_PENDING_KEY_SUFFIX;
+ * the provider moves it into place once its chain is stored.
  *
  * Link: crypt32.lib, ncrypt.lib. */
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -252,10 +253,16 @@ int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, cha
     }
   }
 
-  /* 6. Persist the private key as PEM for the TLS stack. */
-  if (export_key_pem(hKey, key_path) != 0)
+  /* 6. Stage the private key as PEM for the TLS stack. */
   {
-    goto done;
+    char pending[MAX_PATH];
+    if (_snprintf_s(
+            pending, sizeof(pending), _TRUNCATE, "%s" SAMPLE_CSR_PENDING_KEY_SUFFIX, key_path)
+            < 0
+        || export_key_pem(hKey, pending) != 0)
+    {
+      goto done;
+    }
   }
 
   *out_csr = csr_b64;
