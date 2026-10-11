@@ -14,10 +14,10 @@
 #            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
 #            E2E_MQTTV5_SHARED_ADR_NAMESPACE,
 #            E2E_MQTTV5_SHARED_ADR_API_VERSION (optional; default 2026-11-02-preview)
-#   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC). On the resource group the
-#            identity needs Contributor, and role assignment write for
-#            Contributor, IoT Hub Data Contributor and Azure Device Registry
-#            Contributor.
+#   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC). The identity needs
+#            Contributor on the resource group. Grant the link's role
+#            assignments on the resource group once; otherwise it also needs
+#            role assignment write.
 
 name: ci-c-e2e-mqttv5-adr-namespace
 

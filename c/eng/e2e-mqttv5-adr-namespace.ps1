@@ -10,15 +10,15 @@ Workaround: in some regions the ADR namespace can disappear from ARM while the A
 holds it; its role assignments go with it, and DPS registrations then fail. When the namespace
 is missing, or an endpoint is not linked, this script:
   1. re-creates it (same name/region; if ADR still holds it, re-asserts its endpoints),
-  2. re-grants the 8 role assignments the link needs (idempotent),
+  2. ensures the 8 role assignments the link needs; one already present at the target scope or above
+     (e.g. on the resource group, which survives the namespace) is not re-created,
   3. links the hub (messaging/hub-1) and DPS (provisioning/dps-1) and waits for Succeeded,
   4. pushes the namespace to the DPS data plane (tags-only DPS update).
 If the namespace is present with both endpoints Succeeded it makes one ARM read and exits.
 
-Requires `az` logged in with, on the resource group: Contributor, and
-Microsoft.Authorization/roleAssignments/write (e.g. Role Based Access Control Administrator)
-for Contributor (b24988ac-...), IoT Hub Data Contributor (4fc6c259-...) and
-Azure Device Registry Contributor (a5c3590a-...).
+Requires `az` logged in with Contributor on the resource group. Role assignment write (for
+Contributor b24988ac-..., IoT Hub Data Contributor 4fc6c259-..., Azure Device Registry Contributor
+a5c3590a-...) is needed only for grants not already present at the resource group or above.
 Hub and DPS must have system-assigned identities.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -119,10 +119,24 @@ function Wait-For([string]$What, [int]$Minutes, [scriptblock]$Probe) {
     }
 }
 
+# Scope of an existing assignment of RoleId to PrincipalId at Scope or any parent, else $null.
+function Get-CoveringScope([string]$Scope, [string]$PrincipalId, [string]$RoleId) {
+    $ras = Invoke-Arm get "$Arm$Scope/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=principalId%20eq%20'$PrincipalId'"
+    foreach ($ra in @($ras.value)) {
+        $s = ([string]$ra.properties.scope).TrimEnd('/')
+        $parent = $s -eq '' -or $Scope -ieq $s -or $Scope.StartsWith("$s/", [StringComparison]::OrdinalIgnoreCase)
+        if ($ra.properties.roleDefinitionId -match "/$RoleId$" -and $parent) { return $ra.properties.scope }
+    }
+}
+
 function Grant-Role([string]$Scope, [string]$PrincipalId, [string]$RoleId, [string]$What) {
+    if ($covering = Get-CoveringScope $Scope $PrincipalId $RoleId) { Write-Host "  role: $What (present at $covering)"; return }
     for ($i = 1; $i -le 8; $i++) {
         $out = ((& az role assignment create --assignee-object-id $PrincipalId --assignee-principal-type ServicePrincipal --role $RoleId --scope $Scope -o none 2>&1) | Out-String).Trim()
         if ($LASTEXITCODE -eq 0 -or $out -match 'RoleAssignmentExists|already exists') { Write-Host "  role: $What"; return }
+        if ($out -match 'AuthorizationFailed') {
+            throw "Role assignment '$What' is missing and this identity cannot create it. Grant it once on the resource group (it survives the namespace): $out"
+        }
         if ($i -eq 8) { throw "Role assignment '$What' failed: $out" }
         Start-Sleep -Seconds 15
     }
@@ -189,7 +203,7 @@ $ns = (Wait-For 'namespace' 10 {
         @{ Done = ($terminal -and $n.identity.principalId); Failed = ($terminal -and -not $n.identity.principalId); Detail = $ps; Ns = $n } }).Ns
 $nsPid = $ns.identity.principalId
 
-# 2. Role assignments (removed with the namespace; the namespace identity may be new).
+# 2. Role assignments. Those scoped to the namespace go with it; the namespace identity may be new.
 Grant-Role $HubId $nsPid $RoleContributor 'namespace -> hub (Contributor)'
 Grant-Role $NsId $hubPid $RoleContributor 'hub -> namespace (Contributor)'
 Grant-Role $DpsId $nsPid $RoleContributor 'namespace -> DPS (Contributor)'
