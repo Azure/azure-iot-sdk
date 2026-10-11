@@ -173,8 +173,8 @@ static az_iot_result write_file_private(const char* path, const char* data, size
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   HANDLE h = INVALID_HANDLE_VALUE;
-  unsigned long seed = (unsigned long)GetTickCount() ^ ((unsigned long)GetCurrentProcessId() << 16)
-      ^ (unsigned long)(uintptr_t)tmp;
+  unsigned long seed = (unsigned long)GetTickCount64()
+      ^ ((unsigned long)GetCurrentProcessId() << 16) ^ (unsigned long)(uintptr_t)tmp;
   for (int i = 0; i < MANAGED_TMP_ATTEMPTS && h == INVALID_HANDLE_VALUE; ++i)
   {
     seed = seed * 1103515245UL + 12345UL;
@@ -190,7 +190,7 @@ static az_iot_result write_file_private(const char* path, const char* data, size
       break;
     }
   }
-  if (h == INVALID_HANDLE_VALUE)
+  if (h == INVALID_HANDLE_VALUE || h == NULL)
   {
     free(tmp);
     return AZ_IOT_ERR_INTERNAL;
@@ -596,8 +596,9 @@ static void managed_release_csr(
  * stack can parse, which surfaces only much later as a handshake failure, so
  * decode first and write whichever form came back.
  *
- * Returns true on success. */
-static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
+ * Returns AZ_IOT_OK, AZ_IOT_ERR_INVALID_ARG for an entry that is not base64,
+ * AZ_IOT_ERR_OUT_OF_MEMORY, or AZ_IOT_ERR_INTERNAL when writing to @p b fails. */
+static az_iot_result write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
 {
   bool ok = false;
   /* Decoded output is always shorter than its base64; +1 so the result can be
@@ -605,7 +606,7 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   unsigned char* decoded = (unsigned char*)calloc(1, (size_t)base64_len + 1);
   if (decoded == NULL)
   {
-    return false;
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
 
   int decoded_len = EVP_DecodeBlock(decoded, base64, base64_len);
@@ -617,7 +618,7 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
      * anyway would persist a certificate file that cannot be parsed and would
      * only be discovered later, as a connection failure. */
     free(decoded);
-    return false;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   /* EVP_DecodeBlock rounds up to a multiple of three and counts the '=' padding
@@ -634,7 +635,7 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   if (decoded_len <= 0)
   {
     free(decoded);
-    return false;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   /* decoded_len <= base64_len already; the base64_len bound restates it against
@@ -672,7 +673,7 @@ static bool write_issued_cert(BIO* b, const uint8_t* base64, int base64_len)
   }
 
   free(decoded);
-  return ok;
+  return ok ? AZ_IOT_OK : AZ_IOT_ERR_INTERNAL;
 }
 
 static az_iot_result managed_store(
@@ -725,9 +726,9 @@ static az_iot_result managed_store(
       rc = AZ_IOT_ERR_INVALID_ARG;
       break;
     }
-    if (!write_issued_cert(mem, az_span_ptr(cert), len))
+    rc = write_issued_cert(mem, az_span_ptr(cert), len);
+    if (rc != AZ_IOT_OK)
     {
-      rc = AZ_IOT_ERR_INTERNAL;
       break;
     }
     written++;

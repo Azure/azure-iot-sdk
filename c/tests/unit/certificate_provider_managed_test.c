@@ -26,6 +26,8 @@
 #include <aclapi.h>
 #else
 #include <dirent.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -664,6 +666,12 @@ static void managed_store_refuses_a_chain_with_a_bad_trailing_entry(void** state
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued2));
 
+  /* An entry that is not base64 is refused the same way. */
+  az_span chain3[2] = { az_span_create_from_str(next), AZ_SPAN_FROM_STR("!!!!") };
+  az_iot_issued_certificate issued3 = { .certificates = chain3, .count = 2 };
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, prov.base.vtable->store_issued_certificate(&prov.base, &issued3));
+
   char* on_disk = read_chain_base64(OP_CERT);
   assert_string_equal(on_disk, good);
   assert_int_equal(0, count_temp_files());
@@ -899,7 +907,8 @@ static void managed_store_refuses_an_oversized_chain(void** state)
   remove_test_files();
 }
 
-/* An entry too large for the chain limit is refused before it is decoded. */
+/* An entry too large for the chain limit is refused; it is sized from its
+ * encoded length, so it is never decoded or buffered. */
 static void managed_store_refuses_an_oversized_entry_before_decoding(void** state)
 {
   (void)state;
@@ -908,11 +917,11 @@ static void managed_store_refuses_an_oversized_entry_before_decoding(void** stat
   az_iot_certificate_provider_managed prov;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
 
-  /* Not base64: if decoded, the store fails with AZ_IOT_ERR_INTERNAL instead. */
+  /* Valid base64 (zeros) whose decoded size alone exceeds the limit. */
   const size_t big_len = 128u * 1024u;
   uint8_t* big = malloc(big_len);
   assert_non_null(big);
-  memset(big, '!', big_len);
+  memset(big, 'A', big_len);
   az_span entry[1] = { az_span_create(big, (int32_t)big_len) };
   az_iot_issued_certificate issued = { .certificates = entry, .count = 1 };
   assert_int_equal(
@@ -1075,6 +1084,76 @@ static void managed_written_files_are_owner_only(void** state)
   remove_test_files();
 }
 
+/* A write that fails part-way leaves the previous chain in place and no
+ * temporary file behind. The file-size limit makes write() fail with EFBIG. */
+static void managed_a_failed_write_keeps_the_previous_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain1[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  char* next = make_cert_base64((EVP_PKEY*)prov.operational_key, 2);
+  az_span chain2[1] = { az_span_create_from_str(next) };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
+  struct rlimit saved;
+  assert_int_equal(0, getrlimit(RLIMIT_FSIZE, &saved));
+  struct rlimit small = saved;
+  small.rlim_cur = 64;
+  void (*saved_handler)(int) = signal(SIGXFSZ, SIG_IGN);
+  assert_int_equal(0, setrlimit(RLIMIT_FSIZE, &small));
+  az_iot_result rc = prov.base.vtable->store_issued_certificate(&prov.base, &issued2);
+  assert_int_equal(0, setrlimit(RLIMIT_FSIZE, &saved));
+  (void)signal(SIGXFSZ, saved_handler);
+  assert_int_equal(AZ_IOT_ERR_INTERNAL, rc);
+
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  assert_int_equal(0, count_temp_files());
+  assert_true(prov.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(on_disk);
+  free(next);
+  free(good);
+  remove_test_files();
+}
+
+/* A rename that fails leaves the destination as it was and no temporary file
+ * behind. A directory at the destination cannot be replaced by a file. */
+static void managed_a_failed_rename_keeps_the_destination(void** state)
+{
+  (void)state;
+  remove_test_files();
+  assert_int_equal(0, mkdir(OP_CERT, 0700));
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_false(prov.has_operational);
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  assert_int_equal(
+      AZ_IOT_ERR_INTERNAL, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+
+  struct stat st;
+  assert_int_equal(0, stat(OP_CERT, &st));
+  assert_true(S_ISDIR(st.st_mode));
+  assert_int_equal(0, count_temp_files());
+  assert_false(prov.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  free(good);
+  assert_int_equal(0, rmdir(OP_CERT));
+  remove_test_files();
+}
+
 /* init() loads an existing key without rewriting it, so its mode is kept. */
 static void managed_init_keeps_an_existing_key_file_mode(void** state)
 {
@@ -1183,6 +1262,8 @@ int main(void)
 #if !defined(_WIN32)
     cmocka_unit_test(managed_written_files_are_owner_only),
     cmocka_unit_test(managed_init_keeps_an_existing_key_file_mode),
+    cmocka_unit_test(managed_a_failed_write_keeps_the_previous_chain),
+    cmocka_unit_test(managed_a_failed_rename_keeps_the_destination),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
 #endif
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
