@@ -381,7 +381,8 @@ static bool file_is_missing(const char* path)
 /**
  * @brief Stage a copy of the file at @p src next to @p dst (stage_bio).
  *
- * Only a missing file is treated as absent (*out_tmp NULL, AZ_IOT_OK); any other
+ * A missing file, or one over MANAGED_MAX_CHAIN_BYTES (never served, so not
+ * worth keeping), is treated as absent (*out_tmp NULL, AZ_IOT_OK); any other
  * open or read failure is an error, so a partial copy is never staged.
  */
 static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp)
@@ -401,20 +402,24 @@ static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp
   az_iot_result rc = mem ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
   char buf[1024];
   int n = 0;
-  while (rc == AZ_IOT_OK && (n = BIO_read(in, buf, (int)sizeof(buf))) > 0)
+  size_t total = 0;
+  bool oversized = false;
+  while (rc == AZ_IOT_OK && !oversized && (n = BIO_read(in, buf, (int)sizeof(buf))) > 0)
   {
-    if (BIO_write(mem, buf, n) != n)
+    total += (size_t)n;
+    oversized = total > MANAGED_MAX_CHAIN_BYTES;
+    if (!oversized && BIO_write(mem, buf, n) != n)
     {
       rc = AZ_IOT_ERR_INTERNAL;
     }
   }
-  if (rc == AZ_IOT_OK && (n < 0 || !BIO_eof(in)))
+  if (rc == AZ_IOT_OK && !oversized && (n < 0 || !BIO_eof(in)))
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
   BIO_free(in);
   ERR_clear_error();
-  if (rc == AZ_IOT_OK && BIO_pending(mem) > 0)
+  if (rc == AZ_IOT_OK && !oversized && BIO_pending(mem) > 0)
   {
     rc = stage_bio(dst, mem, out_tmp);
   }
@@ -1271,6 +1276,13 @@ static const az_iot_certificate_provider_vtable s_managed_vtable = {
 /* --------------------------------------------------------------------------
  * Public API
  * ------------------------------------------------------------------------ */
+
+az_iot_certificate_provider_managed_options az_iot_certificate_provider_managed_options_default(
+    void)
+{
+  az_iot_certificate_provider_managed_options opts = { 0 };
+  return opts;
+}
 
 void az_iot_certificate_provider_managed_deinit(az_iot_certificate_provider_managed* provider)
 {

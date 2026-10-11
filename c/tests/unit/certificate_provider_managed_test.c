@@ -265,15 +265,28 @@ static void managed_init_rejects_bad_args(void** state)
 /* Shared options over the test-local paths. */
 static az_iot_certificate_provider_managed_options test_options(void)
 {
-  az_iot_certificate_provider_managed_options opts = {
-    .bootstrap_cert_pem_path = BOOT_CRT,
-    .bootstrap_key_pem_path = BOOT_KEY,
-    .trusted_ca_pem_path = TRUST_CA,
-    .operational_key_pem_path = OP_KEY,
-    .operational_cert_pem_path = OP_CERT,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options opts
+      = az_iot_certificate_provider_managed_options_default();
+  opts.bootstrap_cert_pem_path = BOOT_CRT;
+  opts.bootstrap_key_pem_path = BOOT_KEY;
+  opts.trusted_ca_pem_path = TRUST_CA;
+  opts.operational_key_pem_path = OP_KEY;
+  opts.operational_cert_pem_path = OP_CERT;
   return opts;
+}
+
+static void managed_options_default_has_no_paths_and_no_rotation(void** state)
+{
+  (void)state;
+  az_iot_certificate_provider_managed_options opts
+      = az_iot_certificate_provider_managed_options_default();
+  assert_null(opts.bootstrap_cert_pem_path);
+  assert_null(opts.bootstrap_key_pem_path);
+  assert_null(opts.trusted_ca_pem_path);
+  assert_null(opts.operational_key_pem_path);
+  assert_null(opts.operational_cert_pem_path);
+  assert_int_equal(opts.key_type, AZ_IOT_MANAGED_KEY_EC_P256);
+  assert_false(opts.rotate_key_on_csr_request);
 }
 
 static void managed_load_rejects_null_arguments(void** state)
@@ -1167,6 +1180,39 @@ static void managed_csrs_use_the_operational_key_by_default(void** state)
   free(cert);
   EVP_PKEY_free(k1);
   EVP_PKEY_free(k2);
+  remove_test_files();
+}
+
+/* An oversized chain file is never served, so a rotation does not back it up
+ * (nor read it past the size bound) and still completes. */
+static void managed_rotation_does_not_back_up_an_oversized_chain(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = rotation_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  EVP_PKEY* csr_key = request_csr_key(&prov);
+
+  FILE* f = fopen(OP_CERT, "wb");
+  assert_non_null(f);
+  for (size_t i = 0; i < 65u * 1024u; ++i)
+  {
+    assert_int_not_equal(EOF, fputc('A', f));
+  }
+  assert_int_equal(0, fclose(f));
+
+  char* renewed = make_cert_base64(csr_key, 2);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, renewed));
+  assert_true(key_file_is(OP_KEY, csr_key));
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, renewed);
+  assert_int_equal(0, count_temp_files());
+
+  az_iot_certificate_provider_managed_deinit(&prov);
+  free(on_disk);
+  free(renewed);
+  EVP_PKEY_free(csr_key);
   remove_test_files();
 }
 
@@ -2086,8 +2132,10 @@ int main(void)
 #if defined(_WIN32)
     cmocka_unit_test(managed_written_files_have_an_owner_only_dacl),
 #endif
+    cmocka_unit_test(managed_options_default_has_no_paths_and_no_rotation),
     cmocka_unit_test(managed_csrs_use_the_operational_key_by_default),
     cmocka_unit_test(managed_each_csr_uses_a_new_key),
+    cmocka_unit_test(managed_rotation_does_not_back_up_an_oversized_chain),
     cmocka_unit_test(managed_a_chain_for_the_csr_key_rotates_the_key),
     cmocka_unit_test(managed_a_refused_chain_keeps_the_pair_and_the_pending_csr),
     cmocka_unit_test(managed_a_pending_key_does_not_survive_a_restart),

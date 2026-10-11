@@ -126,14 +126,14 @@ int main(void)
   az_iot_connection_client connection_client = { 0 };
   user_ctx.provider = &provider;
 
-  az_iot_certificate_provider_managed_options mopts = {
-    .bootstrap_cert_pem_path = config.cert,
-    .bootstrap_key_pem_path = config.key,
-    .trusted_ca_pem_path = config.ca,
-    .operational_key_pem_path = op_key,
-    .operational_cert_pem_path = op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options mopts
+      = az_iot_certificate_provider_managed_options_default();
+  mopts.bootstrap_cert_pem_path = config.cert;
+  mopts.bootstrap_key_pem_path = config.key;
+  mopts.trusted_ca_pem_path = config.ca;
+  mopts.operational_key_pem_path = op_key;
+  mopts.operational_cert_pem_path = op_cert;
+  mopts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&provider, &mopts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[hub_renew] managed provider init failed\n");

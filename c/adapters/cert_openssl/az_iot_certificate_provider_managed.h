@@ -72,9 +72,11 @@ extern "C"
     /* Operational private key. Loaded if the file holds a valid key, which is
      * then left as is (mode included). Otherwise -- missing, unreadable or
      * malformed -- a new key is generated and written here (unencrypted PEM,
-     * owner-only), replacing the file. Each rotation replaces the file with a
-     * new owner-only one holding the new key, so its previous mode or ACL is
-     * not kept. Required. */
+     * owner-only), replacing the file. Exception: while a stopped rotation
+     * cannot be recovered (see above), no key is generated and only the
+     * bootstrap identity is served. Each rotation replaces the file with a new
+     * owner-only one holding the new key, so its previous mode or ACL is not
+     * kept. Required. */
     const char* operational_key_pem_path; /* required */
     /* Where the issued operational certificate chain is persisted. Written by
      * store_issued_certificate(); read back on load() and on restart, and used
@@ -88,6 +90,12 @@ extern "C"
      * operational key, which is never replaced. */
     bool rotate_key_on_csr_request;
   } az_iot_certificate_provider_managed_options;
+
+  /* Returns an options struct with every field defaulted (paths NULL, EC P-256,
+   * no rotation). Set the required paths before
+   * az_iot_certificate_provider_managed_init(). */
+  az_iot_certificate_provider_managed_options az_iot_certificate_provider_managed_options_default(
+      void);
 
   /* Caller-owned managed certificate provider struct. Fields are INTERNAL. */
   typedef struct az_iot_certificate_provider_managed
