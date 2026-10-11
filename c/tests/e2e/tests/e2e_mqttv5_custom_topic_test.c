@@ -27,6 +27,7 @@
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
+#include "support/test_env.h"
 
 #define E2E_ROUTE_TIMEOUT_S 90
 #define E2E_ACK_TIMEOUT_S 30
@@ -72,8 +73,10 @@ static publish_record* new_record(fixture* fx)
  * cases then skip instead of failing when nothing arrives. */
 static bool routing_check_skipped(void)
 {
-  const char* skip_routing = getenv("AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING");
-  return skip_routing != NULL && skip_routing[0] != '\0' && strcmp(skip_routing, "0") != 0;
+  char* skip_routing = az_iot_test_env_dup("AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING");
+  const bool skipped = skip_routing != NULL && strcmp(skip_routing, "0") != 0;
+  free(skip_routing);
+  return skipped;
 }
 
 static void assert_routed(bool seen)
