@@ -1499,7 +1499,7 @@ static void drive_dps_csr_assignment(
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
   opts.certificate_provider = &prov->base;
-  opts.csr_payload_buffer = az_span_create(csr_buf, csr_buf_size);
+  opts.csr_payload_buffer = az_span_create(csr_buf, (int32_t)csr_buf_size);
   assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
 
   g_dps_op_cert_count = 0;
