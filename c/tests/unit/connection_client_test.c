@@ -2551,7 +2551,7 @@ static void a_credentials_response_with_a_malformed_topic_is_ignored(void** stat
   static const char* const k_bad_topics[] = {
     "$iothub/credentials/res/200x/?$rid=req-t", "$iothub/credentials/res/2000/?$rid=req-t",
     "$iothub/credentials/res//?$rid=req-t",     "$iothub/credentials/res/200?$rid=req-t",
-    "$iothub/credentials/res/200/?x$rid=req-t",
+    "$iothub/credentials/res/200/?x$rid=req-t", "$iothub/credentials/res/200/?a=1&&b=2",
   };
   const char* r200 = "{\"certificates\":[\"TEEF\"]}";
   for (size_t i = 0; i < sizeof(k_bad_topics) / sizeof(k_bad_topics[0]); ++i)
@@ -2563,10 +2563,10 @@ static void a_credentials_response_with_a_malformed_topic_is_ignored(void** stat
   assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
   assert_int_equal(g_csr_prov.store_calls, 0);
 
-  /* $rid after another property is still found. */
+  /* $rid after other, possibly empty, properties is still found. */
   assert_true(az_iot_mock_mqtt_client_inject_message(
       m,
-      "$iothub/credentials/res/200/?a=1&$rid=req-t",
+      "$iothub/credentials/res/200/?a=1&&$rid=req-t",
       (const uint8_t*)r200,
       strlen(r200),
       AZ_IOT_MQTT_QOS_1));

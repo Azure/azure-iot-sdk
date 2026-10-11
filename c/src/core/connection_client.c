@@ -8813,16 +8813,17 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
   p += 2;
   const char* rid = NULL;
-  for (const char* prop = p; prop != NULL; prop = strchr(prop, '&'))
+  for (const char* prop = p; prop != NULL;)
   {
-    if (*prop == '&')
-    {
-      ++prop;
-    }
     if (strncmp(prop, "$rid=", 5) == 0)
     {
       rid = prop + 5;
       break;
+    }
+    prop = strchr(prop, '&');
+    if (prop != NULL)
+    {
+      ++prop; /* past the separator; empty properties are skipped in turn */
     }
   }
   if (!rid)
