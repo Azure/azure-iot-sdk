@@ -67,6 +67,10 @@ extern "C"
   /**
    * @brief Attach to @p conn, which need not be open yet.
    *
+   * @param client Not initialized, or deinitialized: initializing a live instance again leaks its
+   *               hold on the mqttv5 profile.
+   * @param conn   Must outlive @p client.
+   *
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p conn is NULL.
    * @retval AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH @p conn is already known to be mqttv3, or an

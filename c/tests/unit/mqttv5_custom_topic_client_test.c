@@ -620,6 +620,21 @@ static void format_topic_reports_a_short_buffer(void** state)
       az_iot_mqttv5_custom_topic_client_format_topic(&test->custom, template_, out, needed, NULL),
       AZ_IOT_OK);
   assert_string_equal(out, "c/" DEVICE_ID);
+
+  /* A literal run longer than the buffer fails before it is appended, before or after a variable.
+   */
+  static const char* const too_long[]
+      = { "0123456789abcdef/{deviceId}", "{deviceId}/0123456789abcdef" };
+  for (size_t i = 0; i < ARRAY_SIZE(too_long); ++i)
+  {
+    char small[16];
+    memset(small, 'x', sizeof(small));
+    assert_int_equal(
+        az_iot_mqttv5_custom_topic_client_format_topic(
+            &test->custom, too_long[i], small, sizeof(small), NULL),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_string_equal(small, "");
+  }
 }
 
 static void format_topic_rejects_invalid_arguments(void** state)

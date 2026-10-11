@@ -47,6 +47,27 @@ void az_iot_mqttv5_custom_topic_client_deinit(az_iot_mqttv5_custom_topic_client*
   }
 }
 
+/**
+ * @brief Append the literal @p length bytes at @p literal.
+ *
+ * @return false, appending nothing, when they cannot fit @p out_size (at most INT32_MAX), which
+ *         also keeps @p length within the int32_t az_span_create() takes.
+ */
+static bool append_literal(
+    az_iot_span_writer* writer,
+    const char* literal,
+    size_t length,
+    size_t out_size)
+{
+  if (length >= out_size)
+  {
+    return false;
+  }
+  az_iot_span_writer_append_span(
+      writer, az_span_create((uint8_t*)(uintptr_t)literal, (int32_t)length));
+  return true;
+}
+
 AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_format_topic(
     const az_iot_mqttv5_custom_topic_client* client,
     const char* topic_template,
@@ -85,8 +106,11 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_format_topic(
   {
     if (*cursor == '{' && strncmp(cursor, variable, variable_len) == 0)
     {
-      az_iot_span_writer_append_span(
-          &writer, az_span_create((uint8_t*)(uintptr_t)literal, (int32_t)(cursor - literal)));
+      if (!append_literal(&writer, literal, (size_t)(cursor - literal), out_size))
+      {
+        out[0] = '\0';
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
       az_iot_span_writer_append_str(&writer, device_id);
       cursor += variable_len;
       literal = cursor;
@@ -101,8 +125,11 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_format_topic(
       ++cursor;
     }
   }
-  az_iot_span_writer_append_span(
-      &writer, az_span_create((uint8_t*)(uintptr_t)literal, (int32_t)(cursor - literal)));
+  if (!append_literal(&writer, literal, (size_t)(cursor - literal), out_size))
+  {
+    out[0] = '\0';
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   return az_iot_span_writer_end_str(&writer, out_len);
 }
 
