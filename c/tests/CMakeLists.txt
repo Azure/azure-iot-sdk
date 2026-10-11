@@ -188,6 +188,10 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_telemetry_client unit/mqttv5_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv5_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv5)
+az_iot_add_cmocka_test(
+    az_iot_tests_mqttv5_custom_topic_client unit/mqttv5_custom_topic_client_test.c)
+target_link_libraries(
+    az_iot_tests_mqttv5_custom_topic_client PRIVATE az_iot_test_support az_iot_mqttv5)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)

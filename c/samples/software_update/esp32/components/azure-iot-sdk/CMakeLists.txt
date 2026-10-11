@@ -50,6 +50,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_client.c"
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_codec.c"
         "${AZ_IOT_ROOT}/src/mqttv5/twin_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/custom_topic_client.c"
     INCLUDE_DIRS
         "${AZ_IOT_ROOT}/inc"
     PRIV_INCLUDE_DIRS
