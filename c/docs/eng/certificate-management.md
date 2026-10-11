@@ -102,8 +102,13 @@ Providers in the tree:
 - `az_iot_certificate_provider_pem` (core): a static loader. No CSR support.
 - `az_iot_certificate_provider_managed` (optional OpenSSL 3.0+ adapter,
   [`adapters/cert_openssl/`](../../adapters/cert_openssl/az_iot_certificate_provider_managed.h)):
-  bootstrap cert and key, optional trusted CA, operational key and operational cert paths, and
-  a key type. It generates the operational key and CSR, and persists the issued chain.
+  bootstrap cert and key, optional trusted CA, operational key and operational cert paths, a
+  key type and `rotate_key_on_csr_request`. It generates the operational key and CSR, and
+  persists the issued chain. By default each CSR is over the operational key. With
+  `rotate_key_on_csr_request`, each CSR is over a new key held in memory; storing a chain for
+  it replaces the key and chain on disk together, and a failed store keeps the previous pair.
+  `init()` finishes or undoes a replacement a stopped process left half-done, whatever the
+  option. A pending key does not survive `deinit()` or a restart.
 
 ### Connection client
 
