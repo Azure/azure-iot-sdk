@@ -107,12 +107,12 @@ extern "C"
     char* operational_key_path;
     char* operational_cert_path;
     void* operational_key; /* EVP_PKEY* (opaque) */
-    void* pending_key; /* EVP_PKEY* of the last CSR, awaiting its chain (opaque) */
-    char* served_cert_path; /* previous chain kept aside after a failed rollback; NULL normally */
     int key_type;
-    bool rotate_key_on_csr_request;
     bool has_operational; /* issued cert present on disk */
     bool loaded;
+    void* pending_key; /* EVP_PKEY* of the last CSR, awaiting its chain (opaque) */
+    char* served_cert_path; /* previous chain kept aside after a failed rollback; NULL normally */
+    bool rotate_key_on_csr_request;
   } az_iot_certificate_provider_managed;
 
   /* Initialize the managed provider. Loads or generates the operational key and

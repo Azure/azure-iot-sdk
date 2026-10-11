@@ -1236,6 +1236,15 @@ static az_iot_result managed_store(
         {
           m->has_operational = false; /* there was no previous chain to keep */
         }
+        /* A failed rename normally leaves the key file as it was; serve the
+         * operational identity only if it still holds the current key. */
+        EVP_PKEY* on_disk = load_key_file(m->operational_key_path);
+        if (!on_disk || EVP_PKEY_eq(on_disk, (EVP_PKEY*)m->operational_key) != 1)
+        {
+          m->has_operational = false;
+        }
+        EVP_PKEY_free(on_disk);
+        ERR_clear_error();
       }
     }
     discard_file(key_tmp);
