@@ -558,7 +558,8 @@ flowchart TD
     L --> K
     K -->|"200 issued, complete JSON"| M["store_issued_certificate, then<br/>CSR_ISSUED callback (chain, store_status)"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
-    M --> O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status OK| O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status error| P["Previous certificate stays<br/>in use"]
 ```
 
 Renewal topics (MQTTv3 hub):

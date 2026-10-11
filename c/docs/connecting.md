@@ -214,8 +214,9 @@ Operational certificates:
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
   `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
   at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
-  the callback, which reports the result in `store_status`; the session is kept, and `close()`
-  then `open()` connects with it. See
+  the callback, which reports the result in `store_status`. The session is kept either way. If
+  the store succeeded, `close()` then `open()` connects with the renewed chain; if it failed, the
+  provider keeps the previous credential and the next connect uses it. See
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.

@@ -1380,6 +1380,7 @@ typedef struct fake_csr_provider
   int release_csr_calls;
   char csr_subject[64];
   const char* csr_override; /* get_csr() returns this CSR when set */
+  bool csr_null; /* get_csr() returns AZ_IOT_OK with no CSR */
 } fake_csr_provider;
 
 static az_iot_result fake_csr_load(
@@ -1420,7 +1421,7 @@ static az_iot_result fake_get_csr(
   {
     return f->get_csr_rc;
   }
-  out->csr_base64 = f->csr_override ? f->csr_override : "TESTCSRBASE64==";
+  out->csr_base64 = f->csr_null ? NULL : (f->csr_override ? f->csr_override : "TESTCSRBASE64==");
   return AZ_IOT_OK;
 }
 static void fake_release_csr(
@@ -1554,6 +1555,46 @@ static void dps_store_failure_still_delivers_the_chain_with_the_error(void** sta
   assert_int_equal(
       az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_FAULTED);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+  az_iot_connection_client_deinit(&client);
+}
+
+/* get_csr() returning AZ_IOT_OK without a CSR fails the registration, and
+ * what it returned is still released. */
+static void dps_a_successful_get_csr_without_a_csr_is_released(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  prov.csr_null = true;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  az_iot_connection_client_options opts = { 0 };
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  opts.dps.request_operational_certificate = true;
+  opts.client_id = "ut-device";
+  opts.certificate_provider = &prov.base;
+  opts.csr_payload_buffer = az_span_create(csr_buf, (int32_t)sizeof(csr_buf));
+  az_iot_connection_client client;
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(dps);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&client, 0);
+  az_iot_mqtt_event suback;
+  memset(&suback, 0, sizeof(suback));
+  suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  suback.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(dps, &suback));
+  (void)az_iot_connection_client_do_work(&client, 0);
+
+  assert_int_equal(prov.get_csr_calls, 1);
+  assert_int_equal(prov.release_csr_calls, 1);
+  assert_int_equal(prov.store_calls, 0);
   assert_null(az_iot_connection_client_get_iothub_address(&client));
   az_iot_connection_client_deinit(&client);
 }
@@ -3205,6 +3246,7 @@ int main(void)
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
+    cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
     cmocka_unit_test(dps_a_rejected_assignment_leaves_the_profile_alone),
     cmocka_unit_test(open_rejects_operational_cert_without_release_or_store),

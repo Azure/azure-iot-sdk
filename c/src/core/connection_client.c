@@ -2513,7 +2513,11 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
       if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
       {
         AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
-        csr_result = (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
+        if (csr_result == AZ_IOT_OK)
+        {
+          provider->vtable->release_csr(provider, &csr);
+          csr_result = AZ_IOT_ERR_INTERNAL;
+        }
         stage_local_error(
             c, AZ_IOT_CONN_SCOPE_DPS, csr_result, "certificate provider get_csr() failed");
         return csr_result;
