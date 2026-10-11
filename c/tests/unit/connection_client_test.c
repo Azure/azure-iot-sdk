@@ -2515,6 +2515,44 @@ static void a_credentials_response_for_a_different_rid_is_ignored(void** state)
   assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
 }
 
+/* Only "<3-digit status>/?" followed by $rid as a property is a response to
+ * this request; any other shape is ignored, so nothing is stored. */
+static void a_credentials_response_with_a_malformed_topic_is_ignored(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-t", NULL, on_csr_evt, &tc), AZ_IOT_OK);
+
+  static const char* const k_bad_topics[] = {
+    "$iothub/credentials/res/200x/?$rid=req-t", "$iothub/credentials/res/2000/?$rid=req-t",
+    "$iothub/credentials/res//?$rid=req-t",     "$iothub/credentials/res/200?$rid=req-t",
+    "$iothub/credentials/res/200/?x$rid=req-t",
+  };
+  const char* r200 = "{\"certificates\":[\"TEEF\"]}";
+  for (size_t i = 0; i < sizeof(k_bad_topics) / sizeof(k_bad_topics[0]); ++i)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_message(
+        m, k_bad_topics[i], (const uint8_t*)r200, strlen(r200), AZ_IOT_MQTT_QOS_1));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
+  assert_int_equal(g_csr_prov.store_calls, 0);
+
+  /* $rid after another property is still found. */
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/200/?a=1&$rid=req-t",
+      (const uint8_t*)r200,
+      strlen(r200),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.issued, 1);
+  assert_int_equal(g_csr_prov.store_calls, 1);
+}
+
 static void a_400_reports_the_service_code(void** state)
 {
   fixture* fx = *state;
@@ -3174,6 +3212,8 @@ int main(void)
         send_csr_emits_the_replace_field_only_when_supplied, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         a_credentials_response_for_a_different_rid_is_ignored, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_credentials_response_with_a_malformed_topic_is_ignored, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_400_reports_the_service_code, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_412_reports_the_service_code, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_429_surfaces_the_retry_after_hint, setup_csr, teardown),

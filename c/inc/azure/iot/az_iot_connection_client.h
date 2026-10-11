@@ -1058,11 +1058,11 @@ extern "C"
 
   /**
    * @brief Fired when DPS issues an operational certificate (D4), after the
-   * chain was stored in the certificate provider. Optional.
+   * attempt to store the chain in the certificate provider. Optional.
    *
    * @param issued The chain; valid only during the callback.
-   * @param store_result Result of store_issued_certificate(). On failure the
-   * registration fails.
+   * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
+   * chain is stored. On failure the registration fails.
    */
   typedef void (*az_iot_operational_cert_callback)(
       const az_iot_issued_certificate* issued,

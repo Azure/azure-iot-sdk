@@ -8787,20 +8787,40 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  /* Parse the status code and $rid from the topic. */
+  /* Parse "<status>/?<properties>" after the prefix: a 3-digit status, then
+   * $rid as one of the '&'-separated properties. Anything else is not a
+   * response to this client's request. */
   const char* p = msg->topic + (sizeof(CSR_RES_PREFIX) - 1);
   int status = 0;
-  while (*p >= '0' && *p <= '9')
+  int digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 3)
   {
     status = status * 10 + (*p - '0');
     ++p;
+    ++digits;
   }
-  const char* rid = strstr(p, "$rid=");
+  if (digits != 3 || p[0] != '/' || p[1] != '?')
+  {
+    return;
+  }
+  p += 2;
+  const char* rid = NULL;
+  for (const char* prop = p; prop != NULL; prop = strchr(prop, '&'))
+  {
+    if (*prop == '&')
+    {
+      ++prop;
+    }
+    if (strncmp(prop, "$rid=", 5) == 0)
+    {
+      rid = prop + 5;
+      break;
+    }
+  }
   if (!rid)
   {
     return;
   }
-  rid += 5;
   size_t rid_len = strcspn(rid, "&");
   if (rid_len != strlen(c->csr_op.request_id) || strncmp(rid, c->csr_op.request_id, rid_len) != 0)
   {
