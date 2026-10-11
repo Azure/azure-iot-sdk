@@ -9,7 +9,9 @@
  * private key as a PKCS#8 PEM so the (OpenSSL-based) Paho TLS layer can load
  * it. Each call mints a fresh key + CSR, which keeps the sample free of PEM->CNG
  * key import. The key is written to key_path + SAMPLE_CSR_PENDING_KEY_SUFFIX;
- * the provider moves it into place once its chain is stored.
+ * the provider moves it into place once its chain is stored. Not for
+ * send_csr() resubmission of an earlier request id: that makes a new key, and
+ * this sample does not check that a returned chain certifies it.
  *
  * Link: crypt32.lib, ncrypt.lib. */
 #ifndef _CRT_SECURE_NO_WARNINGS

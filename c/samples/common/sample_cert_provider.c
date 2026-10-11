@@ -253,8 +253,13 @@ static az_iot_result commit_chain(sample_cert_provider* p, const char* tmp)
   char* pending = path_with_suffix(p->operational_key_path, SAMPLE_CSR_PENDING_KEY_SUFFIX);
   char* previous = path_with_suffix(p->operational_key_path, ".old");
   az_iot_result rc = (pending && previous) ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
+  errno = 0;
   FILE* staged = rc == AZ_IOT_OK ? fopen(pending, "rb") : NULL;
-  if (staged)
+  if (rc == AZ_IOT_OK && !staged && errno != ENOENT)
+  {
+    rc = AZ_IOT_ERR_INTERNAL; /* a staged key exists but cannot be read */
+  }
+  else if (staged)
   {
     (void)fclose(staged);
     errno = 0;
