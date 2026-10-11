@@ -1,0 +1,121 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# C e2e tests on an mqttv5 IoT Hub.
+#
+# Runs against the shared, long-lived mqttv5 environment (hub, DPS linked through
+# an ADR namespace); nothing is provisioned per run. Each job issues its own
+# device certificate from the DPS X.509 enrollment group's CA
+# (c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED) and reads the events
+# endpoint through its own consumer group. Add a job per mqttv5 client.
+#
+#   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
+#            E2E_MQTTV5_SHARED_DPS_HOST, plus those of
+#            ci-c-e2e-mqttv5-adr-namespace.yml
+#   secrets: E2E_MQTTV5_SHARED_GROUP_CA, E2E_MQTTV5_SHARED_IOTHUB_CS,
+#            E2E_MQTTV5_SHARED_EVENTHUB_CS, E2E_MQTTV5_SHARED_SAS_GROUP_KEY,
+#            AZURE_CLIENT_ID, AZURE_TENANT_ID
+#
+# Pull requests from forks get no secrets, so they skip.
+
+name: ci-c-e2e-mqttv5
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'c/src/core/**'
+      - 'c/src/mqttv5/**'
+      - 'c/inc/azure/iot/*.h'
+      - 'c/inc/azure/iot/mqttv5/**'
+      - 'c/adapters/paho/**'
+      - 'c/tests/e2e/**'
+      - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
+      - '.github/workflows/ci-c-e2e-mqttv5.yml'
+      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
+  schedule:
+    - cron: '30 11 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The namespace can drop out of Azure; DPS registrations fail until it is back.
+  adr-namespace:
+    name: ADR namespace
+    if: >-
+      ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) }}
+    permissions:
+      contents: read
+      id-token: write
+    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  custom-topics:
+    name: custom topics / linux
+    needs: adr-namespace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custom_topic
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_MQTTV5_SHARED_SAS_GROUP_KEY }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-ct-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_custom_topic `
+            --verbose --no-tests=error --timeout 900

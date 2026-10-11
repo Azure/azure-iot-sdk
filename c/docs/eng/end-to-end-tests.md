@@ -125,6 +125,13 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
 
+**mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
+
+- [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
+  hub's custom topic templates `e2e/{deviceId}/#` and `e2e/shared/#`. Telemetry as a baseline;
+  QoS 1 and QoS 0 publishes to those templates reach the events endpoint; a topic no template
+  allows and another device's id are refused without disconnecting. `ci-c-e2e-mqttv5`.
+
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
 > The device uses Paho's own independent TLS stack, so the two never collide.
@@ -248,6 +255,14 @@ and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_
 on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
 resource group once: those survive the namespace, so the job creates none and needs no role
 assignment write unless the namespace identity changes.
+
+[`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
+that environment, one job per client, after the namespace job. Each job issues a device with
+`e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
+reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS`, `_EVENTHUB_CS` (`service` policy) and
+`_SAS_GROUP_KEY`, and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
+`_DPS_HOST`. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
+workflow; nightly; manual. Pull requests from forks skip.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
