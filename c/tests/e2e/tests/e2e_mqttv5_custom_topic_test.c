@@ -88,6 +88,17 @@ static void assert_routed(bool seen)
   assert_true(seen);
 }
 
+/* A refused publish: PUBACK 0x87, or AZ_IOT_ERR_MQTT from an adapter that does not report the code.
+ */
+static void assert_refused(const publish_record* record)
+{
+  assert_true(record->done);
+  if (record->status != AZ_IOT_ERR_PUBLISH_REFUSED && record->status != AZ_IOT_ERR_MQTT)
+  {
+    fail_msg("expected a refusal, got %s", az_iot_result_to_string(record->status));
+  }
+}
+
 static void pump(fixture* fx) { e2e_device_do_work(&fx->dev, E2E_PUMP_MS); }
 
 static bool wait_connected(fixture* fx)
@@ -312,8 +323,6 @@ static void qos0_to_a_shared_template_is_routed(void** state)
   assert_routed(seen);
 }
 
-/* The hub refuses the PUBACK (0x87). Adapters that do not report reason codes give
- * AZ_IOT_ERR_MQTT, so only the failure is asserted. */
 static void a_topic_no_template_allows_is_refused(void** state)
 {
   publish_record* record;
@@ -323,8 +332,7 @@ static void a_topic_no_template_allows_is_refused(void** state)
       AZ_IOT_MQTT_QOS_1,
       E2E_NOT_ROUTED_WAIT_S,
       &record);
-  assert_true(record->done);
-  assert_int_not_equal(record->status, AZ_IOT_OK);
+  assert_refused(record);
   assert_false(seen);
 }
 
@@ -337,8 +345,7 @@ static void another_device_id_is_refused(void** state)
       AZ_IOT_MQTT_QOS_1,
       E2E_NOT_ROUTED_WAIT_S,
       &record);
-  assert_true(record->done);
-  assert_int_not_equal(record->status, AZ_IOT_OK);
+  assert_refused(record);
   assert_false(seen);
 }
 
