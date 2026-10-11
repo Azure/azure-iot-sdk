@@ -893,6 +893,83 @@ static void managed_a_persisted_chain_with_trailing_whitespace_is_used(void** st
   remove_test_files();
 }
 
+/* Exactly @p total bytes (heap; caller frees): the PEM block of @p cert_b64,
+ * then newlines. */
+static char* pem_padded_to(const char* cert_b64, size_t total)
+{
+  char* out = malloc(total + 1);
+  assert_non_null(out);
+  size_t n = 0;
+  static const char begin[] = "-----BEGIN CERTIFICATE-----\n";
+  static const char end[] = "\n-----END CERTIFICATE-----\n";
+  memcpy(out, begin, sizeof(begin) - 1);
+  n += sizeof(begin) - 1;
+  size_t len = strlen(cert_b64);
+  for (size_t off = 0; off < len; off += 64)
+  {
+    size_t chunk = len - off < 64 ? len - off : 64;
+    memcpy(out + n, cert_b64 + off, chunk);
+    n += chunk;
+    if (off + chunk < len)
+    {
+      out[n++] = '\n';
+    }
+  }
+  memcpy(out + n, end, sizeof(end) - 1);
+  n += sizeof(end) - 1;
+  assert_true(n <= total);
+  memset(out + n, '\n', total - n);
+  out[total] = '\0';
+  return out;
+}
+
+/* The 64 KiB bound is inclusive, at init and at store: exactly 64 KiB is
+ * used, one byte more is not. */
+static void managed_the_chain_size_bound_is_exactly_64_kib(void** state)
+{
+  (void)state;
+  const size_t limit = 64u * 1024u;
+  az_iot_certificate_provider_managed_options opts = test_options();
+  for (size_t extra = 0; extra <= 1; ++extra)
+  {
+    remove_test_files();
+    az_iot_certificate_provider_managed prov;
+    assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+    char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+    char* pem = pem_padded_to(good, limit + extra);
+
+    /* Store: one already-PEM entry decoding to exactly limit + extra bytes. */
+    size_t b64_cap = ((limit + extra + 2) / 3) * 4 + 1;
+    char* entry = malloc(b64_cap);
+    assert_non_null(entry);
+    int b64_len
+        = EVP_EncodeBlock((unsigned char*)entry, (const unsigned char*)pem, (int)(limit + extra));
+    assert_true(b64_len > 0);
+    entry[b64_len] = '\0';
+    az_span chain[1] = { az_span_create_from_str(entry) };
+    az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+    assert_int_equal(
+        extra == 0 ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG,
+        prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+    az_iot_certificate_provider_managed_deinit(&prov);
+
+    /* Init: the same bytes as the persisted file. */
+    FILE* f = fopen(OP_CERT, "wb");
+    assert_non_null(f);
+    assert_int_equal(limit + extra, fwrite(pem, 1, limit + extra, f));
+    assert_int_equal(0, fclose(f));
+    az_iot_certificate_provider_managed prov2;
+    assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+    assert_int_equal(extra == 0, prov2.has_operational);
+    az_iot_certificate_provider_managed_deinit(&prov2);
+
+    free(entry);
+    free(pem);
+    free(good);
+  }
+  remove_test_files();
+}
+
 /* A persisted chain larger than the provider reads back is not used. */
 static void managed_an_oversized_persisted_chain_is_not_used(void** state)
 {
@@ -1309,6 +1386,7 @@ int main(void)
     cmocka_unit_test(managed_a_certificate_with_trailing_bytes_is_refused),
     cmocka_unit_test(managed_a_persisted_chain_with_trailing_whitespace_is_used),
     cmocka_unit_test(managed_an_oversized_persisted_chain_is_not_used),
+    cmocka_unit_test(managed_the_chain_size_bound_is_exactly_64_kib),
     cmocka_unit_test(managed_store_refuses_an_oversized_chain),
     cmocka_unit_test(managed_store_refuses_an_oversized_entry_before_decoding),
 #if defined(_WIN32)
