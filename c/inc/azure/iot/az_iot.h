@@ -24,6 +24,7 @@
 #include "mqttv5/az_iot_direct_method_client.h"
 #include "mqttv3/az_iot_twin_client.h"
 #include "mqttv5/az_iot_twin_client.h"
+#include "mqttv5/az_iot_custom_topic_client.h"
 #include "mqttv3/az_iot_file_upload_client.h"
 
 #endif /* AZ_IOT_H */
