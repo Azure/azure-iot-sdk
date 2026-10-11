@@ -214,6 +214,8 @@ int main(void)
           printf("Published to '%s'.\n", topic);
           rc = 0;
         }
+        /* Needs an MQTT adapter that reports PUBACK reason codes. The Paho adapter does not yet, so
+         * there a refusal arrives as AZ_IOT_ERR_MQTT below. */
         else if (user_ctx.send_done && user_ctx.send_status == AZ_IOT_ERR_PUBLISH_REFUSED)
         {
           printf(
