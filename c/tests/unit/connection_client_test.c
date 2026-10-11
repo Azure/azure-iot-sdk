@@ -2908,6 +2908,71 @@ static void a_dps_session_without_a_certificate_provider_is_refused(void** state
   az_iot_connection_client_deinit(&client);
 }
 
+/* A provisioning session a feature client starts without open() only connects;
+ * it never registers, so no CSR is made. open() would then register on it, and
+ * is refused first without the release_csr and store hooks. */
+static void a_dps_session_rejects_operational_cert_without_release_or_store(void** state)
+{
+  (void)state;
+  static const az_iot_certificate_provider_vtable no_store = {
+    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+    .load = fake_csr_load,
+    .release = fake_csr_release,
+    .deinit = fake_csr_destroy,
+    .get_csr = fake_get_csr,
+    .release_csr = fake_release_csr,
+  };
+  static const az_iot_certificate_provider_vtable no_release = {
+    .version = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION,
+    .load = fake_csr_load,
+    .release = fake_csr_release,
+    .deinit = fake_csr_destroy,
+    .get_csr = fake_get_csr,
+    .store_issued_certificate = fake_store,
+  };
+  const az_iot_certificate_provider_vtable* vtables[] = { &no_store, &no_release };
+  for (size_t i = 0; i < sizeof(vtables) / sizeof(vtables[0]); ++i)
+  {
+    fake_csr_provider prov = { 0 };
+    prov.base.vtable = vtables[i];
+    uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+    az_iot_connection_client_options opts = { 0 };
+    opts.client_id = "ut-device";
+    opts.dps.id_scope = "0ne00000000";
+    opts.dps.registration_id = "ut-device";
+    opts.dps.request_operational_certificate = true;
+    opts.certificate_provider = &prov.base;
+    opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
+    az_iot_connection_client client;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+    az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_non_null(factory);
+    assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client__dps_user_acquire(&client), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client__dps_session_ensure(&client), AZ_IOT_ERR_BUSY);
+    az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(factory);
+    assert_non_null(dps);
+    assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(&client, 0);
+    az_iot_mqtt_event suback;
+    memset(&suback, 0, sizeof(suback));
+    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+    suback.status = AZ_IOT_OK;
+    assert_true(az_iot_mock_mqtt_client_inject_event(dps, &suback));
+    (void)az_iot_connection_client_do_work(&client, 0);
+    assert_int_equal(
+        az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+        AZ_IOT_CONN_STATE_CONNECTED);
+    /* open() would register on this session: refused first. */
+    assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_ERR_NOT_SUPPORTED);
+    (void)az_iot_connection_client_do_work(&client, 0);
+    assert_int_equal(prov.get_csr_calls, 0);
+    assert_int_equal(az_iot_mock_mqtt_client_count_of(dps, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+    az_iot_connection_client__dps_user_release(&client);
+    az_iot_connection_client_deinit(&client);
+  }
+}
+
 /* A provider that cannot load an identity fails the attempt: previously the
  * client connected without TLS. */
 static void a_failed_load_fails_the_connect_instead_of_going_plaintext(void** state)
@@ -3292,6 +3357,7 @@ int main(void)
     cmocka_unit_test(cert_util_an_unclosed_chain_array_is_a_protocol_error),
     cmocka_unit_test(open_without_a_certificate_provider_is_refused),
     cmocka_unit_test(a_dps_session_without_a_certificate_provider_is_refused),
+    cmocka_unit_test(a_dps_session_rejects_operational_cert_without_release_or_store),
     cmocka_unit_test(a_failed_load_fails_the_connect_instead_of_going_plaintext),
     cmocka_unit_test(a_provider_that_stops_loading_fails_the_reconnect),
     cmocka_unit_test(every_failed_hub_setup_is_reported_with_its_step),
