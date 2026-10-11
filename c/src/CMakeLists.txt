@@ -81,6 +81,7 @@ add_library(az_iot_mqttv5
     mqttv5/direct_method_client.c
     mqttv5/direct_method_codec.c
     mqttv5/twin_client.c
+    mqttv5/custom_topic_client.c
 )
 add_library(azure::iot::mqttv5 ALIAS az_iot_mqttv5)
 # mqttv5's own internal headers live under mqttv5/internal/; core's are reached

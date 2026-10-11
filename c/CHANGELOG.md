@@ -5,6 +5,11 @@
 ### Features Added
 
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
+- mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
+  templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
+  `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
+  Topics the hub would refuse are rejected locally. Publish only. Sample:
+  [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
