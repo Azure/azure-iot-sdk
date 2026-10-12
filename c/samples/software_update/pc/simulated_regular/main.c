@@ -249,8 +249,11 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
       break;
     case AZ_IOT_SU_EVENT_UPDATE_DEFERRED:
-      /* The current workflow finishes first; a later update check offers it again. */
-      printf("New update deferred until the current one ends.\n");
+      /* A later update check offers it again. Raised in Idle, the last apply
+       * asked for a reboot: the deferral lasts until the reboot. */
+      printf(
+          "New update deferred until %s.\n",
+          event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
       break;
   }
 }
