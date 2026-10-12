@@ -1,7 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using System.Security.Cryptography.X509Certificates;
 
@@ -10,7 +10,7 @@ namespace SetupSampleDevice
     public class SampleConstants
     {
         // Every sample resolves the credential files against the samples root rather than the working directory, so the
-        // files that SetupSampleDevice saves are the same ones the other samples load, regardless of how each is launched.
+        // files that SetupSampleDevice saves are the same ones the other samples load, however each is launched.
         private static readonly string outputPath = FindSamplesRoot();
 
         public static readonly string CertificatePath = outputPath + "certificate.cer";

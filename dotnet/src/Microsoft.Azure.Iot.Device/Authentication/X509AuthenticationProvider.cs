@@ -1,16 +1,18 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Mqtt;
 using System;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
-namespace Microsoft.Azure.Iot.Device
+namespace Microsoft.Azure.Iot.Device.Authentication
 {
     /// <summary>
     /// The device authentication for using an X509 certificate object.
     /// </summary>
-    public class X509AuthenticationProvider
+    public class X509AuthenticationProvider : AuthenticationProvider
     {
         /// <summary>
         /// Creates an instance of this class.
@@ -47,14 +49,12 @@ namespace Microsoft.Azure.Iot.Device
             X509Certificate2 clientCertificate,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
             ClientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
-            RemoteCertificateValidationCallback = remoteCertificateValidationCallback;
-            LocalCertificateSelectionCallback = localCertificateSelectionCallback;
         }
 
         /// <summary>
@@ -67,19 +67,15 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        /// <summary>
-        /// An optional callback for custom validation of the server (remote) certificate during the TLS handshake.
-        /// When null, the platform's default validation is used.
-        /// </summary>
-        public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; }
+        public override MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
+        {
+            base.AddAuthentication(mqttConnect, endpointKind);
+            mqttConnect.Password = Array.Empty<byte>();
+            mqttConnect.ClientCertificate = ClientCertificate;
+            return mqttConnect;
+        }
 
-        /// <summary>
-        /// An optional callback for selecting which client certificate to present during the TLS handshake.
-        /// When null, <see cref="ClientCertificate"/> is presented.
-        /// </summary>
-        public LocalCertificateSelectionCallback? LocalCertificateSelectionCallback { get; }
-
-        internal string GetRegistrationId()
+        public override string GetRegistrationId()
         {
             return ClientCertificate.GetNameInfo(X509NameType.DnsName, false);
         }

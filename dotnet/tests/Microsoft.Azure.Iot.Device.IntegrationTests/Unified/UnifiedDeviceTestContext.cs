@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Devices.Provisioning.Service;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 

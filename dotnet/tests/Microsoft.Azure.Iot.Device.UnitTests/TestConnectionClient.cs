@@ -21,7 +21,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>The CONNECTs that this client was asked to patch before they were sent to IoT hub.</summary>
         public List<MqttConnect> PatchedConnects { get; } = new();
 
-        public override MqttConnect MqttConnectOverride(MqttConnect connect)
+        public override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             lock (PatchedConnects)
             {

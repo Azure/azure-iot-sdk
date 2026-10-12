@@ -12,6 +12,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
