@@ -768,10 +768,6 @@ extern "C"
       /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
        */
       bool checkpoint_superseded;
-      /** install_fn was called in the current workflow. */
-      bool install_called;
-      /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
-      bool reboot_owed;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
        * is a redelivery and is ignored. Retry timestamp and manifest CRC are
@@ -883,6 +879,10 @@ extern "C"
       bool pending_fetch_paced;
       /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
+      /** install_fn was called in the current workflow. */
+      bool install_called;
+      /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
+      bool reboot_owed;
     } _internal;
   } az_iot_su_client;
 
