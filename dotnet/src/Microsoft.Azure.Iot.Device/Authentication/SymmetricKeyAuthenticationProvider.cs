@@ -30,16 +30,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public override MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
         {
             base.AddAuthentication(mqttConnect, endpointKind);
-            mqttConnect.Password = GetSasToken(endpointKind);
+            mqttConnect.Password = GetSasToken(endpointKind, mqttConnect.HostName, mqttConnect.ClientId);
             return mqttConnect;
         }
 
-        public byte[] GetSasToken(ConnectionEndpoint endpointKind)
+        internal byte[] GetSasToken(ConnectionEndpoint endpointKind, string? iotHubHostName = null, string? deviceId = null)
         {
             string sasToken;
             if (endpointKind == ConnectionEndpoint.IotHub)
             {
-                sasToken = BuildSasToken();
+                // Note that hostname + device id may change over time, so cannot just take them in constructor
+                if (string.IsNullOrEmpty(iotHubHostName) || string.IsNullOrEmpty(deviceId))
+                {
+                    Trace.TraceError("Attempted to create an IoT Hub SAS token without a hub host name and device Id");
+                    return Array.Empty<byte>();
+                }
+
+                // Device-scoped token: no key name (skn) since the key is the device's own key
+                sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(iotHubHostName, "/devices/", deviceId), TimeSpan.FromHours(1)); //TODO configurable timespan
             }
             else if (endpointKind == ConnectionEndpoint.DeviceProvisioningService)
             {
@@ -51,7 +59,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                 return Array.Empty<byte>();
             }
 
-            return sasToken;
+            return Encoding.UTF8.GetBytes(sasToken);
         }
 
         public override string GetRegistrationId()

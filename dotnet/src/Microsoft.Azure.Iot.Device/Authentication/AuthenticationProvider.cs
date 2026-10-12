@@ -8,6 +8,7 @@ using System.Net.Security;
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
     //TODO document exactly which fields are expected to be provided here. For instance, deviceId is fill in for the user since it should always be the same
+    // TODO this folds nicely into making this interface generic enough to handle HTTP connections as well for file upload/provisioning over HTTP
     public abstract class AuthenticationProvider
     {
         //TODO track signed certificates in here somehow? SecureString stuff probably
