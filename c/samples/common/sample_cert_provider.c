@@ -137,8 +137,6 @@ static char* dup_str(const char* s)
   return out;
 }
 
-/* True only when the file holds a non-empty PEM certificate. A zero-length or
- * partial file (e.g. a crash mid-write) must not be taken for a usable identity. */
 static az_iot_result provider_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
