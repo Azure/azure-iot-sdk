@@ -261,9 +261,8 @@ assignment write unless the namespace identity changes.
 that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
 requests skip it (it logs in to Azure and runs the checked-out script) and rely on its hourly run. Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
-reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS`, `_EVENTHUB_CS` (`service` policy) and
-`_SAS_GROUP_KEY`, and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
-`_DPS_HOST`. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
+reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS` and `_EVENTHUB_CS` (`service` policy), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
+`_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow

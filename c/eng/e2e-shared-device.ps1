@@ -18,8 +18,9 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_ID_SCOPE        DPS ID scope
   E2E_SHARED_SAS_GROUP_KEY   primary key of the DPS symmetric-key enrollment group
 
--Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same five variables under that prefix, and
-optionally E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
+-Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same variables under that prefix except
+SAS_GROUP_KEY (mqttv5 hubs accept X.509 only; no SAS key is written), and optionally
+E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
@@ -44,7 +45,10 @@ Set-StrictMode -Version Latest
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { $Prefix }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
-$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') } else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+$Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
+$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+            elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
+            else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
@@ -114,11 +118,11 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
-        if ($Prefix -eq 'E2E_MQTTV5_SHARED' -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
+        if ($Mqttv5 -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
-        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
+        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY') }
     )
 }
 $OutDir = Split-Path -Parent $OutFile
