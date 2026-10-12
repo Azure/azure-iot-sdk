@@ -10,3 +10,8 @@ out/
 CMakeUserPresets.json
 compile_commands.json
 vcpkg_installed/
+
+# Left behind by the removed tests/manual mock scripts; .certs/ holds private keys.
+/tests/manual/.certs/
+/tests/manual/.env-mqttv5/
+/tests/manual/.client-env.ps1

@@ -43,7 +43,6 @@
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
 #include "internal/dispatch.h"
-#include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
@@ -129,7 +128,6 @@
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_MQTT_V3_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
-#define DPS_CONNECTION_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
@@ -2897,44 +2895,6 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
   }
 }
 
-/* Development bridge while the DPS api-version that carries connectionProfile
- * is not deployed. It applies only when the property is absent/null; an actual
- * wire value always wins, so enabling this cannot mask service rollout. */
-static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
-{
-  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
-
-  if (az_iot_env_read(DPS_CONNECTION_PROFILE_OVERRIDE_ENV, value, sizeof(value)) != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_DPS, "" DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (value[0] == '\0')
-  {
-    return AZ_IOT_OK;
-  }
-
-  if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
-      && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "%s must be \"classic\" or \"mqttV5\", not \"%s\"",
-        DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-        value);
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  AZ_IOT_LOG_WARNF(
-      AZ_IOT_LOG_COMPONENT_DPS,
-      "connectionProfile was absent/null; applying development override %s=%s",
-      DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-      value);
-  connection_profile_set(c, az_span_create_from_str(value));
-  return AZ_IOT_OK;
-}
-
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
@@ -2952,9 +2912,8 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
   az_iot_result r = dps_enter_registration_state(&jr, payload);
   if (r != AZ_IOT_OK)
   {
-    /* No registrationState at all: nothing to read, keep the default unless a
-     * development override was requested. */
-    return (r == AZ_IOT_ERR_NOT_FOUND) ? dps_apply_connection_profile_override(c) : r;
+    /* No registrationState at all: nothing to read, keep the default. */
+    return (r == AZ_IOT_ERR_NOT_FOUND) ? AZ_IOT_OK : r;
   }
 
   while (az_result_succeeded(az_json_reader_next_token(&jr))
@@ -2976,9 +2935,8 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
         connection_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
-      /* null (or any non-string) resolves to the MQTTv3 default unless the
-       * development bridge explicitly supplies the profile. */
-      return dps_apply_connection_profile_override(c);
+      /* null (or any non-string) resolves to the MQTTv3 default. */
+      return AZ_IOT_OK;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
@@ -2988,7 +2946,7 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
       }
     }
   }
-  return dps_apply_connection_profile_override(c);
+  return AZ_IOT_OK;
 }
 
 /* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
@@ -5858,108 +5816,6 @@ static void apply_deferred(az_iot_connection_client* c)
 }
 
 /* ------------------------------------------------------------------------- */
-/* MQTTv5 mock bypass (env-var-driven, for local dev/test only)            */
-/* ------------------------------------------------------------------------- */
-
-/* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
- * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
- * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development. */
-#define MQTT_V5_MOCK_ENDPOINT_ENV "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT"
-#define MQTT_V5_MOCK_DEVICE_ID_ENV "AZ_IOT_DEVICE_ID"
-/** @brief Capacity for the mock endpoint ("host:port"). */
-#define MQTT_V5_MOCK_ENDPOINT_BUF 256
-
-static bool mock_mqtt_v5_configured(void)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  /* Too long still counts as set: the bypass then rejects it. */
-  return az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || endpoint[0] != '\0';
-}
-
-/* Parse "host:port" into host string and port. Writes host into out_host
- * (up to cap), returns the port, or 0 when the endpoint carries none -- 0 means
- * "derive from the transport" at connect time, so a DPS-assigned hub endpoint
- * does not pin the connection to 8883 when WebSockets were selected. */
-static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap)
-{
-  uint16_t port = 0;
-  const char* colon = strrchr(endpoint, ':');
-  size_t host_len;
-  if (colon && colon != endpoint)
-  {
-    host_len = (size_t)(colon - endpoint);
-    unsigned long p = strtoul(colon + 1, NULL, 10);
-    if (p > 0 && p <= 65535)
-    {
-      port = (uint16_t)p;
-    }
-  }
-  else
-  {
-    host_len = strlen(endpoint);
-  }
-  if (host_len >= cap)
-  {
-    host_len = cap - 1;
-  }
-  memcpy(out_host, endpoint, host_len);
-  out_host[host_len] = '\0';
-  return port;
-}
-
-static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-
-  if (az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf)) != AZ_IOT_OK)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* Falls back to the DPS registration id when AZ_IOT_DEVICE_ID is unset. */
-  const char* device_id = id_buf[0] != '\0' ? id_buf : c->opts.dps.registration_id;
-
-  if (endpoint[0] == '\0' || !is_nonempty_cstr(device_id))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  char host[256];
-  uint16_t port = parse_host_port(endpoint, host, sizeof(host));
-
-  az_iot_result r = replace_owned_string(
-      c->provisioned_iot_hub_hostname,
-      sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
-      host);
-  if (r == AZ_IOT_OK)
-  {
-    c->opts.port = port;
-    r = replace_owned_string(
-        c->provisioned_device_id, sizeof(c->provisioned_device_id), &c->opts.client_id, device_id);
-  }
-  if (r == AZ_IOT_OK)
-  {
-    c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    c->dps_phase = DPS_PHASE_DONE;
-
-    /* Warn, not debug: provisioning was skipped entirely, so anyone reading
-     * the log needs to know this session never talked to DPS. */
-    AZ_IOT_LOG_WARNF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "mqttv5 mock bypass active; host=%s port=%u device=%s",
-        host,
-        (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
-        device_id);
-  }
-
-  return r;
-}
-
-/* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -6270,26 +6126,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
-   * during their init (which happens before open()). When the mqttv5 mock is
-   * configured, also resolve the device_id so subscriptions can be built. */
-  if (mock_mqtt_v5_configured())
-  {
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
-    char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-    (void)az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf));
-    const char* dev_id = id_buf[0] != '\0' ? id_buf : client->opts.dps.registration_id;
-    if (is_nonempty_cstr(dev_id))
-    {
-      (void)replace_owned_string(
-          client->provisioned_device_id,
-          sizeof(client->provisioned_device_id),
-          &client->opts.client_id,
-          dev_id);
-    }
-  }
-  else if (
-      client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+   * during their init (which happens before open()). */
+  if (client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
      * (host == NULL) the profile is learned during provisioning, so
@@ -6593,14 +6431,12 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
  * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
  *
  * @param[in] c Client.
- * @param[in] mock_bypass The mqttv5 mock bypass has replaced host, device id and profile.
  */
-static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass)
+static void log_open_summary(const az_iot_connection_client* c)
 {
   const char* transport
       = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
-  if (!mock_bypass && dps_configured(c)
-      && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6618,12 +6454,11 @@ static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass
   }
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "open: sdk=%s route=%s host=%s device_id=%s profile=%s model_id=%s transport=%s",
+      "open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
       az_iot_version_string(),
-      mock_bypass ? "mock" : "hub",
       text_or_none(c->opts.host),
       text_or_none(c->opts.client_id),
-      mock_bypass ? "mqttv5" : profile_name(c->connection_profile),
+      profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
 }
@@ -6822,33 +6657,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
-  /* --- MQTTv5 mock bypass: when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock MQTTv5 (MQTT v5). ---
-   *
-   * Never for provision_only: the bypass makes a hostless client a hub
-   * connection, and an environment variable must not override a declared
-   * device shape. */
-  bool mock_bypass = mock_mqtt_v5_configured() && !client->opts.dps.provision_only;
-  if (mock_bypass)
-  {
-    az_iot_result r = apply_mqtt_v5_mock_bypass(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-      return r;
-    }
-    /* After the bypass, so the summary shows the endpoint actually used. */
-    log_open_summary(client, true);
-    /* host + client_id are set, session_role = HUB_MQTT_V5 → fall through
-     * to start_connect_attempt which will resolve the v5 factory. */
-    r = start_connect_attempt(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-    }
-    return r;
-  }
-  log_open_summary(client, false);
+  log_open_summary(client);
 
   /* No hub: bring the provisioning session up and stop there. No registration
    * ref is taken. The standing ref alone gives both behaviours the pump needs

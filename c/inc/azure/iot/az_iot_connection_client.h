@@ -30,9 +30,6 @@ extern "C"
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
-   *     Until that DPS api-version ships, local development can synthesize an
-   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
-   *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
@@ -80,7 +77,7 @@ extern "C"
      * verbatim, which keeps the extensible union from becoming lossy at the C
      * boundary: a profile this SDK has never heard of still reports UNKNOWN
      * *and* the text the service sent. For absent/null it is the resolved
-     * contract default ("classic"), or the exact development override value.
+     * contract default ("classic").
      * Points into the connection client and stays valid until deinit().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
