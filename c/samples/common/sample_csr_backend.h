@@ -22,6 +22,11 @@ extern "C"
    * returns 0. Returns non-zero on failure. */
   int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, char** out_csr);
 
+/* A backend that makes a new key per CSR (CNG) writes it to key_path with this
+ * suffix instead; the provider moves it over key_path when the chain issued for
+ * it is stored, so a failed store keeps the previous key and chain. */
+#define SAMPLE_CSR_PENDING_KEY_SUFFIX ".new"
+
 #ifdef __cplusplus
 }
 #endif

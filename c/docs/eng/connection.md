@@ -131,9 +131,9 @@ sequenceDiagram
             Conn->>DPS: PUBLISH get operation status
         end
         DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain)
-        opt issued chain present
+        opt request_operational_certificate (complete payload, chain required)
             Conn->>Cert: store_issued_certificate(chain)
-            Conn-->>App: operational_cert_callback(chain)
+            Conn-->>App: operational_cert_callback(chain, store_result)
         end
         Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
@@ -435,10 +435,10 @@ flowchart TD
     A["open with DPS +<br/>request_operational_certificate"] --> B[get_csr from provider]
     B --> C["DPS register with csr in payload"]
     C --> D{assigned?}
-    D -->|"yes, chain present"| E["store_issued_certificate +<br/>operational_cert_callback"]
-    D -->|"yes, no chain"| F["continue with bootstrap credential"]
-    E --> G["Hub CONNECT using operational credential"]
-    F --> G
+    D -->|"yes, complete payload with chain"| E["store_issued_certificate, then<br/>operational_cert_callback(chain, store_result)"]
+    D -->|"no chain, malformed, or store failed"| F["registration fails"]
+    E -->|"stored"| G["Hub CONNECT using operational credential"]
+    E -->|"store failed"| F
 
     G --> H[CONNECTED]
     H --> I["send_csr renewal<br/>MQTTv3 hub only"]
@@ -446,9 +446,10 @@ flowchart TD
     J --> K{credentials response}
     K -->|202 accepted| L["CSR_ACCEPTED callback,<br/>keep waiting"]
     L --> K
-    K -->|200 issued| M["CSR_ISSUED callback with chain,<br/>app persists"]
+    K -->|"200 issued, complete JSON"| M["store_issued_certificate, then<br/>CSR_ISSUED callback (chain, store_status)"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
-    M --> O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status OK| O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status error| P["Previous certificate stays<br/>in use"]
 ```
 
 Renewal topics (MQTTv3 hub):
@@ -457,13 +458,14 @@ Renewal topics (MQTTv3 hub):
 | --- | --- |
 | Publish | `$iothub/credentials/POST/issueCertificate/?$rid={request_id}` |
 | Subscribe | `$iothub/credentials/res/#` |
-| Response | `$iothub/credentials/res/{status}/{request_id}` |
+| Response | `$iothub/credentials/res/{status}/?$rid={request_id}` |
 
 Rules that apply to both clients:
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
-- The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
-  callback — the application must copy or persist it.
+- The issued chain is stored through the provider's `store_issued_certificate` before the callback,
+  which reports the result in `store_status`. The chain is delivered leaf-first as base64 DER and is
+  only valid for the duration of the callback; the application need not persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
