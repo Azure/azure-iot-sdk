@@ -59,7 +59,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             Debug.Assert(CurrentConnectionContext != null);
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
-            connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+            connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
             connect.Password = Array.Empty<byte>();
 
