@@ -213,7 +213,8 @@ stateDiagram-v2
     RestoreStarted --> Idle : restore complete (reports failure)
     Failed --> Idle : error reported to cloud
 
-    DownloadStarted --> ManifestReceived : new workflowId (replacement, step 0 only)
+    DownloadStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
+    InstallStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
 ```
 
 ### Already-Installed Check
@@ -305,7 +306,7 @@ superseded. The client MUST distinguish:
 | Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
 | `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
 
-A deployment is validated as a whole, so once it has changed the device it is
+A deployment is validated as a whole, so from its first `install_fn` call it is
 not interleaved with another: a partly applied or not yet activated deployment
 is neither dropped (no `restore_fn`, no report) nor mixed with a newer one.
 `az_iot_su_client_config_options::replacement_policy` selects this:
