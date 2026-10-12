@@ -2898,10 +2898,9 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
- * meaning "classic" -- so the caller is left with the MQTTv3 default it was
- * seeded with. Only a malformed payload fails here; an unrecognised *value*
- * fails later, at the point the session role is chosen, so the profile is
- * already recorded and readable when it does. */
+ * meaning "classic" -- so it leaves the MQTTv3 default set on entry. Only a malformed payload fails
+ * here; an unrecognised *value* fails later, at the point the session role is chosen, so the
+ * profile is already recorded and readable when it does. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
   /* Each assignment starts from the default: an absent profile must not keep
