@@ -9,10 +9,11 @@
  * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
  * MQTTv3-only, so on an MQTTv5 hub the sample reports that and exits non-zero.
  * End to end:
- *   1. Connect, then produce a fresh CSR from the managed provider and call
- *      az_iot_connection_client_send_csr().
+ *   1. Connect, then call az_iot_connection_client_send_csr(); the SDK gets the
+ *      CSR from the managed provider.
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
- *      the new chain - and the sample persists it through the provider.
+ *      the new chain - and the SDK stores it in the provider before the
+ *      callback.
  *   3. Apply the renewed cert by reconnecting: close + reopen re-establishes the
  *      session with the new operational identity (a new client certificate
  *      requires a fresh TLS handshake, so the cert is applied on reconnect).
@@ -38,7 +39,6 @@ typedef struct
 {
   az_iot_connection_state conn_state;
   int provisioning_faulted;
-  az_iot_certificate_provider_managed* provider;
   int csr_done;
   az_iot_result csr_status;
 } user_context;
@@ -81,15 +81,10 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
     case AZ_IOT_CSR_ISSUED:
       fprintf(
           stderr,
-          "[hub_renew] renewed chain issued: %zu cert(s)\n",
-          evt->issued ? evt->issued->count : (size_t)0);
-      /* Persist the renewed chain through the provider. */
-      if (evt->issued)
-      {
-        (void)ctx->provider->base.vtable->store_issued_certificate(
-            &ctx->provider->base, evt->issued);
-      }
-      ctx->csr_status = AZ_IOT_OK;
+          "[hub_renew] renewed chain issued: %zu cert(s), store: %s\n",
+          evt->issued ? evt->issued->count : (size_t)0,
+          az_iot_result_to_string(evt->store_status));
+      ctx->csr_status = evt->store_status;
       ctx->csr_done = 1;
       break;
     case AZ_IOT_CSR_FAILED:
@@ -124,7 +119,6 @@ int main(void)
   user_context user_ctx = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  user_ctx.provider = &provider;
 
   az_iot_certificate_provider_managed_options mopts
       = az_iot_certificate_provider_managed_options_default();
@@ -191,30 +185,22 @@ int main(void)
   }
   else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* Produce a CSR from the operational key and request renewal. */
-    az_iot_certificate_signing_request csr = { 0 };
-    if (provider.base.vtable->get_csr(&provider.base, config.reg_id, &csr) == AZ_IOT_OK)
+    /* Request renewal; the SDK gets the CSR from the provider. */
+    if (az_iot_connection_client_send_csr(&connection_client, NULL, NULL, on_csr_event, &user_ctx)
+        == AZ_IOT_OK)
     {
-      az_iot_result send_rc = az_iot_connection_client_send_csr(
-          &connection_client, &csr, NULL, NULL, on_csr_event, &user_ctx);
-      provider.base.vtable->release_csr(&provider.base, &csr);
-
-      if (send_rc == AZ_IOT_OK)
+      for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
       {
-        for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
-        {
-          (void)az_iot_connection_client_do_work(&connection_client, 50);
-        }
+        (void)az_iot_connection_client_do_work(&connection_client, 50);
       }
     }
   }
 
-  /* Apply the renewed certificate. on_csr_event persisted it through the
-   * provider, which flips load() to the OPERATIONAL identity; a new client
-   * certificate needs a fresh TLS handshake, so we close and reopen. The
-   * reopen's hub connection loads the OPERATIONAL identity first and thus
-   * reconnects with the renewed cert. (A production device that already knows
-   * its hub could reconnect to it directly instead of re-provisioning.) */
+  /* Apply the renewed certificate. The SDK stored it in the provider, which flips load() to the
+   * OPERATIONAL identity; a new client certificate needs a fresh TLS handshake, so we close and
+   * reopen. The reopen's hub connection loads the OPERATIONAL identity first and thus reconnects
+   * with the renewed cert. (A production device that already knows its hub could reconnect to it
+   * directly instead of re-provisioning.) */
   if (user_ctx.csr_done && user_ctx.csr_status == AZ_IOT_OK)
   {
     fprintf(stderr, "[hub_renew] renewal complete; reconnecting to apply the new certificate\n");

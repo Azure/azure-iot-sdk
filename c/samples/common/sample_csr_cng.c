@@ -6,9 +6,12 @@
 /* Windows CNG/NCrypt CSR backend for sample_cert_provider. Generates an EC
  * P-256 operational key with CNG, produces a PKCS#10 CSR via
  * CryptSignAndEncodeCertificate(X509_CERT_REQUEST_TO_BE_SIGNED), and exports the
- * private key as a PKCS#8 PEM at key_path so the (OpenSSL-based) Paho TLS layer
- * can load it. Each call mints a fresh key + CSR (a renewal re-enrolls), which
- * keeps the sample free of PEM->CNG key import.
+ * private key as a PKCS#8 PEM so the (OpenSSL-based) Paho TLS layer can load
+ * it. Each call mints a fresh key + CSR, which keeps the sample free of PEM->CNG
+ * key import. The key is written to key_path + SAMPLE_CSR_PENDING_KEY_SUFFIX;
+ * the provider moves it into place once its chain is stored. Not for
+ * send_csr() resubmission of an earlier request id: that makes a new key, and
+ * this sample does not check that a returned chain certifies it.
  *
  * Link: crypt32.lib, ncrypt.lib. */
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -103,9 +106,18 @@ static int export_key_pem(NCRYPT_KEY_HANDLE hKey, const char* path)
   rc = 0;
 
 done:
+  /* A deferred write error surfaces only on flush or close. */
   if (f)
   {
-    fclose(f);
+    int flushed = fflush(f);
+    if (fclose(f) != 0 || flushed != 0)
+    {
+      rc = 1;
+    }
+    if (rc != 0)
+    {
+      (void)remove(path); /* never leave a partial key to be committed */
+    }
   }
   if (b64)
   {
@@ -252,10 +264,16 @@ int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, cha
     }
   }
 
-  /* 6. Persist the private key as PEM for the TLS stack. */
-  if (export_key_pem(hKey, key_path) != 0)
+  /* 6. Stage the private key as PEM for the TLS stack. */
   {
-    goto done;
+    char pending[MAX_PATH];
+    if (_snprintf_s(
+            pending, sizeof(pending), _TRUNCATE, "%s" SAMPLE_CSR_PENDING_KEY_SUFFIX, key_path)
+            < 0
+        || export_key_pem(hKey, pending) != 0)
+    {
+      goto done;
+    }
   }
 
   *out_csr = csr_b64;

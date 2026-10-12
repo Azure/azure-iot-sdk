@@ -103,13 +103,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
-  ((sample_context*)user_ctx)->issued = true;
+  ((sample_context*)user_ctx)->issued = (store_result == AZ_IOT_OK);
   fprintf(
       stderr,
-      "[dps_sas_key_issued_cert] certificate issued (%zu in chain)\n",
-      issued != NULL ? issued->count : (size_t)0);
+      "[dps_sas_key_issued_cert] certificate issued (%zu in chain), store: %s\n",
+      issued != NULL ? issued->count : (size_t)0,
+      az_iot_result_to_string(store_result));
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
