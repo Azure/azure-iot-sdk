@@ -681,8 +681,10 @@ extern "C"
   {
     az_iot_su_event_kind kind;
 
-    /* WORKFLOW_STATE_CHANGED only. */
+    /** Every event: the workflow state when it was raised (the new state for
+     * WORKFLOW_STATE_CHANGED). */
     az_iot_su_state state;
+    /** WORKFLOW_STATE_CHANGED only; other events repeat `state`. */
     az_iot_su_state previous_state;
 
     /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED,
