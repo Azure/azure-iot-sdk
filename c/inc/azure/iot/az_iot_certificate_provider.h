@@ -77,9 +77,10 @@ extern "C"
   } az_iot_certificate_signing_request;
 
   /* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first).
-   * Each entry is the base64-encoded DER of one certificate exactly as received on
-   * the wire (no PEM header/footer); a provider that persists the chain wraps each
-   * entry in PEM. Passing base64 spans (rather than pre-wrapped PEM strings) lets
+   * Each entry is one certificate exactly as received on the wire: base64 of its
+   * DER, or base64 of a whole PEM certificate (the provisioning service sends
+   * this form). A provider decodes each entry and, for DER, wraps it in PEM
+   * before persisting. Passing base64 spans (rather than pre-wrapped PEM strings) lets
    * the connection client deliver the chain with ZERO heap allocation - the spans
    * point directly into the client's receive buffer.
    *
@@ -90,7 +91,7 @@ extern "C"
    * persist it) MUST copy the bytes; storing the spans yields dangling reads. */
   typedef struct az_iot_issued_certificate
   {
-    const az_span* certificates; /* base64 DER certs, leaf first */
+    const az_span* certificates; /* base64 DER or PEM certs, leaf first */
     size_t count;
   } az_iot_issued_certificate;
 
@@ -136,7 +137,7 @@ extern "C"
      * az_iot_certificate_material: what is issued is a certificate chain only -
      * the matching private key is the provider's operational key and never
      * transits this hook - so the single-cert material shape would not fit.
-     * Each entry is base64 DER (the provider PEM-wraps to persist). The chain is
+     * Each entry is base64 DER or PEM (see az_iot_issued_certificate). The chain is
      * valid only for this call (see the type's lifetime note).
      *
      * A chain whose leaf does not certify the operational key is refused
