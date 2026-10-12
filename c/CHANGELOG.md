@@ -61,3 +61,8 @@
   `az_iot_su_parse_update_request()` uses `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` (8192) bytes of stack
   instead. A part that does not fit is logged as too large, not as invalid. The ESP32 sample sets
   the request buffer to 8192 and its NVS partition to 36 KB (erase the flash to move to it).
+- Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
+  `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
+  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and
+  `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
+  scripts (`tests/manual`) are removed.
