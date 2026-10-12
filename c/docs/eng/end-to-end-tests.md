@@ -132,6 +132,13 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   QoS 1 and QoS 0 publishes to those templates reach the events endpoint; a topic no template
   allows and another device's id are refused without disconnecting. `ci-c-e2e-mqttv5`.
   `AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING` turns the routed checks into skips when nothing arrives.
+- [`e2e_mqttv5_twin_test.c`](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) — desired properties
+  patched through the service REST API. Without `twin_push.push_desired`, no change arrives while
+  connected and a GET delivers it as a snapshot; with it, the snapshot is pushed on connect and each
+  change arrives as a patch. One connection per test, on one device. `ci-c-e2e-mqttv5`.
+
+Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
+`AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
 
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
