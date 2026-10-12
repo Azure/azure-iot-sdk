@@ -213,11 +213,11 @@ int main(void)
   az_iot_connection_client client = { 0 };
 
   /* CSR key and issued chain only; no bootstrap certificate. */
-  az_iot_certificate_provider_managed_options op_opts = {
-    .operational_key_pem_path = config.op_key,
-    .operational_cert_pem_path = config.op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options op_opts
+      = az_iot_certificate_provider_managed_options_default();
+  op_opts.operational_key_pem_path = config.op_key;
+  op_opts.operational_cert_pem_path = config.op_cert;
+  op_opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&operational, &op_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key_issued_cert] managed provider init failed\n");

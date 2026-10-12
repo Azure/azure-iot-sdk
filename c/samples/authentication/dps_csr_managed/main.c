@@ -197,14 +197,14 @@ int main(void)
 
   /* Loads the operational key, or generates and saves one on first run. The
    * key type applies only when a key is generated. */
-  az_iot_certificate_provider_managed_options provider_opts = {
-    .bootstrap_cert_pem_path = config.cert,
-    .bootstrap_key_pem_path = config.key,
-    .trusted_ca_pem_path = config.ca,
-    .operational_key_pem_path = op_key,
-    .operational_cert_pem_path = op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options provider_opts
+      = az_iot_certificate_provider_managed_options_default();
+  provider_opts.bootstrap_cert_pem_path = config.cert;
+  provider_opts.bootstrap_key_pem_path = config.key;
+  provider_opts.trusted_ca_pem_path = config.ca;
+  provider_opts.operational_key_pem_path = op_key;
+  provider_opts.operational_cert_pem_path = op_cert;
+  provider_opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&provider, &provider_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] managed certificate provider init failed\n");
