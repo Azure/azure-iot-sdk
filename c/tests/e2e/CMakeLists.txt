@@ -221,7 +221,6 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
 endif()
 
 
-endif() # AZ_IOT_WITH_PAHO
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_mqttv5_custom_topic
@@ -236,3 +235,5 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     target_link_libraries(az_iot_tests_e2e_mqttv5_custom_topic PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
 endif()
+
+endif() # AZ_IOT_WITH_PAHO
