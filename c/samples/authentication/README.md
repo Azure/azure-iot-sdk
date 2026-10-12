@@ -66,7 +66,7 @@ The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON` (the 
 | Sample | Built when |
 | --- | --- |
 | `dps_csr_managed`, `hub_renew` | OpenSSL 3.0+ and the Paho adapter (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`) |
-| `custom_certificate_provider` | The Paho adapter, and OpenSSL 3.0+ outside Windows |
+| `custom_certificate_provider` | OpenSSL 3.0+ and the Paho adapter |
 | `hsm_pkcs11` | The Paho adapter |
 | `custom_provider_template`, `hsm_sign_callback` | Always |
 | `dps_sas_key` | The Paho adapter and the OpenSSL crypto backend (`AZ_IOT_WITH_CRYPTO_OPENSSL`) |

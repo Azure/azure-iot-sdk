@@ -16,6 +16,8 @@
 #include "sample_csr_backend.h"
 #include "sample_utils.h"
 
+#include <azure/core/az_base64.h>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -227,6 +229,40 @@ static void provider_release_csr(
   }
 }
 
+/* Write one issued entry to @p f as PEM. The service sends base64 of either a
+ * PEM certificate (written decoded) or of DER (wrapped in PEM lines). */
+static az_iot_result write_cert_pem(FILE* f, az_span cert)
+{
+  static const char pem_b64[] = "LS0tLS1CRUdJTi"; /* base64 of "-----BEGIN" */
+  int32_t n = az_span_size(cert);
+  if (n < (int32_t)(sizeof(pem_b64) - 1)
+      || memcmp(az_span_ptr(cert), pem_b64, sizeof(pem_b64) - 1) != 0)
+  {
+    return (fputs(PEM_CERT_BEGIN, f) < 0 || fwrite(az_span_ptr(cert), 1, (size_t)n, f) != (size_t)n
+            || fputs(PEM_CERT_END, f) < 0)
+        ? AZ_IOT_ERR_INTERNAL
+        : AZ_IOT_OK;
+  }
+  int32_t cap = (n / 4) * 3 + 3;
+  uint8_t* pem = (uint8_t*)malloc((size_t)cap);
+  if (!pem)
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  int32_t written = 0;
+  az_iot_result rc = AZ_IOT_ERR_INVALID_ARG;
+  if (az_result_succeeded(az_base64_decode(az_span_create(pem, cap), cert, &written)) && written > 0
+      && written <= cap)
+  {
+    rc = (fwrite(pem, 1, (size_t)written, f) == (size_t)written
+          && (pem[written - 1] == '\n' || fputc('\n', f) != EOF))
+        ? AZ_IOT_OK
+        : AZ_IOT_ERR_INTERNAL;
+  }
+  free(pem);
+  return rc;
+}
+
 static az_iot_result provider_store(
     az_iot_certificate_provider* self,
     const az_iot_issued_certificate* issued)
@@ -256,21 +292,19 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* PEM-wrap each base64 DER cert (leaf first) into the temporary file. */
+  /* Write each cert (leaf first) as PEM into the temporary file. */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
     az_span cert = issued->certificates[i];
-    size_t len = (size_t)az_span_size(cert);
-    if (len == 0)
+    if (az_span_size(cert) <= 0)
     {
       rc = AZ_IOT_ERR_INVALID_ARG; /* every issued entry must be a certificate */
       break;
     }
-    if (fputs(PEM_CERT_BEGIN, f) < 0 || fwrite(az_span_ptr(cert), 1, len, f) != len
-        || fputs(PEM_CERT_END, f) < 0)
+    rc = write_cert_pem(f, cert);
+    if (rc != AZ_IOT_OK)
     {
-      rc = AZ_IOT_ERR_INTERNAL;
       break;
     }
   }

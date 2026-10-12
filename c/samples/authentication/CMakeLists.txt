@@ -32,7 +32,7 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
 endif()
 
 # The complete app-owned custom provider: real PKCS#10 CSR issuance from
-# samples/common with OpenSSL 3.0+ (which the Paho adapter's TLS already needs).
+# samples/common. Needs the Paho adapter and OpenSSL 3.0+ on every platform.
 if(AZ_IOT_WITH_PAHO)
     set(_csr_backend_src "")
     set(_csr_backend_libs "")

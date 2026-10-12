@@ -13,7 +13,7 @@ component.
 ## Sample features
 
 - Hub generations: mqttv3 and mqttv5, whichever DPS assigns.
-- `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with OpenSSL 3.0+ (`sample_csr_openssl.c`), which the Paho adapter's TLS already requires.
+- `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with OpenSSL 3.0+ (`sample_csr_openssl.c`) on every platform.
 - Opts in to issuance with `dps.request_operational_certificate`.
 - Platforms: Linux and Windows.
 
@@ -78,7 +78,7 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_auth_custom_cer
 .\build\windows-msvc-debug\samples\authentication\Debug\az_iot_sample_auth_custom_certificate_provider.exe
 ```
 
-The target exists when the Paho adapter is enabled and, outside Windows, OpenSSL 3.0+ is found.
+The target exists when the Paho adapter is enabled and OpenSSL 3.0+ is found.
 
 ## How it ends
 

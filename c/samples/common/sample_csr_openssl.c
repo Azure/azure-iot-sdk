@@ -175,9 +175,9 @@ int sample_csr_backend_cert_matches_key(const char* key_path, const char* cert_b
     {
       der_len--;
     }
-    static const char pem_begin[] = "-----BEGIN";
-    if ((size_t)der_len >= sizeof(pem_begin) - 1
-        && memcmp(der, pem_begin, sizeof(pem_begin) - 1) == 0)
+    /* "LS0tLS1CRUdJTi" is base64 of "-----BEGIN": a PEM certificate. */
+    static const char pem_b64[] = "LS0tLS1CRUdJTi";
+    if (len >= sizeof(pem_b64) - 1 && memcmp(cert_base64, pem_b64, sizeof(pem_b64) - 1) == 0)
     {
       BIO* b = BIO_new_mem_buf(der, der_len);
       cert = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
