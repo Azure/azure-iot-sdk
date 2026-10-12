@@ -34,6 +34,8 @@
 #define E2E_CONNECT_TIMEOUT_S 60
 #define E2E_SERVICE_CONNECT_TIMEOUT_S 45
 #define E2E_PUMP_MS 20
+/* tag, '-', device id (<= 128), '-', 11 hex digits, NUL. */
+#define E2E_MARKER_MAX 160
 
 typedef struct
 {
@@ -133,23 +135,18 @@ static bool wait_connected(fixture* fx)
   return fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED;
 }
 
-static void make_marker(char* out, size_t cap, const char* tag)
+/* Unique per run: the device id is per run (a device holds one connection), and the
+ * events endpoint is shared by concurrent runs. */
+static void make_marker(char* out, size_t cap, const char* tag, const char* device_id)
 {
   static unsigned counter = 0;
   snprintf(
-      out,
-      cap,
-      "%s-%08lx%04x%03x",
-      tag,
-      (unsigned long)time(NULL),
-      (unsigned)rand() & 0xffffu,
-      (counter++) & 0xfffu);
+      out, cap, "%s-%s-%08lx%03x", tag, device_id, (unsigned long)time(NULL), (counter++) & 0xfffu);
 }
 
 static int group_setup(void** state)
 {
   memset(&g_fx, 0, sizeof(g_fx));
-  srand((unsigned)time(NULL));
   e2e_install_log_sink();
 
   const char* svc_err = NULL;
@@ -271,9 +268,9 @@ static bool publish_and_watch(
           &fx->custom, topic_template, topic, sizeof(topic), NULL),
       AZ_IOT_OK);
 
-  char marker[64];
-  make_marker(marker, sizeof(marker), "ct");
-  char payload[128];
+  char marker[E2E_MARKER_MAX];
+  make_marker(marker, sizeof(marker), "ct", fx->dev.device_id);
+  char payload[E2E_MARKER_MAX + 16];
   snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
 
   watch_begin(fx);
@@ -306,9 +303,9 @@ static void baseline_telemetry_is_routed(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_true(wait_connected(fx));
-  char marker[64];
-  make_marker(marker, sizeof(marker), "tm");
-  char payload[128];
+  char marker[E2E_MARKER_MAX];
+  make_marker(marker, sizeof(marker), "tm", fx->dev.device_id);
+  char payload[E2E_MARKER_MAX + 16];
   snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
 
   watch_begin(fx);
