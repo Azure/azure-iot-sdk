@@ -1337,9 +1337,11 @@ static az_iot_result managed_store(
           m->served_cert_path = backup_tmp;
           backup_tmp = NULL;
         }
-        else if (remove(m->operational_cert_path) != 0)
+        else
         {
-          m->has_operational = false; /* there was no previous chain to keep */
+          /* No usable previous chain: nothing operational to serve. */
+          (void)remove(m->operational_cert_path);
+          m->has_operational = false;
         }
         /* A failed rename normally leaves the key file as it was; serve the
          * operational identity only if it still holds the current key. */
