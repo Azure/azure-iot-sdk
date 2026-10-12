@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* sample_cert_provider - vtable glue and cert persistence. The platform-native
- * CSR issuance lives in sample_csr_openssl.c / sample_csr_cng.c. */
+/* sample_cert_provider - vtable glue and cert persistence. CSR issuance lives
+ * in sample_csr_openssl.c. */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS /* this sample uses fopen for cert persistence */
 #endif
@@ -233,6 +233,14 @@ static az_iot_result provider_store(
 {
   sample_cert_provider* p = (sample_cert_provider*)self;
   if (!p || !issued || !issued->certificates || issued->count == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* The leaf must certify the operational key, or the next connect fails. */
+  if (!sample_csr_backend_cert_matches_key(
+          p->operational_key_path,
+          (const char*)az_span_ptr(issued->certificates[0]),
+          (size_t)az_span_size(issued->certificates[0])))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

@@ -7,8 +7,8 @@
  *
  * The COMPLETE, app-owned certificate-provider path (vs. the shipped "managed"
  * provider used by dps_csr_managed). It wires sample_cert_provider - a real
- * az_iot_certificate_provider implemented in samples/common with platform-
- * native CSR issuance (OpenSSL on Linux, CNG on Windows) - into a full DPS CSR
+ * az_iot_certificate_provider implemented in samples/common with OpenSSL CSR
+ * issuance - into a full DPS CSR
  * enrollment: authenticate to DPS with the bootstrap identity, send a real
  * PKCS#10 CSR, persist the issued operational chain, and connect to the assigned
  * hub with the OPERATIONAL identity.

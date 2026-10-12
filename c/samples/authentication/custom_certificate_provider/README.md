@@ -13,7 +13,7 @@ component.
 ## Sample features
 
 - Hub generations: mqttv3 and mqttv5, whichever DPS assigns.
-- `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with platform crypto: OpenSSL 3.0+ on Linux (`sample_csr_openssl.c`), CNG on Windows (`sample_csr_cng.c`).
+- `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with OpenSSL 3.0+ (`sample_csr_openssl.c`), which the Paho adapter's TLS already requires.
 - Opts in to issuance with `dps.request_operational_certificate`.
 - Platforms: Linux and Windows.
 
@@ -36,7 +36,7 @@ The sample reads these environment variables:
 | `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM file). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated. On Windows the key is a persisted CNG key named after this path, exported here as PEM; a new path gives a new key. Default `operational_key.pem`. |
+| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated. A stored chain must certify it. Default `operational_key.pem`. |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued operational chain file. Default `operational_cert.pem`. |
 
 ```sh
@@ -106,7 +106,7 @@ Exit code 0 when the hub connection was reached; the last line says with which i
 | What | Code |
 | --- | --- |
 | The provider | [`sample_cert_provider.c`](../../common/sample_cert_provider.c), `sample_cert_provider_init()` |
-| Platform CSR code | [`sample_csr_openssl.c`](../../common/sample_csr_openssl.c), [`sample_csr_cng.c`](../../common/sample_csr_cng.c) |
+| CSR code | [`sample_csr_openssl.c`](../../common/sample_csr_openssl.c) |
 | Opt in to issuance | `copts.dps.request_operational_certificate = true` and `copts.csr_payload_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()`, `on_operational_cert()` |
 

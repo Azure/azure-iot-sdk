@@ -32,20 +32,14 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
 endif()
 
 # The complete app-owned custom provider: real PKCS#10 CSR issuance from
-# samples/common using platform-native crypto - CNG on Windows, OpenSSL
-# elsewhere. Needs the Paho adapter; on non-Windows it needs OpenSSL 3.0+.
+# samples/common with OpenSSL 3.0+ (which the Paho adapter's TLS already needs).
 if(AZ_IOT_WITH_PAHO)
     set(_csr_backend_src "")
     set(_csr_backend_libs "")
-    if(WIN32)
-        set(_csr_backend_src ${_auth_common}/sample_csr_cng.c)
-        set(_csr_backend_libs crypt32 ncrypt)
-    else()
-        find_package(OpenSSL 3.0 QUIET)
-        if(OPENSSL_FOUND)
-            set(_csr_backend_src ${_auth_common}/sample_csr_openssl.c)
-            set(_csr_backend_libs OpenSSL::Crypto)
-        endif()
+    find_package(OpenSSL 3.0 QUIET)
+    if(OPENSSL_FOUND)
+        set(_csr_backend_src ${_auth_common}/sample_csr_openssl.c)
+        set(_csr_backend_libs OpenSSL::Crypto)
     endif()
 
     if(_csr_backend_src)

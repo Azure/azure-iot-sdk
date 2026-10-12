@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* OpenSSL 3.0+ CSR backend for sample_cert_provider (non-Windows). Loads or
+/* OpenSSL 3.0+ CSR backend for sample_cert_provider. Loads or
  * generates an EC P-256 operational key (persisted as PEM) and produces a
  * PKCS#10 CSR over it. Uses only public OpenSSL 3.0 EVP/X509_REQ/BIO APIs. */
 #include "sample_csr_backend.h"
@@ -157,4 +157,45 @@ done:
   }
   EVP_PKEY_free(key);
   return rc;
+}
+
+int sample_csr_backend_cert_matches_key(const char* key_path, const char* cert_base64, size_t len)
+{
+  if (!key_path || !cert_base64 || len == 0 || len > (size_t)64u * 1024u)
+  {
+    return 0;
+  }
+  X509* cert = NULL;
+  unsigned char* der = (unsigned char*)malloc((len / 4u) * 3u + 3u);
+  int der_len = der ? EVP_DecodeBlock(der, (const unsigned char*)cert_base64, (int)len) : -1;
+  if (der_len > 0)
+  {
+    /* EVP_DecodeBlock counts '=' padding as zero bytes. */
+    for (size_t i = len; i > 0 && cert_base64[i - 1] == '=' && der_len > 0; --i)
+    {
+      der_len--;
+    }
+    static const char pem_begin[] = "-----BEGIN";
+    if ((size_t)der_len >= sizeof(pem_begin) - 1
+        && memcmp(der, pem_begin, sizeof(pem_begin) - 1) == 0)
+    {
+      BIO* b = BIO_new_mem_buf(der, der_len);
+      cert = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
+      BIO_free(b);
+    }
+    else
+    {
+      const unsigned char* q = der;
+      cert = d2i_X509(NULL, &q, der_len);
+    }
+  }
+  BIO* kb = cert ? BIO_new_file(key_path, "rb") : NULL;
+  EVP_PKEY* key = kb ? PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL) : NULL;
+  BIO_free(kb);
+  int match = (cert && key && X509_check_private_key(cert, key) == 1) ? 1 : 0;
+  EVP_PKEY_free(key);
+  X509_free(cert);
+  free(der);
+  ERR_clear_error();
+  return match;
 }

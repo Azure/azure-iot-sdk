@@ -3,11 +3,11 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Platform CSR backend used by sample_cert_provider. Two implementations exist,
- * selected at build time: sample_csr_openssl.c (non-Windows) and
- * sample_csr_cng.c (Windows). */
+/* CSR backend used by sample_cert_provider (OpenSSL 3.0+: sample_csr_openssl.c). */
 #ifndef SAMPLE_CSR_BACKEND_H
 #define SAMPLE_CSR_BACKEND_H
+
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -22,6 +22,13 @@ extern "C"
    * DPS/Hub wire format) to *out_csr (caller frees with free()) and returns 0.
    * Returns non-zero on failure. */
   int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, char** out_csr);
+
+  /* Returns 1 when @p cert_base64 (base64 of a DER or PEM certificate, @p len
+   * bytes) certifies the private key at key_path, else 0. Never creates a key. */
+  int sample_csr_backend_cert_matches_key(
+      const char* key_path,
+      const char* cert_base64,
+      size_t len);
 
 #ifdef __cplusplus
 }
