@@ -132,6 +132,16 @@ static EVP_PKEY* load_key_file(const char* path)
   return k;
 }
 
+/** @brief True when the key file at @p path holds @p key. */
+static bool key_file_holds(const char* path, EVP_PKEY* key)
+{
+  EVP_PKEY* on_disk = load_key_file(path);
+  bool same = on_disk && EVP_PKEY_eq(on_disk, key) == 1;
+  EVP_PKEY_free(on_disk);
+  ERR_clear_error();
+  return same;
+}
+
 #ifdef _WIN32
 /**
  * @brief Create a new file with an owner-only DACL, failing if it exists.
@@ -1292,7 +1302,16 @@ static az_iot_result managed_store(
 
   if (rc == AZ_IOT_OK && !rotate)
   {
-    rc = write_bio_private(m->operational_cert_path, mem);
+    /* The chain is served with the key file: put the current key back first
+     * if a failed rotation left the file without it. */
+    if (!key_file_holds(m->operational_key_path, (EVP_PKEY*)m->operational_key))
+    {
+      rc = write_key_file(m->operational_key_path, (EVP_PKEY*)m->operational_key);
+    }
+    if (rc == AZ_IOT_OK)
+    {
+      rc = write_bio_private(m->operational_cert_path, mem);
+    }
   }
   else if (rc == AZ_IOT_OK)
   {
@@ -1345,13 +1364,10 @@ static az_iot_result managed_store(
         }
         /* A failed rename normally leaves the key file as it was; serve the
          * operational identity only if it still holds the current key. */
-        EVP_PKEY* on_disk = load_key_file(m->operational_key_path);
-        if (!on_disk || EVP_PKEY_eq(on_disk, (EVP_PKEY*)m->operational_key) != 1)
+        if (!key_file_holds(m->operational_key_path, (EVP_PKEY*)m->operational_key))
         {
           m->has_operational = false;
         }
-        EVP_PKEY_free(on_disk);
-        ERR_clear_error();
       }
     }
     discard_file(key_tmp);

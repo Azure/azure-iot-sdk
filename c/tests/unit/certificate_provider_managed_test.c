@@ -1758,7 +1758,8 @@ static void managed_a_chain_that_cannot_be_replaced_changes_nothing(void** state
 
 /* If the key cannot follow the new chain, the previous chain is put back. A
  * directory at the key path makes the key rename fail; with no key file left
- * there, the operational identity is no longer served. */
+ * there, the operational identity is no longer served until a later store puts
+ * the key back. */
 static void managed_a_failed_key_rename_restores_the_chain(void** state)
 {
   (void)state;
@@ -1786,9 +1787,17 @@ static void managed_a_failed_key_rename_restores_the_chain(void** state)
   assert_int_equal(
       AZ_IOT_ERR_NOT_FOUND, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &mat));
   assert_int_equal(0, count_temp_files());
+
+  /* A chain for the current key needs the key file back: refused while it
+   * cannot be written, then the key is rewritten and the chain served. */
+  assert_int_not_equal(AZ_IOT_OK, store_one(&prov, first));
+  assert_false(prov.has_operational);
+  remove_dir(OP_KEY);
+  assert_int_equal(AZ_IOT_OK, store_one(&prov, first));
+  assert_true(prov.has_operational);
+  assert_true(key_file_is(OP_KEY, old_key));
   az_iot_certificate_provider_managed_deinit(&prov);
 
-  remove_dir(OP_KEY);
   free(on_disk);
   free(renewed);
   free(first);

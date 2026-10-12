@@ -19,7 +19,8 @@
  *     chain parses, the PEM chain is at most 64 KiB and the leaf certifies
  *     the operational key or, with rotation, the pending CSR key (which then
  *     replaces the operational key file). A failed store keeps the previous
- *     key and certificate usable. If the process stops between the chain and
+ *     key and certificate usable. A chain for the current key first writes
+ *     the key back if the key file no longer holds it. If the process stops between the chain and
  *     key renames, init() finishes or undoes the rotation from the files it
  *     staged, so the pair matches. A pending key does not survive deinit or a
  *     restart: a chain for it arriving afterwards is refused; request a new
