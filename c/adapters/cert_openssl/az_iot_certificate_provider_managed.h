@@ -25,7 +25,8 @@
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
- * next to the destination, then renamed over it. The private key is stored
+ * ("<path>.aziot-...") next to the destination, then renamed over it. init()
+ * deletes such files a stopped process left behind. The private key is stored
  * unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
@@ -99,7 +100,9 @@ extern "C"
 
   /* Initialize the managed provider. Loads or generates the operational key and
    * detects any previously-persisted operational certificate. Returns
-   * ERR_INVALID_ARG if a required path is missing, or ERR_INTERNAL on OpenSSL
+   * ERR_INVALID_ARG if a required path is missing or a configured path starts
+   * with "<operational key or cert path>.aziot-" (the temporary-file names), or
+   * ERR_INTERNAL on OpenSSL
    * failure. The provider base pointer can be passed wherever
    * az_iot_certificate_provider* is expected. */
   az_iot_result az_iot_certificate_provider_managed_init(

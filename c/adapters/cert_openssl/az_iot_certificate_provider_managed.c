@@ -15,6 +15,7 @@
 
 #include "az_iot_certificate_provider_managed.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +30,7 @@
 #include <windows.h>
 #include <sddl.h>
 #else
+#include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -72,6 +74,11 @@
  * certificates of a few KB each; anything larger is refused. */
 #define MANAGED_MAX_CHAIN_BYTES ((size_t)64u * 1024u)
 
+/* Marks this provider's temporary files, so init() can find leftovers of a
+ * stopped process without touching anything else next to the key or chain. */
+#define MANAGED_TMP_TAG ".aziot-"
+#define MANAGED_TMP_TAG_LEN (sizeof(MANAGED_TMP_TAG) - 1)
+
 #ifdef _WIN32
 /* Owner-only DACL for written files: full access for the owner and SYSTEM,
  * protected from inheriting the directory's ACEs. */
@@ -80,7 +87,7 @@
 #define MANAGED_TMP_ATTEMPTS 16
 #else
 /* mkstemp() template appended to the destination path. */
-#define MANAGED_TMP_TEMPLATE ".XXXXXX"
+#define MANAGED_TMP_TEMPLATE MANAGED_TMP_TAG "XXXXXX"
 #endif
 
 /* --------------------------------------------------------------------------
@@ -166,7 +173,7 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   size_t path_len = strlen(path);
 #ifdef _WIN32
   /* "<path>.<8 hex>.tmp" */
-  size_t tmp_size = path_len + 14;
+  size_t tmp_size = path_len + MANAGED_TMP_TAG_LEN + 13;
   char* tmp = (char*)malloc(tmp_size);
   if (!tmp)
   {
@@ -178,7 +185,7 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   for (int i = 0; i < MANAGED_TMP_ATTEMPTS && h == INVALID_HANDLE_VALUE; ++i)
   {
     seed = seed * 1103515245UL + 12345UL;
-    int n = snprintf(tmp, tmp_size, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    int n = snprintf(tmp, tmp_size, "%s" MANAGED_TMP_TAG "%08lx.tmp", path, seed & 0xFFFFFFFFUL);
     if (n < 0 || (size_t)n >= tmp_size)
     {
       break; /* never expected: tmp_size fits the format exactly */
@@ -218,7 +225,8 @@ static az_iot_result write_file_private(const char* path, const char* data, size
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
   memcpy(tmp, path, path_len);
-  memcpy(tmp + path_len, MANAGED_TMP_TEMPLATE, sizeof(MANAGED_TMP_TEMPLATE));
+  memcpy(tmp + path_len, MANAGED_TMP_TEMPLATE, sizeof(MANAGED_TMP_TEMPLATE) - 1);
+  tmp[path_len + sizeof(MANAGED_TMP_TEMPLATE) - 1] = '\0';
   int fd = mkstemp(tmp); /* O_CREAT|O_EXCL; its 0600 is reduced by the umask */
   if (fd < 0)
   {
@@ -271,6 +279,242 @@ static az_iot_result write_bio_private(const char* path, BIO* mem)
   az_iot_result rc = write_file_private(path, data, (size_t)len);
   OPENSSL_cleanse(data, (size_t)len);
   return rc;
+}
+
+/** @brief Identity of an existing file, independent of the path spelling. */
+typedef struct file_id
+{
+  unsigned long long dev;
+  unsigned long long ino;
+} file_id;
+
+/** @brief The configured files a staged-file walk must never pass on. */
+typedef struct file_ids
+{
+  file_id ids[5];
+  size_t count;
+} file_ids;
+
+/** @brief Identity of the file at @p path (links followed). @return false if
+ * there is none. */
+static bool file_id_of(const char* path, file_id* out)
+{
+#ifdef _WIN32
+  HANDLE h = CreateFileA(
+      path,
+      0,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      NULL,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS,
+      NULL);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    return false;
+  }
+  BY_HANDLE_FILE_INFORMATION info;
+  bool ok = GetFileInformationByHandle(h, &info) != 0;
+  CloseHandle(h);
+  if (ok)
+  {
+    out->dev = info.dwVolumeSerialNumber;
+    out->ino = ((unsigned long long)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+  }
+  return ok;
+#else
+  struct stat st;
+  if (stat(path, &st) != 0)
+  {
+    return false;
+  }
+  out->dev = (unsigned long long)st.st_dev;
+  out->ino = (unsigned long long)st.st_ino;
+  return true;
+#endif
+}
+
+/** @brief True when @p path is one of @p excluded, however either is spelled. */
+static bool is_excluded(const char* path, const file_ids* excluded)
+{
+  file_id id;
+  if (!excluded || excluded->count == 0 || !file_id_of(path, &id))
+  {
+    return false;
+  }
+  for (size_t i = 0; i < excluded->count; ++i)
+  {
+    if (excluded->ids[i].dev == id.dev && excluded->ids[i].ino == id.ino)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief Called per staged file; return true to stop the walk. */
+typedef bool (*staged_file_fn)(const char* staged, void* ctx);
+
+/**
+ * @brief Call @p fn for each regular file write_file_private() created next to @p path:
+ * "<path>.aziot-XXXXXX" (6 alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
+ * on Windows. Other names are never passed.
+ *
+ * @return false if the directory could not be listed completely, so a caller
+ * cannot tell whether every staged file was seen. A missing directory counts as
+ * listed and empty. A file that is one of @p excluded (a configured
+ * credential, by identity rather than path) is never passed.
+ */
+static bool for_each_staged(
+    const char* path,
+    const file_ids* excluded,
+    staged_file_fn fn,
+    void* ctx)
+{
+  const char* slash = strrchr(path, '/');
+#ifdef _WIN32
+  const char* bslash = strrchr(path, '\\');
+  if (!slash || (bslash && bslash > slash))
+  {
+    slash = bslash;
+  }
+#endif
+  size_t dir_len = slash ? (size_t)(slash - path) + 1 : 0;
+#ifdef _WIN32
+  /* A drive-relative path ("D:name") has no separator but keeps its drive. */
+  if (!slash && isalpha((unsigned char)path[0]) && path[1] == ':')
+  {
+    dir_len = 2;
+  }
+#endif
+  const char* base = path + dir_len;
+  size_t base_len = strlen(base);
+#ifdef _WIN32
+  size_t pattern_size = strlen(path) + MANAGED_TMP_TAG_LEN + 6;
+  char* pattern = (char*)malloc(pattern_size);
+  if (!pattern)
+  {
+    return false;
+  }
+  (void)snprintf(pattern, pattern_size, "%s" MANAGED_TMP_TAG "*.tmp", path);
+  WIN32_FIND_DATAA fd;
+  HANDLE h = FindFirstFileA(pattern, &fd);
+  free(pattern);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    DWORD err = GetLastError();
+    /* A missing directory holds no staged files either. */
+    return err == ERROR_FILE_NOT_FOUND || err == ERROR_NO_MORE_FILES || err == ERROR_PATH_NOT_FOUND;
+  }
+  char* stale = (char*)malloc(dir_len + MAX_PATH + 1);
+  if (!stale)
+  {
+    FindClose(h);
+    return false;
+  }
+  bool stop = false;
+  do
+  {
+    const char* name = fd.cFileName;
+    size_t hex_at = base_len + MANAGED_TMP_TAG_LEN;
+    bool match = strlen(name) == hex_at + 12 && _strnicmp(name, base, base_len) == 0
+        && _strnicmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0
+        && _stricmp(name + hex_at + 8, ".tmp") == 0;
+    for (size_t i = 0; match && i < 8; ++i)
+    {
+      match = isxdigit((unsigned char)name[hex_at + i]) != 0;
+    }
+    /* Only regular files: write_file_private() never creates anything else. */
+    match = match
+        && (fd.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE))
+            == 0;
+    if (match)
+    {
+      memcpy(stale, path, dir_len);
+      memcpy(stale + dir_len, name, strlen(name) + 1);
+      if (!is_excluded(stale, excluded))
+      {
+        stop = fn(stale, ctx);
+      }
+    }
+  } while (!stop && FindNextFileA(h, &fd));
+  bool ok = stop || GetLastError() == ERROR_NO_MORE_FILES;
+  FindClose(h);
+  free(stale);
+  return ok;
+#else
+  char* dir = (char*)malloc(dir_len + 2);
+  size_t name_len = base_len + MANAGED_TMP_TAG_LEN + 6;
+  char* stale = (char*)malloc(dir_len + name_len + 1);
+  DIR* d = NULL;
+  if (dir && stale)
+  {
+    if (dir_len > 0)
+    {
+      memcpy(dir, path, dir_len);
+      dir[dir_len] = '\0';
+    }
+    else
+    {
+      memcpy(dir, ".", 2);
+    }
+    errno = 0;
+    d = opendir(dir);
+  }
+  bool stop = false;
+  /* A missing directory holds no staged files either. */
+  bool listed = d != NULL || (dir && stale && errno == ENOENT);
+  while (!stop && d)
+  {
+    errno = 0; /* fn() may set it; only readdir()'s own result counts */
+    struct dirent* e = readdir(d);
+    if (!e)
+    {
+      listed = errno == 0;
+      break;
+    }
+    const char* name = e->d_name;
+    bool match = strlen(name) == name_len && strncmp(name, base, base_len) == 0
+        && strncmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+    for (size_t i = base_len + MANAGED_TMP_TAG_LEN; match && i < name_len; ++i)
+    {
+      match = isalnum((unsigned char)name[i]) != 0;
+    }
+    if (match)
+    {
+      memcpy(stale, path, dir_len);
+      memcpy(stale + dir_len, name, name_len + 1);
+      /* Only regular files, not followed through a link: write_file_private() never
+       * creates anything else, and a FIFO would block the read. */
+      struct stat st;
+      if (lstat(stale, &st) == 0 && S_ISREG(st.st_mode) && !is_excluded(stale, excluded))
+      {
+        stop = fn(stale, ctx);
+      }
+    }
+  }
+  bool ok = listed;
+  if (d)
+  {
+    closedir(d);
+  }
+  free(dir);
+  free(stale);
+  return ok;
+#endif
+}
+
+static bool delete_staged(const char* staged, void* ctx)
+{
+  (void)ctx;
+  (void)remove(staged);
+  return false;
+}
+
+/** @brief Remove files write_file_private() left next to @p path (for_each_staged). */
+static void remove_stale_temps(const char* path, const file_ids* excluded)
+{
+  (void)for_each_staged(path, excluded, delete_staged, NULL);
 }
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
@@ -788,6 +1032,43 @@ static const az_iot_certificate_provider_vtable s_managed_vtable = {
   .store_issued_certificate = managed_store,
 };
 
+/** @brief True when @p path is in @p owner's temporary-file namespace
+ * ("<owner>.aziot-..."), which init() sweeps. */
+static bool in_temp_namespace(const char* path, const char* owner)
+{
+  size_t n = strlen(owner);
+  if (!is_nonempty_cstr(path))
+  {
+    return false;
+  }
+#ifdef _WIN32
+  return _strnicmp(path, owner, n) == 0
+      && _strnicmp(path + n, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+#else
+  return strncmp(path, owner, n) == 0
+      && strncmp(path + n, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+#endif
+}
+
+/** @brief True when a configured path could be taken for a staged file. */
+static bool paths_collide(const az_iot_certificate_provider_managed_options* opts)
+{
+  const char* paths[] = { opts->bootstrap_cert_pem_path,
+                          opts->bootstrap_key_pem_path,
+                          opts->trusted_ca_pem_path,
+                          opts->operational_key_pem_path,
+                          opts->operational_cert_pem_path };
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i)
+  {
+    if (in_temp_namespace(paths[i], opts->operational_key_pem_path)
+        || in_temp_namespace(paths[i], opts->operational_cert_pem_path))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* --------------------------------------------------------------------------
  * Public API
  * ------------------------------------------------------------------------ */
@@ -829,7 +1110,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
   bool has_bootstrap = is_nonempty_cstr(opts->bootstrap_cert_pem_path);
   if (has_bootstrap != is_nonempty_cstr(opts->bootstrap_key_pem_path)
       || !is_nonempty_cstr(opts->operational_key_pem_path)
-      || !is_nonempty_cstr(opts->operational_cert_pem_path))
+      || !is_nonempty_cstr(opts->operational_cert_pem_path) || paths_collide(opts))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -860,6 +1141,25 @@ az_iot_result az_iot_certificate_provider_managed_init(
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
+
+  /* Delete temporary files a stopped process left next to the key or chain:
+   * one may hold a copy of a private key. Configured files are never taken
+   * for them, however their paths are spelled. */
+  file_ids configured = { .count = 0 };
+  const char* paths[] = { opts->bootstrap_cert_pem_path,
+                          opts->bootstrap_key_pem_path,
+                          opts->trusted_ca_pem_path,
+                          opts->operational_key_pem_path,
+                          opts->operational_cert_pem_path };
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i)
+  {
+    if (is_nonempty_cstr(paths[i]) && file_id_of(paths[i], &configured.ids[configured.count]))
+    {
+      configured.count++;
+    }
+  }
+  remove_stale_temps(provider->operational_key_path, &configured);
+  remove_stale_temps(provider->operational_cert_path, &configured);
 
   /* Operational key: load if present on disk, else generate and persist. */
   EVP_PKEY* key = load_key_file(provider->operational_key_path);
