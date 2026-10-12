@@ -1409,6 +1409,187 @@ static void managed_writes_replace_a_link_instead_of_following_it(void** state)
 }
 #endif
 
+/* Names the provider gives staged files next to a path, and look-alikes it
+ * must leave alone. */
+#if defined(_WIN32)
+#define STAGED_1(p) p ".aziot-0123abcd.tmp"
+#define STAGED_2(p) p ".aziot-DEADBEEF.tmp"
+#define NOT_STAGED_1(p) p ".aziot-0123abc.tmp"
+#define NOT_STAGED_2(p) p ".aziot-0123abcg.tmp"
+#define NOT_STAGED_3(p) p ".aziot-0123abc\xe9.tmp"
+#else
+#define STAGED_1(p) p ".aziot-abc123"
+#define STAGED_2(p) p ".aziot-ZZZZZZ"
+#define NOT_STAGED_1(p) p ".aziot-abc12"
+#define NOT_STAGED_2(p) p ".aziot-abc1234"
+/* Non-ASCII suffix: never generated, whatever the locale classifies it as. */
+#define NOT_STAGED_3(p) p ".aziot-abc12\xe9"
+#endif
+
+static void touch(const char* path)
+{
+  FILE* t = fopen(path, "wb");
+  assert_non_null(t);
+  assert_int_equal(0, fclose(t));
+}
+
+/* init() deletes the temporary files a stopped process left staged next to
+ * the key or chain, and nothing else. */
+static void managed_init_removes_only_its_own_stale_temp_files(void** state)
+{
+  (void)state;
+  remove_test_files();
+  static const char* const stale[] = { STAGED_1(OP_KEY), STAGED_2(OP_CERT) };
+  static const char* const kept[] = { OP_KEY ".backup",
+                                      NOT_STAGED_1(OP_KEY),
+                                      NOT_STAGED_2(OP_CERT),
+                                      NOT_STAGED_3(OP_KEY),
+                                      STAGED_1("x" OP_KEY) };
+  for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); ++i)
+  {
+    touch(stale[i]);
+  }
+  for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); ++i)
+  {
+    touch(kept[i]);
+  }
+
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); ++i)
+  {
+    assert_false(file_exists(stale[i]));
+  }
+  for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); ++i)
+  {
+    assert_true(file_exists(kept[i]));
+    assert_int_equal(0, remove(kept[i]));
+  }
+  remove_test_files();
+}
+
+#if !defined(_WIN32)
+static void make_dir(const char* path) { assert_int_equal(0, mkdir(path, 0700)); }
+
+static void remove_dir(const char* path) { assert_int_equal(0, rmdir(path)); }
+
+/* Only regular files are treated as staged: a FIFO with a staged name is not
+ * read (it would block init()), and a directory or symlink (nor its target) is
+ * not deleted. POSIX only. */
+static void managed_init_ignores_staged_names_that_are_not_files(void** state)
+{
+  (void)state;
+  remove_test_files();
+  assert_int_equal(0, mkfifo(STAGED_1(OP_KEY), 0600));
+  make_dir(STAGED_2(OP_CERT));
+  touch(LINK_TARGET);
+  assert_int_equal(0, symlink(LINK_TARGET, STAGED_2(OP_KEY)));
+
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_non_null(prov.operational_key);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  struct stat st;
+  assert_int_equal(0, lstat(STAGED_1(OP_KEY), &st)); /* fopen() would block on a FIFO */
+  assert_true(S_ISFIFO(st.st_mode));
+  assert_int_equal(0, lstat(STAGED_2(OP_CERT), &st));
+  assert_true(S_ISDIR(st.st_mode));
+  assert_int_equal(0, lstat(STAGED_2(OP_KEY), &st));
+  assert_true(S_ISLNK(st.st_mode));
+  assert_true(file_exists(LINK_TARGET));
+  assert_int_equal(0, remove(STAGED_2(OP_KEY)));
+  assert_int_equal(0, remove(LINK_TARGET));
+  assert_int_equal(0, remove(STAGED_1(OP_KEY)));
+  remove_dir(STAGED_2(OP_CERT));
+  remove_test_files();
+}
+#endif
+
+/* A configured file that a differently spelled path puts in the key's temp
+ * namespace is matched by identity, so the sweep never deletes it. */
+static void managed_init_never_sweeps_a_configured_file_under_an_alias(void** state)
+{
+  (void)state;
+  remove_test_files();
+  touch(STAGED_1(OP_KEY));
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = "./" OP_KEY;
+  opts.trusted_ca_pem_path = STAGED_1(OP_KEY);
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  az_iot_certificate_provider_managed_deinit(&prov);
+  assert_true(file_exists(STAGED_1(OP_KEY)));
+  assert_int_equal(0, remove(STAGED_1(OP_KEY)));
+  remove_test_files();
+}
+
+/* A missing directory holds no staged files: init() still tries to generate
+ * the key, and reports that it cannot write it rather than succeeding without
+ * one. */
+static void managed_init_in_a_missing_directory_fails_the_key_write(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = "az_iot_managed_test_no_such_dir/key.pem";
+  opts.operational_cert_pem_path = "az_iot_managed_test_no_such_dir/cert.pem";
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_ERR_INTERNAL, az_iot_certificate_provider_managed_init(&prov, &opts));
+  remove_test_files();
+}
+
+/* A configured path inside the key's or chain's temporary-file namespace is
+ * refused: init() would otherwise sweep it as a stale staged file. */
+static void managed_init_refuses_a_path_in_a_temp_namespace(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed prov;
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_cert_pem_path = OP_KEY ".aziot-abc123";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts = test_options();
+  opts.trusted_ca_pem_path = OP_CERT ".aziot-0123abcd.tmp";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts = test_options();
+  opts.bootstrap_key_pem_path = OP_KEY ".aziot-";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_false(file_exists(OP_KEY));
+  remove_test_files();
+}
+
+/* A directory path has no file name to namespace temp files under: refused
+ * before the sweep, which would otherwise match any ".aziot-" file there. */
+static void managed_init_refuses_a_directory_path(void** state)
+{
+  (void)state;
+  remove_test_files();
+  touch(STAGED_1(""));
+  touch(STAGED_1("."));
+  az_iot_certificate_provider_managed prov;
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = "./";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  const char* not_files[] = { "./", ".", "..", "./.", "./.." };
+  for (size_t i = 0; i < sizeof(not_files) / sizeof(not_files[0]); ++i)
+  {
+    opts = test_options();
+    opts.operational_cert_pem_path = not_files[i];
+    assert_int_equal(
+        AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  }
+  assert_true(file_exists(STAGED_1("")));
+  assert_true(file_exists(STAGED_1(".")));
+  assert_int_equal(0, remove(STAGED_1("")));
+  assert_int_equal(0, remove(STAGED_1(".")));
+  remove_test_files();
+}
+
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
  * makes adding an implementation a deliberate act rather than a surprise. */
@@ -1467,6 +1648,14 @@ int main(void)
     cmocka_unit_test(managed_a_failed_rename_keeps_the_destination),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
 #endif
+    cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
+#if !defined(_WIN32)
+    cmocka_unit_test(managed_init_ignores_staged_names_that_are_not_files),
+#endif
+    cmocka_unit_test(managed_init_never_sweeps_a_configured_file_under_an_alias),
+    cmocka_unit_test(managed_init_in_a_missing_directory_fails_the_key_write),
+    cmocka_unit_test(managed_init_refuses_a_path_in_a_temp_namespace),
+    cmocka_unit_test(managed_init_refuses_a_directory_path),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
