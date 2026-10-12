@@ -1543,12 +1543,15 @@ static void a_push_before_the_birth_is_dropped(void** state)
   /* The nonce rides the CONNECT username: correlationId=<32 hex>&... */
   const az_iot_mock_call* connect = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
   assert_int_equal(connect->kind, AZ_IOT_MOCK_CALL_CONNECT);
+  static const char hexd[] = "0123456789abcdef";
   uint8_t nonce[16];
   for (size_t i = 0; i < sizeof(nonce); ++i)
   {
-    unsigned byte = 0;
-    assert_int_equal(sscanf(connect->username + 14 + i * 2, "%2x", &byte), 1);
-    nonce[i] = (uint8_t)byte;
+    const char* hex = connect->username + 14 + i * 2;
+    const char* hi = strchr(hexd, hex[0]);
+    const char* lo = strchr(hexd, hex[1]);
+    assert_true(hex[0] != '\0' && hi != NULL && hex[1] != '\0' && lo != NULL);
+    nonce[i] = (uint8_t)(((hi - hexd) << 4) | (lo - hexd));
   }
 
   const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
