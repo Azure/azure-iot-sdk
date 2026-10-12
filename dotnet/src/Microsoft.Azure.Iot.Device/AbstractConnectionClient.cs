@@ -584,6 +584,9 @@ namespace Microsoft.Azure.Iot.Device
                 return Task.FromResult(connectPacketToEdit);
             }
 
+            Debug.Assert(_lastProvisioningAuthentication != null);
+            connectPacketToEdit = _lastProvisioningAuthentication.AddAuthentication(connectPacketToEdit, ConnectionEndpoint.IotHub);
+
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return Task.FromResult(IotHubMqttConnectOverride(connectPacketToEdit));
         }

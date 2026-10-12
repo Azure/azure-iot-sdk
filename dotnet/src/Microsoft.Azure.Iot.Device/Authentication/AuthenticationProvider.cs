@@ -12,6 +12,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     public abstract class AuthenticationProvider
     {
         //TODO track signed certificates in here somehow? SecureString stuff probably
+        // Kill the onCsrCompleted callback thing since now users who want to customly handle signed certificates just implement this interface instead
 
         public virtual MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
         {
