@@ -7513,8 +7513,10 @@ az_iot_result az_iot_connection_client__birth_nonce(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
-      && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+  if ((client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
+       && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+      || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }

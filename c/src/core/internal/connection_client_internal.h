@@ -95,7 +95,8 @@ extern "C"
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
 
   /* As az_iot_connection_client__presence_nonce(), but available once the birth is
-   * sent: the service may send dev-bound messages before the birth-ack. */
+   * sent: the service may send dev-bound messages before the birth-ack. Not available
+   * once close() is requested. */
   az_iot_result az_iot_connection_client__birth_nonce(
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);

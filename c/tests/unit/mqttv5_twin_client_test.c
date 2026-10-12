@@ -1484,6 +1484,20 @@ static void with_push_desired_a_push_before_the_birth_ack_is_delivered(void** st
   assert_int_equal(count_gets(fx), 0);
 }
 
+/* After close() during the birth, a push for that connection is dropped. */
+static void a_push_after_close_during_the_birth_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+  az_iot_connection_client_close(&fx->conn);
+
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_false(rec.fired);
+}
+
 /* Before the birth-ack, a push for another connection is still dropped. */
 static void a_push_before_the_birth_ack_from_another_connection_is_dropped(void** state)
 {
@@ -2710,6 +2724,8 @@ int main(void)
         a_desired_patch_before_the_birth_ack_is_delivered, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(
         a_push_before_the_birth_is_dropped, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_after_close_during_the_birth_is_dropped, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(connecting_current_does_not_fetch, setup, teardown),
     cmocka_unit_test_setup_teardown(a_get_ahead_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
