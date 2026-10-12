@@ -13,12 +13,23 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
     /// wire enum so the on-the-wire values ("classic", "mqttV5") are preserved even though the public API exposes the
     /// "Mqttv3"/"Mqttv5" surface.
     /// </summary>
-    internal sealed class IotHubConnectionTypeJsonConverter : JsonConverter<IotHubConnectionType>
+    internal sealed class IotHubConnectionTypeJsonConverter : JsonConverter<IotHubConnectionType?>
     {
-        public override IotHubConnectionType Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-            => JsonSerializer.Deserialize<ConnectionProfile>(ref reader, options).ToIotHubConnectionType();
+        public override IotHubConnectionType? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => reader.TokenType == JsonTokenType.Null
+                ? null
+                : JsonSerializer.Deserialize<ConnectionProfile>(ref reader, options).ToIotHubConnectionType();
 
-        public override void Write(Utf8JsonWriter writer, IotHubConnectionType value, JsonSerializerOptions options)
-            => JsonSerializer.Serialize(writer, value.ToConnectionProfile(), options);
+        public override void Write(Utf8JsonWriter writer, IotHubConnectionType? value, JsonSerializerOptions options)
+        {
+            if (value.HasValue)
+            {
+                JsonSerializer.Serialize(writer, value.Value.ToConnectionProfile(), options);
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
+        }
     }
 }
