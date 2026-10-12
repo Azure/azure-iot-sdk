@@ -574,8 +574,9 @@ Rules every client must implement. The C client meets all of them.
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
 - The issued chain is stored through the provider's `store_issued_certificate` before the callback,
-  which reports the result in `store_status`. The chain is delivered leaf-first as base64 DER and is
-  only valid for the duration of the callback; the application need not persist it.
+  which reports the result in `store_status`. The chain is delivered leaf-first, each entry base64
+  of DER or of a whole PEM certificate, and is only valid for the duration of the callback; the
+  application need not persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when

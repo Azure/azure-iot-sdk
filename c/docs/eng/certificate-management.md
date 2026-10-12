@@ -91,7 +91,7 @@ are the reference.
 | `release`, `deinit` | v1 | Release material; tear down the provider. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
-| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: base64 DER, leaf first, valid for the call only). |
+| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: each entry base64 of DER or of a whole PEM certificate, leaf first, valid for the call only; decode before persisting, PEM-wrapping DER). |
 | `sign(self, digest, ...)` | v2, optional | Sign for the TLS handshake with a non-extractable key (D8). |
 
 `az_iot_certificate_material` carries the credential as PEM strings, file paths, or a key

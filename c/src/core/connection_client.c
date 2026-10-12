@@ -2948,8 +2948,8 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
   return AZ_IOT_OK;
 }
 
-/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
- * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
+/* Parse registrationState.issuedCertificateChain (an array of base64 DER or PEM
+ * certs) from the DPS ASSIGNED payload and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
  * does not surface this field, so we walk the raw payload with az_json. */
 static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)

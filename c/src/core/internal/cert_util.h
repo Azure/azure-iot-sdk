@@ -29,7 +29,7 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
  */
 bool az_iot_cert_util_json_is_complete(az_span payload);
 
-/* Collect the base64 DER cert strings of a JSON array (the reader positioned so
+/* Collect the base64 cert strings (DER or PEM) of a JSON array (the reader positioned so
  * the next tokens are the array's string elements) as ZERO-COPY spans into the
  * payload. Fills certs[0..*out_count) and returns AZ_IOT_OK, or a *_PROTOCOL /
  * *_NOT_ENOUGH_SPACE error. An array that does not close is *_PROTOCOL. */
