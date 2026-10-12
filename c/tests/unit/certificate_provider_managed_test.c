@@ -1416,11 +1416,14 @@ static void managed_writes_replace_a_link_instead_of_following_it(void** state)
 #define STAGED_2(p) p ".aziot-DEADBEEF.tmp"
 #define NOT_STAGED_1(p) p ".aziot-0123abc.tmp"
 #define NOT_STAGED_2(p) p ".aziot-0123abcg.tmp"
+#define NOT_STAGED_3(p) p ".aziot-0123abc\xe9.tmp"
 #else
 #define STAGED_1(p) p ".aziot-abc123"
 #define STAGED_2(p) p ".aziot-ZZZZZZ"
 #define NOT_STAGED_1(p) p ".aziot-abc12"
 #define NOT_STAGED_2(p) p ".aziot-abc1234"
+/* Non-ASCII suffix: never generated, whatever the locale classifies it as. */
+#define NOT_STAGED_3(p) p ".aziot-abc12\xe9"
 #endif
 
 static void touch(const char* path)
@@ -1437,8 +1440,11 @@ static void managed_init_removes_only_its_own_stale_temp_files(void** state)
   (void)state;
   remove_test_files();
   static const char* const stale[] = { STAGED_1(OP_KEY), STAGED_2(OP_CERT) };
-  static const char* const kept[]
-      = { OP_KEY ".backup", NOT_STAGED_1(OP_KEY), NOT_STAGED_2(OP_CERT), STAGED_1("x" OP_KEY) };
+  static const char* const kept[] = { OP_KEY ".backup",
+                                      NOT_STAGED_1(OP_KEY),
+                                      NOT_STAGED_2(OP_CERT),
+                                      NOT_STAGED_3(OP_KEY),
+                                      STAGED_1("x" OP_KEY) };
   for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); ++i)
   {
     touch(stale[i]);

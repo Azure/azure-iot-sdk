@@ -351,12 +351,25 @@ static bool is_excluded(const char* path, const file_ids* excluded)
   return false;
 }
 
+/** @brief ASCII-only (locale-independent) checks for generated temp-name suffixes. */
+#ifdef _WIN32
+static bool is_ascii_xdigit(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+#else
+static bool is_ascii_alnum(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+#endif
+
 /** @brief Called per staged file; return true to stop the walk. */
 typedef bool (*staged_file_fn)(const char* staged, void* ctx);
 
 /**
  * @brief Call @p fn for each regular file write_file_private() created next to @p path:
- * "<path>.aziot-XXXXXX" (6 alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
+ * "<path>.aziot-XXXXXX" (6 ASCII alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
  * on Windows. Other names are never passed.
  *
  * @return false if the directory could not be listed completely, so a caller
@@ -421,7 +434,7 @@ static bool for_each_staged(
         && _stricmp(name + hex_at + 8, ".tmp") == 0;
     for (size_t i = 0; match && i < 8; ++i)
     {
-      match = isxdigit((unsigned char)name[hex_at + i]) != 0;
+      match = is_ascii_xdigit(name[hex_at + i]);
     }
     /* Only regular files: write_file_private() never creates anything else. */
     match = match
@@ -478,7 +491,7 @@ static bool for_each_staged(
         && strncmp(name + base_len, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
     for (size_t i = base_len + MANAGED_TMP_TAG_LEN; match && i < name_len; ++i)
     {
-      match = isalnum((unsigned char)name[i]) != 0;
+      match = is_ascii_alnum(name[i]);
     }
     if (match)
     {
@@ -511,7 +524,7 @@ static bool delete_staged(const char* staged, void* ctx)
   return false;
 }
 
-/** @brief Remove files write_file_private() left next to @p path (for_each_staged). */
+/** @brief Best effort: remove files write_file_private() left next to @p path. */
 static void remove_stale_temps(const char* path, const file_ids* excluded)
 {
   (void)for_each_staged(path, excluded, delete_staged, NULL);
