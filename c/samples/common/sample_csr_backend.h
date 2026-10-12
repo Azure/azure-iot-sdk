@@ -23,12 +23,17 @@ extern "C"
    * Returns non-zero on failure. */
   int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, char** out_csr);
 
-  /* Returns 1 when @p cert_base64 (base64 of a DER or PEM certificate, @p len
-   * bytes) certifies the private key at key_path, else 0. Never creates a key. */
+  /* Returns 1 when @p cert_base64 (base64 of exactly one DER or PEM
+   * certificate, @p len bytes, at most 64 KiB) certifies the private key at
+   * key_path, else 0. Never creates a key. */
   int sample_csr_backend_cert_matches_key(
       const char* key_path,
       const char* cert_base64,
       size_t len);
+
+  /* Returns 1 when the first certificate in the PEM file at cert_path certifies
+   * the private key at key_path, else 0. */
+  int sample_csr_backend_cert_file_matches_key(const char* key_path, const char* cert_path);
 
 #ifdef __cplusplus
 }

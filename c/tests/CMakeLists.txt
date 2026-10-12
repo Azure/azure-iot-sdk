@@ -498,6 +498,18 @@ if(TARGET az_iot_certificate_provider_managed)
     endif()
 endif()
 
+# The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+    set(_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
+        unit/sample_cert_provider_test.c
+        ${_sample_common}/sample_cert_provider.c
+        ${_sample_common}/sample_csr_openssl.c)
+    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
+    target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
+endif()
+
 # ---------------------------------------------------------------------------
 # MQTT iface conformance suite.
 #

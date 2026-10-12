@@ -139,19 +139,6 @@ static char* dup_str(const char* s)
 
 /* True only when the file holds a non-empty PEM certificate. A zero-length or
  * partial file (e.g. a crash mid-write) must not be taken for a usable identity. */
-static int cert_file_has_pem(const char* path)
-{
-  FILE* f = fopen(path, "rb");
-  if (!f)
-  {
-    return 0;
-  }
-  char buf[64] = { 0 };
-  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  (void)fclose(f);
-  return (n > 0) && (strstr(buf, "-----BEGIN CERTIFICATE-----") != NULL);
-}
-
 static az_iot_result provider_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
@@ -400,6 +387,8 @@ az_iot_result sample_cert_provider_init(
     }
   }
 
-  provider->has_operational = cert_file_has_pem(provider->operational_cert_path);
+  /* A stored chain is used only while it still certifies the key. */
+  provider->has_operational = sample_csr_backend_cert_file_matches_key(
+      provider->operational_key_path, provider->operational_cert_path);
   return AZ_IOT_OK;
 }
