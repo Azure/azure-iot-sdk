@@ -421,13 +421,14 @@ static az_result _tls_prepare(
 static az_result _tls_failure(_tls_transport* transport, int ret, bool handshake)
 {
   _az_mqtt_io_layer_errors const* const sink = &transport->errors;
-  if (handshake && ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED)
+  // A certificate whose (extended) key usage does not allow it fails as a bad certificate.
+  uint32_t const flags = handshake ? mbedtls_ssl_get_verify_result(&transport->ssl) : 0;
+  if (handshake
+      && (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
+          || (ret == MBEDTLS_ERR_SSL_BAD_CERTIFICATE && flags != 0 && flags != UINT32_MAX)))
   {
     _az_mqtt_io_layer_report(
-        sink,
-        AZ_MQTT_NATIVE_ERROR_TLS_VERIFY,
-        (int32_t)mbedtls_ssl_get_verify_result(&transport->ssl),
-        AZ_MQTT_ERROR_TLS_VERIFY);
+        sink, AZ_MQTT_NATIVE_ERROR_TLS_VERIFY, (int32_t)flags, AZ_MQTT_ERROR_TLS_VERIFY);
     _az_mqtt_io_layer_report(sink, AZ_MQTT_NATIVE_ERROR_TLS, ret, AZ_MQTT_ERROR_TLS_VERIFY);
     return AZ_MQTT_ERROR_TLS_VERIFY;
   }

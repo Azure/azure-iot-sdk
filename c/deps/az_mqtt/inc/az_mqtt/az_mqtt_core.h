@@ -79,6 +79,8 @@ struct az_mqtt_core
     int32_t recv_buf_pos;
     /** @brief Bumped whenever a session ends; guards against callbacks that reconnect. */
     uint32_t session_generation;
+    /** @brief While dispatching (see dispatching): the session whose packet is being handled. */
+    uint32_t dispatching_generation;
     /** @brief Server Maximum Packet Size (mqttv5 CONNACK); 0: none. Reset when a session ends. */
     uint32_t server_maximum_packet_size;
     az_mqtt_client_state state;
@@ -94,6 +96,8 @@ struct az_mqtt_core
     bool connect_sent;
     /** @brief The session outlives the connection: QoS 1/2 PUBLISH are stored for resending. */
     bool keep_messages;
+    /** @brief A received packet is being handled (its callbacks may be running). */
+    bool dispatching;
   } _internal;
 };
 

@@ -135,14 +135,6 @@ int main(void)
     return 1;
   }
 
-  /* The mock bypass is MQTT v5 only. */
-  if (sample_initial_profile(&state.config) != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
-  {
-    printf("Cloud-to-device messages are not available on this hub generation.\n");
-    sample_state_destroy(&state);
-    return 1;
-  }
-
   user_context user_ctx = { 0 };
 
   /* Certificate provider */

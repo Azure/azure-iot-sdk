@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -17,10 +16,20 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 
 namespace Microsoft.Azure.Iot.Device
 {
-
+    /// <summary>
+    /// A base class for all <see cref="ConnectionClient"/> classes to extend.
+    /// </summary>
+    /// <remarks>
+    /// Broadly, this class is responsible for connection management, managing when to try connecting to IoT Hub vs falling back to provisioning the device. It is also
+    /// responsible for locally queueing all feature client traffic while the device re-establishes its presence with IoT Hub.
+    /// 
+    /// Specific connection clients that inherit from this should only implement the specific connection needs for that client (for example, choosing CONNECT packet details, subscribing
+    /// to topics that are relevant for each Hub type, etc).
+    /// </remarks>
     public abstract class AbstractConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;

@@ -59,8 +59,13 @@ typedef struct csr_provider
 static az_iot_result csr_provider_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)s;
   (void)role;
   memset(out, 0, sizeof(*out));

@@ -5,6 +5,7 @@
 # FetchContent for the same reason as azure-sdk-for-c (no vcpkg dependency).
 include(FetchContent)
 
+# Keep the commit for this tag in c/cgmanifest.json.
 set(CMOCKA_TAG "cmocka-1.1.7" CACHE STRING "cmocka git tag")
 # cmocka is developed on GitLab; git.cryptomilk.org is the maintainer's older
 # host and is the less reliable of the two. On 2026-08-05 it began answering
@@ -162,6 +163,9 @@ target_include_directories(az_iot_tests_retry_policy PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_base64 unit/base64_test.c)
+target_include_directories(az_iot_tests_base64 PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -184,6 +188,10 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_telemetry_client unit/mqttv5_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv5_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv5)
+az_iot_add_cmocka_test(
+    az_iot_tests_mqttv5_custom_topic_client unit/mqttv5_custom_topic_client_test.c)
+target_link_libraries(
+    az_iot_tests_mqttv5_custom_topic_client PRIVATE az_iot_test_support az_iot_mqttv5)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
@@ -467,6 +475,12 @@ foreach(_backend openssl mbedtls)
         string(TOUPPER ${_backend} _backend_upper)
         target_compile_definitions(az_iot_tests_connection_sas_${_backend} PRIVATE
             AZ_IOT_TEST_CRYPTO_${_backend_upper})
+
+        # SAS token helpers over this backend.
+        az_iot_add_cmocka_test(az_iot_tests_sas_token_${_backend} unit/sas_token_test.c)
+        target_link_libraries(az_iot_tests_sas_token_${_backend} PRIVATE az_iot_crypto_${_backend})
+        target_compile_definitions(az_iot_tests_sas_token_${_backend} PRIVATE
+            AZ_IOT_TEST_CRYPTO_${_backend_upper})
     endif()
 endforeach()
 
@@ -478,6 +492,22 @@ if(TARGET az_iot_certificate_provider_managed)
         unit/certificate_provider_managed_test.c)
     target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE
         az_iot_certificate_provider_managed OpenSSL::Crypto)
+    if(WIN32)
+        # GetNamedSecurityInfoA and friends, to check the written files' DACLs.
+        target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE advapi32)
+    endif()
+endif()
+
+# The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+    set(_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
+        unit/sample_cert_provider_test.c
+        ${_sample_common}/sample_cert_provider.c
+        ${_sample_common}/sample_csr_openssl.c)
+    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
+    target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -655,21 +685,68 @@ if(AZ_IOT_WITH_PAHO)
 endif()
 
 if(AZ_IOT_WITH_AZ_MQTT)
+    # The adapter's sizes: its az_iot_az_mqtt_config.h, with the same definitions.
+    get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|SEND_|RECEIVE_|INFLIGHT_|USER_PROPERTIES_)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
-    target_compile_definitions(az_iot_tests_az_mqtt_adapter PRIVATE
-        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
         integration/az_mqtt_adapter_broker_test.c NO_CTEST)
-    target_link_libraries(az_iot_az_mqtt_adapter_broker PRIVATE az_iot_adapter_az_mqtt)
-    target_compile_definitions(az_iot_az_mqtt_adapter_broker PRIVATE
-        AZ_IOT_AZ_MQTT_BUFFER_SIZE=${AZ_IOT_AZ_MQTT_BUFFER_SIZE})
+    foreach(_t az_iot_tests_az_mqtt_adapter az_iot_az_mqtt_adapter_broker)
+        target_link_libraries(${_t} PRIVATE az_iot_adapter_az_mqtt)
+        # The adapter's include paths too (evaluated at generation): a config file found there.
+        target_include_directories(${_t} PRIVATE ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+            $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
+    endforeach()
+    if(WIN32)
+        # The PUBACK cases run an in-process server.
+        target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE ws2_32)
+    endif()
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
 
-    get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    # The adapter with a receive buffer larger than its send buffer, against an in-process server.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes
+        unit/az_mqtt_adapter_sizes_test.c
+        support/az_mqtt_asymmetric_common.c
+        support/az_mqtt_asymmetric_v3.c
+        support/az_mqtt_asymmetric_v5.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
+    endif()
+
+    # The adapter compiled in, so its az_mqtt callbacks can be called directly.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_ack
+        unit/az_mqtt_adapter_ack_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
+    endif()
+
+    # Each footprint, a user's definition over it, and a config file: resolved as documented.
+    foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
+        set(_t az_iot_tests_az_mqtt_config_${_case})
+        add_executable(${_t} unit/az_mqtt_config_test.c)
+        target_include_directories(${_t} PRIVATE
+            ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${CMAKE_CURRENT_SOURCE_DIR}/unit)
+        target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_CONFIG_TEST_${_case})
+        az_iot_apply_warnings(${_t})
+        add_test(NAME ${_t} COMMAND ${_t})
+    endforeach()
+    unset(_case)
+    unset(_az_mqtt_size_defs)
+
     foreach(_v 3 5)
         set(_t az_iot_conformance_az_mqtt_v${_v})
         add_executable(${_t} conformance/az_mqtt_main.c)

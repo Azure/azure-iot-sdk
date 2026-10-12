@@ -18,7 +18,38 @@ safe to run on a dev box or in CI — it never touches real firmware.
 - Requires Azure Device Provisioning service
 - Does not require an Azure IoT Hub service
 
-## Service Requirements
+### What is real vs. simulated
+
+The simulated hooks are shared with the regular-update sample, in
+[../common/su_sim.c](../common/su_sim.c).
+
+| Concern | Behavior |
+|---|---|
+| Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
+| Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
+| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
+| `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
+| `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
+| `is_installed_fn` | Always reports "not installed" so the deployment proceeds |
+| `persist_state_fn` / `load_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised |
+
+The simulated update payload is **zero-filled** on purpose: the device synthesizes
+the same zero bytes the import manifest declares, so the **real** per-file SHA-256
+check passes. Random content would not match.
+
+An update must declare `compatibility` matching the first two rows to be
+offered (see [main.c](main.c)):
+
+| Property | Value | Overridden by | Matched? |
+|---|---|---|---|
+| Manufacturer | `Contoso` | `AZ_IOT_SU_MANUFACTURER` | yes |
+| Model | `SU-Sim` | `AZ_IOT_SU_MODEL` | yes |
+| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
+
+The sample prints what it reported at startup, so a mismatch is visible rather
+than silent.
+
+## Service requirements
 - Azure Device Provisioning service
 - Azure Device Update service
 
@@ -34,20 +65,7 @@ This is **declared, not inferred**. A device whose enrollment has no linked hub
 and a device that is simply misconfigured both fail registration the same way, so
 a sample that guessed from the failure would hide real misconfiguration.
 
-
-## Sample Termination
-
-It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
-and exits 0. It stops early and exits non-zero only if a lifecycle settles at
-`Faulted`, or if the update check is abandoned — both of which it prints first.
-
-> Its output is block-buffered when piped or redirected, so a run that is killed
-> rather than interrupted can lose it. Prefix with `stdbuf -oL -eL` when
-> capturing to a file.
-
----
-
-## Configure the sample
+## Configure
 
 The sample [reads](../../../common/sample_utils.c) these environment variables:
 
@@ -108,7 +126,43 @@ $env:AZ_IOT_TRUSTED_CA          = "$PWD\ca.pem"
 > `az_iot_su_microsoft_root_keys()`, Microsoft's published software updates production roots
 > compiled into the SDK — see [Root keys](#root-keys) below.
 
----
+### Simulation knobs
+
+Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MISMATCH`, `SU_SIM_REBOOT`, `SU_SIM_DELAY_MS` and `AZ_IOT_PAHO_TRACE` are off by default; the other defaults are in the table:
+
+| Variable | Effect |
+|---|---|
+| `SU_SIM_FAIL_STEP=<n>` | Force `install_fn` to fail at 1-based step *n* (exercises per-step result accumulation + reverse-order rollback) |
+| `SU_SIM_HASH_MISMATCH=1` | Corrupt the synthesized payload to drive the per-file hash-verification failure path |
+| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample **exits** once the state is persisted (while the write fails the client retries it; if it gives up, the update is rolled back and reported FAILED). Re-run it (without this knob) to `resume()` and finish the workflow; that run makes no startup update check, since a new workflow would supersede the resumed one |
+| `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
+| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
+| `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
+| `AZ_IOT_PAHO_TRACE=<level>` | Enable the Paho MQTT library's trace logging (`error`, `protocol`, `min`, `medium`, `max`; any other value means `min`). The lines are logged at `TRACE` by the `paho` component, so also set `AZ_IOT_SU_LOG_LEVEL=trace`. Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
+
+```bash
+# Force step 1 install to fail -> reverse-order rollback, failure reported.
+SU_SIM_FAIL_STEP=1 ./az_iot_sample_simulated_onboarding
+
+# Drive a payload hash mismatch -> download verification failure.
+SU_SIM_HASH_MISMATCH=1 ./az_iot_sample_simulated_onboarding
+
+# Require a reboot at install -> persist + exit; re-run to resume() and finish.
+SU_SIM_REBOOT=1 ./az_iot_sample_simulated_onboarding
+./az_iot_sample_simulated_onboarding            # resumes from the persisted blob
+```
+
+### Root keys
+
+The software updates client verifies the manifest's JWS signature against one or more RSA root public
+keys. The sample calls `az_iot_su_microsoft_root_keys()` — Microsoft's published
+Software updates production roots, compiled into the SDK (`src/features/su/su_root_keys_microsoft.c`)
+— so manifests signed under those roots can be verified. A manifest signed
+under a different key (including a preview or test issuer) fails verification;
+this sample does not download roots dynamically. To trust another issuer,
+validate its public key out of band, build a corresponding `az_iot_su_root_key`
+array, and pass it to `az_iot_su_client_init()` instead. Do not bypass
+signature verification.
 
 ## Build and run
 
@@ -206,7 +260,7 @@ docker cp device-key.pem  su-sample:/azure-iot-sdk/c/build/linux-gcc-debug/sampl
 
 # --- back inside the container ---
 cd /azure-iot-sdk/c/build/linux-gcc-debug/samples/software_update
-# export the variables from "Configure the sample", then:
+# export the variables from "Configure", then:
 ./az_iot_sample_simulated_onboarding
 ```
 
@@ -219,9 +273,7 @@ Leave it running. It brings up its provisioning session, asks for an onboarding
 update on that session, and waits there. It never registers — see
 [Why no IoT Hub is required?](#why-no-iot-hub-is-required).
 
----
-
-## When an update is offered
+### When an update is offered
 
 **Have the update deployed before you start the sample.** It asks once, on the
 onboarding route, when its provisioning session comes up — it does not poll. A
@@ -236,75 +288,71 @@ route" — it is not an error.** An update is only offered on the route that mat
 the job type: an `OnboardingUpdate` job is served **only** on the onboarding
 route, which is the one this sample uses.
 
----
+## How it ends
 
-## Additional Details
+It runs until interrupted (Ctrl-C), like the long-lived agent it stands in for,
+and exits 0. It stops early and exits non-zero only if a lifecycle settles at
+`Faulted`, or if the update check is abandoned — both of which it prints first.
 
-### What is real vs. simulated
+It also exits 0 after a simulated reboot request (`SU_SIM_REBOOT`), once the workflow
+state is persisted, and exits 1 at startup when configuration or initialization fails.
 
-The simulated hooks are shared with the regular-update sample, in
-[../common/su_sim.c](../common/su_sim.c).
+> Its output is block-buffered when piped or redirected, so a run that is killed
+> rather than interrupted can lose it. Prefix with `stdbuf -oL -eL` when
+> capturing to a file.
 
-| Concern | Behavior |
-|---|---|
-| Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
-| Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
-| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
-| `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
-| `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
-| `is_installed_fn` | Always reports "not installed" so the deployment proceeds |
-| `persist_state_fn` / `load_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised |
+## Expected output
 
-The simulated update payload is **zero-filled** on purpose: the device synthesizes
-the same zero bytes the import manifest declares, so the **real** per-file SHA-256
-check passes. Random content would not match.
+At startup, with the defaults (SDK log lines omitted):
 
-An update must declare `compatibility` matching the first two rows to be
-offered (see [main.c](main.c)):
-
-| Property | Value | Overridden by | Matched? |
-|---|---|---|---|
-| Manufacturer | `Contoso` | `AZ_IOT_SU_MANUFACTURER` | yes |
-| Model | `SU-Sim` | `AZ_IOT_SU_MODEL` | yes |
-| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
-
-The sample prints what it reported at startup, so a mismatch is visible rather
-than silent.
-
-### Root keys
-
-Software updates verifies the manifest's JWS signature against one or more RSA root public
-keys. The sample calls `az_iot_su_microsoft_root_keys()` — Microsoft's published
-Software updates production roots, compiled into the SDK (`src/features/su/su_root_keys_microsoft.c`)
-— so manifests signed under those roots can be verified. A manifest signed
-under a different key (including a preview or test issuer) fails verification;
-this sample does not download roots dynamically. To trust another issuer,
-validate its public key out of band, build a corresponding `az_iot_su_root_key`
-array, and pass it to `az_iot_su_client_init()` instead. Do not bypass
-signature verification.
-
-### Simulation knobs
-
-All default off. Set them in the shell that runs the sample:
-
-| Variable | Effect |
-|---|---|
-| `SU_SIM_FAIL_STEP=<n>` | Force `install_fn` to fail at 1-based step *n* (exercises per-step result accumulation + reverse-order rollback) |
-| `SU_SIM_HASH_MISMATCH=1` | Corrupt the synthesized payload to drive the per-file hash-verification failure path |
-| `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample **exits** once the state is persisted (while the write fails the client retries it; if it gives up, the update is rolled back and reported FAILED). Re-run it (without this knob) to `resume()` and finish the workflow; that run makes no startup update check, since a new workflow would supersede the resumed one |
-| `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
-| `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
-| `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
-| `AZ_IOT_PAHO_TRACE=1` | Enable the Paho MQTT library's trace logging (`[paho-trace]` lines). Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
-
-```bash
-# Force step 1 install to fail -> reverse-order rollback, failure reported.
-SU_SIM_FAIL_STEP=1 ./az_iot_sample_simulated_onboarding
-
-# Drive a payload hash mismatch -> download verification failure.
-SU_SIM_HASH_MISMATCH=1 ./az_iot_sample_simulated_onboarding
-
-# Require a reboot at install -> persist + exit; re-run to resume() and finish.
-SU_SIM_REBOOT=1 ./az_iot_sample_simulated_onboarding
-./az_iot_sample_simulated_onboarding            # resumes from the persisted blob
 ```
+Matched against a deployed update: manufacturer=Contoso model=SU-Sim
+Reported only (not matched, and omitted on the onboarding route): installedUpdateId=Contoso/SU-Sim/1.0.0
+Provisioning: Idle -> Setting up (AZ_IOT_OK)
+...
+Provisioning: Connecting -> Connected (AZ_IOT_OK)
+Provisioning session up. Running (Ctrl-C to exit)...
+```
+
+When an update is offered (excerpt):
+
+```
+Update workflow: Idle -> ManifestReceived
+...
+  [download] file 1/1 (<size> bytes) [simulated]
+...
+  [install] step 0 [simulated]
+...
+  [apply]   step 0 [simulated]
+...
+Deployment workflow complete. Restart the sample to ask again.
+```
+
+The workflow states and steps depend on the imported update. With nothing deployed, the
+startup lines are all it prints.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
+| `Device properties are invalid or too long ...` or `Device properties need <n> bytes of cache ...`, exit 1 | An `AZ_IOT_SU_*` identity value is too long. |
+| `onboarding update check abandoned: ...`, exit 1 | The check got no usable answer within its timeout; the line includes what the service said. |
+| No update offered, no error | Nothing is deployed, the deployment is not an `OnboardingUpdate` job, it was created after the startup check, or `AZ_IOT_SU_MANUFACTURER` / `AZ_IOT_SU_MODEL` do not match the update's compatibility. |
+| `Update workflow: ... -> Failed` | A manifest signature not under the Microsoft root keys (see [Root keys](#root-keys)), a payload hash mismatch, or an install failure; `SU_SIM_FAIL_STEP` and `SU_SIM_HASH_MISMATCH` force the last two. |
+| Repeating `TCP/TLS connect failure` | DPS is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
+| `connection lost: (unknown)` | Set `AZ_IOT_PAHO_TRACE=protocol` and `AZ_IOT_SU_LOG_LEVEL=trace` to see the cause. |
+| `The connection faulted and will not recover on its own.`, exit 1 | A connection lifecycle settled at `Faulted`; see the SDK log lines before it. |
+
+## Where to look in `main.c`
+
+| What | Code |
+| --- | --- |
+| Provisioning-only connection client | `initialize_connection_client()`, `copts.dps.provision_only = true` |
+| Device properties and root keys | `dp` in `main()`, `az_iot_su_microsoft_root_keys()`, `az_iot_su_client_init()` |
+| Simulated platform hooks | `hooks.*_fn` in `main()`, implemented in [`su_sim.c`](../common/su_sim.c) |
+| The single update check | `az_iot_su_client_request_onboarding_update()` |
+| Workflow and abandoned-operation events | `on_su_event()` |
+| Resume after a simulated reboot | `az_iot_su_client_resume()` |
+
+Design background: [software-updates.md](../../../../docs/eng/software-updates.md).

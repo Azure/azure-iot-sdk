@@ -69,7 +69,8 @@ AZ_NODISCARD az_result _az_mqtt_http_connect_check(az_mqtt_proxy_options const* 
  *
  * The request holds the credentials: clear @p buffer after use.
  *
- * @retval AZ_MQTT_ERROR_INVALID_CONFIG @p host is empty, too long, or has CR, LF, NUL or a space.
+ * @retval AZ_MQTT_ERROR_INVALID_CONFIG @p host is empty, too long, or has a control character or
+ * space.
  */
 AZ_NODISCARD az_result _az_mqtt_http_connect_request(
     az_mqtt_proxy_options const* proxy,

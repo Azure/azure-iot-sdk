@@ -106,6 +106,8 @@ extern "C"
   /* Decimal, unpadded, no locale involvement. */
   void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value);
   void az_iot_span_writer_append_i32(az_iot_span_writer* writer, int32_t value);
+  /** @brief Decimal, unpadded: up to 20 digits. */
+  void az_iot_span_writer_append_u64(az_iot_span_writer* writer, uint64_t value);
 
   /** @brief Decimal, zero-padded to @p min_digits (clamped to 1..10) and widened
    * past it when the value needs more digits. */

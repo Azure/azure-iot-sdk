@@ -30,9 +30,6 @@ extern "C"
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
-   *     Until that DPS api-version ships, local development can synthesize an
-   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
-   *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
@@ -80,7 +77,7 @@ extern "C"
      * verbatim, which keeps the extensible union from becoming lossy at the C
      * boundary: a profile this SDK has never heard of still reports UNKNOWN
      * *and* the text the service sent. For absent/null it is the resolved
-     * contract default ("classic"), or the exact development override value.
+     * contract default ("classic").
      * Points into the connection client and stays valid until deinit().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
@@ -219,11 +216,10 @@ extern "C"
    * Per role (DPS, hub), the sources configured are tried in this order,
    * skipping any not set: the X.509 certificate from
    * az_iot_connection_client_options::certificate_provider, then the primary
-   * and secondary keys of az_iot_auth::sas. Setting only one of X.509 or SAS
+   * and secondary keys of az_iot_auth::sas, then its on_sas_token_required.
+   * The provider may offer several certificates per role (load() index 0, 1,
+   * ...); each is a source in that order. Setting only one of X.509 or SAS
    * selects it alone. See az_iot_auth for fallback on rejection.
-   *
-   * Not implemented yet: further provider certificates (a load() index, see
-   * docs/eng/certificate-management.md) and user_provided_token.
    */
   typedef enum az_iot_auth_source
   {
@@ -231,86 +227,53 @@ extern "C"
     AZ_IOT_AUTH_SOURCE_X509, /**< Certificate from the provider; see x509_index. */
     AZ_IOT_AUTH_SOURCE_PRIMARY_KEY, /**< SAS token signed with the primary key. */
     AZ_IOT_AUTH_SOURCE_SECONDARY_KEY, /**< SAS token signed with the secondary key. */
-    AZ_IOT_AUTH_SOURCE_USER_PROVIDED /**< SAS token from az_iot_auth::sas::user_provided_token. */
+    AZ_IOT_AUTH_SOURCE_USER_PROVIDED /**< SAS token from
+                                        az_iot_connection_client_update_sas_token(). */
   } az_iot_auth_source;
 
   /**
-   * @brief What a requested SAS token must be valid for. SDK-owned; valid
-   * only during the callback. Copy what a PENDING response needs later.
+   * @brief What a required SAS token must be valid for. SDK-owned; valid only
+   * during the callback.
    */
   typedef struct az_iot_sas_token_request
   {
-    /** @brief Identifies this request to az_iot_connection_client_complete_sas_token(). */
-    uint32_t request_id;
     /** @brief Role the token is for. */
     az_iot_connection_scope scope;
     /** @brief For AZ_IOT_CONN_SCOPE_HUB, the hub generation the token is for.
      * AZ_IOT_CONNECTION_PROFILE_MQTT_V3 for DPS. */
     az_iot_connection_profile profile;
     /** @brief The token's `sr` value, NUL-terminated, already URL-encoded:
-     * `<id_scope>%2fregistrations%2f<registration_id>` for DPS (lowercase,
-     * as azure-sdk-for-c builds it),
-     * `<hub host>%2Fdevices%2F<device id>` for an mqttv3 hub. */
+     * `<id_scope>%2fregistrations%2f<registration_id>` for DPS,
+     * `<hub host>%2Fdevices%2F<device id>` for the hub (mqttv3 and mqttv5). */
     const char* resource_uri;
     /** @brief The token's `skn` value, NUL-terminated: `registration` for DPS,
-     * "" for the hub. */
+     * "" (no `skn`) for the hub. */
     const char* key_name;
+    /** @brief The hub's connected session is due for renewal; it continues
+     * until the token is supplied. false: a connect attempt waits for it. */
+    bool is_renewal;
   } az_iot_sas_token_request;
 
-  /** @brief Outcome of a SAS token request. */
-  typedef enum az_iot_sas_token_status
-  {
-    /** @brief The token is in the buffer. */
-    AZ_IOT_SAS_TOKEN_READY = 0,
-    /** @brief The application will deliver it with
-     * az_iot_connection_client_complete_sas_token(). The callback must return
-     * promptly; do slow work (network, HSM) outside it. */
-    AZ_IOT_SAS_TOKEN_PENDING,
-    /** @brief No token now. The attempt fails and is retried after
-     * az_iot_sas_token_response::retry_after_seconds. */
-    AZ_IOT_SAS_TOKEN_UNAVAILABLE
-  } az_iot_sas_token_status;
-
-  /** @brief Response to a SAS token request. */
-  typedef struct az_iot_sas_token_response
-  {
-    az_iot_sas_token_status status; /**< Outcome. */
-    /** @brief READY: bytes of the token, without a terminator. */
-    size_t token_len;
-    /** @brief READY: seconds the token stays valid from now; non-zero. The
-     * SDK renews at az_iot_auth::sas::renewal_percent of it. */
-    uint32_t valid_seconds;
-    /** @brief UNAVAILABLE: seconds before the next attempt. 0: the
-     * reconnection policy decides. */
-    uint32_t retry_after_seconds;
-  } az_iot_sas_token_response;
-
   /**
-   * @brief Supplies a SAS token. Called from do_work() before each connect
-   * attempt that needs one, and again at az_iot_auth::sas::renewal_percent of
-   * the current token's validity.
+   * @brief Notifies that @p request->scope needs a SAS token. Called from
+   * do_work() for each connect attempt that needs one, which waits in
+   * SETTING_UP meanwhile, and at az_iot_auth::sas::renewal_percent of the
+   * current token's lifetime.
    *
-   * For READY, write the complete token, `SharedAccessSignature
-   * sr=...&sig=...&se=...` (plus `&skn=...` when @p request->key_name is not
-   * empty), into @p token_buffer. A response of PENDING keeps the attempt
-   * waiting, at most connect_timeout_seconds, for
-   * az_iot_connection_client_complete_sas_token().
+   * Supply the token with az_iot_connection_client_update_sas_token(), from
+   * here or later. Must not block: do slow work (network, HSM) outside it.
+   * A connect attempt waits at most connect_timeout_seconds, then fails with
+   * AZ_IOT_ERR_TIMEOUT and is retried under reconnection_policy, notifying
+   * again. A renewal keeps the session up; if the current token expires first,
+   * the session ends and its reconnect waits for the token. To stop waiting,
+   * call az_iot_connection_client_close().
    *
-   * @param[in] request           What the token must be valid for.
-   * @param[out] token_buffer     Destination for READY; no terminator needed.
-   * @param[in] token_buffer_size Bytes the token may use: the token area of
-   *                              az_iot_connection_client_options::sas_buffer
-   *                              less one, reserved for the terminator the
-   *                              SDK appends.
-   * @param[out] response         Outcome; zeroed on entry.
-   * @param[in] user_ctx          az_iot_auth::sas::user_ctx.
+   * @param[in] request  What the token must be valid for. Copy what is needed
+   *                     after the call.
+   * @param[in] user_ctx az_iot_auth::sas::user_ctx.
    */
-  typedef void (*az_iot_sas_token_callback)(
-      const az_iot_sas_token_request* request,
-      char* token_buffer,
-      size_t token_buffer_size,
-      az_iot_sas_token_response* response,
-      void* user_ctx);
+  typedef void (
+      *az_iot_sas_token_required_callback)(const az_iot_sas_token_request* request, void* user_ctx);
 
   /**
    * @brief Current time, in seconds since 1970-01-01T00:00:00Z, or 0 when not
@@ -345,7 +308,7 @@ extern "C"
    *
    * Keys are copied and decoded by init(); later changes to the strings have
    * no effect. To change keys, re-initialize the client (and its feature
-   * clients), or supply tokens through user_provided_token.
+   * clients), or supply tokens through on_sas_token_required.
    *
    * init() fails with AZ_IOT_ERR_INVALID_ARG for a secondary key without a
    * primary, an undecodable key, or keys without
@@ -366,27 +329,38 @@ extern "C"
        * client_id for a direct hub connection. */
       bool is_enrollment_group_key;
       /** @brief Application-supplied tokens, or NULL. Tried after the keys.
-       * Not implemented yet: init() returns AZ_IOT_ERR_NOT_SUPPORTED. */
-      az_iot_sas_token_callback user_provided_token;
-      void* user_ctx; /**< Passed to user_provided_token. */
+       * Needs sas_buffer; not crypto or a Unix time. */
+      az_iot_sas_token_required_callback on_sas_token_required;
+      void* user_ctx; /**< Passed to on_sas_token_required. */
       /** @brief Lifetime of each token the SDK signs from a key, in seconds.
        * 0 selects AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS. */
       uint32_t token_lifetime_seconds;
       /**
-       * @brief When to renew the token of a session held open, as a percent
-       * of token_lifetime_seconds for key-signed tokens, or of
-       * az_iot_sas_token_response::valid_seconds for user-provided ones. 0
+       * @brief When to renew the session's token, as a percent of
+       * token_lifetime_seconds for key-signed tokens, or of
+       * the lifetime_seconds given to az_iot_connection_client_update_sas_token()
+       * for user-provided ones. 0
        * selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects values
        * above 99.
        *
-       * Not implemented yet: validated only. Until it is, the service ends
-       * the session when the token expires and the reconnect signs a new
-       * one. When implemented: MQTT 3.1.1 cannot re-authenticate a live session, so renewal
-       * reconnects: RETRY_PENDING, then CONNECTED, both with
-       * az_iot_connection_state_event::is_credential_renewal set and reason
-       * AZ_IOT_OK; a hub session resumes per session_continuity. With a
-       * PENDING user-provided token, the session continues until the token
-       * arrives or the current one expires.
+       * MQTT 3.1.1 cannot re-authenticate a live session, so renewal
+       * disconnects and reconnects at once, with or without a
+       * reconnection_policy: RETRY_PENDING, SETTING_UP, CONNECTING, then
+       * CONNECTED, all with az_iot_connection_state_event::is_credential_renewal
+       * set and reason AZ_IOT_OK. The session resumes per session_continuity;
+       * publishes awaiting a PUBACK complete with AZ_IOT_ERR_NOT_CONNECTED. A
+       * failed reconnect is reported and retried as any other failure.
+       *
+       * A provisioning session kept open without a registration (provision_only,
+       * or held by a feature client) is renewed the same way: DISCONNECTING,
+       * SETTING_UP, CONNECTING, then CONNECTED, all flagged, reason AZ_IOT_OK;
+       * its users see DISCONNECTING as for any loss of the session. A
+       * registration in progress is not interrupted. A failed reconnect is
+       * handled as that session's other failures. A
+       * user-provided token is asked for first (is_renewal), while the session
+       * continues: the renewal starts once it is supplied. If none is there
+       * when the current token expires, the session ends and the reconnect
+       * waits for one. lifetime_seconds counts from when the token is supplied.
        */
       uint8_t renewal_percent;
     } sas;
@@ -462,7 +436,9 @@ extern "C"
      * first for each role (az_iot_auth_source); a role for which it has no
      * certificate moves on to SAS. A load() failure other than
      * AZ_IOT_ERR_NOT_FOUND fails the attempt instead of connecting without
-     * TLS.
+     * TLS. Its keys must not change while the client is open; load() is called
+     * on every connect, so a key changed while closed is used on the next
+     * open().
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -524,8 +500,9 @@ extern "C"
                                              * from the certificate_provider during DPS
                                              * registration and connect to the assigned
                                              * hub with the issued operational cert.
-                                             * Requires a provider whose vtable exposes
-                                             * get_csr (version >= 2). */
+                                             * Requires a provider with get_csr,
+                                             * release_csr and store_issued_certificate;
+                                             * the chain is always stored there. */
 
       /* Consecutive failed hub connect attempts after which the assignment is
        * treated as stale and re-provisioning is forced. Defaults to
@@ -672,9 +649,12 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only). With push_desired, the service pushes
-     * the desired snapshot on connect instead of the mqttv5 twin client fetching
-     * it. With push_reported, a pushed reported section reaches
+     * Both default to false. With push_desired, the service pushes the desired
+     * snapshot on connect and each desired patch while connected. Without it
+     * (pull mode) the service sends no desired patches: the mqttv5 twin client
+     * fetches the snapshot on connect when behind, and later changes are seen
+     * only on reconnect or after az_iot_mqttv5_twin_client_get(). With
+     * push_reported, a pushed reported section reaches
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
@@ -849,7 +829,7 @@ extern "C"
     /**
      * @brief Storage for SAS: signing scratch, the decoded keys and the token
      * of the current attempt. Required when dps_auth or hub_auth sets a key
-     * (or, once implemented, user_provided_token); unused otherwise, so
+     * (or on_sas_token_required); unused otherwise, so
      * clients without SAS pay nothing. Size it with
      * AZ_IOT_SAS_BUFFER_SIZE(); init() fails with
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is missing or smaller than
@@ -861,7 +841,7 @@ extern "C"
      */
     struct
     {
-      uint8_t* buffer; /**< NULL when no SAS key is set. */
+      uint8_t* buffer; /**< NULL when no SAS key or on_sas_token_required is set. */
       size_t size; /**< Bytes in buffer. */
     } sas_buffer;
   } az_iot_connection_client_options;
@@ -1018,17 +998,19 @@ extern "C"
      * FAULTED with AZ_IOT_CONN_FAILURE_IDENTITY means no further automatic
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
-    /** @brief The transition is a planned SAS token renewal, not a failure.
-     * Only where renewal needs a reconnect (MQTT); a transport that
-     * re-authenticates in session has no transition to flag. Always false
-     * until renewal is implemented. */
+    /** @brief The transition is a planned SAS token renewal, not a failure:
+     * the hub's RETRY_PENDING, or the provisioning session's DISCONNECTING,
+     * through CONNECTED (see
+     * az_iot_auth::sas::renewal_percent). Only where renewal needs a reconnect
+     * (MQTT); a transport that re-authenticates in session has no transition
+     * to flag. */
     bool is_credential_renewal;
     /** @brief The credential this event is about: the one that connected on
      * CONNECTED, the one rejected on a rejection. AZ_IOT_AUTH_SOURCE_NONE from
      * a new session's SETTING_UP until a credential is selected. */
     az_iot_auth_source auth_source;
-    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index.
-     * Always 0 until multiple certificates per role are implemented. */
+    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index
+     * (load() index). */
     uint8_t x509_index;
   } az_iot_connection_state_event;
 
@@ -1066,15 +1048,28 @@ extern "C"
     int32_t service_code; /* hub errorCode on FAILED; 0 otherwise     */
     uint32_t retry_after_s; /* suggested retry delay; 0 if none         */
     const az_iot_issued_certificate* issued; /* non-NULL on ISSUED          */
+    /* ISSUED only: result of storing the chain in the certificate provider.
+     * AZ_IOT_OK if the next connect uses it. */
+    az_iot_result store_status;
   } az_iot_csr_event;
 
   typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
-  /* Fired when the connection client obtains a DPS/provider-issued operational
-   * certificate during provisioning (D4). Optional; use for app-side persistence
-   * or to react (e.g. inventory). The chain is valid only during the callback. */
-  typedef void (
-      *az_iot_operational_cert_callback)(const az_iot_issued_certificate* issued, void* user_ctx);
+  /**
+   * @brief Fired when DPS issues an operational certificate (D4), after the
+   * attempt to store the chain in the certificate provider. Optional.
+   *
+   * @param issued The chain; valid only during the callback.
+   * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
+   * chain is stored. On failure the registration fails.
+   *
+   * Runs while the provisioning message is being processed: do not call
+   * az_iot_connection_client_close() or _deinit() from it.
+   */
+  typedef void (*az_iot_operational_cert_callback)(
+      const az_iot_issued_certificate* issued,
+      az_iot_result store_result,
+      void* user_ctx);
 
   /* Fired when a DPS registration completes and the assignment carries a custom
    * payload -- `registrationState.payload`, the counterpart of
@@ -1236,9 +1231,9 @@ extern "C"
  */
 #define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
   (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
-/** @brief Reserved: most certificates the client will load from the provider
- * per role once multiple certificates are implemented (indexes 0 to this - 1),
- * even if the provider never returns AZ_IOT_ERR_NOT_FOUND. At most 256. */
+/** @brief Most certificates the client loads from the provider per role
+ * (indexes 0 to this - 1), even if the provider never returns
+ * AZ_IOT_ERR_NOT_FOUND. 1 to 255. */
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
@@ -1323,7 +1318,8 @@ extern "C"
     AZ_IOT_CONN_DEFER_FAULT,
     AZ_IOT_CONN_DEFER_RECONNECT,
     AZ_IOT_CONN_DEFER_IDLE,
-    AZ_IOT_CONN_DEFER_FALLBACK
+    AZ_IOT_CONN_DEFER_FALLBACK,
+    AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
   };
   enum
   {
@@ -1740,11 +1736,15 @@ extern "C"
       az_iot_auth_source source;
       uint8_t x509_index;
       /* Fallback: where the next attempt starts (NONE: the first source),
-       * where the current pass began (NONE: no pass), and whether the last
-       * load() returned a certificate. */
+       * where the current pass began (NONE: no pass), with their certificate
+       * indexes for X.509; whether the last load() at index 0 returned a
+       * certificate, and the role it was for. */
       az_iot_auth_source first;
+      uint8_t first_x509_index;
       az_iot_auth_source pass_from;
+      uint8_t pass_from_x509_index;
       bool x509_available;
+      uint8_t x509_role; /* az_iot_cert_role */
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
@@ -1756,6 +1756,50 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
+    /* SAS token renewal per scope: when the current token is due (monotonic
+     * ms, and Unix seconds for a monotonic clock that stops in suspend; 0:
+     * none) and whether a renewal is in progress. The disconnect deadline is
+     * the hub's: the bound on the wait for its renewal disconnect (0: not
+     * waiting). */
+    uint64_t sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_renewal_disconnect_deadline_ms;
+    bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
+    /* User-provided SAS token request per scope; request_id 0: none. The
+     * callback is called from do_work() (asked); ready once the token is in
+     * the token area (see sas_token_holder). */
+    struct
+    {
+      uint32_t request_id;
+      bool asked;
+      bool for_renewal; /* a renewal: the session stays up meanwhile */
+      bool held; /* supplied unasked: kept for the next attempt */
+      bool ready;
+      size_t token_len;
+      uint32_t valid_seconds;
+      uint64_t delivered_ms; /* when supplied (monotonic); valid_seconds counts from it */
+      uint64_t delivered_unix_seconds; /* the same in Unix time; 0: unknown */
+      uint64_t deadline_ms; /* bound on the wait (monotonic); 0: none */
+    } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
+    /* When each scope's user-provided token expires: monotonic ms, and Unix
+     * seconds for a monotonic clock that stops in suspend; 0: none. */
+    uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Each scope's next token request is not asked before this (monotonic
+     * ms): a renewal request that could not be asked. 0: none. */
+    uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint32_t sas_token_last_request_id;
+    /* Bytes a delivered token may use now, terminator excluded. */
+    size_t sas_token_capacity;
+    /* Scope + 1 whose delivered token the token area holds; 0: none. */
+    uint8_t sas_token_holder;
+    /* Scope + 1 whose callback is running; 0: none. */
+    uint8_t sas_token_asking;
+    /* Scope + 1 whose CONNECT password is the token area, until connect()
+     * has taken it; 0: none. */
+    uint8_t sas_token_in_use;
+    /* The failure being scheduled is a user-provided token's, not the hub's. */
+    bool sas_token_attempt_failed;
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct
@@ -1890,27 +1934,49 @@ extern "C"
   AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
   /**
-   * @brief Delivers a SAS token the callback answered PENDING.
+   * @brief Supplies a SAS token for @p scope, from az_iot_auth::sas::on_sas_token_required
+   * or at any other time.
    *
-   * Call from the thread that calls do_work(); the attempt proceeds on the
-   * next do_work(). The token is copied.
+   * - A connect attempt or renewal waiting for one takes it.
+   * - Otherwise, for a session connected with a user-provided token (the hub,
+   *   or a provisioning session that is not registering):
+   *   renews the session with it now. MQTT 3.1.1 cannot re-authenticate a live
+   *   session, so the session disconnects and reconnects at once, as for any
+   *   renewal (see az_iot_auth::sas::renewal_percent).
+   * - Otherwise: kept for @p scope's next attempt that uses a user-provided
+   *   token; dropped when @p scope settles in IDLE or FAULTED, by close(), or
+   *   when the token area of sas_buffer is needed first (a key-signed token,
+   *   or the other role's token request).
    *
-   * @param[in] client     Client.
-   * @param[in] request_id az_iot_sas_token_request::request_id.
-   * @param[in] token      For READY, response->token_len bytes of token; no
-   *                       terminator needed. NULL otherwise.
-   * @param[in] response   READY or UNAVAILABLE, as for the callback.
-   * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p request_id is not pending
-   * (completed, timed out, or cancelled by close()); AZ_IOT_ERR_NOT_ENOUGH_SPACE
-   * when the token and its terminator exceed the token area of sas_buffer;
-   * AZ_IOT_ERR_INVALID_ARG for a
-   * PENDING response, a READY response without a token or validity.
+   * The token's `sr` must match @p scope's current resource URI
+   * (az_iot_sas_token_request::resource_uri, compared decoded), and its `skn`
+   * the key name; `sr`, `sig`, `se` and `skn` may appear once each. The token is copied. Call from
+   * the thread that calls do_work(), or from an SDK callback; a reconnect it causes runs in
+   * do_work().
+   *
+   * @param[in] client           Client.
+   * @param[in] scope            Role the token is for.
+   * @param[in] token            `SharedAccessSignature sr=...&sig=...&se=...`,
+   *                             plus `&skn=registration` for DPS; no terminator needed.
+   * @param[in] token_len        Bytes of @p token.
+   * @param[in] lifetime_seconds Seconds the token stays valid from now; non-zero.
+   * @return AZ_IOT_OK;
+   * AZ_IOT_ERR_INVALID_ARG for a NULL or empty token, one with a NUL byte, a
+   * lifetime of 0, or a token not for @p scope's identity;
+   * AZ_IOT_ERR_NOT_FOUND when @p scope's identity is not known yet (a hub
+   * before its DPS assignment);
+   * AZ_IOT_ERR_NOT_SUPPORTED when @p scope has no on_sas_token_required;
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token and its terminator exceed the
+   * token area of sas_buffer (less the resource URI from inside the callback);
+   * AZ_IOT_ERR_BUSY while a token is being handed to a CONNECT (from state
+   * callbacks before it), or from the other role's callback.
    */
-  AZ_NODISCARD az_iot_result az_iot_connection_client_complete_sas_token(
+  AZ_NODISCARD az_iot_result az_iot_connection_client_update_sas_token(
       az_iot_connection_client* client,
-      uint32_t request_id,
+      az_iot_connection_scope scope,
       const char* token,
-      const az_iot_sas_token_response* response);
+      size_t token_len,
+      uint32_t lifetime_seconds);
 
   /* Close the session and return the client to AZ_IOT_CONN_STATE_IDLE.
    *
@@ -1952,23 +2018,29 @@ extern "C"
       az_iot_connection_client* client,
       uint32_t timeout_ms);
 
-  /* Request a renewed operational certificate from the connected (MQTTv3) hub by
-   * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
-   * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
-   *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
-   *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
-   * The request's device id is taken from the connected client_id. Only one CSR
-   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The request is
-   * always tracked: if the
-   * broker rejects it, the callback fires at once with AZ_IOT_CSR_FAILED and the
-   * PUBACK status. The issued
-   * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
-   * If no terminal (200/error) response arrives within an internal timeout, the
-   * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
-   * is released, so a lost response can never wedge renewal permanently. */
+  /**
+   * @brief Request a renewed operational certificate from the connected (MQTTv3)
+   * hub.
+   *
+   * The CSR comes from the certificate provider's get_csr(), with the device id
+   * as subject; the provider needs get_csr, release_csr and
+   * store_issued_certificate, else AZ_IOT_ERR_NOT_SUPPORTED before anything is
+   * sent. Two-phase: @p cb fires with AZ_IOT_CSR_ACCEPTED (202), then
+   * AZ_IOT_CSR_ISSUED (200) or AZ_IOT_CSR_FAILED. On ISSUED the chain is stored
+   * with store_issued_certificate() before @p cb, which reports the result in
+   * az_iot_csr_event::store_status. The live session is kept; the next connect
+   * uses the stored chain, or the previous credential if the store failed.
+   *
+   * Only one operation may be in flight (AZ_IOT_ERR_BUSY). A request the broker
+   * rejects fails at once with the PUBACK status; one with no terminal response
+   * within an internal timeout fails with AZ_IOT_ERR_TIMEOUT.
+   *
+   * @param request_id NULL to generate one, or a prior id to resubmit.
+   * @param replace NULL, or "*" / a request id to supersede an active hub-side
+   * operation.
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
       az_iot_connection_client* client,
-      const az_iot_certificate_signing_request* csr,
       const char* request_id,
       const char* replace,
       az_iot_csr_callback cb,

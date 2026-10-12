@@ -96,29 +96,6 @@ typedef void (*az_mqtt5_on_transport_error_fn)(
 
 // ──────────────────────── Client options ─────────────────────
 
-typedef struct
-{
-  /** @brief Buffer for user properties in received CONNACK (az_mqtt5_user_property[]). */
-  az_span connack_user_properties;
-
-  /** @brief Buffer for user properties in received PUBLISH (az_mqtt5_user_property[]). */
-  az_span publish_user_properties;
-
-  /** @brief Buffer for subscription identifiers in received PUBLISH (int32_t[]). */
-  az_span publish_subscription_identifiers;
-
-  /** @brief Buffer for reason codes in SUBACK/UNSUBACK (az_mqtt5_reason_code[]). */
-  az_span suback_reason_codes;
-
-  /** @brief Buffer for user properties in SUBACK/UNSUBACK (az_mqtt5_user_property[]). */
-  az_span suback_user_properties;
-
-  /** @brief Buffer for user properties in ACKs (PUBACK/PUBREC/PUBREL/PUBCOMP) (az_mqtt5_user_property[]). */
-  az_span ack_user_properties;
-
-  /** @brief Buffer for user properties in received DISCONNECT (az_mqtt5_user_property[]). */
-  az_span disconnect_user_properties;
-} az_mqtt5_client_buffers;
 
 typedef struct
 {
@@ -178,8 +155,17 @@ typedef struct
   /** @brief User context pointer (passthrough, not used by the library). */
   void* user_context;
 
-  /** @brief Caller-provided decode buffers used by callbacks and packet parsing. */
-  az_mqtt5_client_buffers buffers;
+  /**
+   * @brief User properties of a received packet (az_mqtt5_user_property[]), for every packet type:
+   * one packet is decoded at a time. A callback's arrays point into it, valid until it returns or
+   * reconnects (as its spans into receive_buffer). Extra ones are dropped. May be empty.
+   */
+  az_span decode_user_properties;
+  /**
+   * @brief Subscription identifiers (PUBLISH) or reason codes (SUBACK, UNSUBACK) of a received
+   * packet (int32_t[]), shared like decode_user_properties. Extra ones are dropped. May be empty.
+   */
+  az_span decode_codes;
   /** @brief Optional. See az_mqtt5_on_connection_closed_fn. */
   az_mqtt5_on_connection_closed_fn on_connection_closed;
   /** @brief Optional. See az_mqtt5_on_transport_error_fn. */
@@ -223,7 +209,8 @@ struct az_mqtt5_client
     /** @brief Connection, framing, keep-alive and session state (az_mqtt_core); first. */
     az_mqtt_core core;
     az_mqtt5_connect_options connect_options;
-    az_mqtt5_client_buffers buffers;
+    az_span decode_user_properties;
+    az_span decode_codes;
     az_mqtt5_on_connack_fn on_connack;
     az_mqtt5_on_publish_received_fn on_publish;
     az_mqtt5_on_suback_fn on_suback;
@@ -298,8 +285,9 @@ az_mqtt5_client_connect_start(az_mqtt5_client* client, int32_t timeout_ms);
  * connect (see az_mqtt5_client_connect_start()). Returns early when keep-alive needs
  * attention, so a long @p timeout_ms never delays a PINGREQ.
  *
- * Any failure ends the session: the transport is closed, the state becomes
- * DISCONNECTED and on_connection_closed reports the same result.
+ * Any failure but AZ_MQTT_ERROR_NOT_CONNECTED and AZ_MQTT_ERROR_INVALID_STATE ends the session:
+ * the transport is closed, the state becomes DISCONNECTED and on_connection_closed reports the
+ * same result.
  *
  * @param timeout_ms  Max time to wait for incoming data (or connect progress);
  *                    -1 waits until keep-alive is due. Sends are bounded by
@@ -307,6 +295,8 @@ az_mqtt5_client_connect_start(az_mqtt5_client* client, int32_t timeout_ms);
  *                    by this.
  * @retval AZ_MQTT_ERROR_KEEP_ALIVE_TIMEOUT A PINGREQ got nothing back within the keep-alive.
  * @retval AZ_MQTT_ERROR_NOT_CONNECTED Called while disconnected.
+ * @retval AZ_MQTT_ERROR_INVALID_STATE Called from a callback of a received packet of this session
+ *         (that packet is still being handled): nothing done; the session continues.
  */
 AZ_NODISCARD az_result az_mqtt5_client_process_loop(az_mqtt5_client* client, int32_t timeout_ms);
 

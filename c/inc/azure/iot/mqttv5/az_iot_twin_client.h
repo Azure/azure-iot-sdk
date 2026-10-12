@@ -7,13 +7,15 @@
  * @file
  * @brief MQTT v5 (MQTTv5 hub) twin client.
  *
- * Desired properties are kept in sync with the service: the handler receives a
- * @ref AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT (full document) whenever the device is
- * behind, then each in-order @ref AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH. The client
- * fetches the snapshot itself: on connect when the birth-ack shows the device
- * behind (unless `options.twin_push.push_desired` has the service push it), and
- * whenever a patch or probe shows it behind. It holds no twin content, only
- * versions.
+ * Desired properties reach the handler as a
+ * @ref AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT (full document) whenever the device
+ * is behind, then as each in-order @ref AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH. The
+ * service sends patches and version probes only when
+ * `options.twin_push.push_desired` is set, and then also pushes the snapshot on
+ * connect. Otherwise (the default), changes made while connected reach the
+ * handler only on reconnect or after a GET. The client fetches a snapshot when
+ * the birth-ack (without push_desired), a GET, a patch or a probe shows it
+ * behind. It holds no twin content, only versions.
  *
  * GET and reported patches are requests: each completes exactly once, with the
  * service's answer, AZ_IOT_ERR_TIMEOUT, or AZ_IOT_ERR_NOT_CONNECTED. The SDK

@@ -249,9 +249,14 @@ static az_result _validate_server_certificate(_tls_transport* transport, PCCERT_
     }
   }
 
+  // A certificate with an Extended Key Usage must allow server authentication.
+  static LPSTR server_auth[] = { szOID_PKIX_KP_SERVER_AUTH };
   CERT_CHAIN_PARA chain_para;
   memset(&chain_para, 0, sizeof(chain_para));
   chain_para.cbSize = sizeof(chain_para);
+  chain_para.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
+  chain_para.RequestedUsage.Usage.cUsageIdentifier = 1;
+  chain_para.RequestedUsage.Usage.rgpszUsageIdentifier = server_auth;
   PCCERT_CHAIN_CONTEXT chain = NULL;
   if (!CertGetCertificateChain(
           chain_engine, server_cert, NULL, server_cert->hCertStore, &chain_para, 0, NULL, &chain)
@@ -291,6 +296,7 @@ static az_result _validate_server_certificate(_tls_transport* transport, PCCERT_
     { CERT_TRUST_IS_UNTRUSTED_ROOT, CERT_E_UNTRUSTEDROOT },
     { CERT_TRUST_IS_NOT_SIGNATURE_VALID, TRUST_E_CERT_SIGNATURE },
     { CERT_TRUST_IS_NOT_TIME_VALID, CERT_E_EXPIRED },
+    { CERT_TRUST_IS_NOT_VALID_FOR_USAGE, CERT_E_WRONG_USAGE },
   };
   for (size_t i = 0; policy_error == 0 && i < sizeof(rejected) / sizeof(rejected[0]); ++i)
   {

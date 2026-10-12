@@ -266,8 +266,9 @@ typedef struct
 typedef struct
 {
   uint16_t packet_id;
-  /** @brief One per topic filter, in order. */
-  az_mqtt5_reason_code* reason_codes;
+  /** @brief One per topic filter, in order: az_mqtt5_reason_code values. int32_t, the element
+   * type of az_mqtt5_client_options.decode_codes, which holds them. */
+  int32_t* reason_codes;
   /** @brief Entries stored; never exceeds reason_code_capacity (extra codes are dropped). */
   int32_t reason_code_count;
   int32_t reason_code_capacity;

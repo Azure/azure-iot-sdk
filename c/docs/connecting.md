@@ -193,6 +193,7 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 | `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
+| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. |
 
 ## Certificates
 
@@ -205,14 +206,17 @@ Operational certificates:
 
 - **Issued at provisioning.** Set `dps.request_operational_certificate` and provide
   `csr_payload_buffer` (`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes is enough for any CSR the service
-  accepts). The device sends a CSR with its registration. The issued chain goes to the provider's
-  `store_issued_certificate()`, if it has one, and then to the callback set with
-  `az_iot_connection_client_set_operational_cert_callback()`, if set. At least one must be
-  present. If storage fails, the callback is skipped and the registration fails.
+  accepts). The provider must implement `get_csr()`, `release_csr()` and
+  `store_issued_certificate()`. The device sends the provider's CSR with its registration. The
+  issued chain is stored with the provider's `store_issued_certificate()`, then passed with the
+  store result to the callback set with `az_iot_connection_client_set_operational_cert_callback()`,
+  if set. If storage fails, the registration fails.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
-  `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
-  copy or persist it in the callback (it is valid only there), for example through the
-  provider, then `close()` and `open()` to use it. See
+  `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
+  at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
+  the callback, which reports the result in `store_status`. The session is kept either way. If
+  the store succeeded, `close()` then `open()` connects with the renewed chain; if it failed, the
+  provider keeps the previous credential and the next connect uses it. See
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.
@@ -224,12 +228,10 @@ Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
 
 ## Authentication
 
-> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
-> with the primary and secondary keys, with fallback on rejection; `trusted_ca`; `unix_time`;
-> `token_lifetime_seconds`; `auth_source` in state events. Proposed, not implemented yet: further
-> provider certificates, `user_provided_token` (`init()` returns `AZ_IOT_ERR_NOT_SUPPORTED`), and
-> planned renewal (`renewal_percent`). Until renewal lands, the hub ends the session when the
-> token expires and the client reconnects with a new one.
+> **Implemented:** X.509 from `certificate_provider` (several certificates per role), then SAS
+> tokens signed with the primary and secondary keys, then tokens from `on_sas_token_required`,
+> with fallback on rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the
+> hub's token (`renewal_percent`); `auth_source` and `x509_index` in state events.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -238,7 +240,7 @@ order, skipping any not set:
 | --- | --- | --- |
 | X.509 certificates | `certificate_provider` | As today. The provider may offer more than one per role (index 0, 1, ...). |
 | Primary, secondary key | `dps_auth` / `hub_auth`: `sas.primary_key_base64` (+ `secondary_key_base64`, `is_enrollment_group_key`) | The SDK signs tokens with the backend in `crypto`, and needs a Unix time: `time()`, or `unix_time.get_time`. |
-| User-provided token | `sas.user_provided_token` | The application supplies tokens; the SDK never sees its key. |
+| User-provided token | `sas.on_sas_token_required` | The application supplies tokens with `az_iot_connection_client_update_sas_token()`; the SDK never sees its key. |
 
 Setting only X.509, or only SAS, uses that alone. A zeroed `az_iot_auth` means no SAS.
 
@@ -265,22 +267,63 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **Cost.** Only devices configured with more than one source pay for fallback: one extra
   connect per rejected source, once per credential change (the working source is kept).
 - **Memory.** All SAS state -- decoded keys, signing scratch, the token -- lives in
-  `sas_buffer`, which the app provides only when it uses SAS keys. Size it with
+  `sas_buffer`, which the app provides only when it uses SAS keys or `on_sas_token_required`. Size it with
   `AZ_IOT_SAS_BUFFER_SIZE(distinct keys, token area)`; a key set identically for DPS and the hub
   counts once. The token is wiped once the transport has taken it; the whole buffer at
   `deinit()`.
 - **Keys are fixed at `init()`.** They are copied and decoded there; to change them,
-  re-initialize the client and its feature clients. Use `user_provided_token` to rotate without
+  re-initialize the client and its feature clients. Use `on_sas_token_required` to rotate without
   re-initializing.
-- **Token callback.** It must not block. It answers `READY`, `PENDING` (deliver later with
-  `az_iot_connection_client_complete_sas_token()`, within `connect_timeout_seconds`), or
-  `UNAVAILABLE` with `retry_after_seconds` (0: the reconnection policy decides).
-- **Renewal.** Per role, in `sas`: at `renewal_percent` (default 80; 1-99) of
-  `token_lifetime_seconds` (key-signed, default one hour) or of the callback's `valid_seconds`.
-  Applies to any session held open. MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
-  reconnects; those state events carry `is_credential_renewal` and reason `AZ_IOT_OK`.
-- **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
-  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
+- **Token callback.** `on_sas_token_required` only notifies: it receives the role, hub
+  generation, resource URI, key name and `is_renewal`, and must not block. It is called from
+  `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
+  a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
+  later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
+  retried under the policy, notifying again. To stop waiting, call `close()`. A renewal (hub, or a
+  provisioning session kept open) is notified while the session stays up, with no timeout.
+- **Supplying a token.** `update_sas_token()` checks the token's `sr` (decoded) and `skn` against
+  the role's current identity: `AZ_IOT_ERR_INVALID_ARG` on a mismatch, `AZ_IOT_ERR_NOT_FOUND` for
+  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a session
+  connected with a user-provided token (the hub, or a provisioning session that is not
+  registering) renews with it at once (disconnect and reconnect, as below);
+  anything else keeps it for the role's next attempt that uses a user-provided token, until the
+  role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
+  key-signed token, or the other role's token request). A token supplied after its attempt timed out
+  is kept for the retry, unless the role settles in `IDLE` first: a provisioning session without a
+  registration (`provision_only`, or held by a feature client) does, and asks again. Call it from the `do_work()` thread or an SDK callback; it returns
+  `AZ_IOT_ERR_BUSY` while a token is being handed to a CONNECT, or from the other role's callback.
+  During a callback the resource URI shares the token area, so the token has less room then.
+  `lifetime_seconds` counts from the call; a token that expired before use is asked for again,
+  and a session whose token expires before its replacement arrives is ended, the reconnect
+  waiting for the token. A new DPS assignment drops a hub token asked for or held before it; the
+  next attempt asks again.
+- **Building a token.** [`az_iot_sas_token.h`](../inc/azure/iot/az_iot_sas_token.h) formats it
+  from the request's `resource_uri` and `key_name` and an expiry: `az_iot_sas_token_string_to_sign()`
+  gives what to sign, and `az_iot_sas_token_from_signature()` builds the token from its
+  HMAC-SHA256, so a key that never leaves a TPM, HSM or secure element can sign it.
+  `az_iot_sas_token_sign()` does both with a key in memory, through a crypto backend;
+  `az_iot_sas_derive_device_key()` derives a device key from an enrollment-group key.
+- **Renewal.** In `hub_auth.sas` and `dps_auth.sas`: at `renewal_percent` (default 80; 1-99) of
+  `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
+  by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
+  MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
+  disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
+  `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
+  `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
+  reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
+  registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
+  `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see
+  `DISCONNECTING` as for any loss of the session. A registration in progress is not interrupted.
+- **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until
+  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4). Each is a
+  source in the pass, in index order, before the keys: a rejected certificate falls back to the
+  next index at once. The index that connected is kept, like any source, and reported in
+  `x509_index`. The hub uses the operational certificates when index 0 of that role exists,
+  else the bootstrap ones, checked on every attempt: an operational certificate that appears
+  (e.g. issued by DPS) replaces a kept bootstrap one. Without a certificate at index 0, none past
+  it is asked for or reused: a kept later index is dropped, for DPS and the hub. A provider with one certificate per role returns `AZ_IOT_ERR_NOT_FOUND`
+  for index > 0. Uses: a self-signed identity's primary and secondary certificates, or the
+  previous issued certificate kept as a rollback.
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
   certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
@@ -319,6 +362,7 @@ no crypto can leave `crypto` NULL.
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
+| `AZ_IOT_ERR_PUBLISH_REFUSED` | Publish callback: the hub refused the message and will refuse it again (mqttv5 `0x87`, `0x90`, `0x99`), or it is over the hub's Maximum Packet Size (`0x95`). Do not resend unchanged. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
 | `AZ_IOT_ERR_TIMEOUT` | A handshake step or CSR operation timed out. |
 

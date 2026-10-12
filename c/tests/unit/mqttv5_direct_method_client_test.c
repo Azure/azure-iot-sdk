@@ -1728,7 +1728,8 @@ static void a_full_shared_pool_leaves_results_tracked(void** state)
   inject_puback(fx, sent->packet_id, AZ_IOT_ERR_MQTT);
   az_iot_log_set_global_sink(NULL);
 
-  assert_int_equal(cap.count, 1);
+  /* The connection's line with the wire code, then this client's. */
+  assert_int_equal(cap.count, 2);
   assert_non_null(strstr(cap.last, "result:1"));
   assert_non_null(strstr(cap.last, "rejected"));
 }

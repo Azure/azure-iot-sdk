@@ -146,7 +146,7 @@ static void test_load_returns_file_contents(void** state)
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
 
   assert_non_null(mat.client_cert_pem);
   assert_string_equal(k_cert_pem, mat.client_cert_pem);
@@ -164,7 +164,7 @@ static void test_load_returns_file_contents(void** state)
 
   az_iot_certificate_material mat2;
   memset(&mat2, 0, sizeof(mat2));
-  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat2));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat2));
   assert_string_equal(k_cert_pem, mat2.client_cert_pem);
   mgr.base.vtable->release(&mgr.base, &mat2);
 
@@ -183,7 +183,7 @@ static void test_load_without_optional_fields(void** state)
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   assert_null(mat.trusted_ca_pem);
   assert_null(mat.client_key_password);
   assert_non_null(mat.client_cert_pem);
@@ -212,7 +212,7 @@ static void test_load_after_deinit_is_refused(void** state)
    * point at. */
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
 }
 
 static void test_load_rejects_null_arguments(void** state)
@@ -228,9 +228,16 @@ static void test_load_rejects_null_arguments(void** state)
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, &mat));
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, NULL));
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, NULL));
+  /* At any index; past index 0 a valid call is NOT_FOUND (one certificate). */
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(NULL, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 1, NULL));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 1, &mat));
 
   az_iot_certificate_provider_pem_deinit(&mgr);
 }
@@ -252,8 +259,8 @@ static void test_load_of_an_operational_credential_returns_the_static_material(v
   az_iot_certificate_material oper;
   memset(&boot, 0, sizeof(boot));
   memset(&oper, 0, sizeof(oper));
-  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &boot));
-  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_OPERATIONAL, &oper));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &boot));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_OPERATIONAL, 0, &oper));
 
   assert_string_equal(boot.client_cert_pem, oper.client_cert_pem);
   assert_string_equal(boot.client_key_pem, oper.client_key_pem);
@@ -303,7 +310,7 @@ static void test_deinit_through_the_vtable_destroys_the_provider(void** state)
 
   az_iot_certificate_material mat;
   memset(&mat, 0, sizeof(mat));
-  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, &mat));
+  assert_int_equal(AZ_IOT_ERR_NOT_INITIALIZED, vt->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
 }
 
 /* A readable certificate with an unreadable key is the shape a half-provisioned
