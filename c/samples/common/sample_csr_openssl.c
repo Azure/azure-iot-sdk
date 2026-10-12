@@ -239,6 +239,13 @@ int sample_csr_backend_cert_matches_key(const char* key_path, const char* cert_b
   return key_path ? cert_certifies_key_file(parse_cert_entry(cert_base64, len), key_path) : 0;
 }
 
+int sample_csr_backend_is_cert(const char* cert_base64, size_t len)
+{
+  X509* cert = parse_cert_entry(cert_base64, len);
+  X509_free(cert);
+  return cert != NULL;
+}
+
 int sample_csr_backend_cert_file_matches_key(const char* key_path, const char* cert_path)
 {
   if (!key_path || !cert_path)

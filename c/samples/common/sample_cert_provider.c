@@ -259,13 +259,23 @@ static az_iot_result provider_store(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* The leaf must certify the operational key, or the next connect fails. */
+  /* Every entry must be one certificate, and the leaf must certify the
+   * operational key, or the next connect fails. */
   if (!sample_csr_backend_cert_matches_key(
           p->operational_key_path,
           (const char*)az_span_ptr(issued->certificates[0]),
           (size_t)az_span_size(issued->certificates[0])))
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 1; i < issued->count; ++i)
+  {
+    if (!sample_csr_backend_is_cert(
+            (const char*)az_span_ptr(issued->certificates[i]),
+            (size_t)az_span_size(issued->certificates[i])))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
 
   /* All-or-nothing: write a new, uniquely named file next to the destination,

@@ -291,8 +291,9 @@ static int stored_chain(EVP_PKEY* key, int* leaf_ok)
   return count;
 }
 
-/* Store refuses a chain for another key and keeps the previous one; both wire
- * forms are stored as a PEM chain TLS can read. */
+/* Store refuses a chain for another key, or with an entry that is not one
+ * certificate, and keeps the previous one; both wire forms are stored as a
+ * PEM chain TLS can read. */
 static void sample_store_checks_the_key_and_writes_both_forms(void** state)
 {
   (void)state;
@@ -320,6 +321,18 @@ static void sample_store_checks_the_key_and_writes_both_forms(void** state)
 
   int leaf_ok = 0;
   char* leaf_der = der_entry(leaf, 0);
+  char junk[] = "!!!!";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, store(&p, leaf_der, junk));
+  char* inter_trailing = der_entry(inter, 3);
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, store(&p, leaf_der, inter_trailing));
+  free(inter_trailing);
+  f = fopen(OP_CERT, "rb");
+  assert_non_null(f);
+  memset(buf, 0, sizeof(buf));
+  assert_int_equal(8, (int)fread(buf, 1, sizeof(buf) - 1, f));
+  assert_int_equal(0, fclose(f));
+  assert_string_equal(buf, "previous");
+
   assert_int_equal(AZ_IOT_OK, store(&p, leaf_der, inter_der));
   assert_int_equal(2, stored_chain(key, &leaf_ok));
   assert_true(leaf_ok);

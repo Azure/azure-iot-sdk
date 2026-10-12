@@ -31,6 +31,10 @@ extern "C"
       const char* cert_base64,
       size_t len);
 
+  /* Returns 1 when @p cert_base64 is base64 of exactly one DER or PEM
+   * certificate (@p len bytes, at most 64 KiB), else 0. */
+  int sample_csr_backend_is_cert(const char* cert_base64, size_t len);
+
   /* Returns 1 when the first certificate in the PEM file at cert_path certifies
    * the private key at key_path, else 0. */
   int sample_csr_backend_cert_file_matches_key(const char* key_path, const char* cert_path);
