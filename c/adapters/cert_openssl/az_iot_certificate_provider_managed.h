@@ -27,7 +27,8 @@
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
  * ("<path>.aziot-...") next to the destination, then renamed over it. init()
  * deletes such files a stopped process left behind (best effort: one it cannot
- * list or delete is left, and init() continues). The private key is stored
+ * list or delete is left, and init() continues). The key and chain paths must
+ * be used by one provider instance at a time. The private key is stored
  * unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments

@@ -1063,9 +1063,7 @@ static bool in_temp_namespace(const char* path, const char* owner)
 #endif
 }
 
-/** @brief True when a configured path could be taken for a staged file. */
-/** @brief True if @p path is non-empty and ends in a file name (not a separator or a bare drive).
- */
+/** @brief True if @p path is non-empty and ends in a file name, not a separator or bare drive. */
 static bool has_file_name(const char* path)
 {
   if (!is_nonempty_cstr(path))
@@ -1081,6 +1079,7 @@ static bool has_file_name(const char* path)
 #endif
 }
 
+/** @brief True when a configured path could be taken for a staged file. */
 static bool paths_collide(const az_iot_certificate_provider_managed_options* opts)
 {
   const char* paths[] = { opts->bootstrap_cert_pem_path,
