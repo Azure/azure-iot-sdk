@@ -117,7 +117,9 @@ extern "C"
 
   /* Initialize the managed provider. Loads or generates the operational key and
    * detects any previously-persisted operational certificate. Returns
-   * ERR_INVALID_ARG if a required path is missing, or ERR_INTERNAL on OpenSSL
+   * ERR_INVALID_ARG if a required path is missing or a configured path starts
+   * with "<operational key or cert path>.aziot-" (that prefix names the
+   * provider's temporary files), or ERR_INTERNAL on OpenSSL
    * failure. The provider base pointer can be passed wherever
    * az_iot_certificate_provider* is expected. */
   az_iot_result az_iot_certificate_provider_managed_init(

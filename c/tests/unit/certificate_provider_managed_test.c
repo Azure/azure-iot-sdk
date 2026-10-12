@@ -1892,6 +1892,26 @@ static void managed_init_ignores_staged_names_that_are_not_files(void** state)
 }
 #endif
 
+/* A configured path inside the key's or chain's temporary-file namespace is
+ * refused: init() would otherwise sweep it as a stale staged file. */
+static void managed_init_refuses_a_path_in_a_temp_namespace(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed prov;
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_cert_pem_path = OP_KEY ".aziot-abc123";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts = test_options();
+  opts.trusted_ca_pem_path = OP_CERT ".aziot-0123abcd.tmp";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts = test_options();
+  opts.bootstrap_key_pem_path = OP_KEY ".aziot-";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_false(file_exists(OP_KEY));
+  remove_test_files();
+}
+
 /* A process stopped after renaming the new chain but before the key: init()
  * renames the staged new key into place, so the new pair is used. Recovery
  * does not depend on the rotation option. */
@@ -2183,6 +2203,7 @@ int main(void)
     cmocka_unit_test(managed_a_failed_key_rename_restores_the_chain),
     cmocka_unit_test(managed_a_failed_key_rename_removes_a_first_chain),
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
+    cmocka_unit_test(managed_init_refuses_a_path_in_a_temp_namespace),
 #if !defined(_WIN32)
     cmocka_unit_test(managed_init_ignores_staged_names_that_are_not_files),
 #endif

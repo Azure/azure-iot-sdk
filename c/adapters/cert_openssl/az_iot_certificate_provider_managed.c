@@ -332,29 +332,37 @@ static az_iot_result write_bio_private(const char* path, BIO* mem)
   return (rc == AZ_IOT_OK) ? commit_file(tmp, path) : rc;
 }
 
-/** @brief PEM-encode private @p key into a new memory BIO (NULL on failure). */
-static BIO* key_to_bio(EVP_PKEY* key)
+/**
+ * @brief PEM-encode private @p key into a new memory BIO (*out_mem; caller
+ * frees). @return AZ_IOT_OK, AZ_IOT_ERR_OUT_OF_MEMORY or AZ_IOT_ERR_INTERNAL.
+ */
+static az_iot_result key_to_bio(EVP_PKEY* key, BIO** out_mem)
 {
-  BIO* mem = BIO_new(BIO_s_mem());
-  if (mem && PEM_write_bio_PrivateKey(mem, key, NULL, NULL, 0, NULL, NULL) != 1)
+  *out_mem = BIO_new(BIO_s_mem());
+  if (!*out_mem)
   {
-    BIO_free(mem);
-    mem = NULL;
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  return mem;
+  if (PEM_write_bio_PrivateKey(*out_mem, key, NULL, NULL, 0, NULL, NULL) != 1)
+  {
+    BIO_free(*out_mem);
+    *out_mem = NULL;
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  return AZ_IOT_OK;
 }
 
 /** @brief Stage private @p key next to @p path (stage_bio). */
 static az_iot_result stage_key(const char* path, EVP_PKEY* key, char** out_tmp)
 {
   *out_tmp = NULL;
-  BIO* mem = key_to_bio(key);
-  if (!mem)
+  BIO* mem = NULL;
+  az_iot_result rc = key_to_bio(key, &mem);
+  if (rc == AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    rc = stage_bio(path, mem, out_tmp);
+    BIO_free(mem);
   }
-  az_iot_result rc = stage_bio(path, mem, out_tmp);
-  BIO_free(mem);
   return rc;
 }
 
@@ -583,13 +591,13 @@ static void remove_stale_temps(const char* path)
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
-  BIO* mem = key_to_bio(key);
-  if (!mem)
+  BIO* mem = NULL;
+  az_iot_result rc = key_to_bio(key, &mem);
+  if (rc == AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INTERNAL;
+    rc = write_bio_private(path, mem);
+    BIO_free(mem);
   }
-  az_iot_result rc = write_bio_private(path, mem);
-  BIO_free(mem);
   return rc;
 }
 
@@ -1293,6 +1301,43 @@ static const az_iot_certificate_provider_vtable s_managed_vtable = {
   .store_issued_certificate = managed_store,
 };
 
+/** @brief True when @p path is in @p owner's temporary-file namespace
+ * ("<owner>.aziot-..."), which init() sweeps. */
+static bool in_temp_namespace(const char* path, const char* owner)
+{
+  size_t n = strlen(owner);
+  if (!is_nonempty_cstr(path))
+  {
+    return false;
+  }
+#ifdef _WIN32
+  return _strnicmp(path, owner, n) == 0
+      && _strnicmp(path + n, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+#else
+  return strncmp(path, owner, n) == 0
+      && strncmp(path + n, MANAGED_TMP_TAG, MANAGED_TMP_TAG_LEN) == 0;
+#endif
+}
+
+/** @brief True when a configured path could be taken for a staged file. */
+static bool paths_collide(const az_iot_certificate_provider_managed_options* opts)
+{
+  const char* paths[] = { opts->bootstrap_cert_pem_path,
+                          opts->bootstrap_key_pem_path,
+                          opts->trusted_ca_pem_path,
+                          opts->operational_key_pem_path,
+                          opts->operational_cert_pem_path };
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i)
+  {
+    if (in_temp_namespace(paths[i], opts->operational_key_pem_path)
+        || in_temp_namespace(paths[i], opts->operational_cert_pem_path))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* --------------------------------------------------------------------------
  * Public API
  * ------------------------------------------------------------------------ */
@@ -1336,7 +1381,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
   bool has_bootstrap = is_nonempty_cstr(opts->bootstrap_cert_pem_path);
   if (has_bootstrap != is_nonempty_cstr(opts->bootstrap_key_pem_path)
       || !is_nonempty_cstr(opts->operational_key_pem_path)
-      || !is_nonempty_cstr(opts->operational_cert_pem_path))
+      || !is_nonempty_cstr(opts->operational_cert_pem_path) || paths_collide(opts))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
