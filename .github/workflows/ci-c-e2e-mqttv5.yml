@@ -54,7 +54,7 @@ jobs:
   # The namespace can drop out of Azure; DPS registrations fail until it is back.
   # Not on pull requests: the repair logs in to Azure and runs the checked-out
   # script, so it only runs trusted code (schedule, manual). Pull requests rely
-  # on the hourly repair in ci-c-e2e-mqttv5-adr-namespace.yml.
+  # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
   adr-namespace:
     name: ADR namespace
     if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}

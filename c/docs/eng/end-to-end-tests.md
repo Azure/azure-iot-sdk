@@ -259,7 +259,7 @@ assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
 that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
-requests skip it (it logs in to Azure and runs the checked-out script) and rely on its hourly run. Each job issues a device with
+requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS` and `_EVENTHUB_CS` (`service` policy), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
 `_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
