@@ -172,7 +172,7 @@ static az_iot_result write_file_private(const char* path, const char* data, size
 {
   size_t path_len = strlen(path);
 #ifdef _WIN32
-  /* "<path>.<8 hex>.tmp" */
+  /* "<path>.aziot-<8 hex>.tmp" + NUL */
   size_t tmp_size = path_len + MANAGED_TMP_TAG_LEN + 13;
   char* tmp = (char*)malloc(tmp_size);
   if (!tmp)
