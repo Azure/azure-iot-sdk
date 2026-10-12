@@ -1500,6 +1500,62 @@ static void a_push_before_the_birth_ack_from_another_connection_is_dropped(void*
   assert_false(rec.fired);
 }
 
+/* A desired-patch before the birth-ack is delivered in order; the birth-ack adds no fetch. */
+static void a_desired_patch_before_the_birth_ack_is_delivered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  /* DesiredPatch { 1: version=1, 2: payload } */
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x07, '{', '"', 'p', '"', ':', '1', '}' };
+  inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH);
+  assert_int_equal(rec.version, 1);
+
+  ack_birth(fx, 1, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(count_gets(fx), 0);
+}
+
+/* Before the birth is published, even this connection's nonce is not accepted. */
+static void a_push_before_the_birth_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  fx->factory_registered = true;
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(find_publish(fx->mock, "ih/ut-device/srv/presence"));
+
+  /* The nonce rides the CONNECT username: correlationId=<32 hex>&... */
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+  assert_int_equal(connect->kind, AZ_IOT_MOCK_CALL_CONNECT);
+  uint8_t nonce[16];
+  for (size_t i = 0; i < sizeof(nonce); ++i)
+  {
+    unsigned byte = 0;
+    assert_int_equal(sscanf(connect->username + 14 + i * 2, "%2x", &byte), 1);
+    nonce[i] = (uint8_t)byte;
+  }
+
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", nonce, body, sizeof(body));
+  assert_false(rec.fired);
+}
+
 static void connecting_current_does_not_fetch(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2647,6 +2703,10 @@ int main(void)
         a_push_before_the_birth_ack_from_another_connection_is_dropped,
         setup_push_desired,
         teardown),
+    cmocka_unit_test_setup_teardown(
+        a_desired_patch_before_the_birth_ack_is_delivered, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_before_the_birth_is_dropped, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(connecting_current_does_not_fetch, setup, teardown),
     cmocka_unit_test_setup_teardown(a_get_ahead_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
