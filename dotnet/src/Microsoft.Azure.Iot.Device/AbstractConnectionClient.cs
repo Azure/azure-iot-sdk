@@ -585,17 +585,18 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             Debug.Assert(_lastProvisioningAuthentication != null);
-            connectPacketToEdit = ApplyAuthentication(_lastProvisioningAuthentication, connectPacketToEdit, ConnectionEndpoint.IotHub);
+            AuthenticationCredentials hubCredentials = _lastProvisioningAuthentication.GetIotHubAuthentication(
+                connectPacketToEdit.HostName,
+                connectPacketToEdit.ClientId ?? _lastProvisioningAuthentication.GetRegistrationId());
+            connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return Task.FromResult(IotHubMqttConnectOverride(connectPacketToEdit));
         }
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
-        private static MqttConnect ApplyAuthentication(AuthenticationProvider authentication, MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
-        {
-            AuthenticationCredentials credentials = authentication.GetAuthentication(endpointKind, mqttConnect.HostName, mqttConnect.ClientId ?? authentication.GetRegistrationId());
-            mqttConnect.Password = credentials.Password;
+        private static MqttConnect ApplyAuthentication(AuthenticationCredentials credentials, MqttConnect mqttConnect)
+        {            mqttConnect.Password = credentials.Password;
             mqttConnect.ClientCertificate = credentials.ClientCertificate;
             mqttConnect.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
             mqttConnect.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback;
@@ -1281,7 +1282,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return ApplyAuthentication(authentication, mqttConnect, ConnectionEndpoint.DeviceProvisioningService);
+            return ApplyAuthentication(authentication.GetDeviceProvisioningServiceAuthentication(), mqttConnect);
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)

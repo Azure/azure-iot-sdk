@@ -67,7 +67,17 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        public override AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
+        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId)
+        {
+            return CreateCredentials();
+        }
+
+        public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
+        {
+            return CreateCredentials();
+        }
+
+        private AuthenticationCredentials CreateCredentials()
         {
             return new AuthenticationCredentials()
             {

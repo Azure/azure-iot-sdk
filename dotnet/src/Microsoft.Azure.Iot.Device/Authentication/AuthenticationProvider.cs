@@ -14,19 +14,18 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
-        /// for connecting to the given endpoint. The caller maps it onto its own transport (MQTT, HTTP, etc.).
+        /// for connecting to an IoT Hub. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// </summary>
-        /// <param name="endpointKind">Which service the connection targets.</param>
-        /// <param name="hostName">The host name being connected to.</param>
-        /// <param name="deviceId">The device Id (or registration Id when targeting DPS) being authenticated.</param>
-        public virtual AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
-        {
-            return new AuthenticationCredentials()
-            {
-                LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
-                RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
-            };
-        }
+        /// <param name="hostName">The IoT Hub host name being connected to.</param>
+        /// <param name="deviceId">The device Id being authenticated.</param>
+        public abstract AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId);
+
+        /// <summary>
+        /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
+        /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
+        /// </summary>
+        /// <param name="hostName">The device provisioning service host name being connected to.</param>
+        public abstract AuthenticationCredentials GetDeviceProvisioningServiceAuthentication();
 
         public abstract string GetRegistrationId();
 

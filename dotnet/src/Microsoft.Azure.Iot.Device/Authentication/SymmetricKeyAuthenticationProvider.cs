@@ -1,9 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Mqtt;
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
@@ -27,42 +24,28 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
+        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId)
+        {
+            // Note that hostname + device id may change over time, so cannot just take them in constructor.
+            // Device-scoped token: no key name (skn) since the key is the device's own key
+            string sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(hostName, "/devices/", deviceId), TimeSpan.FromHours(1)); //TODO configurable timespan
+            return CreateCredentials(sasToken);
+        }
+
+        public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
+        {
+            string sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), TimeSpan.FromHours(1)); //TODO configurable timespan
+            return CreateCredentials(sasToken);
+        }
+
+        private AuthenticationCredentials CreateCredentials(string sasToken)
         {
             return new AuthenticationCredentials()
             {
-                Password = GetSasToken(endpointKind, hostName, deviceId),
+                Password = Encoding.UTF8.GetBytes(sasToken),
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
                 LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
             };
-        }
-
-        internal byte[] GetSasToken(ConnectionEndpoint endpointKind, string? iotHubHostName = null, string? deviceId = null)
-        {
-            string sasToken;
-            if (endpointKind == ConnectionEndpoint.IotHub)
-            {
-                // Note that hostname + device id may change over time, so cannot just take them in constructor
-                if (string.IsNullOrEmpty(iotHubHostName) || string.IsNullOrEmpty(deviceId))
-                {
-                    Trace.TraceError("Attempted to create an IoT Hub SAS token without a hub host name and device Id");
-                    return Array.Empty<byte>();
-                }
-
-                // Device-scoped token: no key name (skn) since the key is the device's own key
-                sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(iotHubHostName, "/devices/", deviceId), TimeSpan.FromHours(1)); //TODO configurable timespan
-            }
-            else if (endpointKind == ConnectionEndpoint.DeviceProvisioningService)
-            {
-                sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), TimeSpan.FromHours(1)); //TODO configurable timespan
-            }
-            else 
-            {
-                Trace.TraceError("Attempted to create SAS token for an unsupported endpoint: {0}", endpointKind);
-                return Array.Empty<byte>();
-            }
-
-            return Encoding.UTF8.GetBytes(sasToken);
         }
 
         public override string GetRegistrationId()
