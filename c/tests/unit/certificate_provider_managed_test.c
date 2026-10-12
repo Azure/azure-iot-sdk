@@ -1477,13 +1477,16 @@ static void make_dir(const char* path) { assert_int_equal(0, mkdir(path, 0700));
 static void remove_dir(const char* path) { assert_int_equal(0, rmdir(path)); }
 
 /* Only regular files are treated as staged: a FIFO with a staged name is not
- * read (it would block init()), and a directory is not deleted. POSIX only. */
+ * read (it would block init()), and a directory or symlink (nor its target) is
+ * not deleted. POSIX only. */
 static void managed_init_ignores_staged_names_that_are_not_files(void** state)
 {
   (void)state;
   remove_test_files();
   assert_int_equal(0, mkfifo(STAGED_1(OP_KEY), 0600));
   make_dir(STAGED_2(OP_CERT));
+  touch(LINK_TARGET);
+  assert_int_equal(0, symlink(LINK_TARGET, STAGED_2(OP_KEY)));
 
   az_iot_certificate_provider_managed_options opts = test_options();
   az_iot_certificate_provider_managed prov;
@@ -1496,6 +1499,11 @@ static void managed_init_ignores_staged_names_that_are_not_files(void** state)
   assert_true(S_ISFIFO(st.st_mode));
   assert_int_equal(0, lstat(STAGED_2(OP_CERT), &st));
   assert_true(S_ISDIR(st.st_mode));
+  assert_int_equal(0, lstat(STAGED_2(OP_KEY), &st));
+  assert_true(S_ISLNK(st.st_mode));
+  assert_true(file_exists(LINK_TARGET));
+  assert_int_equal(0, remove(STAGED_2(OP_KEY)));
+  assert_int_equal(0, remove(LINK_TARGET));
   assert_int_equal(0, remove(STAGED_1(OP_KEY)));
   remove_dir(STAGED_2(OP_CERT));
   remove_test_files();
