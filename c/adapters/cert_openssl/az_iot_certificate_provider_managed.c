@@ -435,6 +435,76 @@ static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp
   return rc;
 }
 
+/** @brief Identity of an existing file, independent of the path spelling. */
+typedef struct file_id
+{
+  unsigned long long dev;
+  unsigned long long ino;
+} file_id;
+
+/** @brief The configured files a staged-file walk must never pass on. */
+typedef struct file_ids
+{
+  file_id ids[5];
+  size_t count;
+} file_ids;
+
+/** @brief Identity of the file at @p path (links followed). @return false if
+ * there is none. */
+static bool file_id_of(const char* path, file_id* out)
+{
+#ifdef _WIN32
+  HANDLE h = CreateFileA(
+      path,
+      0,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      NULL,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS,
+      NULL);
+  if (h == INVALID_HANDLE_VALUE)
+  {
+    return false;
+  }
+  BY_HANDLE_FILE_INFORMATION info;
+  bool ok = GetFileInformationByHandle(h, &info) != 0;
+  CloseHandle(h);
+  if (ok)
+  {
+    out->dev = info.dwVolumeSerialNumber;
+    out->ino = ((unsigned long long)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+  }
+  return ok;
+#else
+  struct stat st;
+  if (stat(path, &st) != 0)
+  {
+    return false;
+  }
+  out->dev = (unsigned long long)st.st_dev;
+  out->ino = (unsigned long long)st.st_ino;
+  return true;
+#endif
+}
+
+/** @brief True when @p path is one of @p excluded, however either is spelled. */
+static bool is_excluded(const char* path, const file_ids* excluded)
+{
+  file_id id;
+  if (!excluded || excluded->count == 0 || !file_id_of(path, &id))
+  {
+    return false;
+  }
+  for (size_t i = 0; i < excluded->count; ++i)
+  {
+    if (excluded->ids[i].dev == id.dev && excluded->ids[i].ino == id.ino)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** @brief Called per staged file; return true to stop the walk. */
 typedef bool (*staged_file_fn)(const char* staged, void* ctx);
 
@@ -445,9 +515,14 @@ typedef bool (*staged_file_fn)(const char* staged, void* ctx);
  *
  * @return false if the directory could not be listed completely, so a caller
  * cannot tell whether every staged file was seen. A missing directory counts as
- * listed and empty.
+ * listed and empty. A file that is one of @p excluded (a configured
+ * credential, by identity rather than path) is never passed.
  */
-static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
+static bool for_each_staged(
+    const char* path,
+    const file_ids* excluded,
+    staged_file_fn fn,
+    void* ctx)
 {
   const char* slash = strrchr(path, '/');
 #ifdef _WIN32
@@ -511,7 +586,10 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
     {
       memcpy(stale, path, dir_len);
       memcpy(stale + dir_len, name, strlen(name) + 1);
-      stop = fn(stale, ctx);
+      if (!is_excluded(stale, excluded))
+      {
+        stop = fn(stale, ctx);
+      }
     }
   } while (!stop && FindNextFileA(h, &fd));
   bool ok = stop || GetLastError() == ERROR_NO_MORE_FILES;
@@ -563,7 +641,7 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
       /* Only regular files, not followed through a link: stage_file() never
        * creates anything else, and a FIFO would block the read. */
       struct stat st;
-      if (lstat(stale, &st) == 0 && S_ISREG(st.st_mode))
+      if (lstat(stale, &st) == 0 && S_ISREG(st.st_mode) && !is_excluded(stale, excluded))
       {
         stop = fn(stale, ctx);
       }
@@ -588,9 +666,9 @@ static bool delete_staged(const char* staged, void* ctx)
 }
 
 /** @brief Remove files stage_file() left next to @p path (for_each_staged). */
-static void remove_stale_temps(const char* path)
+static void remove_stale_temps(const char* path, const file_ids* excluded)
 {
-  (void)for_each_staged(path, delete_staged, NULL);
+  (void)for_each_staged(path, excluded, delete_staged, NULL);
 }
 
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
@@ -831,17 +909,21 @@ static bool recover_staged_chain(const char* staged, void* vctx)
  * chain exists while the key file does not load; the staged files must then be
  * kept so a later init() can retry.
  */
-static bool recover_rotation(const char* key_path, const char* cert_path, EVP_PKEY** key)
+static bool recover_rotation(
+    const char* key_path,
+    const char* cert_path,
+    const file_ids* excluded,
+    EVP_PKEY** key)
 {
   if (*key && operational_cert_is_valid(cert_path, *key))
   {
     return true;
   }
   recovery_ctx c = { .key_path = key_path, .cert_path = cert_path, .key = *key };
-  bool listed = for_each_staged(key_path, recover_staged_key, &c);
+  bool listed = for_each_staged(key_path, excluded, recover_staged_key, &c);
   if (!c.done && !c.blocked)
   {
-    listed = for_each_staged(cert_path, recover_staged_chain, &c) && listed;
+    listed = for_each_staged(cert_path, excluded, recover_staged_chain, &c) && listed;
   }
   *key = c.key;
   return c.done || (listed && !c.blocked);
@@ -1427,12 +1509,27 @@ az_iot_result az_iot_certificate_provider_managed_init(
    * so without a loadable key the provider serves the bootstrap identity only
    * and get_csr() reports AZ_IOT_ERR_NOT_INITIALIZED. */
   EVP_PKEY* key = load_key_file(provider->operational_key_path);
-  bool recovered
-      = recover_rotation(provider->operational_key_path, provider->operational_cert_path, &key);
+  /* Configured files are never taken for staged ones, however their paths
+   * are spelled. */
+  file_ids configured = { .count = 0 };
+  const char* paths[] = { opts->bootstrap_cert_pem_path,
+                          opts->bootstrap_key_pem_path,
+                          opts->trusted_ca_pem_path,
+                          opts->operational_key_pem_path,
+                          opts->operational_cert_pem_path };
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i)
+  {
+    if (is_nonempty_cstr(paths[i]) && file_id_of(paths[i], &configured.ids[configured.count]))
+    {
+      configured.count++;
+    }
+  }
+  bool recovered = recover_rotation(
+      provider->operational_key_path, provider->operational_cert_path, &configured, &key);
   if (recovered)
   {
-    remove_stale_temps(provider->operational_key_path);
-    remove_stale_temps(provider->operational_cert_path);
+    remove_stale_temps(provider->operational_key_path, &configured);
+    remove_stale_temps(provider->operational_cert_path, &configured);
   }
   if (!key && recovered)
   {

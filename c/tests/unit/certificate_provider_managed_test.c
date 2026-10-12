@@ -1892,6 +1892,24 @@ static void managed_init_ignores_staged_names_that_are_not_files(void** state)
 }
 #endif
 
+/* A configured file that a differently spelled path puts in the key's temp
+ * namespace is matched by identity, so the sweep never deletes it. */
+static void managed_init_never_sweeps_a_configured_file_under_an_alias(void** state)
+{
+  (void)state;
+  remove_test_files();
+  touch(STAGED_1(OP_KEY));
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = "./" OP_KEY;
+  opts.trusted_ca_pem_path = STAGED_1(OP_KEY);
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  az_iot_certificate_provider_managed_deinit(&prov);
+  assert_true(file_exists(STAGED_1(OP_KEY)));
+  assert_int_equal(0, remove(STAGED_1(OP_KEY)));
+  remove_test_files();
+}
+
 /* A missing directory holds no staged files: init() still tries to generate
  * the key, and reports that it cannot write it rather than succeeding without
  * one. */
@@ -2220,6 +2238,7 @@ int main(void)
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
     cmocka_unit_test(managed_init_refuses_a_path_in_a_temp_namespace),
     cmocka_unit_test(managed_init_in_a_missing_directory_fails_the_key_write),
+    cmocka_unit_test(managed_init_never_sweeps_a_configured_file_under_an_alias),
 #if !defined(_WIN32)
     cmocka_unit_test(managed_init_ignores_staged_names_that_are_not_files),
 #endif
