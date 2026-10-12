@@ -3315,7 +3315,9 @@ static void a_new_workflow_is_deferred_once_an_install_began(void** state)
   {
     assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   }
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 1);
   inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
   assert_int_equal(fx->deferred_count, 1);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
@@ -3343,6 +3345,42 @@ static void a_new_workflow_is_deferred_once_an_install_began(void** state)
   inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
   assert_int_equal(fx->deferred_count, 2);
+}
+
+/* Entering Install is not the boundary: until install_fn is called, a new
+ * workflow still replaces the current one. */
+static void a_new_workflow_replaces_before_install_fn_is_called(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_INSTALL_STARTED;
+       ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 0);
+
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fx->deferred_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  /* A failed install ends that workflow; the next one starts with no install called. */
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
+  inject_patch(fx, build_patch("cccccccc-0000-0000-0000-000000000003"));
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  inject_patch(fx, build_patch("dddddddd-0000-0000-0000-000000000004"));
+  assert_int_equal(fx->deferred_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
 }
 
 /* A last apply that asked for a reboot ends the workflow, but the device has
@@ -6571,6 +6609,8 @@ int main(void)
         a_new_workflow_is_deferred_at_a_stored_reboot_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_new_workflow_is_deferred_once_an_install_began, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_workflow_replaces_before_install_fn_is_called, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_new_workflow_is_deferred_until_a_last_apply_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(the_replacement_policy_is_validated, setup, teardown),

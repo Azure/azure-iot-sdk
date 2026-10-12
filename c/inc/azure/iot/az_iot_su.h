@@ -766,6 +766,8 @@ extern "C"
       /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
        */
       bool checkpoint_superseded;
+      /** install_fn was called in the current workflow. */
+      bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
 

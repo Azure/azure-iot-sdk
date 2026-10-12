@@ -1414,7 +1414,6 @@ static bool workflow_replaceable(const az_iot_su_client* client)
     case AZ_IOT_SU_STATE_IDLE:
     case AZ_IOT_SU_STATE_FAILED:
       return true;
-    case AZ_IOT_SU_STATE_INSTALL_STARTED:
     case AZ_IOT_SU_STATE_INSTALL_COMPLETE:
     case AZ_IOT_SU_STATE_APPLY_STARTED:
     case AZ_IOT_SU_STATE_RESTORE_STARTED:
@@ -1425,8 +1424,9 @@ static bool workflow_replaceable(const az_iot_su_client* client)
     case AZ_IOT_SU_STATE_DOWNLOAD_COMPLETE:
     case AZ_IOT_SU_STATE_BACKUP_STARTED:
     case AZ_IOT_SU_STATE_BACKUP_COMPLETE:
+    case AZ_IOT_SU_STATE_INSTALL_STARTED:
     default:
-      return SU_I(client).current_step == 0;
+      return SU_I(client).current_step == 0 && !SU_I(client).install_called;
   }
 }
 
@@ -1438,7 +1438,9 @@ static bool workflow_replaceable(const az_iot_su_client* client)
  *
  * `workflowId` is the sole deployment identity: a payload with the active id
  * is a redelivery and is ignored before request_buffer is touched, so the
- * running workflow is undisturbed. A new id (re)starts the workflow.
+ * running workflow is undisturbed. A new id restarts the workflow while
+ * workflow_replaceable() allows it; otherwise it is deferred
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and nothing is touched.
  *
  * @param client    The client.
  * @param patch     The payload.
@@ -1557,6 +1559,7 @@ static void process_update_metadata(
   SU_I(client).have_request = true;
   SU_I(client).cancel_requested = false;
   SU_I(client).checkpoint_pending = false;
+  SU_I(client).install_called = false;
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
   result_init_steps(client, 0);
@@ -3301,6 +3304,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_INSTALL_STARTED:
     {
       uint32_t step = SU_I(client).current_step;
+      SU_I(client).install_called = true;
       int32_t ir = (h->install_fn != NULL)
           ? h->install_fn(&SU_I(client).current_manifest, step, h->user_ctx)
           : AZ_IOT_SU_RESULT_FAILURE;
