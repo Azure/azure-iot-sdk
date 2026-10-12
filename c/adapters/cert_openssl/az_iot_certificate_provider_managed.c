@@ -444,7 +444,8 @@ typedef bool (*staged_file_fn)(const char* staged, void* ctx);
  * on Windows. Other names are never passed.
  *
  * @return false if the directory could not be listed completely, so a caller
- * cannot tell whether every staged file was seen.
+ * cannot tell whether every staged file was seen. A missing directory counts as
+ * listed and empty.
  */
 static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
 {
@@ -480,7 +481,8 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
   if (h == INVALID_HANDLE_VALUE)
   {
     DWORD err = GetLastError();
-    return err == ERROR_FILE_NOT_FOUND || err == ERROR_NO_MORE_FILES;
+    /* A missing directory holds no staged files either. */
+    return err == ERROR_FILE_NOT_FOUND || err == ERROR_NO_MORE_FILES || err == ERROR_PATH_NOT_FOUND;
   }
   char* stale = (char*)malloc(dir_len + MAX_PATH + 1);
   if (!stale)
@@ -532,10 +534,12 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
     {
       memcpy(dir, ".", 2);
     }
+    errno = 0;
     d = opendir(dir);
   }
   bool stop = false;
-  bool listed = d != NULL;
+  /* A missing directory holds no staged files either. */
+  bool listed = d != NULL || (dir && stale && errno == ENOENT);
   while (!stop && d)
   {
     errno = 0; /* fn() may set it; only readdir()'s own result counts */
