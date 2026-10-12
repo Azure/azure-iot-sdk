@@ -4,7 +4,7 @@
 namespace Microsoft.Azure.Iot.Device.Models
 {
     /// <summary>
-    /// The context under which a provisioned device should connect to IoT Hub with
+    /// The context used by a provisioned device to connect to IoT Hub.
     /// </summary>
     public class ConnectionContext
     {
