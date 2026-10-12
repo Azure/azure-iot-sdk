@@ -287,11 +287,6 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
   return count;
 }
 
-/* Drive an MQTT v5 session to CONNECTED, admitting the birth with a birth-ack
- * carrying @p desired and @p reported as the authoritative twin versions.
- *
- * Unlike MQTTv3, CONNACK alone does not announce CONNECTED: the presence
- * wildcard and the birth handshake complete first. */
 /* CONNACK and SUBACKs after open(), up to the published birth; records its nonce. */
 static void open_to_birth_after_open(fixture* fx)
 {
@@ -391,7 +386,9 @@ static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint6
   open_to_birth_ack_after_open(fx, desired, reported);
 }
 
-/* Up to the birth-ack, then ack any feature SUBACKs so hub CONNECTED is announced. */
+/* Drive an MQTT v5 session to CONNECTED: birth-ack with @p desired and @p reported as the
+ * authoritative twin versions, then feature SUBACKs. Unlike MQTTv3, CONNACK alone does not
+ * announce CONNECTED. */
 static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
 {
   open_to_birth_ack_with_versions(fx, desired, reported);
