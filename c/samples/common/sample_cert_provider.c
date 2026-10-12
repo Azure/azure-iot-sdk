@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* sample_cert_provider - vtable glue and cert persistence. The platform-native
- * CSR issuance lives in sample_csr_openssl.c / sample_csr_cng.c. */
+/* sample_cert_provider - vtable glue and cert persistence. CSR issuance lives
+ * in sample_csr_openssl.c. */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS /* this sample uses fopen for cert persistence */
 #endif
@@ -16,8 +16,8 @@
 #include "sample_csr_backend.h"
 #include "sample_utils.h"
 
-#include <errno.h>
-#include <stdbool.h>
+#include <azure/core/az_base64.h>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,21 +137,6 @@ static char* dup_str(const char* s)
   return out;
 }
 
-/* True only when the file holds a non-empty PEM certificate. A zero-length or
- * partial file (e.g. a crash mid-write) must not be taken for a usable identity. */
-static int cert_file_has_pem(const char* path)
-{
-  FILE* f = fopen(path, "rb");
-  if (!f)
-  {
-    return 0;
-  }
-  char buf[64] = { 0 };
-  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  (void)fclose(f);
-  return (n > 0) && (strstr(buf, "-----BEGIN CERTIFICATE-----") != NULL);
-}
-
 static az_iot_result provider_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
@@ -229,77 +214,37 @@ static void provider_release_csr(
   }
 }
 
-/* "<path><suffix>" on the heap, or NULL. */
-static char* path_with_suffix(const char* path, const char* suffix)
+/* Write one issued entry to @p f as PEM. The service sends base64 of either a
+ * PEM certificate (written decoded) or of DER (wrapped in PEM lines). */
+static az_iot_result write_cert_pem(FILE* f, az_span cert)
 {
-  size_t a = strlen(path);
-  size_t b = strlen(suffix);
-  char* out = (char*)malloc(a + b + 1);
-  if (out)
+  static const char pem_b64[] = "LS0tLS1CRUdJTi"; /* base64 of "-----BEGIN" */
+  int32_t n = az_span_size(cert);
+  if (n < (int32_t)(sizeof(pem_b64) - 1)
+      || memcmp(az_span_ptr(cert), pem_b64, sizeof(pem_b64) - 1) != 0)
   {
-    memcpy(out, path, a);
-    memcpy(out + a, suffix, b);
-    out[a + b] = '\0';
+    return (fputs(PEM_CERT_BEGIN, f) < 0 || fwrite(az_span_ptr(cert), 1, (size_t)n, f) != (size_t)n
+            || fputs(PEM_CERT_END, f) < 0)
+        ? AZ_IOT_ERR_INTERNAL
+        : AZ_IOT_OK;
   }
-  return out;
-}
-
-/* Rename the staged chain @p tmp over the chain file. If the backend staged a
- * new key for this CSR, it replaces the key file too: the previous key is set
- * aside first and put back if either rename fails, so key and chain stay a
- * pair. */
-static az_iot_result commit_chain(sample_cert_provider* p, const char* tmp)
-{
-  char* pending = path_with_suffix(p->operational_key_path, SAMPLE_CSR_PENDING_KEY_SUFFIX);
-  char* previous = path_with_suffix(p->operational_key_path, ".old");
-  az_iot_result rc = (pending && previous) ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
-  errno = 0;
-  FILE* staged = rc == AZ_IOT_OK ? fopen(pending, "rb") : NULL;
-  if (rc == AZ_IOT_OK && !staged && errno != ENOENT)
+  int32_t cap = (n / 4) * 3 + 3;
+  uint8_t* pem = (uint8_t*)malloc((size_t)cap);
+  if (!pem)
   {
-    rc = AZ_IOT_ERR_INTERNAL; /* a staged key exists but cannot be read */
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  else if (staged)
+  int32_t written = 0;
+  az_iot_result rc = AZ_IOT_ERR_INVALID_ARG;
+  if (az_result_succeeded(az_base64_decode(az_span_create(pem, cap), cert, &written)) && written > 0
+      && written <= cap)
   {
-    (void)fclose(staged);
-    errno = 0;
-    FILE* current = fopen(p->operational_key_path, "rb");
-    bool had_key = current != NULL || errno != ENOENT; /* exists, even if unreadable */
-    if (current)
-    {
-      (void)fclose(current);
-    }
-    /* A key that exists but cannot be set aside could not be put back: change
-     * nothing. */
-    bool set_aside = had_key && sample_replace_file(p->operational_key_path, previous);
-    if (had_key && !set_aside)
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-    }
-    else if (!sample_replace_file(pending, p->operational_key_path))
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-    }
-    else if (!sample_replace_file(tmp, p->operational_cert_path))
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-      (void)remove(p->operational_key_path);
-    }
-    if (set_aside && rc != AZ_IOT_OK)
-    {
-      (void)sample_replace_file(previous, p->operational_key_path);
-    }
-    else if (set_aside)
-    {
-      (void)remove(previous);
-    }
+    rc = (fwrite(pem, 1, (size_t)written, f) == (size_t)written
+          && (pem[written - 1] == '\n' || fputc('\n', f) != EOF))
+        ? AZ_IOT_OK
+        : AZ_IOT_ERR_INTERNAL;
   }
-  else if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
-  {
-    rc = AZ_IOT_ERR_INTERNAL;
-  }
-  free(pending);
-  free(previous);
+  free(pem);
   return rc;
 }
 
@@ -311,6 +256,24 @@ static az_iot_result provider_store(
   if (!p || !issued || !issued->certificates || issued->count == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* Every entry must be one certificate, and the leaf must certify the
+   * operational key, or the next connect fails. */
+  if (!sample_csr_backend_cert_matches_key(
+          p->operational_key_path,
+          (const char*)az_span_ptr(issued->certificates[0]),
+          (size_t)az_span_size(issued->certificates[0])))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 1; i < issued->count; ++i)
+  {
+    if (!sample_csr_backend_is_cert(
+            (const char*)az_span_ptr(issued->certificates[i]),
+            (size_t)az_span_size(issued->certificates[i])))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
 
   /* All-or-nothing: write a new, uniquely named file next to the destination,
@@ -324,21 +287,19 @@ static az_iot_result provider_store(
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* PEM-wrap each base64 DER cert (leaf first) into the temporary file. */
+  /* Write each cert (leaf first) as PEM into the temporary file. */
   az_iot_result rc = AZ_IOT_OK;
   for (size_t i = 0; i < issued->count; ++i)
   {
     az_span cert = issued->certificates[i];
-    size_t len = (size_t)az_span_size(cert);
-    if (len == 0)
+    if (az_span_size(cert) <= 0)
     {
       rc = AZ_IOT_ERR_INVALID_ARG; /* every issued entry must be a certificate */
       break;
     }
-    if (fputs(PEM_CERT_BEGIN, f) < 0 || fwrite(az_span_ptr(cert), 1, len, f) != len
-        || fputs(PEM_CERT_END, f) < 0)
+    rc = write_cert_pem(f, cert);
+    if (rc != AZ_IOT_OK)
     {
-      rc = AZ_IOT_ERR_INTERNAL;
       break;
     }
   }
@@ -350,9 +311,9 @@ static az_iot_result provider_store(
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
-  if (rc == AZ_IOT_OK)
+  if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
   {
-    rc = commit_chain(p, tmp);
+    rc = AZ_IOT_ERR_INTERNAL;
   }
   if (rc != AZ_IOT_OK)
   {
@@ -434,6 +395,8 @@ az_iot_result sample_cert_provider_init(
     }
   }
 
-  provider->has_operational = cert_file_has_pem(provider->operational_cert_path);
+  /* A stored chain is used only while it still certifies the key. */
+  provider->has_operational = sample_csr_backend_cert_file_matches_key(
+      provider->operational_key_path, provider->operational_cert_path);
   return AZ_IOT_OK;
 }

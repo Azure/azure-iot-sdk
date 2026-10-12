@@ -142,9 +142,10 @@ static az_iot_result my_store_issued_certificate(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* REPLACE ME: persist issued->certificates[0..count) - each entry is a
-   * base64 DER cert (az_span); PEM-wrap and write it wherever your platform
-   * keeps certificates. */
+  /* REPLACE ME: persist issued->certificates[0..count) all-or-nothing. Each
+   * entry (az_span) is base64 of one DER or one PEM certificate: decode it,
+   * PEM-wrap DER (keep PEM as is), and refuse the chain unless the leaf
+   * certifies your operational key. */
   fprintf(stderr, "[custom] persisting issued chain: %zu cert(s)\n", issued->count);
   m->has_operational = 1;
   return AZ_IOT_OK;

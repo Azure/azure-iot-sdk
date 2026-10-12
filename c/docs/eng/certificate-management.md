@@ -91,7 +91,7 @@ are the reference.
 | `release`, `deinit` | v1 | Release material; tear down the provider. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
-| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: base64 DER, leaf first, valid for the call only). |
+| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: each entry base64 of DER or of a whole PEM certificate, leaf first, valid for the call only; decode before persisting, PEM-wrapping DER). |
 | `sign(self, digest, ...)` | v2, optional | Sign for the TLS handshake with a non-extractable key (D8). |
 
 `az_iot_certificate_material` carries the credential as PEM strings, file paths, or a key
@@ -102,14 +102,17 @@ Providers in the tree:
 - `az_iot_certificate_provider_pem` (core): a static loader. No CSR support.
 - `az_iot_certificate_provider_managed` (optional OpenSSL 3.0+ adapter,
   [`adapters/cert_openssl/`](../../adapters/cert_openssl/az_iot_certificate_provider_managed.h)):
-  bootstrap cert and key, optional trusted CA, operational key and operational cert paths, a
-  key type and `rotate_key_on_csr_request` (start from
-  `az_iot_certificate_provider_managed_options_default()`). It generates the operational key and CSR, and
-  persists the issued chain. By default each CSR is over the operational key. With
-  `rotate_key_on_csr_request`, each CSR is over a new key held in memory; storing a chain for
-  it replaces the key and chain on disk together, and a failed store keeps the previous pair.
-  `init()` finishes or undoes a replacement a stopped process left half-done, whatever the
-  option. A pending key does not survive `deinit()` or a restart.
+  bootstrap cert and key, optional trusted CA, operational key and operational cert paths, and
+  a key type (start from `az_iot_certificate_provider_managed_options_default()`). It generates
+  the operational key and CSR, and persists the issued chain. Every CSR is over the operational
+  key.
+
+**Key stability.** While the connection client is open, a provider's operational key does not
+change: `get_csr()` signs over it, and `store_issued_certificate()` refuses a chain whose leaf
+does not certify it. Resubmitting a renewal request therefore returns a chain that still fits.
+To rotate the key, close the client, change the key (provider-specific; a provider may be
+deinitialized and initialized again in place), then open it and enroll or renew. The client
+calls `load()` on every connect and keeps no key between connects.
 
 ### Connection client
 

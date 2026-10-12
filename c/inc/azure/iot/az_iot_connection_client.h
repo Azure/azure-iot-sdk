@@ -436,7 +436,9 @@ extern "C"
      * first for each role (az_iot_auth_source); a role for which it has no
      * certificate moves on to SAS. A load() failure other than
      * AZ_IOT_ERR_NOT_FOUND fails the attempt instead of connecting without
-     * TLS.
+     * TLS. Its keys must not change while the client is open; load() is called
+     * on every connect, so a key changed while closed is used on the next
+     * open().
      */
     az_iot_certificate_provider* certificate_provider;
 
