@@ -143,7 +143,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         AuthenticationProvider = CreateAuthenticationProvider(),
                         DeviceId = DeviceId,
                         IotHubHostName = FirstAssignedHub,
-                        ConnectionProfile = ConnectionProfile.Classic,
+                        ConnectionProfile = IotHubConnectionType.Mqttv3,
                     },
                     TestContext.Current.CancellationToken));
 
@@ -474,7 +474,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     RegistrationId = RegistrationId,
                     DeviceId = DeviceId,
                     AssignedHub = FirstAssignedHub,
-                    ConnectionProfile = ConnectionProfile.MqttV5,
+                    ConnectionProfile = IotHubConnectionType.Mqttv5,
                     Status = ProvisioningRegistrationStatus.Assigned,
                 },
             };
@@ -553,7 +553,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     AuthenticationProvider = CreateAuthenticationProvider(),
                     DeviceId = DeviceId,
                     IotHubHostName = FirstAssignedHub,
-                    ConnectionProfile = ConnectionProfile.Classic,
+                    ConnectionProfile = IotHubConnectionType.Mqttv3,
                 },
                 cancellationToken: TestContext.Current.CancellationToken);
 
@@ -1181,7 +1181,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 AuthenticationProvider = CreateAuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
-                ConnectionProfile = ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 
             using TestConnectionClient connectionClient = new(
@@ -1220,7 +1220,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 AuthenticationProvider = CreateAuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
-                ConnectionProfile = ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 
             using TestConnectionClient connectionClient = new(
@@ -1253,7 +1253,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 AuthenticationProvider = CreateAuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
-                ConnectionProfile = ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 
             using TestConnectionClient connectionClient = new(
