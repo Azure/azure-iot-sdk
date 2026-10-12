@@ -101,7 +101,8 @@ extern "C"
 
   /* Initialize the managed provider. Loads or generates the operational key and
    * detects any previously-persisted operational certificate. Returns
-   * ERR_INVALID_ARG if a required path is missing or a configured path starts
+   * ERR_INVALID_ARG if a required path is missing, an operational path does not
+   * end in a file name (e.g. ends in a separator), or a configured path starts
    * with "<operational key or cert path>.aziot-" (the temporary-file names), or
    * ERR_INTERNAL on OpenSSL
    * failure. The provider base pointer can be passed wherever

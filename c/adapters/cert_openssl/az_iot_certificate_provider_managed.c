@@ -1064,6 +1064,23 @@ static bool in_temp_namespace(const char* path, const char* owner)
 }
 
 /** @brief True when a configured path could be taken for a staged file. */
+/** @brief True if @p path is non-empty and ends in a file name (not a separator or a bare drive).
+ */
+static bool has_file_name(const char* path)
+{
+  if (!is_nonempty_cstr(path))
+  {
+    return false;
+  }
+  size_t len = strlen(path);
+  char last = path[len - 1];
+#ifdef _WIN32
+  return last != '/' && last != '\\' && !(len == 2 && path[1] == ':');
+#else
+  return last != '/';
+#endif
+}
+
 static bool paths_collide(const az_iot_certificate_provider_managed_options* opts)
 {
   const char* paths[] = { opts->bootstrap_cert_pem_path,
@@ -1122,8 +1139,8 @@ az_iot_result az_iot_certificate_provider_managed_init(
   /* Bootstrap identity: both or neither (SAS onboarding has none). */
   bool has_bootstrap = is_nonempty_cstr(opts->bootstrap_cert_pem_path);
   if (has_bootstrap != is_nonempty_cstr(opts->bootstrap_key_pem_path)
-      || !is_nonempty_cstr(opts->operational_key_pem_path)
-      || !is_nonempty_cstr(opts->operational_cert_pem_path) || paths_collide(opts))
+      || !has_file_name(opts->operational_key_pem_path)
+      || !has_file_name(opts->operational_cert_pem_path) || paths_collide(opts))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

@@ -1555,6 +1555,25 @@ static void managed_init_refuses_a_path_in_a_temp_namespace(void** state)
   remove_test_files();
 }
 
+/* A directory path has no file name to namespace temp files under: refused
+ * before the sweep, which would otherwise match any ".aziot-" file there. */
+static void managed_init_refuses_a_directory_path(void** state)
+{
+  (void)state;
+  remove_test_files();
+  touch(STAGED_1(""));
+  az_iot_certificate_provider_managed prov;
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = "./";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts = test_options();
+  opts.operational_cert_pem_path = "./";
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_true(file_exists(STAGED_1("")));
+  assert_int_equal(0, remove(STAGED_1("")));
+  remove_test_files();
+}
+
 /* Neither bundled provider implements the optional sign() hook, so the connect
  * path must keep checking it for NULL before calling it. Pinning that here
  * makes adding an implementation a deliberate act rather than a surprise. */
@@ -1620,6 +1639,7 @@ int main(void)
     cmocka_unit_test(managed_init_never_sweeps_a_configured_file_under_an_alias),
     cmocka_unit_test(managed_init_in_a_missing_directory_fails_the_key_write),
     cmocka_unit_test(managed_init_refuses_a_path_in_a_temp_namespace),
+    cmocka_unit_test(managed_init_refuses_a_directory_path),
     cmocka_unit_test(the_sign_hook_is_not_offered_by_this_provider),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
