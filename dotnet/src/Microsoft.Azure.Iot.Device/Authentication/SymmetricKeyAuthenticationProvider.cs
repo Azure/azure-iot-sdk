@@ -40,7 +40,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         private AuthenticationCredentials CreateCredentials(string sasToken)
         {
-            return new AuthenticationCredentials()
+            return new AuthenticationCredentials() //TODO want to re-use the same instance to persist certificate signing results 
             {
                 Password = Encoding.UTF8.GetBytes(sasToken),
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,

@@ -596,7 +596,8 @@ namespace Microsoft.Azure.Iot.Device
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
         private static MqttConnect ApplyAuthentication(AuthenticationCredentials credentials, MqttConnect mqttConnect)
-        {            mqttConnect.Password = credentials.Password;
+        {
+            mqttConnect.Password = credentials.Password;
             mqttConnect.ClientCertificate = credentials.ClientCertificate;
             mqttConnect.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
             mqttConnect.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback;
