@@ -1865,6 +1865,33 @@ static void managed_init_removes_only_its_own_stale_temp_files(void** state)
   remove_test_files();
 }
 
+#if !defined(_WIN32)
+/* Only regular files are treated as staged: a FIFO with a staged name is not
+ * read (it would block init()), and a directory is not deleted. POSIX only. */
+static void managed_init_ignores_staged_names_that_are_not_files(void** state)
+{
+  (void)state;
+  remove_test_files();
+  assert_int_equal(0, mkfifo(STAGED_1(OP_KEY), 0600));
+  make_dir(STAGED_2(OP_CERT));
+
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_non_null(prov.operational_key);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  struct stat st;
+  assert_int_equal(0, lstat(STAGED_1(OP_KEY), &st)); /* fopen() would block on a FIFO */
+  assert_true(S_ISFIFO(st.st_mode));
+  assert_int_equal(0, lstat(STAGED_2(OP_CERT), &st));
+  assert_true(S_ISDIR(st.st_mode));
+  assert_int_equal(0, remove(STAGED_1(OP_KEY)));
+  remove_dir(STAGED_2(OP_CERT));
+  remove_test_files();
+}
+#endif
+
 /* A process stopped after renaming the new chain but before the key: init()
  * renames the staged new key into place, so the new pair is used. Recovery
  * does not depend on the rotation option. */
@@ -2156,6 +2183,9 @@ int main(void)
     cmocka_unit_test(managed_a_failed_key_rename_restores_the_chain),
     cmocka_unit_test(managed_a_failed_key_rename_removes_a_first_chain),
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
+#if !defined(_WIN32)
+    cmocka_unit_test(managed_init_ignores_staged_names_that_are_not_files),
+#endif
     cmocka_unit_test(managed_init_finishes_a_rotation_stopped_after_the_chain),
     cmocka_unit_test(managed_init_undoes_a_rotation_it_cannot_finish),
     cmocka_unit_test(managed_init_keeps_a_staged_chain_while_the_key_does_not_load),

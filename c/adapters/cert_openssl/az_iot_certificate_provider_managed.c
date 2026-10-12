@@ -431,7 +431,7 @@ static az_iot_result stage_copy(const char* src, const char* dst, char** out_tmp
 typedef bool (*staged_file_fn)(const char* staged, void* ctx);
 
 /**
- * @brief Call @p fn for each file stage_file() created next to @p path:
+ * @brief Call @p fn for each regular file stage_file() created next to @p path:
  * "<path>.aziot-XXXXXX" (6 alphanumerics) on POSIX, "<path>.aziot-<8 hex>.tmp"
  * on Windows. Other names are never passed.
  *
@@ -492,6 +492,11 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
     {
       match = isxdigit((unsigned char)name[hex_at + i]) != 0;
     }
+    /* Only regular files: stage_file() never creates anything else. */
+    match = match
+        && (fd.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE))
+            == 0;
     if (match)
     {
       memcpy(stale, path, dir_len);
@@ -543,7 +548,13 @@ static bool for_each_staged(const char* path, staged_file_fn fn, void* ctx)
     {
       memcpy(stale, path, dir_len);
       memcpy(stale + dir_len, name, name_len + 1);
-      stop = fn(stale, ctx);
+      /* Only regular files, not followed through a link: stage_file() never
+       * creates anything else, and a FIFO would block the read. */
+      struct stat st;
+      if (lstat(stale, &st) == 0 && S_ISREG(st.st_mode))
+      {
+        stop = fn(stale, ctx);
+      }
     }
   }
   bool ok = listed;
