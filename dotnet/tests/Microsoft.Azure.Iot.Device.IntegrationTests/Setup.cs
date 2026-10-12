@@ -151,6 +151,35 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+            string registrationId = Guid.NewGuid().ToString();
+            string symmetricKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+            Attestation attestation = new SymmetricKeyAttestation(symmetricKey, symmetricKey);
+            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+
+            SymmetricKeyAuthenticationProvider authentication = new(registrationId, DpsIdScope, symmetricKey);
+
+            ConnectionClient connectionClient = new(options);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
+
+            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
+                cancellationToken);
+
+            return new UnifiedDeviceTestContext()
+            {
+                ConnectionClient = connectionClient,
+                ConnectionContext = connectionContext!,
+                AuthenticationProvider = authentication,
+                IndividualEnrollment = individualEnrollment,
+            };
+        }
+
         public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)
         {
             var ecdsa = ECDsa.Create(); // generate asymmetric key pair
