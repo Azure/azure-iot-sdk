@@ -258,7 +258,8 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client, after the namespace job. Each job issues a device with
+that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
+requests skip it (it logs in to Azure and runs the checked-out script) and rely on its hourly run. Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS`, `_EVENTHUB_CS` (`service` policy) and
 `_SAS_GROUP_KEY`, and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and

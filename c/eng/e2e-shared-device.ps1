@@ -114,7 +114,7 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
-        if (Get-Shared 'DPS_HOST') { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
+        if ($Prefix -eq 'E2E_MQTTV5_SHARED' -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64

@@ -46,13 +46,12 @@ permissions:
 
 jobs:
   # The namespace can drop out of Azure; DPS registrations fail until it is back.
+  # Not on pull requests: the repair logs in to Azure and runs the checked-out
+  # script, so it only runs trusted code (schedule, manual). Pull requests rely
+  # on the hourly repair in ci-c-e2e-mqttv5-adr-namespace.yml.
   adr-namespace:
     name: ADR namespace
-    if: >-
-      ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (github.event_name != 'pull_request' ||
-           (github.event.pull_request.head.repo.full_name == github.repository &&
-            github.actor != 'dependabot[bot]')) }}
+    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
     permissions:
       contents: read
       id-token: write
@@ -65,6 +64,12 @@ jobs:
   custom-topics:
     name: custom topics / linux
     needs: adr-namespace
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
