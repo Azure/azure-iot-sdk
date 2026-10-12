@@ -67,12 +67,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        public override MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
+        public override AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
         {
-            base.AddAuthentication(mqttConnect, endpointKind);
-            mqttConnect.Password = Array.Empty<byte>();
-            mqttConnect.ClientCertificate = ClientCertificate;
-            return mqttConnect;
+            return new AuthenticationCredentials()
+            {
+                ClientCertificate = ClientCertificate,
+                RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
+                LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
+            };
         }
 
         public override string GetRegistrationId()

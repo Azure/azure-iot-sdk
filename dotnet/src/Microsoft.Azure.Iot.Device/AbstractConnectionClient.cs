@@ -585,10 +585,21 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             Debug.Assert(_lastProvisioningAuthentication != null);
-            connectPacketToEdit = _lastProvisioningAuthentication.AddAuthentication(connectPacketToEdit, ConnectionEndpoint.IotHub);
+            connectPacketToEdit = ApplyAuthentication(_lastProvisioningAuthentication, connectPacketToEdit, ConnectionEndpoint.IotHub);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return Task.FromResult(IotHubMqttConnectOverride(connectPacketToEdit));
+        }
+
+        // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
+        private static MqttConnect ApplyAuthentication(AuthenticationProvider authentication, MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
+        {
+            AuthenticationCredentials credentials = authentication.GetAuthentication(endpointKind, mqttConnect.HostName, mqttConnect.ClientId ?? authentication.GetRegistrationId());
+            mqttConnect.Password = credentials.Password;
+            mqttConnect.ClientCertificate = credentials.ClientCertificate;
+            mqttConnect.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
+            mqttConnect.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback;
+            return mqttConnect;
         }
 
         /// <summary>
@@ -1270,7 +1281,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return authentication.AddAuthentication(mqttConnect, ConnectionEndpoint.DeviceProvisioningService);
+            return ApplyAuthentication(authentication, mqttConnect, ConnectionEndpoint.DeviceProvisioningService);
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)

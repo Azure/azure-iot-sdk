@@ -27,11 +27,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _symmetricKey = symmetricKey;
         }
 
-        public override MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
+        public override AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
         {
-            base.AddAuthentication(mqttConnect, endpointKind);
-            mqttConnect.Password = GetSasToken(endpointKind, mqttConnect.HostName, mqttConnect.ClientId);
-            return mqttConnect;
+            return new AuthenticationCredentials()
+            {
+                Password = GetSasToken(endpointKind, hostName, deviceId),
+                RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
+                LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
+            };
         }
 
         internal byte[] GetSasToken(ConnectionEndpoint endpointKind, string? iotHubHostName = null, string? deviceId = null)

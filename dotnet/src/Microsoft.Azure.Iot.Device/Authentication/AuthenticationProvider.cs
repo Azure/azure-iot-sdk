@@ -7,18 +7,25 @@ using System.Net.Security;
 
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
-    //TODO document exactly which fields are expected to be provided here. For instance, deviceId is fill in for the user since it should always be the same
-    // TODO this folds nicely into making this interface generic enough to handle HTTP connections as well for file upload/provisioning over HTTP
     public abstract class AuthenticationProvider
     {
         //TODO track signed certificates in here somehow? SecureString stuff probably
         // Kill the onCsrCompleted callback thing since now users who want to customly handle signed certificates just implement this interface instead
 
-        public virtual MqttConnect AddAuthentication(MqttConnect mqttConnect, ConnectionEndpoint endpointKind)
+        /// <summary>
+        /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
+        /// for connecting to the given endpoint. The caller maps it onto its own transport (MQTT, HTTP, etc.).
+        /// </summary>
+        /// <param name="endpointKind">Which service the connection targets.</param>
+        /// <param name="hostName">The host name being connected to.</param>
+        /// <param name="deviceId">The device Id (or registration Id when targeting DPS) being authenticated.</param>
+        public virtual AuthenticationCredentials GetAuthentication(ConnectionEndpoint endpointKind, string hostName, string deviceId)
         {
-            mqttConnect.LocalCertificateSelectionCallback = LocalCertificateSelectionCallback;
-            mqttConnect.RemoteCertificateValidationCallback = RemoteCertificateValidationCallback;
-            return mqttConnect;
+            return new AuthenticationCredentials()
+            {
+                LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
+                RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
+            };
         }
 
         public abstract string GetRegistrationId();
