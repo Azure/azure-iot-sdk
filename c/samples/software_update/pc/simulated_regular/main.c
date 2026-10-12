@@ -248,6 +248,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       /* Nothing was installed or reported; raise the limit named in the log. */
       fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_DEFERRED:
+      /* The current workflow finishes first; a later update check offers it again. */
+      printf("New update deferred until the current one ends.\n");
+      break;
   }
 }
 

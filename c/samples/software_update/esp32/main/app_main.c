@@ -223,6 +223,10 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   {
     ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_DEFERRED)
+  {
+    ESP_LOGI(TAG, "new update deferred until the current one ends");
+  }
 }
 
 /* ------------------------------------------------------------------------- */
