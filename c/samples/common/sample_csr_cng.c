@@ -3,15 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Windows CNG/NCrypt CSR backend for sample_cert_provider. Generates an EC
- * P-256 operational key with CNG, produces a PKCS#10 CSR via
- * CryptSignAndEncodeCertificate(X509_CERT_REQUEST_TO_BE_SIGNED), and exports the
- * private key as a PKCS#8 PEM so the (OpenSSL-based) Paho TLS layer can load
- * it. Each call mints a fresh key + CSR, which keeps the sample free of PEM->CNG
- * key import. The key is written to key_path + SAMPLE_CSR_PENDING_KEY_SUFFIX;
- * the provider moves it into place once its chain is stored. Not for
- * send_csr() resubmission of an earlier request id: that makes a new key, and
- * this sample does not check that a returned chain certifies it.
+/* Windows CNG/NCrypt CSR backend for sample_cert_provider. Keeps one EC P-256
+ * operational key per key_path as a persisted CNG key (named from key_path),
+ * creating it on first use, produces a PKCS#10 CSR over it via
+ * CryptSignAndEncodeCertificate(X509_CERT_REQUEST_TO_BE_SIGNED), and exports it
+ * as a PKCS#8 PEM at key_path so the (OpenSSL-based) Paho TLS layer can load it.
+ * Every call uses the same key; a new key_path gives a new key.
  *
  * Link: crypt32.lib, ncrypt.lib. */
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -55,6 +52,19 @@ static char* base64_dup(const BYTE* der, DWORD der_len, BOOL no_crlf)
 }
 
 /* Export the NCrypt private key as a PKCS#8 PEM file at path. Returns 0 on ok. */
+/* Name of the persisted CNG key for @p key_path: a fixed prefix and a 64-bit
+ * FNV-1a hash of the path, case-folded (Windows paths are case-insensitive). */
+static void persisted_key_name(const char* key_path, WCHAR out[64])
+{
+  unsigned long long h = 1469598103934665603ULL;
+  for (const char* c = key_path; *c; ++c)
+  {
+    char ch = (*c >= 'A' && *c <= 'Z') ? (char)(*c - 'A' + 'a') : *c;
+    h = (h ^ (unsigned char)ch) * 1099511628211ULL;
+  }
+  (void)_snwprintf_s(out, 64, _TRUNCATE, L"azure-iot-sample-%016llx", h);
+}
+
 static int export_key_pem(NCRYPT_KEY_HANDLE hKey, const char* path)
 {
   int rc = 1;
@@ -116,7 +126,7 @@ done:
     }
     if (rc != 0)
     {
-      (void)remove(path); /* never leave a partial key to be committed */
+      (void)remove(path); /* never leave a partial key behind */
     }
   }
   if (b64)
@@ -153,27 +163,35 @@ int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, cha
     return 1;
   }
 
-  /* 1. Generate an exportable ephemeral EC P-256 key. */
+  /* 1. Open the persisted EC P-256 key for key_path, creating it (exportable)
+   *    on first use. */
   if (NCryptOpenStorageProvider(&hProv, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS)
   {
     goto done;
   }
-  if (NCryptCreatePersistedKey(hProv, &hKey, BCRYPT_ECDSA_P256_ALGORITHM, NULL, 0, 0)
-      != ERROR_SUCCESS)
   {
-    goto done;
-  }
-  {
-    DWORD policy = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
-    if (NCryptSetProperty(hKey, NCRYPT_EXPORT_POLICY_PROPERTY, (PBYTE)&policy, sizeof(policy), 0)
-        != ERROR_SUCCESS)
+    WCHAR key_name[64];
+    persisted_key_name(key_path, key_name);
+    SECURITY_STATUS st = NCryptOpenKey(hProv, &hKey, key_name, 0, 0);
+    if (st == NTE_BAD_KEYSET)
     {
+      hKey = 0;
+      DWORD policy = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
+      if (NCryptCreatePersistedKey(hProv, &hKey, BCRYPT_ECDSA_P256_ALGORITHM, key_name, 0, 0)
+              != ERROR_SUCCESS
+          || NCryptSetProperty(
+                 hKey, NCRYPT_EXPORT_POLICY_PROPERTY, (PBYTE)&policy, sizeof(policy), 0)
+              != ERROR_SUCCESS
+          || NCryptFinalizeKey(hKey, 0) != ERROR_SUCCESS)
+      {
+        goto done;
+      }
+    }
+    else if (st != ERROR_SUCCESS)
+    {
+      hKey = 0;
       goto done;
     }
-  }
-  if (NCryptFinalizeKey(hKey, 0) != ERROR_SUCCESS)
-  {
-    goto done;
   }
 
   /* 2. Encode the subject DN. */
@@ -264,14 +282,18 @@ int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, cha
     }
   }
 
-  /* 6. Stage the private key as PEM for the TLS stack. */
+  /* 6. Write the private key as PEM for the TLS stack: to a temporary file,
+   *    then over key_path in one step. It is the same key every time. */
   {
-    char pending[MAX_PATH];
-    if (_snprintf_s(
-            pending, sizeof(pending), _TRUNCATE, "%s" SAMPLE_CSR_PENDING_KEY_SUFFIX, key_path)
-            < 0
-        || export_key_pem(hKey, pending) != 0)
+    char tmp[MAX_PATH];
+    if (_snprintf_s(tmp, sizeof(tmp), _TRUNCATE, "%s.tmp", key_path) < 0
+        || export_key_pem(hKey, tmp) != 0)
     {
+      goto done;
+    }
+    if (!MoveFileExA(tmp, key_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+      (void)remove(tmp);
       goto done;
     }
   }

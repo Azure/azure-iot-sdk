@@ -2909,6 +2909,7 @@ typedef struct tls_provider
   az_iot_result bootstrap_rc;
   az_iot_result operational_rc;
   int load_calls;
+  const char* key_path; /* NULL: "key.pem" */
 } tls_provider;
 
 static az_iot_result tls_load(
@@ -2928,7 +2929,7 @@ static az_iot_result tls_load(
   if (rc == AZ_IOT_OK)
   {
     out->client_cert_path = "cert.pem";
-    out->client_key_path = "key.pem";
+    out->client_key_path = p->key_path ? p->key_path : "key.pem";
   }
   return rc;
 }
@@ -3088,6 +3089,36 @@ static void a_failed_load_fails_the_connect_instead_of_going_plaintext(void** st
     assert_null(az_iot_mock_mqtt_factory_last_client(factory));
     az_iot_connection_client_deinit(&client);
   }
+}
+
+/* A key changed while the client is closed is used on the next open(): load()
+ * runs on every connect and nothing from the previous session is kept. */
+static void a_key_changed_while_closed_is_used_on_the_next_open(void** state)
+{
+  (void)state;
+  tls_provider prov = { .base.vtable = &k_tls_vtable, .key_path = "key-a.pem" };
+  az_iot_connection_client client;
+  az_iot_mqtt_factory* factory = tls_client_init(&client, &prov, false, false);
+  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&client, 0);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_string_equal(connect->connect.client_key_path, "key-a.pem");
+
+  assert_int_equal(az_iot_connection_client_close(&client), AZ_IOT_OK);
+  (void)az_iot_mock_mqtt_client_inject_disconnected(m);
+  (void)az_iot_connection_client_do_work(&client, 0);
+  prov.key_path = "key-b.pem";
+  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
+  m = az_iot_mock_mqtt_factory_last_client(factory);
+  assert_non_null(m);
+  connect = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_string_equal(connect->connect.client_key_path, "key-b.pem");
+  az_iot_connection_client_deinit(&client);
 }
 
 /* A provider that stops loading between attempts fails the reconnect, which
@@ -3460,6 +3491,7 @@ int main(void)
     cmocka_unit_test(a_dps_session_rejects_operational_cert_without_release_or_store),
     cmocka_unit_test(a_failed_load_fails_the_connect_instead_of_going_plaintext),
     cmocka_unit_test(a_provider_that_stops_loading_fails_the_reconnect),
+    cmocka_unit_test(a_key_changed_while_closed_is_used_on_the_next_open),
     cmocka_unit_test(every_failed_hub_setup_is_reported_with_its_step),
     cmocka_unit_test(a_refused_adapter_connect_is_reported_with_its_step),
     cmocka_unit_test(open_setup_failure_settles_idle_with_its_step),

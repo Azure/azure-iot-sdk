@@ -157,9 +157,7 @@ fails with `unknown target`; the configure output must include
   `managed certificate provider init failed` and exits 1.
 - Every run registers again, and DPS issues a new certificate over the same key;
   `AZ_IOT_OPERATIONAL_CERT` is overwritten.
-- To rotate the key, delete both files, or set `rotate_key_on_csr_request` in the
-  provider options: each CSR is then over a new key, and both files are replaced
-  when its certificate is stored. If storing fails, the previous pair stays in use.
+- To rotate the key, delete both files before a run.
 
 ## How it ends
 

@@ -16,8 +16,6 @@
 #include "sample_csr_backend.h"
 #include "sample_utils.h"
 
-#include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -229,80 +227,6 @@ static void provider_release_csr(
   }
 }
 
-/* "<path><suffix>" on the heap, or NULL. */
-static char* path_with_suffix(const char* path, const char* suffix)
-{
-  size_t a = strlen(path);
-  size_t b = strlen(suffix);
-  char* out = (char*)malloc(a + b + 1);
-  if (out)
-  {
-    memcpy(out, path, a);
-    memcpy(out + a, suffix, b);
-    out[a + b] = '\0';
-  }
-  return out;
-}
-
-/* Rename the staged chain @p tmp over the chain file. If the backend staged a
- * new key for this CSR, it replaces the key file too: the previous key is set
- * aside first and put back if either rename fails, so key and chain stay a
- * pair. */
-static az_iot_result commit_chain(sample_cert_provider* p, const char* tmp)
-{
-  char* pending = path_with_suffix(p->operational_key_path, SAMPLE_CSR_PENDING_KEY_SUFFIX);
-  char* previous = path_with_suffix(p->operational_key_path, ".old");
-  az_iot_result rc = (pending && previous) ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
-  errno = 0;
-  FILE* staged = rc == AZ_IOT_OK ? fopen(pending, "rb") : NULL;
-  if (rc == AZ_IOT_OK && !staged && errno != ENOENT)
-  {
-    rc = AZ_IOT_ERR_INTERNAL; /* a staged key exists but cannot be read */
-  }
-  else if (staged)
-  {
-    (void)fclose(staged);
-    errno = 0;
-    FILE* current = fopen(p->operational_key_path, "rb");
-    bool had_key = current != NULL || errno != ENOENT; /* exists, even if unreadable */
-    if (current)
-    {
-      (void)fclose(current);
-    }
-    /* A key that exists but cannot be set aside could not be put back: change
-     * nothing. */
-    bool set_aside = had_key && sample_replace_file(p->operational_key_path, previous);
-    if (had_key && !set_aside)
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-    }
-    else if (!sample_replace_file(pending, p->operational_key_path))
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-    }
-    else if (!sample_replace_file(tmp, p->operational_cert_path))
-    {
-      rc = AZ_IOT_ERR_INTERNAL;
-      (void)remove(p->operational_key_path);
-    }
-    if (set_aside && rc != AZ_IOT_OK)
-    {
-      (void)sample_replace_file(previous, p->operational_key_path);
-    }
-    else if (set_aside)
-    {
-      (void)remove(previous);
-    }
-  }
-  else if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
-  {
-    rc = AZ_IOT_ERR_INTERNAL;
-  }
-  free(pending);
-  free(previous);
-  return rc;
-}
-
 static az_iot_result provider_store(
     az_iot_certificate_provider* self,
     const az_iot_issued_certificate* issued)
@@ -350,9 +274,9 @@ static az_iot_result provider_store(
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
-  if (rc == AZ_IOT_OK)
+  if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
   {
-    rc = commit_chain(p, tmp);
+    rc = AZ_IOT_ERR_INTERNAL;
   }
   if (rc != AZ_IOT_OK)
   {

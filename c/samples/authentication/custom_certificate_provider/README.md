@@ -36,7 +36,7 @@ The sample reads these environment variables:
 | `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM file). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated (Linux). On Windows each CSR makes a new key, staged as `<file>.new` and moved into place with its issued chain; resubmitting an earlier `send_csr()` request id is not supported there (the chain would be for an older key). Default `operational_key.pem`. |
+| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated. On Windows the key is a persisted CNG key named after this path, exported here as PEM; a new path gives a new key. Default `operational_key.pem`. |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued operational chain file. Default `operational_cert.pem`. |
 
 ```sh
