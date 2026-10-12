@@ -52,6 +52,9 @@ typedef struct
   /* Callback contexts live as long as the connection: a late PUBACK may still complete one. */
   publish_record records[E2E_MAX_PUBLISHES];
   size_t records_used;
+  /* Hub transitions out of CONNECTED; a refusal must not cause one. */
+  int hub_drops;
+  bool hub_connected;
 } fixture;
 
 static fixture g_fx;
@@ -61,6 +64,21 @@ static void on_publish(az_iot_result status, void* user_ctx)
   publish_record* record = (publish_record*)user_ctx;
   record->status = status;
   record->done = 1;
+}
+
+static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+  const bool connected = event->state == AZ_IOT_CONN_STATE_CONNECTED;
+  if (fx->hub_connected && !connected)
+  {
+    fx->hub_drops++;
+  }
+  fx->hub_connected = connected;
 }
 
 static publish_record* new_record(fixture* fx)
@@ -153,6 +171,12 @@ static int group_setup(void** state)
     fprintf(stderr, "[e2e] the device is not on an mqttv5 hub\n");
     return -1;
   }
+  g_fx.hub_connected = true;
+  if (az_iot_connection_client_add_state_observer(&g_fx.dev.conn, on_state, &g_fx) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[e2e] state observer registration failed\n");
+    return -1;
+  }
   if (az_iot_mqttv5_custom_topic_client_init(&g_fx.custom, &g_fx.dev.conn) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] custom topic client init failed\n");
@@ -174,6 +198,10 @@ static int group_teardown(void** state)
   if (fx->custom_ok)
   {
     az_iot_mqttv5_custom_topic_client_deinit(&fx->custom);
+  }
+  if (fx->dev.conn_ok)
+  {
+    (void)az_iot_connection_client_remove_state_observer(&fx->dev.conn, on_state, fx);
   }
   e2e_device_disconnect(&fx->dev);
   if (fx->service != NULL)
@@ -326,15 +354,18 @@ static void qos0_to_a_shared_template_is_routed(void** state)
 
 static void a_topic_no_template_allows_is_refused(void** state)
 {
+  const int drops = ((fixture*)*state)->hub_drops;
   publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state, "e2e-unlisted/telemetry", AZ_IOT_MQTT_QOS_1, E2E_ROUTE_TIMEOUT_S, &record);
   assert_refused(record);
+  assert_int_equal(((fixture*)*state)->hub_drops, drops);
   assert_false(seen);
 }
 
 static void another_device_id_is_refused(void** state)
 {
+  const int drops = ((fixture*)*state)->hub_drops;
   publish_record* record;
   const bool seen = publish_and_watch(
       (fixture*)*state,
@@ -343,6 +374,7 @@ static void another_device_id_is_refused(void** state)
       E2E_ROUTE_TIMEOUT_S,
       &record);
   assert_refused(record);
+  assert_int_equal(((fixture*)*state)->hub_drops, drops);
   assert_false(seen);
 }
 
@@ -350,6 +382,7 @@ static void another_device_id_is_refused(void** state)
 static void publishing_continues_after_a_refusal(void** state)
 {
   fixture* fx = (fixture*)*state;
+  assert_int_equal(fx->hub_drops, 0);
   assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
   publish_record* record;
   (void)publish_and_watch(fx, "e2e/{deviceId}/after", AZ_IOT_MQTT_QOS_1, 1, &record);
