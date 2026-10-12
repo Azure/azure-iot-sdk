@@ -147,11 +147,15 @@ static int find_pending_by_correlation_id(
   return -1;
 }
 
-/** @brief True when a backend-initiated message belongs to the current connection. */
+/**
+ * @brief True when a backend-initiated message belongs to the current connection.
+ *
+ * Accepted from the birth on: the service may push before the birth-ack.
+ */
 static bool matches_connection(const az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message* msg)
 {
   uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
-  return az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
+  return az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
       && correlation_is(msg, birth_nonce);
 }
 

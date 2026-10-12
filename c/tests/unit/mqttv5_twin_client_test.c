@@ -292,8 +292,8 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
  *
  * Unlike MQTTv3, CONNACK alone does not announce CONNECTED: the presence
  * wildcard and the birth handshake complete first. */
-/* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
-static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
+/* CONNACK and SUBACKs after open(), up to the published birth; records its nonce. */
+static void open_to_birth_after_open(fixture* fx)
 {
   assert_non_null(fx->mock);
 
@@ -334,7 +334,11 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
   memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
+}
 
+/* Answer the birth recorded by open_to_birth_after_open(). */
+static void ack_birth(fixture* fx, uint64_t desired, uint64_t reported)
+{
   /* BirthAck { 10: desired_version, 11: reported_version }; proto3 omits a
    * zero, so an unset version simply is not written. */
   uint8_t ack_body[24];
@@ -368,6 +372,13 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
+/* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
+static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
+{
+  open_to_birth_after_open(fx);
+  ack_birth(fx, desired, reported);
 }
 
 static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
@@ -1443,6 +1454,53 @@ static void with_push_desired_connecting_does_not_fetch(void** state)
   inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
   assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
   assert_int_equal(rec.version, 5);
+}
+
+static void open_to_birth(fixture* fx)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  fx->factory_registered = true;
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_after_open(fx);
+}
+
+/* The service may push before the birth-ack; the push is delivered once and not refetched. */
+static void with_push_desired_a_push_before_the_birth_ack_is_delivered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  /* TwinPush { 1: Section{ version=5, payload } } */
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 5);
+
+  ack_birth(fx, 5, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(count_gets(fx), 0);
+}
+
+/* Before the birth-ack, a push for another connection is still dropped. */
+static void a_push_before_the_birth_ack_from_another_connection_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  uint8_t other[16];
+  memcpy(other, fx->nonce, sizeof(other));
+  other[0] ^= 0xFF;
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", other, body, sizeof(body));
+  assert_false(rec.fired);
 }
 
 static void connecting_current_does_not_fetch(void** state)
@@ -2586,6 +2644,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(connecting_behind_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         with_push_desired_connecting_does_not_fetch, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        with_push_desired_a_push_before_the_birth_ack_is_delivered, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_before_the_birth_ack_from_another_connection_is_dropped,
+        setup_push_desired,
+        teardown),
     cmocka_unit_test_setup_teardown(connecting_current_does_not_fetch, setup, teardown),
     cmocka_unit_test_setup_teardown(a_get_ahead_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
