@@ -122,10 +122,13 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       (unsigned)reason);
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   csr_ctx* c = (csr_ctx*)user_ctx;
-  c->issued = 1;
+  c->issued = (store_result == AZ_IOT_OK);
   c->issued_count = issued ? issued->count : 0;
 }
 
