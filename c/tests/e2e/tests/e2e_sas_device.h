@@ -19,6 +19,10 @@ typedef struct
   char* registration_id; /**< AZ_IOT_DPS_SAS_REGISTRATION_ID */
   char* trusted_ca; /**< AZ_IOT_TRUSTED_CA: PEM file path */
   char* global_endpoint; /**< AZ_IOT_DPS_GLOBAL_ENDPOINT, or NULL */
+  char* proxy_host; /**< AZ_IOT_PROXY_HOST, or NULL for a direct connection */
+  uint16_t proxy_port; /**< AZ_IOT_PROXY_PORT, or 0 */
+  char* proxy_username; /**< AZ_IOT_PROXY_USERNAME, or NULL */
+  char* proxy_password; /**< AZ_IOT_PROXY_PASSWORD, or NULL */
 } e2e_sas_config;
 
 /** @brief Credentials each scope connected with. */
