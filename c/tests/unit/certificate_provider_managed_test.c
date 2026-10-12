@@ -1570,15 +1570,23 @@ static void managed_init_refuses_a_directory_path(void** state)
   (void)state;
   remove_test_files();
   touch(STAGED_1(""));
+  touch(STAGED_1("."));
   az_iot_certificate_provider_managed prov;
   az_iot_certificate_provider_managed_options opts = test_options();
   opts.operational_key_pem_path = "./";
   assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
-  opts = test_options();
-  opts.operational_cert_pem_path = "./";
-  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  const char* not_files[] = { "./", ".", "..", "./.", "./.." };
+  for (size_t i = 0; i < sizeof(not_files) / sizeof(not_files[0]); ++i)
+  {
+    opts = test_options();
+    opts.operational_cert_pem_path = not_files[i];
+    assert_int_equal(
+        AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  }
   assert_true(file_exists(STAGED_1("")));
+  assert_true(file_exists(STAGED_1(".")));
   assert_int_equal(0, remove(STAGED_1("")));
+  assert_int_equal(0, remove(STAGED_1(".")));
   remove_test_files();
 }
 

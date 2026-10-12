@@ -1063,7 +1063,10 @@ static bool in_temp_namespace(const char* path, const char* owner)
 #endif
 }
 
-/** @brief True if @p path is non-empty and ends in a file name, not a separator or bare drive. */
+/**
+ * @brief True if @p path is non-empty and ends in a file name: not a separator,
+ * ".", ".." or a bare drive.
+ */
 static bool has_file_name(const char* path)
 {
   if (!is_nonempty_cstr(path))
@@ -1071,12 +1074,17 @@ static bool has_file_name(const char* path)
     return false;
   }
   size_t len = strlen(path);
-  char last = path[len - 1];
+  size_t base = len;
+  while (base > 0 && path[base - 1] != '/'
 #ifdef _WIN32
-  return last != '/' && last != '\\' && !(len == 2 && path[1] == ':');
-#else
-  return last != '/';
+         && path[base - 1] != '\\' && !(base == 2 && path[1] == ':')
 #endif
+  )
+  {
+    --base;
+  }
+  const char* name = path + base;
+  return *name != '\0' && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
 }
 
 /** @brief True when a configured path could be taken for a staged file. */
