@@ -792,6 +792,9 @@ typedef struct az_iot_su_client
  *   device_properties_buffer / size: caller-owned cache the client copies into.
  *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
  *     with az_iot_su_device_properties_buffer_size().
+ *   replacement_policy: what a new workflow id does to a workflow that may not
+ *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
+ *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
  */
 typedef struct az_iot_su_client_config_options
 {
@@ -801,6 +804,7 @@ typedef struct az_iot_su_client_config_options
     const az_iot_su_device_properties* device_properties;
     uint8_t*                            device_properties_buffer;
     size_t                              device_properties_buffer_size;
+    az_iot_su_replacement_policy        replacement_policy;
 } az_iot_su_client_config_options;
 
 az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
@@ -856,7 +860,9 @@ az_iot_result az_iot_su_client_remove_observer(
  * Initialize the software updates client. `connection` is the connection client whose DPS
  * session carries the software updates channel; `options` carries the rest (hooks,
  * crypto, trust store, device properties + caller cache). Returns
- * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
+ * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
+ * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
+ * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
  * the buffer is too small for device_properties.
  */
