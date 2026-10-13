@@ -744,9 +744,10 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_handle_response(
         (long)f.error_code);
     return fail(client, AZ_IOT_ERR_DPS);
   }
-  if (!parsed || state == DPS_TPM_STATE_REGISTER)
+  /* A 2xx before the key exchange is not part of the TPM flow, and one without
+   * a status cannot be acted on. */
+  if (!parsed || state == DPS_TPM_STATE_REGISTER || az_span_size(f.status) <= 0)
   {
-    /* A 2xx before the key exchange is not part of the TPM flow. */
     return fail(client, AZ_IOT_ERR_PROTOCOL);
   }
 
@@ -774,7 +775,7 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_handle_response(
       AZ_IOT_LOG_COMPONENT_DPS,
       "TPM registration failed: status \"%.*s\", errorCode %ld",
       (int)az_span_size(f.status),
-      az_span_size(f.status) > 0 ? (const char*)az_span_ptr(f.status) : "",
+      (const char*)az_span_ptr(f.status),
       (long)f.error_code);
   return fail(client, AZ_IOT_ERR_DPS);
 }

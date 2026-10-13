@@ -495,7 +495,7 @@ static void capture_log(
   last_log[n] = '\0';
 }
 
-static void a_response_without_status_fails_and_logs_it(void** state)
+static void a_failed_status_is_logged(void** state)
 {
   (void)state;
   az_iot_log_sink sink = { capture_log, NULL, AZ_IOT_LOG_LEVEL_TRACE };
@@ -508,9 +508,9 @@ static void a_response_without_status_fails_and_logs_it(void** state)
   az_iot_dps_tpm_next next;
   assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
   last_log[0] = '\0';
-  assert_int_equal(respond(&c, 200, "{}", 0, &next), AZ_IOT_ERR_DPS);
+  assert_int_equal(respond(&c, 200, "{\"status\":\"disabled\"}", 0, &next), AZ_IOT_ERR_DPS);
   az_iot_log_set_global_sink(NULL);
-  assert_non_null(strstr(last_log, "status \"\", errorCode 0"));
+  assert_non_null(strstr(last_log, "status \"disabled\", errorCode 0"));
 }
 
 static void assignment_problems_are_protocol_errors(void** state)
@@ -520,6 +520,9 @@ static void assignment_problems_are_protocol_errors(void** state)
     "{\"status\":\"assigned\",\"registrationState\":{\"deviceId\":\"d\"}}",
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\"}}",
     "{\"status\":\"assigning\"}",
+    "{}",
+    "{\"status\":\"\"}",
+    "{\"status\":null}",
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\\u002ex\",\"deviceId\":"
     "\"d\"}}",
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
@@ -962,7 +965,7 @@ int main(void)
     cmocka_unit_test(a_2xx_before_the_challenge_is_a_protocol_error),
     cmocka_unit_test(service_failures_report_the_error_code),
     cmocka_unit_test(assignment_problems_are_protocol_errors),
-    cmocka_unit_test(a_response_without_status_fails_and_logs_it),
+    cmocka_unit_test(a_failed_status_is_logged),
     cmocka_unit_test(tpm_failures_end_the_registration),
     cmocka_unit_test(a_short_buffer_or_zero_time_is_rejected),
     cmocka_unit_test(optional_members_and_options_are_sent),
