@@ -50,6 +50,7 @@ static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeou
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
 static void raise_refused(az_iot_su_client* client, az_iot_result reason);
+static void raise_deferred(az_iot_su_client* client);
 
 /* fetch_in_flight occupies padding after pending_fetch, so adding it left the
  * caller-allocated client's size and offsets unchanged. Fails the build if that
@@ -1395,6 +1396,41 @@ static bool same_workflow_id(az_iot_su_client* client, az_span id)
 }
 
 /**
+ * @brief Whether a new workflow id may replace the current workflow.
+ *
+ * Not once install_fn has been called for any step, until the workflow ends,
+ * nor while a reboot asked for by the last apply is owed: the device then
+ * holds a partly applied or not yet activated deployment. This covers a
+ * workflow held at a reboot boundary.
+ */
+static bool workflow_replaceable(const az_iot_su_client* client)
+{
+  if (SU_I(client).reboot_owed)
+  {
+    return false;
+  }
+  switch (SU_I(client).state)
+  {
+    case AZ_IOT_SU_STATE_IDLE:
+    case AZ_IOT_SU_STATE_FAILED:
+      return true;
+    case AZ_IOT_SU_STATE_INSTALL_COMPLETE:
+    case AZ_IOT_SU_STATE_APPLY_STARTED:
+    case AZ_IOT_SU_STATE_RESTORE_STARTED:
+      return false;
+    case AZ_IOT_SU_STATE_MANIFEST_RECEIVED:
+    case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
+    case AZ_IOT_SU_STATE_DOWNLOAD_STARTED:
+    case AZ_IOT_SU_STATE_DOWNLOAD_COMPLETE:
+    case AZ_IOT_SU_STATE_BACKUP_STARTED:
+    case AZ_IOT_SU_STATE_BACKUP_COMPLETE:
+    case AZ_IOT_SU_STATE_INSTALL_STARTED:
+    default:
+      return SU_I(client).current_step == 0 && !SU_I(client).install_called;
+  }
+}
+
+/**
  * @brief Stage and start the deployment in an `updateMetadata` payload.
  *
  * The payload is valid only for this call, and the parsed spans must outlive
@@ -1402,7 +1438,9 @@ static bool same_workflow_id(az_iot_su_client* client, az_span id)
  *
  * `workflowId` is the sole deployment identity: a payload with the active id
  * is a redelivery and is ignored before request_buffer is touched, so the
- * running workflow is undisturbed. A new id (re)starts the workflow.
+ * running workflow is undisturbed. A new id restarts the workflow while
+ * workflow_replaceable() allows it; otherwise it is deferred
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and nothing is touched.
  *
  * @param client    The client.
  * @param patch     The payload.
@@ -1486,15 +1524,14 @@ static void process_update_metadata(
     return;
   }
 
-  /* A workflow held at a reboot boundary has installed a step the device has
-   * not rebooted into. It is not replaced until its checkpoint lands or the
-   * client gives up and rolls it back; the service offers the new workflow
-   * again on a later update check. */
-  if (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
-      && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
+  if (!workflow_replaceable(client))
   {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_SU, "new workflow ignored while one is held at a reboot boundary");
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "new workflow deferred: the current one has changed the device (state %d, step %u)",
+        (int)SU_I(client).state,
+        (unsigned)SU_I(client).current_step);
+    raise_deferred(client);
     return;
   }
 
@@ -1522,6 +1559,7 @@ static void process_update_metadata(
   SU_I(client).have_request = true;
   SU_I(client).cancel_requested = false;
   SU_I(client).checkpoint_pending = false;
+  SU_I(client).install_called = false;
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
   result_init_steps(client, 0);
@@ -1637,6 +1675,19 @@ static void raise_refused(az_iot_su_client* client, az_iot_result reason)
   dispatch_event(client, &event);
 }
 
+/** @brief Raise AZ_IOT_SU_EVENT_UPDATE_DEFERRED for a new workflow not started. */
+static void raise_deferred(az_iot_su_client* client)
+{
+  az_iot_su_event event = {
+    .kind = AZ_IOT_SU_EVENT_UPDATE_DEFERRED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .reason = AZ_IOT_ERR_BUSY,
+    .service_error = k_no_service_error,
+  };
+  dispatch_event(client, &event);
+}
+
 /* Move the workflow, telling anyone watching. Centralised so every transition
  * is reported: eighteen assignment sites cannot each be trusted to remember,
  * and a state change nobody hears about is the gap this closes. */
@@ -1734,10 +1785,9 @@ static bool arm_retry_backoff(
  * FATAL is not re-armed: the request is malformed or the device is not
  * entitled, so resending it every tick would spin against the service.
  *
- * ALREADY_REPORTED is not re-armed: a terminal result is already recorded for
- * this workflow, so the report HAS been delivered and reporting is idempotent
- * on workflowId. Re-arming it would retry forever, and during the held
- * bootstrap session that starves the update check until the hold expires.
+ * ALREADY_REPORTED is the legacy untyped conflict verdict, not the explicit
+ * REPORT_CONFLICT rejection (FATAL). It is not re-armed. Re-arming it would retry forever, and
+ * during the held bootstrap session that starves the update check until the hold expires.
  *
  * PROCEED is not re-armed either. It is a terminal answer, not a failure: the
  * service is telling the device there is no update service configured for it,
@@ -1787,8 +1837,8 @@ static void on_channel_result(
      *
      * Not every verdict here is an abandonment:
      *   - AZ_IOT_OK is success, and NONE accompanies it.
-     *   - ALREADY_REPORTED means the service already has a terminal result for
-     *     this workflow, so the report was not lost -- nothing to report.
+     *   - ALREADY_REPORTED preserves the legacy untyped 409000 interpretation.
+     *     An explicit REPORT_CONFLICT is FATAL and reports its rejection.
      * What remains -- FATAL and PROCEED -- are requests that were dropped. Both
      * are reported. PROCEED in particular is UPDATE_ACCOUNT_NOT_LINKED on a
      * fetch: the device asked, was refused permanently, and without this reads
@@ -2087,6 +2137,15 @@ static az_iot_result su_client_init_core(
   if (options->root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  if (options->replacement_policy == AZ_IOT_SU_REPLACEMENT_ROLLBACK)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "AZ_IOT_SU_REPLACEMENT_ROLLBACK is not supported");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (options->replacement_policy != AZ_IOT_SU_REPLACEMENT_DEFER)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
   }
 
   SU_I(client).channel.vtable = channel->vtable;
@@ -3244,6 +3303,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_INSTALL_STARTED:
     {
       uint32_t step = SU_I(client).current_step;
+      SU_I(client).install_called = true;
       int32_t ir = (h->install_fn != NULL)
           ? h->install_fn(&SU_I(client).current_manifest, step, h->user_ctx)
           : AZ_IOT_SU_RESULT_FAILURE;
@@ -3317,6 +3377,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       /* The last step: the terminal record replaces any stored position. */
       result_overall_success(client);
       latch_terminal(client, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+      SU_I(client).reboot_owed = (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED);
       reset_to_idle(client);
       (void)az_iot_su__report_state(client);
       break;

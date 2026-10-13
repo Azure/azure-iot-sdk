@@ -248,7 +248,7 @@ static size_t utf8_sequence_length(const uint8_t* s)
 
 static bool is_valid_topic(const char* topic)
 {
-  if (!is_nonempty_cstr(topic) || topic[0] == '$')
+  if (!is_nonempty_cstr(topic))
   {
     return false;
   }

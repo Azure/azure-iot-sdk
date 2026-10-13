@@ -46,7 +46,7 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Device certificate chain (PEM file, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
+| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 | `AZ_IOT_CUSTOM_TOPIC_TEMPLATE` | no | Topic to publish to; `{deviceId}` is replaced with the device id. Default `contoso/{deviceId}/telemetry`. |
@@ -111,7 +111,7 @@ SDK warnings and errors go to stderr. On an mqttv3 hub it prints
 | --- | --- |
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | `Cannot build a topic from '<template>': AZ_IOT_ERR_INVALID_ARG` | The template has a `{` or `}` that is not part of `{deviceId}`. The variable is case-sensitive. |
-| `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a leading `$`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
+| `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
 | `The hub refused '<topic>'.` | No topic template on the hub matches the topic. Shown only with an MQTT adapter that reports PUBACK reason codes, such as az_mqtt; the Paho adapter registered here does not yet. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed and the MQTT adapter did not report why. With the Paho adapter this includes a topic no template matches. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_NOT_CONNECTED` | The connection ended before the hub acknowledged; the hub may also close the connection on a refused publish. |

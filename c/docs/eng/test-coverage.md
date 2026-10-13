@@ -23,7 +23,9 @@ otherwise. [MQTTv3 hub protocol conformance](#mqttv3-hub-protocol-conformance)
 maps the service's documented MQTT surface onto what the SDK implements and what is
 pinned by a test — read it first to see which gaps are missing *tests* and which are
 missing *code*. The MQTTv5 hub (MQTT v5) surface is tracked separately, see
-[MQTTv5 hub, deferred](#mqttv5-hub-deferred). Software updates is frozen for this pass.
+[MQTTv5 hub, deferred](#mqttv5-hub-deferred). Software updates has a bounded
+[device-update error-response catalog](#device-update-error-response-catalog); its broader inventory
+remains frozen for this pass.
 
 ## Connection
 
@@ -282,6 +284,11 @@ Covers `az_iot_connection_client` lifecycle, CONNACK handling, reconnection, the
 | | Overlong profile reports truncation | The retained prefix is never presented as the complete wire value. | unit | Done | [dps_overlong_profile_is_flagged_as_truncated](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1187) |
 | Profile query | Query before connected is rejected | The DPS profile is unresolved until assignment. | unit | Done | [get_hub_profile_before_connected_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1216) |
 | | Null arguments are rejected | — | unit | Done | [get_hub_profile_rejects_null_arguments](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1261) |
+| Device id query | Assigned device id is reported once adopted | `NULL` before; the assigned id differs from the registration id and the caller's `client_id`. | unit | Done | [get_device_id_returns_the_assigned_device_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
+| | Re-provision replaces the device id with the hub | The previous pair stays until the new assignment is adopted. | unit | Done | [get_device_id_follows_a_reprovision](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
+| | Rejected assignment is not reported | — | unit | Done | [get_device_id_ignores_a_rejected_assignment](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
+| | Null client returns `NULL` | — | unit | Done | [get_device_id_rejects_a_null_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
+| | Direct-hub client reports its `client_id` | — | unit | Done | [get_device_id_returns_the_direct_client_id](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c) |
 | Direct profile declaration | Unknown caller profile is rejected at init | `UNKNOWN` is service-produced only. | unit | Done | [init_rejects_a_connection_profile_the_sdk_cannot_speak](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c#L1277) |
 | Crypto backend | Incomplete crypto backend is rejected at init | Missing SHA-256 function or another `version`; `verify_rs256` is optional. | unit | Done | [init_rejects_an_incomplete_crypto_backend](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_dps_test.c) |
 | | DPS start rejects a missing id scope | The registration id is checked; the id scope is not, and an empty one trips an az_core precondition whose default handler spins forever. | unit | Pending | *connection_dps_test.c* |
@@ -871,15 +878,95 @@ below stand in for what would otherwise be a second flavor section.
 
 ## Software updates
 
-> **Frozen for this pass.** The software updates feature is expected to change, so the table below
+> **Broader inventory frozen for this pass.** The software updates feature is expected to change, so the table below
 > inventories what exists today — including the `Pending` rows already known — and is not
-> being extended with newly identified gaps the way the other areas are. Revisit once the
-> feature settles.
+> being extended with unrelated gaps. The local error-response catalog below is a targeted exception.
 
 Covers `az_iot_su_client`: the deployment workflow driven by software updates `updateMetadata` offers, the
 status reported through the software updates channel, and the manifest crypto (SHA-256 file hashes,
 RS256 signature verification) through the crypto backends in `c/adapters/crypto_openssl` and
 `c/adapters/crypto_mbedtls`.
+
+### Device-update error-response catalog
+
+The Software Update service defines 12 named error codes and a body-optional 429. These tests start **after DPS translation**,
+using the SDK's flat MQTT error body and response-topic status. They do not feed
+the nested HTTP `{error:{code,...}}` envelope to a device or verify gateway translation.
+
+[`su_error_cases.h`](../../tests/support/su_error_cases.h) is the executable inventory:
+**223 independently named cases in each of three existing cmocka suites**, not a loop
+that hides later rows after the first failure. Expectations are explicit contract inputs.
+The common inventory keeps parser, channel and engine rows identical without adding a runner.
+
+| Named code / condition | Regular fetch | Onboarding fetch | Report | Expected SDK behavior |
+| --- | --- | --- | --- | --- |
+| `UNSUPPORTED_API_VERSION` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `UNSUPPORTED_AGENT_PROFILE` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `INVALID_COMPATIBILITY_PROPERTIES` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `INVALID_REQUEST` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `UNKNOWN_AGENT_INFO_VERSION` | 5 | 5 | — | Drop both cached ETags, resend full agent info, keep caller deadline. |
+| `OUTDATED_AGENT_INFO` | 5 | 5 | — | Same corrective resend, not replay of an unchanged ETag-only request. |
+| `OUTDATED_SERVICE_CONFIG` | 5 | 5 | — | Drop only the cached service-config ETag; retry immediately with the agent-info ETag. |
+| `UPDATE_ACCOUNT_NOT_LINKED` | 5 | 5 | 5 | `PROCEED` compatibility policy; stop retry, expose abandonment, allow provisioning. Not successful no-offer. |
+| `UNKNOWN_WORKFLOW_ID` | — | — | 5 | Fatal; stop reporting this workflow, expose rejection, never claim delivery. |
+| `REPORT_CONFLICT` | — | — | 6 | Fatal when typed; stop conflicting replay, expose rejection; application explicitly re-polls. |
+| `INTERNAL_SERVER_ERROR` | 5 | 5 | 5 | Jittered exponential backoff, then unchanged retry. |
+| `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay; fallback backoff or honor supplied delay. |
+| 429 | 12 | 12 | 12 | Typed and bodyless × supplied, missing, zero, malformed (`3s`), negative, HTTP-date topic values. Valid seconds gate retry; all unusable hints fall back to backoff. |
+| Related numeric/open-code fallback (not additional named codes) | 9 | 9 | 8 | SDK-documented numeric buckets, captured `500001`, unknown string fallback, bodyless 503. |
+| **Total per suite** | **76** | **76** | **71** | **223** |
+
+The five named-code variants are: `info.aduErrorCode` without a numeric code (with
+diagnostic prose); `message` only; `message` with a contradictory numeric bucket;
+`message` with a contradictory topic status; and `info.aduErrorCode` overriding both
+a different `message` and a contradictory numeric bucket. The sixth conflict variant
+uses the documented shared `409000` with explicit `REPORT_CONFLICT`.
+String-only and conflicting-signal fixtures test supported SDK behavior, not captured
+gateway output for every code. No per-name DPS numeric mapping is invented.
+
+Reports have no agent-info fields, so corrective agent-info rows apply only to fetches.
+The report rows for profile/compatibility validation are defensive terminal handling
+of the design's shared error set, not a claim that reports contain those fields.
+Workflow-specific errors apply only to reporting.
+
+The fallback rows, on all routes, are numeric `400000`, `409000`, `429000`, captured
+`500001`, `503000`, unknown `FUTURE_CODE` with `400002` or `503000`, and bodyless 503.
+Fetches additionally exercise numeric `400004` corrective resend. Numeric values come
+from the SDK's existing DPS constants/captured fixtures, **not HTTP status multiplication**.
+The untyped shared `409000` retains legacy `PROCEED` (fetch) / `ALREADY_REPORTED`
+(report); absence of a string prevents reliable discrimination. This compatibility
+interpretation is not proof that the conflicting payload was recorded.
+
+| Suite | Evidence beyond classification |
+| --- | --- |
+| [`az_iot_tests_su_protocol`](../../tests/unit/su_protocol_test.c) | Parsed string/numeric precedence and topic integer-delay parsing for every row. Existing tests retain malformed/truncated/nested-envelope rejection and integer bound/overflow controls. |
+| [`az_iot_tests_su_channel_dps`](../../tests/unit/su_channel_dps_test.c) | Mock-MQTT correlation, exactly one failed verdict, released slot, copied tracking diagnosis, cache/save-state invalidation, full-info bytes on corrective resend, supplied-delay gating of fetch and report, late/future RID isolation, and terminal fetches allowing registration. The existing report-success fixture now uses a zero-byte 200 body. |
+| [`az_iot_tests_su_client`](../../tests/unit/su_client_test.c) | Every row traverses the shipping DPS channel into the actual engine, public observer, mock hooks and storage. Terminal rows stop replay; transient rows block immediate publish then retry, preserving deadlines and identical payload bytes. Owed reports/checkpoints survive until correlated empty-200 settlement, without repeating install/apply or other workflow hooks. A subsequent explicit poll can accept a new workflow; old/future responses cannot settle the current request. |
+
+Engine-only positive/boundary controls add **8 tests**: correlated zero-byte report
+acceptance (the same wire verdict as an accepted duplicate, not a service-deduplication test),
+three failed-report retries with complete diagnostic/step fields (500 backoff, 503 delay,
+429 delay; optional diagnostic spans seeded by the test fixture), and four supplied
+delays exceeding the caller budget (429/503 × regular/onboarding).
+Mock deadlines are inspected and expired explicitly;
+these are deterministic scheduler tests, not real-time sleeps or cloud tests.
+
+**Ownership limits.** HTTP `Retry-After` date conversion belongs to the gateway;
+the SDK accepts only topic integer seconds (0/unusable means fallback backoff, maximum
+86400 seconds). The open-code fallbacks do not enumerate future service errors or the
+undefined failure-loop-cap proposal. A typed conflict is a rejected payload: terminal
+record retirement only stops replay. Recovery polling remains application-owned, with
+no new public API or automatic cadence. Crypto, response-size coverage, live enrollments,
+deployment campaigns, service idempotency and gateway mappings are outside this catalog.
+
+Run the three suites from an out-of-tree build configured with `AZ_IOT_BUILD_TESTS=ON`:
+
+```sh
+cmake --build <build-dir> --target az_iot_tests_su_protocol az_iot_tests_su_channel_dps az_iot_tests_su_client
+ctest --test-dir <build-dir> --output-on-failure -R '^az_iot_tests_su_(protocol|channel_dps|client)$'
+```
+
+No downloads, external runner, service calls or cloud agents are required.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |
@@ -898,7 +985,7 @@ RS256 signature verification) through the crypto backends in `c/adapters/crypto_
 | | A finished workflow is not replayed after reboot | The checkpoint is cleared at Idle; with none stored, later workflows cost no persist write. | unit | Done | [finished_workflow_is_not_replayed_after_reboot](../../tests/unit/su_client_test.c) |
 | | A failed checkpoint clear is retried | Paced retries while Idle, and at the next terminal transition or superseding workflow. | unit | Done | [a_failed_checkpoint_retire_is_retried](../../tests/unit/su_client_test.c) |
 | | A failed checkpoint clear is retried while Idle | A reboot before the next workflow finds nothing to resume. | unit | Done | [a_failed_checkpoint_clear_is_retried_while_idle](../../tests/unit/su_client_test.c) |
-| | A superseding workflow clears the stored checkpoint | — | unit | Done | [superseding_workflow_retires_the_stored_checkpoint](../../tests/unit/su_client_test.c) |
+| | A new workflow is deferred at a stored reboot checkpoint | Checkpoint bytes, step and results kept; nothing rolled back; `UPDATE_DEFERRED` on each delivery; taken after the resumed workflow ends. | unit | Done | [a_new_workflow_is_deferred_at_a_stored_reboot_checkpoint](../../tests/unit/su_client_test.c) |
 | | An undecodable replacement keeps the active checkpoint | Refused before the request buffer or checkpoint is touched; the active workflow finishes. | unit | Done | [an_undecodable_replacement_keeps_the_active_checkpoint](../../tests/unit/su_client_test.c) |
 | | Resume without a persist hook is not supported | A stored record could never be cleared. | unit | Done | [resume_without_a_persist_hook_is_not_supported](../../tests/unit/su_client_test.c) |
 | | updateMetadata drives the full workflow | Download gets the offered URL; the report carries the workflowId; a re-offer is ignored. | unit | Done | [update_metadata_drives_full_workflow](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
@@ -915,9 +1002,13 @@ RS256 signature verification) through the crypto backends in `c/adapters/crypto_
 | | Earlier step results survive a later checkpoint | Outcome, origin and both codes of a completed step round-trip. | unit | Done | [earlier_step_results_survive_a_later_checkpoint](../../tests/unit/su_client_test.c) |
 | | Download failure is reported and does not install | — | unit | Done | [download_failure_is_reported_and_does_not_install](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1286) |
 | Deduplication | Duplicate redelivery is ignored | Same manifest re-sent by the service. | unit | Done | [duplicate_redelivery_is_ignored](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1058) |
-| | Replacement with a new id restarts | — | unit | Done | [replacement_with_new_id_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1108) |
+| | Replacement with a new id restarts | Before the first install. | unit | Done | [replacement_with_new_id_restarts](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1108) |
 | | Workflow id survives resume | A re-offer after resume is still a duplicate. | unit | Done | [workflow_id_survives_resume](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
 | | Same id with a changed manifest is a duplicate | `workflowId` is the sole identity. | unit | Done | [same_id_changed_manifest_is_a_duplicate](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c) |
+| | A new workflow is deferred once an install began | During step 0's install and between steps; taken once the current workflow ends. | unit | Done | [a_new_workflow_is_deferred_once_an_install_began](../../tests/unit/su_client_test.c) |
+| | A new workflow replaces before install_fn is called | Entering Install is not the boundary; the hook call is. | unit | Done | [a_new_workflow_replaces_before_install_fn_is_called](../../tests/unit/su_client_test.c) |
+| | A new workflow is deferred until a last apply's reboot | The owed terminal report and its record are kept; taken after re-initialization. | unit | Done | [a_new_workflow_is_deferred_until_a_last_apply_reboot](../../tests/unit/su_client_test.c) |
+| | Replacement policy is validated | `ROLLBACK` is not supported; an unknown value is invalid. | unit | Done | [the_replacement_policy_is_validated](../../tests/unit/su_client_test.c) |
 | | Oversized workflow id is refused | Nothing runs or is reported; `UPDATE_REFUSED` raised on each delivery. | unit | Done | [an_oversized_workflow_id_is_refused](../../tests/unit/su_client_test.c) |
 | | Oversized workflow id leaves the active workflow | — | unit | Done | [an_oversized_workflow_id_leaves_the_active_workflow](../../tests/unit/su_client_test.c) |
 | | Workflow id at the limit is reported in full | Limit applies to the decoded id. | unit | Done | [a_workflow_id_at_the_limit_is_reported_in_full](../../tests/unit/su_client_test.c) |
@@ -962,7 +1053,7 @@ RS256 signature verification) through the crypto backends in `c/adapters/crypto_
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1481) |
 | | Verify file hash rejects an unsupported algorithm | — | unit | Done | [verify_file_hash_rejects_an_unsupported_algorithm](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1534) |
 | End-to-end | Real update is downloaded, verified, installed and reported | A real offer through the whole client: real roots, real download and hash, SUCCEEDED acknowledged. Passes live; not yet in CI. | e2e | Pending | [real_update_is_downloaded_verified_installed_and_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
-| | Terminal report is idempotent and a conflict is detected | The identical report is accepted; a conflicting one is 409000 REPORT_CONFLICT, read as already reported. Passes live; not yet in CI. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
+| | Terminal report is idempotent and a conflict is detected | An identical report is accepted (200); typed 409000 REPORT_CONFLICT rejects the payload permanently. Requires live service; not part of the offline error catalog. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Workflow is offered again after its terminal report | The service keeps offering it; a client with no record runs it again and the identical report is accepted. Passes live; not yet in CI. | e2e | Pending | [workflow_is_offered_again_after_its_terminal_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Incompatible device is offered nothing | 200 with no updateMetadata; nothing downloaded or reported. Passes live; not yet in CI. | e2e | Pending | [incompatible_device_is_offered_nothing](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Install failure is rolled back and reported failed | Needs a staged offer; not yet run live. | e2e | Pending | [install_failure_is_rolled_back_and_reported_failed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
@@ -1081,6 +1172,16 @@ runtime renewal against the connected hub over `$iothub/credentials/...` per
 | | Sample provider: entry bound is 64 KiB | 64 KiB of base64 is read; one more quantum is refused. | unit | Done | [sample_cert_entry_bound_is_64_kib](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/sample_cert_provider_test.c#L231) |
 | | Sample provider: store checks the key and writes both forms | A chain for another key, or with an entry that is not one certificate, is refused and the previous one kept; both forms are stored as a readable PEM chain. | unit | Done | [sample_store_checks_the_key_and_writes_both_forms](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/sample_cert_provider_test.c#L297) |
 | | Sample provider: init uses a stored chain only for its key | After the key file is replaced, the old chain is not served. | unit | Done | [sample_init_uses_a_stored_chain_only_for_its_key](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/sample_cert_provider_test.c#L361) |
+| Provider contract | Vtable is well formed | Version 1..current; `load`/`release`/`deinit` set; with `get_csr`, `release_csr` and `store_issued_certificate` too. PEM, managed (X.509 and SAS onboarding), sample. | unit | Done | [vtable_is_well_formed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L313) |
+|  | Each role returns usable credentials | Every certificate a role returns, up to `AZ_IOT_MAX_CERTS_PER_ROLE`, is usable (its key matches, or a key reference with `crypto_engine_id`, or a v2 `sign()`); a v2 `sign()`, when set, signs a digest (format not checked); a non-OK `load()` ends the role and is `NOT_FOUND`. | unit | Done | [each_role_returns_usable_credentials](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L333) |
+|  | CSR is signed and names the subject | Base64 PKCS#10 DER, no PEM, whitespace or trailing bytes; verifies with its own key; CN is the requested subject. | unit | Done | [csr_is_signed_and_names_the_subject](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L362) |
+|  | CSRs reuse the operational key | Requests carry the same public key, also for different subjects. | unit | Done | [csrs_reuse_the_operational_key](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L374) |
+|  | Operational is not found before a store | `load(OPERATIONAL, 0)` on fresh state. | unit | Done | [operational_is_not_found_before_a_store](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L386) |
+|  | A DER chain is stored and served | Base64 DER entries; `load()` serves the whole chain (leaf, CA) with a key the leaf certifies; the next CSR keeps the key. | unit | Done | [a_der_chain_is_stored_and_served](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L417) |
+|  | A PEM chain is stored and served | Same, base64 of PEM entries. | unit | Done | [a_pem_chain_is_stored_and_served](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L423) |
+|  | A chain for another key is refused | `INVALID_ARG` in both wire forms; an empty chain is refused; the previous chain is still served. | unit | Done | [a_chain_for_another_key_is_refused_and_the_previous_kept](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L430) |
+|  | A new chain replaces the previous | A second store is served. | unit | Done | [a_new_chain_replaces_the_previous](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L456) |
+|  | A restart keeps the chain and key | Persisting providers: a new instance serves the stored chain and keeps the CSR key. | unit | Done | [a_restart_keeps_the_chain_and_key](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/support/cert_provider_contract.c#L476) |
 | TLS required | Open without a certificate provider is refused | Direct hub and DPS; nothing is created. | unit | Done | [open_without_a_certificate_provider_is_refused](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L2980) |
 | | A feature-client DPS session without a provider is refused | The path that bypasses `open()`. | unit | Done | [a_dps_session_without_a_certificate_provider_is_refused](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L2997) |
 | | A failed load fails the connect | Hub and DPS; previously connected in plaintext. | unit | Done | [a_failed_load_fails_the_connect_instead_of_going_plaintext](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/connection_client_test.c#L3077) |

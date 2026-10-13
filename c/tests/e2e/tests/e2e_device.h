@@ -23,7 +23,9 @@
  *   - DPS (the default): AZ_IOT_DPS_ID_SCOPE + AZ_IOT_DPS_REGISTRATION_ID.
  *   - Direct hub connect: AZ_IOT_HUB_HOSTNAME + AZ_IOT_DEVICE_ID, for an
  *     environment whose DPS instance cannot hand out an assignment. The hub
- *     half of every scenario is identical either way.
+ *     half of every scenario is identical either way. AZ_IOT_HUB_CONNECTION_PROFILE
+ *     ("mqttv3", the default, or "mqttv5") names the hub's profile, which DPS
+ *     would otherwise report.
  *
  * Egress (optional, both modes, applied to the DPS and the hub connect alike):
  *   AZ_IOT_MQTT_TRANSPORT   "tcp" (default) or "websocket"
@@ -58,6 +60,7 @@ extern "C"
     /* Direct-hub mode (no DPS). Both set, or both NULL. */
     char* hub_hostname;
     char* hub_device_id;
+    az_iot_connection_profile hub_profile;
     /* Egress configuration read from the environment. */
     az_iot_mqtt_transport transport;
     char* websocket_path; /* optional */
@@ -83,6 +86,20 @@ extern "C"
    * to stderr). On failure the partially-initialized device is left safe to pass to
    * e2e_device_disconnect(). */
   int e2e_device_connect(e2e_device* dev);
+
+  /* Options for e2e_device_connect_with(). Zero-initialize. */
+  typedef struct e2e_device_connect_options
+  {
+    /* Copied to the connection options' twin_push (mqttv5 only). */
+    bool twin_push_desired;
+    /* Called after the client is initialized and before open(), e.g. to attach feature
+     * clients that must see the first messages. Non-zero aborts the connect. Optional. */
+    int (*before_open)(e2e_device* dev, void* ctx);
+    void* before_open_ctx;
+  } e2e_device_connect_options;
+
+  /* As e2e_device_connect(), with @p opts (NULL for the defaults). */
+  int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* opts);
 
   /* Advance the device MQTT stack for a single slice of up to @p ms milliseconds. */
   void e2e_device_do_work(e2e_device* dev, int ms);
