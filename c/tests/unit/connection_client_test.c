@@ -1799,6 +1799,55 @@ static void the_op_cert_callback_cannot_require_the_other_generation(void** stat
   az_iot_connection_client_deinit(&client);
 }
 
+/* Caches a hub as a previous assignment would, then close() + open() at the
+ * provisioning session's IDLE announcement. */
+static void reopen_at_dps_idle(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return;
+  }
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTING && !ctx->done_connecting)
+  {
+    ctx->done_connecting = true;
+    ctx->client->opts.host = "oldhub.azure-devices.net";
+  }
+  if (event->state == AZ_IOT_CONN_STATE_IDLE && !ctx->done_teardown)
+  {
+    ctx->done_teardown = true;
+    (void)az_iot_connection_client_close(ctx->client);
+    ctx->pin_result = az_iot_connection_client_open(ctx->client);
+  }
+}
+
+/* A close() + open() after the chain is stored and before its assignment is
+ * adopted registers again rather than connecting to the cached hub with the
+ * new certificate. */
+static void a_reopen_before_adoption_registers_again(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  g_dps_drive_observer = reopen_at_dps_idle;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_teardown);
+  assert_int_equal(ctx.pin_result, AZ_IOT_OK);
+  assert_int_equal(prov.store_calls, 1);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(
+      az_iot_mock_mqtt_factory_last_client(g_dps_drive_factory), AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_non_null(strstr(connect->username, "/registrations/"));
+  az_iot_connection_client_deinit(&client);
+}
+
 /* A failed store must not hide the chain from the app: the callback still fires,
  * carrying the provider's error, and the registration fails. */
 static void dps_store_failure_still_delivers_the_chain_with_the_error(void** state)
@@ -3872,6 +3921,7 @@ int main(void)
     cmocka_unit_test(a_stored_chain_blocks_the_other_generation_until_adoption),
     cmocka_unit_test(a_withheld_chain_is_not_adopted_after_the_pin_is_released),
     cmocka_unit_test(the_op_cert_callback_cannot_require_the_other_generation),
+    cmocka_unit_test(a_reopen_before_adoption_registers_again),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),

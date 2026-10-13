@@ -171,9 +171,9 @@ static bool replace_file(const char* from, const char* to)
 #endif
 }
 
-/** @brief Saves the adopted assignment, replacing any earlier one. The record
- *  is written to a temporary file and renamed, so a failure or power loss
- *  leaves the previous record intact. */
+/** @brief Saves the adopted assignment, replacing any earlier one. Written to a
+ *  temporary file and renamed, so the record file always holds one complete
+ *  record, the previous or the new one. */
 static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;

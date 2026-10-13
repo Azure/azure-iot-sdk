@@ -6874,6 +6874,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
+  /* As in close(): an open() from a teardown observer abandons the stored
+   * chain's assignment. */
+  if (client->dps_cert_awaits_adoption)
+  {
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
+  }
+
   log_open_summary(client);
 
   /* No hub: bring the provisioning session up and stop there. No registration
@@ -7022,7 +7030,13 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   client->close_count++;
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
-  client->dps_cert_awaits_adoption = false;
+  /* A stored chain whose assignment was never adopted: the cached hub no
+   * longer matches the certificate, so the next open() registers again. */
+  if (client->dps_cert_awaits_adoption)
+  {
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
+  }
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
   client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_DPS] = 0;
