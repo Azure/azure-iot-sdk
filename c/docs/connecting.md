@@ -443,9 +443,10 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **TPM attestation.** DPS takes it over HTTPS, not MQTT, so it is a separate step before the
   connection client: [`az_iot_dps_tpm_client.h`](../inc/azure/iot/az_iot_dps_tpm_client.h) builds
   the registration requests and parses the responses; the application sends them over HTTPS and
-  runs the TPM (import the DPS key, HMAC-SHA256). Then connect directly to the assigned hub
-  (`host`, `client_id`, `connection_profile` from the assignment) and sign hub tokens with the TPM
-  key from `on_sas_token_required`. The connection client does not re-provision such a device; on
+  runs the TPM (import the DPS key, HMAC-SHA256). For an mqttv3 hub, then connect directly to the
+  assigned hub (`host`, `client_id`, `connection_profile` from the assignment) and sign hub tokens
+  with the TPM key from `on_sas_token_required`. mqttv5 hubs do not accept SAS and need an X.509
+  certificate, which DPS does not document issuing under TPM attestation. The connection client does not re-provision such a device; on
   `AZ_IOT_ERR_IDENTITY_REJECTED`, register again.
 
 ## Crypto backend

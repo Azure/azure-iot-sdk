@@ -21,9 +21,13 @@
  * 2. The same PUT with a SAS token signed by az_iot_dps_tpm_ops::hmac_sha256.
  * 3. On 202, `GET .../operations/{operationId}` until DPS assigns. The
  *    assignment carries the hub key, also imported with import_key.
- * 4. The application connects az_iot_connection_client directly to the
- *    assigned hub (az_iot_dps_tpm_assignment) and signs hub SAS tokens with the
- *    TPM key from az_iot_auth::sas::on_sas_token_required.
+ * 4. For an mqttv3 hub (az_iot_dps_tpm_assignment::connection_profile
+ *    AZ_IOT_CONNECTION_PROFILE_MQTT_V3), the application connects
+ *    az_iot_connection_client directly to the assigned hub and signs hub SAS
+ *    tokens with the TPM key from az_iot_auth::sas::on_sas_token_required.
+ *    mqttv5 hubs do not accept SAS; they need an X.509 certificate, which DPS
+ *    does not document issuing (az_iot_dps_tpm_client_options::csr) under TPM
+ *    attestation.
  *
  * Send each request to the DPS endpoint (`global.azure-devices-provisioning.net`
  * unless the enrollment says otherwise) with headers `Accept: application/json`,
