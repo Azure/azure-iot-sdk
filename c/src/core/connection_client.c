@@ -4192,14 +4192,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       .device_id = c->opts.device_id,
       .profile = &assigned_profile,
     };
-    uint32_t closes_before_cb = c->close_count;
-    uint32_t seq_before_cb = c->open_seq;
     c->assignment_cb(&assignment, c->assignment_cb_ctx);
-    /* The callback closed (or reopened) the client: no hub connect for this one. */
-    if (c->close_count != closes_before_cb || c->open_seq != seq_before_cb)
-    {
-      return;
-    }
+  }
+  /* A state callback above, or the assignment callback, closed or reopened the
+   * client: the assignment stays adopted, but no hub connect starts for it. */
+  if (c->close_count != closes || c->open_seq != seq)
+  {
+    return;
   }
 
   /* The assignment is kept, but no hub attempt starts past the bound. */

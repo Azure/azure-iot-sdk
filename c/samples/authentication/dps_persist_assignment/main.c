@@ -9,7 +9,7 @@
  *
  * First run: registers with DPS (bootstrap X.509, CSR), the managed provider
  * persists the issued operational chain, and the assignment callback saves the
- * hub, device id and profile to AZ_IOT_ASSIGNMENT_FILE.
+ * hub, device id and profile to SAMPLE_ASSIGNMENT_FILE.
  *
  * Later runs: the saved assignment is loaded into opts.iothub_hostname, opts.device_id and
  * opts.connection_profile, so open() connects straight to the hub with the
@@ -39,6 +39,8 @@
 #define SAMPLE_TICK_MS 50u
 /** @brief Longest saved line (hub hostname or device id) plus terminator. */
 #define SAMPLE_LINE_MAX 256
+/** @brief Where the assignment is saved, in the working directory. */
+#define SAMPLE_ASSIGNMENT_FILE "dps_assignment.txt"
 /** @brief Saved profile names. */
 #define SAMPLE_PROFILE_MQTTV3 "mqttv3"
 #define SAMPLE_PROFILE_MQTTV5 "mqttv5"
@@ -156,8 +158,14 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
   }
+  /* An identity refusal is not retriable as such, but identity recovery
+   * re-provisions after it, so only a fault or another unfixable cause ends the
+   * wait. */
+  bool unfixable = event->state == AZ_IOT_CONN_STATE_RETRY_PENDING && !event->is_retriable
+      && (event->recovery == NULL
+          || event->recovery->classification != AZ_IOT_CONN_FAILURE_IDENTITY);
   if (event->reason != AZ_IOT_OK && !ctx->failed
-      && (event->state == AZ_IOT_CONN_STATE_FAULTED || !event->is_retriable))
+      && (event->state == AZ_IOT_CONN_STATE_FAULTED || unfixable))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;
@@ -190,16 +198,15 @@ int main(void)
   /* Every string cleanup frees is assigned before the first goto. */
   char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
   char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
-  char* assignment_path = sample_env_dup("AZ_IOT_ASSIGNMENT_FILE", "dps_assignment.txt");
 
   int rc = 1;
   sample_context ctx = { 0 };
-  ctx.assignment_path = assignment_path;
+  ctx.assignment_path = SAMPLE_ASSIGNMENT_FILE;
   saved_assignment saved = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client client = { 0 };
 
-  if (op_key == NULL || op_cert == NULL || assignment_path == NULL)
+  if (op_key == NULL || op_cert == NULL)
   {
     fprintf(stderr, "[persist] out of memory\n");
     goto cleanup;
@@ -226,10 +233,12 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
   opts.dps.request_operational_certificate = true;
-  /* A saved identity the hub refuses goes back to DPS. */
+  /* A saved identity the hub refuses goes back to DPS, on the reconnection
+   * schedule rather than the 5 minute default identity recovery delay. */
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
+  opts.identity_recovery.policy = opts.reconnection_policy;
 
-  bool restored = load_assignment(assignment_path, &saved);
+  bool restored = load_assignment(SAMPLE_ASSIGNMENT_FILE, &saved);
   if (restored)
   {
     opts.iothub_hostname = saved.hub;
@@ -241,11 +250,14 @@ int main(void)
         saved.hub,
         saved.device_id,
         sample_connection_profile_name(saved.profile),
-        assignment_path);
+        SAMPLE_ASSIGNMENT_FILE);
   }
   else
   {
-    fprintf(stderr, "[persist] no saved assignment in %s; registering with DPS\n", assignment_path);
+    fprintf(
+        stderr,
+        "[persist] no saved assignment in %s; registering with DPS\n",
+        SAMPLE_ASSIGNMENT_FILE);
   }
 
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
@@ -309,7 +321,6 @@ cleanup:
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);
-  free(assignment_path);
   sample_config_release(&config);
   return rc;
 }

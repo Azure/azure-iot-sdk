@@ -23,13 +23,10 @@ See [`main.c`](main.c) and [connecting.md](../../../docs/connecting.md#saved-hub
 ## Setup
 
 As [`dps_csr_managed`](../dps_csr_managed/README.md): the same Azure resources, bootstrap
-identity, enrollment group and environment variables, plus:
+identity, enrollment group and environment variables.
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `AZ_IOT_ASSIGNMENT_FILE` | no | Where the assignment is saved. Default `dps_assignment.txt`. |
-
-The file holds three lines: hub hostname, device id, and `mqttv3` or `mqttv5`. Delete it to
+The assignment is saved to `dps_assignment.txt` in the working directory: three lines, hub
+hostname, device id, and `mqttv3` or `mqttv5`. Delete it to
 register again. Keep it with `AZ_IOT_OPERATIONAL_KEY` and `AZ_IOT_OPERATIONAL_CERT`: the
 saved identity is only usable with the certificate issued alongside it.
 
@@ -49,8 +46,9 @@ Built when OpenSSL 3.0+ and the Paho adapter are available (`AZ_IOT_WITH_CERT_PR
 
 ## Behavior
 
-- Identity recovery is `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`: if the hub refuses the saved
-  identity, the client registers with DPS and the new assignment is saved.
+- Identity recovery is `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`, paced by the reconnection policy
+  instead of the 5 minute default: if the hub refuses the saved identity, the client registers
+  with DPS and the new assignment is saved. The refusal does not end the run.
 - Exit code 0 when the hub connects and any new assignment was saved; otherwise 1.
 - The file is rewritten in place. A production device should write a temporary file and rename
   it, so a power loss cannot leave a partial assignment.

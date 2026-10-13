@@ -5716,6 +5716,56 @@ static void close_from_the_assignment_callback_skips_the_hub_connect(void** stat
   profile_fixture_close(&pf);
 }
 
+typedef struct close_on_dps_state
+{
+  az_iot_connection_client* client;
+  az_iot_connection_state state;
+  bool closed;
+} close_on_dps_state;
+
+static void close_when_dps_reaches(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_on_dps_state* ctx = (close_on_dps_state*)user_ctx;
+  if (!ctx->closed && event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == ctx->state)
+  {
+    ctx->closed = true;
+    (void)az_iot_connection_client_close(ctx->client);
+  }
+}
+
+/* close() from the provisioning session's teardown announcements, which run
+ * before the assignment is adopted: no hub connect follows. */
+static void close_during_dps_teardown_skips_the_hub_connect(az_iot_connection_state teardown_state)
+{
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  close_on_dps_state ctx = { &pf.c, teardown_state, false };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&pf.c, close_when_dps_reaches, &ctx), AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_true(ctx.closed);
+  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+  profile_fixture_close(&pf);
+}
+
+static void close_from_dps_disconnecting_skips_the_hub_connect(void** state)
+{
+  (void)state;
+  close_during_dps_teardown_skips_the_hub_connect(AZ_IOT_CONN_STATE_DISCONNECTING);
+}
+
+static void close_from_dps_idle_skips_the_hub_connect(void** state)
+{
+  (void)state;
+  close_during_dps_teardown_skips_the_hub_connect(AZ_IOT_CONN_STATE_IDLE);
+}
+
 /* A re-provision reports the new assignment too. */
 static void assignment_callback_fires_again_on_reprovision(void** state)
 {
@@ -5808,6 +5858,8 @@ int main(void)
     cmocka_unit_test(assignment_callback_reports_the_adopted_assignment),
     cmocka_unit_test(assignment_callback_is_not_fired_for_a_rejected_assignment),
     cmocka_unit_test(close_from_the_assignment_callback_skips_the_hub_connect),
+    cmocka_unit_test(close_from_dps_disconnecting_skips_the_hub_connect),
+    cmocka_unit_test(close_from_dps_idle_skips_the_hub_connect),
     cmocka_unit_test_setup_teardown(
         assignment_callback_fires_again_on_reprovision, setup_with_reconnect, teardown),
     cmocka_unit_test(a_restored_assignment_connects_without_registering),
