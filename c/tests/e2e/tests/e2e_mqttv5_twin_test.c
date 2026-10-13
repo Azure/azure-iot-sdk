@@ -180,17 +180,23 @@ static int connect_device(fixture* fx, bool push_desired)
   return 0;
 }
 
-static int setup_pull(void** state)
+static int teardown(void** state);
+
+/* cmocka skips teardown when setup fails, so a failed connect cleans up here. */
+static int setup_with(void** state, bool push_desired)
 {
   *state = &g_fx;
-  return connect_device(&g_fx, false);
+  if (connect_device(&g_fx, push_desired) != 0)
+  {
+    (void)teardown(state);
+    return -1;
+  }
+  return 0;
 }
 
-static int setup_push(void** state)
-{
-  *state = &g_fx;
-  return connect_device(&g_fx, true);
-}
+static int setup_pull(void** state) { return setup_with(state, false); }
+
+static int setup_push(void** state) { return setup_with(state, true); }
 
 static int teardown(void** state)
 {
