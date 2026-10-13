@@ -710,6 +710,8 @@ jobs:
   # (Release in lib, Debug in debug/lib) and Paho from vcpkg (c/vcpkg.json
   # `installed-paho`, static triplet for /MT[d]). Debug and Release are each
   # built, unit-tested, installed and consumed (c/tests/install).
+  # VCPKG_APPLOCAL_DEPS=OFF: a static triplet has no DLLs to copy, and the
+  # post-link copy step fails on locked files under parallel Ninja links.
   installed-deps-windows:
     name: windows-msvc / installed deps
     needs: changes
@@ -758,6 +760,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
           -DVCPKG_TARGET_TRIPLET=x64-windows-static
           -DVCPKG_MANIFEST_FEATURES=installed-paho
+          -DVCPKG_APPLOCAL_DEPS=OFF
           -DCMAKE_PREFIX_PATH="$AZ_IOT_DEPS"
           -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=ON
           -DAZ_IOT_USE_INSTALLED_PAHO=ON
@@ -772,6 +775,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows-static
             -DVCPKG_INSTALLED_DIR="$AZ_IOT_BUILD/vcpkg_installed"
             -DVCPKG_MANIFEST_MODE=OFF
+            -DVCPKG_APPLOCAL_DEPS=OFF
           )
           for cfg in Debug Release; do
             cmake --build "$AZ_IOT_BUILD" --config "$cfg"
