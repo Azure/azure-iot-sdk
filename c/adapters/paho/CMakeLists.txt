@@ -16,6 +16,13 @@
 if(AZ_IOT_USE_INSTALLED_PAHO)
     # Upstream's package config does not load OpenSSL, which its SSL targets link.
     find_package(OpenSSL QUIET)
+    # A target a parent project already imported is visible here and cannot be promoted.
+    set(_paho_inherited "")
+    foreach(_pt IN ITEMS paho-mqtt3as-static paho-mqtt3as paho-mqtt3a-static paho-mqtt3a)
+        if(TARGET eclipse-paho-mqtt-c::${_pt})
+            list(APPEND _paho_inherited eclipse-paho-mqtt-c::${_pt})
+        endif()
+    endforeach()
     find_package(eclipse-paho-mqtt-c 1.3.13 CONFIG REQUIRED)
     # The asynchronous API; static if available, SSL-capable if OpenSSL was found.
     set(_paho_candidates paho-mqtt3a-static paho-mqtt3a)
@@ -42,7 +49,12 @@ if(AZ_IOT_USE_INSTALLED_PAHO)
     endif()
     get_target_property(_paho_inc ${_paho_target} INTERFACE_INCLUDE_DIRECTORIES)
     # Visible to az_iot_install.cmake and az_iot_pkgconfig.cmake at the top level.
-    set_property(TARGET ${_paho_target} PROPERTY IMPORTED_GLOBAL TRUE)
+    get_target_property(_paho_global ${_paho_target} IMPORTED_GLOBAL)
+    if(NOT _paho_global AND NOT _paho_target IN_LIST _paho_inherited)
+        set_property(TARGET ${_paho_target} PROPERTY IMPORTED_GLOBAL TRUE)
+    endif()
+    unset(_paho_global)
+    unset(_paho_inherited)
     # For the package config file (az_iot_install.cmake).
     set(AZ_IOT_PAHO_VERSION "${eclipse-paho-mqtt-c_VERSION}" PARENT_SCOPE)
 else()
