@@ -584,6 +584,7 @@ typedef struct
 {
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client conn;
+  az_iot_mqtt_factory* factory;
   az_iot_su_channel_dps channel_state;
   spy_channel spy;
   az_iot_su_client su;
@@ -677,10 +678,9 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   fx->have_conn = true;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+  fx->factory = az_iot_paho_factory_create_v3_1_1();
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(
-          &fx->conn, az_iot_paho_factory_create_v3_1_1()),
-      AZ_IOT_OK);
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = o->manufacturer;
@@ -738,6 +738,8 @@ static void fixture_close(fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->have_conn = false;
   }
+  az_iot_paho_factory_destroy(fx->factory);
+  fx->factory = NULL;
   if (fx->have_certs)
   {
     az_iot_certificate_provider_pem_deinit(&fx->certs);

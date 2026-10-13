@@ -120,12 +120,8 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_deinit(&fx->client_storage);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -607,6 +603,7 @@ static void dps_honors_a_custom_global_endpoint(void** state)
   assert_string_equal(call->connect.host, "my-dps.example.net");
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 /* Provisioning is the one connect that happens unattended on a first boot, so
@@ -632,6 +629,7 @@ static void dps_honors_the_configured_timings(void** state)
   assert_int_equal(call->connect.connect_timeout_seconds, 7);
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void dps_defaults_the_timings_when_unset(void** state)
@@ -652,6 +650,7 @@ static void dps_defaults_the_timings_when_unset(void** state)
   assert_int_equal(call->connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 /* The proxy and the transport apply to provisioning too. A device that can only
@@ -681,6 +680,7 @@ static void dps_carries_the_proxy_and_transport(void** state)
   assert_int_equal(call->connect.proxy_port, 3128);
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 /* The provisioning service does not implement session persistence -- it treats
@@ -724,6 +724,7 @@ static void dps_connects_with_a_clean_session_and_no_will(void** state)
   assert_int_equal(call->connect.disconnect_reason_code, 0);
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 /* DPS speaks MQTT v3.1.1 only. Even when the device is headed for a v5
@@ -746,6 +747,8 @@ static void dps_uses_v3_1_1_even_when_the_hub_is_mqtt_v5(void** state)
   assert_non_null(az_iot_mock_mqtt_factory_last_client(v3));
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(v3);
+  az_iot_mock_mqtt_factory_destroy(v5);
 }
 
 static void dps_without_a_v3_1_1_factory_is_not_supported(void** state)
@@ -760,6 +763,7 @@ static void dps_without_a_v3_1_1_factory_is_not_supported(void** state)
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(v5);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2213,7 +2217,12 @@ static void assert_hub_leg_used(profile_fixture* pf, az_iot_mqtt_factory* expect
   }
 }
 
-static void profile_fixture_close(profile_fixture* pf) { az_iot_connection_client_deinit(&pf->c); }
+static void profile_fixture_close(profile_fixture* pf)
+{
+  az_iot_connection_client_deinit(&pf->c);
+  az_iot_mock_mqtt_factory_destroy(pf->v3);
+  az_iot_mock_mqtt_factory_destroy(pf->v5);
+}
 
 /* Carry the hub leg all the way to CONNECTED, which is what makes the profile
  * readable. MQTTv3 needs only a CONNACK; MQTTv5 additionally has to complete
@@ -2829,6 +2838,7 @@ static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
   assert_string_equal(c->connect.host, "global.azure-devices-provisioning.net");
 
   az_iot_connection_client_deinit(&fx->client_storage);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 
@@ -4264,6 +4274,7 @@ static void every_failed_registration_setup_is_reported_with_its_step(void** sta
   assert_false(fx->log.is_retriable[i]);
 
   az_iot_connection_client_deinit(&fx->client_storage);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 
@@ -4808,6 +4819,7 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
           az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
           AZ_IOT_CONN_STATE_IDLE);
       az_iot_connection_client_deinit(&fx->client_storage);
+      az_iot_mock_mqtt_factory_destroy(fx->factory);
       free(fx);
       continue;
     }
@@ -4829,6 +4841,7 @@ static void a_provision_only_reopen_from_the_callback_keeps_the_session(void** s
 
     assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
     az_iot_connection_client_deinit(&fx->client_storage);
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
 }
@@ -4940,6 +4953,7 @@ static void a_reopen_from_close_idle_survives_the_outer_close(void** state)
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_IDLE);
   az_iot_connection_client_deinit(&fx->client_storage);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 

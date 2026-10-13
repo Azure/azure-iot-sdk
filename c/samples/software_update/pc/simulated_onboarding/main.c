@@ -98,6 +98,8 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_su_client su_client;
 
   /* Device identity, kept past init() only so it can be printed. */
@@ -130,6 +132,8 @@ static void sample_state_destroy(sample_state* s)
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -168,10 +172,8 @@ static void on_connection_state_event_received(
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
-    /* Says only that the provisioning session came up, never whether the
-     * update check has been answered. The SDK raises no event for a
-     * successful "no update available", so the sample cannot tell pending
-     * from answered and does not claim to. */
+    /* Says only that the provisioning session came up. The check's answer is
+     * an update or AZ_IOT_SU_EVENT_NO_UPDATE. */
     if (scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
       printf("Provisioning session up. Running (Ctrl-C to exit)...\n");
@@ -195,6 +197,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Update workflow: %s -> %s\n",
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
+      if (event->state == AZ_IOT_SU_STATE_FAILED)
+      {
+        fprintf(
+            stderr,
+            "Update failed: %s, extended result 0x%08x\n",
+            az_iot_result_to_string(event->reason),
+            (unsigned)event->extended_result_code);
+      }
       state->su_workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
       if (!state->su_workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
@@ -242,6 +252,15 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       printf(
           "New update deferred until %s.\n",
           event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
+      break;
+    case AZ_IOT_SU_EVENT_NO_UPDATE:
+      printf("%s: no update available.\n", su_sample_operation_name(event->operation));
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_DUPLICATE:
+      printf("Update ignored: it repeats the current workflow.\n");
+      break;
+    case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
+      printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
       break;
   }
 }
@@ -293,11 +312,12 @@ static int initialize_connection_client(sample_state* state)
     return 1;
   }
 
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state->connection_client, az_iot_paho_factory_create_v3_1_1())
+  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, az_iot_paho_factory_create_v5())
+             &state->connection_client, state->factory_v5)
           != AZ_IOT_OK)
   {
     return 1;

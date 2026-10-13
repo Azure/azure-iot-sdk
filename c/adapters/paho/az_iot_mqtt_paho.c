@@ -1764,8 +1764,6 @@ static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
   return &m->base;
 }
 
-static void paho_factory_cleanup(void* ctx) { free(ctx); }
-
 static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
 {
   paho_factory_state* st = (paho_factory_state*)calloc(1, sizeof(*st));
@@ -1776,7 +1774,6 @@ static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
   st->public_.version = v;
   st->public_.create = paho_factory_create;
   st->public_.factory_ctx = st;
-  st->public_.destroy = paho_factory_cleanup;
   return &st->public_;
 }
 

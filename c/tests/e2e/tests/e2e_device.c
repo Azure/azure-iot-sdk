@@ -177,11 +177,10 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   dev->conn_ok = true;
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
-  if (az_iot_connection_client_register_mqtt_factory(
-          &dev->conn, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&dev->conn, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+  dev->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  dev->factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v5) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] MQTT factory registration failed\n");
     return 1;
@@ -231,6 +230,10 @@ void e2e_device_disconnect(e2e_device* dev)
     az_iot_connection_client_deinit(&dev->conn);
     dev->conn_ok = false;
   }
+  az_iot_paho_factory_destroy(dev->factory_v3);
+  az_iot_paho_factory_destroy(dev->factory_v5);
+  dev->factory_v3 = NULL;
+  dev->factory_v5 = NULL;
   if (dev->certs_ok)
   {
     az_iot_certificate_provider_pem_deinit(&dev->certs);

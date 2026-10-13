@@ -87,6 +87,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
   az_iot_mqttv5_direct_method_client mqttv5;
@@ -131,6 +133,8 @@ static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s, NULL);
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -374,15 +378,15 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

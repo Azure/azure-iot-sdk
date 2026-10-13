@@ -29,7 +29,6 @@ typedef struct fixture
   az_iot_mqttv3_telemetry_client telemetry;
   az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
-  bool factory_registered;
 } fixture;
 
 typedef struct send_record
@@ -91,10 +90,7 @@ static int teardown(void** state)
   {
     az_iot_mqttv3_telemetry_client_deinit(&test->telemetry);
     az_iot_connection_client_deinit(&test->connection);
-    if (!test->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(test->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(test->factory);
     free(test);
   }
   return 0;
@@ -118,7 +114,6 @@ static void open_mqtt_v3(fixture* test)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
-  test->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
   test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
   assert_non_null(test->mock);
@@ -135,7 +130,6 @@ static void open_v5(fixture* test)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
-  test->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
   test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
   assert_non_null(test->mock);
@@ -561,7 +555,6 @@ static void a_send_while_not_connected_is_refused_and_not_queued(void** state)
   /* Same client instance, so a queue it owned would still be there. */
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
-  test->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
   test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
   assert_non_null(test->mock);
