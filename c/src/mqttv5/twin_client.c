@@ -150,7 +150,8 @@ static int find_pending_by_correlation_id(
 /**
  * @brief True when a backend-initiated message belongs to the current connection.
  *
- * Accepted from the birth on: the service may push before the birth-ack.
+ * Accepted from the birth on: the service sends the twin-push before the birth-ack. Both come
+ * from the same session open, so the birth-ack baseline matches what the push delivered.
  */
 static bool matches_connection(const az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message* msg)
 {
