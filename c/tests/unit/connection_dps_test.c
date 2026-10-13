@@ -5272,6 +5272,8 @@ typedef struct saved_cert_provider
 {
   az_iot_certificate_provider base;
   int csr_calls;
+  az_iot_result csr_rc; /* get_csr() result; 0 = AZ_IOT_OK */
+  az_iot_result store_rc; /* store_issued_certificate() result */
 } saved_cert_provider;
 
 static az_iot_result saved_cert_load(
@@ -5306,9 +5308,10 @@ static az_iot_result saved_cert_get_csr(
     az_iot_certificate_signing_request* out)
 {
   (void)subject;
-  (void)out;
-  ((saved_cert_provider*)self)->csr_calls++;
-  return AZ_IOT_ERR_NOT_SUPPORTED;
+  saved_cert_provider* p = (saved_cert_provider*)self;
+  p->csr_calls++;
+  out->csr_base64 = "TESTCSRBASE64==";
+  return p->csr_rc;
 }
 
 static void saved_cert_release_csr(
@@ -5323,9 +5326,8 @@ static az_iot_result saved_cert_store(
     az_iot_certificate_provider* self,
     const az_iot_issued_certificate* issued)
 {
-  (void)self;
   (void)issued;
-  return AZ_IOT_OK;
+  return ((saved_cert_provider*)self)->store_rc;
 }
 
 static const az_iot_certificate_provider_vtable k_saved_cert_vtable = {
@@ -5371,6 +5373,69 @@ static void a_saved_hub_uses_the_stored_operational_certificate(void** state)
   assert_string_equal(c->connect.client_cert_path, "bootstrap-cert.pem");
 
   az_iot_connection_client_deinit(fx.client);
+}
+
+/* An assignment that fails before it is adopted (here: storing the issued
+ * certificate) leaves the saved profile declared, so reopening the saved hub
+ * keeps both the protocol and the feature-client check on that profile. */
+static void a_failed_enrollment_keeps_the_saved_profile(void** state)
+{
+  (void)state;
+  static const char k_assigned_with_chain[]
+      = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"assigned-device\","
+        "\"connectionProfile\":\"classic\",\"issuedCertificateChain\":[\"TEEF\"]}}";
+  static uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  saved_cert_provider prov
+      = { .base = { .vtable = &k_saved_cert_vtable }, .store_rc = AZ_IOT_ERR_INTERNAL };
+  az_iot_connection_client_options opts = saved_hub_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
+  opts.certificate_provider = &prov.base;
+  opts.dps.request_operational_certificate = true;
+  opts.csr_payload_buffer = az_span_create(csr_buf, (int32_t)sizeof(csr_buf));
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f5), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f3), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(&c), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(f3);
+  assert_non_null(dps);
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_with_chain));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&c, 0);
+  }
+  assert_int_equal(
+      az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_FAULTED);
+  assert_string_equal(az_iot_connection_client_get_iothub_address(&c), SAVED_HUB);
+
+  assert_int_equal(
+      az_iot_connection_client__require_profile(&c, AZ_IOT_CONNECTION_PROFILE_MQTT_V3),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_int_equal(
+      az_iot_connection_client__require_profile(&c, AZ_IOT_CONNECTION_PROFILE_MQTT_V5), AZ_IOT_OK);
+  az_iot_connection_client__release_profile(&c);
+
+  (void)az_iot_connection_client_close(&c);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(f5);
+  assert_non_null(hub);
+  assert_string_equal(last_connect_host(hub), SAVED_HUB);
+  az_iot_connection_client_deinit(&c);
 }
 
 int main(void)
@@ -5669,6 +5734,7 @@ int main(void)
     cmocka_unit_test(a_saved_hub_profile_is_declared),
     cmocka_unit_test(a_saved_hub_without_a_device_id_is_refused),
     cmocka_unit_test(a_saved_hub_uses_the_stored_operational_certificate),
+    cmocka_unit_test(a_failed_enrollment_keeps_the_saved_profile),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

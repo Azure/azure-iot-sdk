@@ -1730,9 +1730,9 @@ static void dps_a_rejected_assignment_leaves_the_profile_alone(void** state)
   az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
-/* A failed store fails the registration after the profile was read. The next
- * assignment, with no profile, must get the default rather than the failed
- * one's. */
+/* A failed store fails the registration after the profile was read. The
+ * failed assignment's profile is not kept, and the next assignment, with no
+ * profile, gets the default. */
 static void dps_a_failed_store_does_not_leak_its_profile_into_the_next_assignment(void** state)
 {
   (void)state;
@@ -1748,7 +1748,7 @@ static void dps_a_failed_store_does_not_leak_its_profile_into_the_next_assignmen
                     "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
   drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, v5);
   assert_int_equal(prov.store_calls, 1);
-  assert_int_equal(client.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  assert_int_equal(client.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
 
   az_iot_mock_mqtt_client* first = az_iot_mock_mqtt_factory_last_client(g_dps_drive_factory);
   assert_int_equal(az_iot_connection_client_close(&client), AZ_IOT_OK);

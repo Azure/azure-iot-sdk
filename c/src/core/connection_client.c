@@ -2965,6 +2965,34 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
   }
 }
 
+/** @brief The recorded connection profile, as connection_profile_set() leaves it. */
+typedef struct connection_profile_snapshot
+{
+  az_iot_connection_profile profile;
+  char raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+  bool raw_truncated;
+} connection_profile_snapshot;
+
+/** @brief Copies the recorded profile of @p c into @p out. */
+static void connection_profile_save(
+    const az_iot_connection_client* c,
+    connection_profile_snapshot* out)
+{
+  out->profile = c->connection_profile;
+  memcpy(out->raw, c->connection_profile_raw, sizeof(out->raw));
+  out->raw_truncated = c->connection_profile_raw_truncated;
+}
+
+/** @brief Restores the profile saved in @p in, undoing an assignment that is not adopted. */
+static void connection_profile_restore(
+    az_iot_connection_client* c,
+    const connection_profile_snapshot* in)
+{
+  c->connection_profile = in->profile;
+  memcpy(c->connection_profile_raw, in->raw, sizeof(c->connection_profile_raw));
+  c->connection_profile_raw_truncated = in->raw_truncated;
+}
+
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
@@ -3307,11 +3335,15 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
-          /* Which hub generation we were assigned to. Read before the issued
-           * cert so the profile is recorded even if the cert path fails. */
+          /* Which hub generation we were assigned to. A failure before the
+           * assignment is handed on restores the previous profile: the cached
+           * or saved hub may still be connected to, with its own profile. */
+          connection_profile_snapshot prev;
+          connection_profile_save(c, &prev);
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
           if (pr != AZ_IOT_OK)
           {
+            connection_profile_restore(c, &prev);
             dps_finalize(c, pr, false);
             return;
           }
@@ -3320,6 +3352,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)
             {
+              connection_profile_restore(c, &prev);
               dps_finalize(c, sc, false);
               return;
             }
