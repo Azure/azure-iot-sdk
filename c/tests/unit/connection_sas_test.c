@@ -3775,9 +3775,10 @@ static az_iot_result not_found_sha256_final(
     az_iot_sha256_ctx* ctx,
     uint8_t out[AZ_IOT_SHA256_SIZE])
 {
+  /* The real final releases the backend's context. */
+  az_iot_result released = TEST_CRYPTO()->sha256_final(TEST_CRYPTO(), ctx, out);
   (void)self;
-  (void)ctx;
-  (void)out;
+  (void)released;
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
