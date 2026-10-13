@@ -60,8 +60,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
 
-            X509AuthenticationProvider authentication = CreateAuthenticationProvider();
-            authentication.IssuedCertificatePrivateKey = operationalKey;
+            X509AuthenticationProvider authentication = CreateAuthenticationProvider(operationalKey);
 
             ProvisioningSettings provisioningSettings = new(IdScope)
             {
@@ -169,8 +168,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
             string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
 
-            X509AuthenticationProvider authentication = CreateAuthenticationProvider();
-            authentication.IssuedCertificatePrivateKey = operationalKey;
+            X509AuthenticationProvider authentication = CreateAuthenticationProvider(operationalKey);
 
             AuthenticationCredentials hubCredentials = authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain);
             Assert.NotNull(hubCredentials.ClientCertificate);
@@ -195,7 +193,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
 
-            authentication.IssuedCertificatePrivateKey = operationalKey;
+            authentication = CreateAuthenticationProvider(operationalKey);
             Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, null).ClientCertificate);
         }
 
@@ -284,13 +282,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return Convert.ToBase64String(certificateRequest.CreateSigningRequest());
         }
 
-        private static X509AuthenticationProvider CreateAuthenticationProvider()
+        private static X509AuthenticationProvider CreateAuthenticationProvider(AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
         {
             using RSA key = RSA.Create(2048);
             var certificateRequest = new CertificateRequest($"CN={RegistrationId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
-            return new X509AuthenticationProvider(certificate);
+            return new X509AuthenticationProvider(certificate, issuedCertificatePrivateKey: issuedCertificatePrivateKey);
         }
 
         /// <summary>

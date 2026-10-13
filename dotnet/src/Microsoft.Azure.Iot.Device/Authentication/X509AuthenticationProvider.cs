@@ -47,16 +47,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <paramref name="clientCertificate"/> is presented. The selected certificate must be able to sign with its
         /// associated (possibly HSM-backed) private key.
         /// </param>
+        /// <param name="issuedCertificatePrivateKey">
+        /// The private key that this device's certificate signing requests are generated with. When provided, and a
+        /// client certificate has been issued to this device (either by the device provisioning service during
+        /// provisioning or by IoT Hub), the issued device certificate is paired with this key and presented to IoT Hub
+        /// instead of <paramref name="clientCertificate"/>. When null, <paramref name="clientCertificate"/> is always presented.
+        /// </param>
         public X509AuthenticationProvider(
             X509Certificate2 clientCertificate,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
             ClientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
+            IssuedCertificatePrivateKey = issuedCertificatePrivateKey;
         }
 
         /// <summary>
@@ -70,26 +78,19 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public X509Certificate2Collection? CertificateChain { get; }
 
         /// <summary>
-        /// The private key that the most recent certificate signing request was generated with.
+        /// The private key that this device's certificate signing requests are generated with, if any.
         /// </summary>
         /// <remarks>
-        /// When set, and a client certificate has been issued to this device (either by the device provisioning service
-        /// during provisioning or by IoT Hub), the issued device certificate is paired with this key and presented to
-        /// IoT Hub instead of <see cref="ClientCertificate"/>. Update this property before sending a certificate signing
-        /// request that was generated with a different key. When null, <see cref="ClientCertificate"/> is always presented.
+        /// When set, and a client certificate has been issued to this device, the issued device certificate is paired
+        /// with this key and presented to IoT Hub instead of <see cref="ClientCertificate"/>. Every certificate signing
+        /// request this device sends must be generated with this key; to rotate keys, create a new provider.
         /// <para>
         /// On platforms whose TLS stack cannot use an in-memory key (such as Windows SChannel), the paired certificate is
         /// round-tripped through an in-memory PKCS#12 blob. If the key cannot be exported (for example an HSM-backed key),
         /// the paired certificate is presented as-is.
         /// </para>
         /// </remarks>
-        public AsymmetricAlgorithm? IssuedCertificatePrivateKey
-        {
-            get => _issuedCertificatePrivateKey;
-            set => _issuedCertificatePrivateKey = value;
-        }
-
-        private volatile AsymmetricAlgorithm? _issuedCertificatePrivateKey;
+        public AsymmetricAlgorithm? IssuedCertificatePrivateKey { get; }
 
         private readonly IssuedCertificateCache _issuedCertificateCache = new();
 
@@ -103,7 +104,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
             if (privateKey == null)
             {
-                Trace.TraceWarning("A client certificate was issued to this device, but no IssuedCertificatePrivateKey was set, so the original client certificate will be presented to IoT Hub instead.");
+                Trace.TraceWarning("A client certificate was issued to this device, but this provider was created without an issuedCertificatePrivateKey, so the original client certificate will be presented to IoT Hub instead.");
                 return CreateCredentials(ClientCertificate);
             }
 

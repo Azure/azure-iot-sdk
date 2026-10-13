@@ -25,7 +25,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     public class SymmetricKeyWithIssuedCertificateAuthenticationProvider : SymmetricKeyAuthenticationProvider
     {
         private readonly IssuedCertificateCache _issuedCertificateCache = new();
-        private volatile AsymmetricAlgorithm _issuedCertificatePrivateKey;
 
         /// <summary>
         /// Creates an instance of this class.
@@ -34,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="idScope">The device provisioning service Id scope.</param>
         /// <param name="symmetricKey">The Base64-encoded symmetric key used to authenticate with the device provisioning service.</param>
         /// <param name="issuedCertificatePrivateKey">
-        /// The private key that the certificate signing request sent during provisioning was generated with.
+        /// The private key that this device's certificate signing requests (during provisioning and with IoT Hub) are generated with.
         /// </param>
         /// <param name="remoteCertificateValidationCallback">
         /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
@@ -53,18 +52,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
             : base(registrationId, idScope, symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            _issuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
+            IssuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
         }
 
         /// <summary>
-        /// The private key that the most recent certificate signing request was generated with. Update this before
-        /// sending a certificate signing request to IoT Hub that was generated with a different key.
+        /// The private key that this device's certificate signing requests are generated with. Every certificate signing
+        /// request this device sends must be generated with this key; to rotate keys, create a new provider.
         /// </summary>
-        public AsymmetricAlgorithm IssuedCertificatePrivateKey
-        {
-            get => _issuedCertificatePrivateKey;
-            set => _issuedCertificatePrivateKey = value ?? throw new ArgumentNullException(nameof(value));
-        }
+        public AsymmetricAlgorithm IssuedCertificatePrivateKey { get; }
 
         public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {

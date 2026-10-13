@@ -36,11 +36,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_KEY");
 
             using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            x509AuthenticationProvider.IssuedCertificatePrivateKey = privateKey;
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, issuedCertificatePrivateKey: privateKey);
 
             ConnectionClient connectionClient = new();
 

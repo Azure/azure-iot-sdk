@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Models;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
@@ -156,7 +157,7 @@ namespace SetupSampleDevice
             return File.ReadAllBytes(outputPath + "certificate.pfx");
         }
 
-        public static X509AuthenticationProvider LoadAuthenticationProvider()
+        public static X509AuthenticationProvider LoadAuthenticationProvider(AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
         {
             X509Certificate2 certificate;
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
@@ -176,7 +177,7 @@ namespace SetupSampleDevice
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
 
-            return new(certificate);
+            return new(certificate, issuedCertificatePrivateKey: issuedCertificatePrivateKey);
         }
     }
 }

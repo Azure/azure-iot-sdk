@@ -18,13 +18,11 @@ internal class Program
         string deviceId = SampleConstants.LoadDeviceId();
         string registrationId = deviceId;
         string idScope = SampleConstants.LoadIdScope();
-        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
-
         // Create initial certificate signing request for DPS to fulfill while provisioning
         var (csrBase64, privateKey) = GenerateCsrAndPrivateKey(registrationId, CsrAlgorithm.RSA);
 
         // Pair any certificate issued for this CSR (by DPS or IoT hub) with its private key when connecting to IoT hub
-        authentication.IssuedCertificatePrivateKey = privateKey;
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider(privateKey);
 
         using ConnectionClient connectionClient = new();
 
@@ -53,7 +51,7 @@ internal class Program
         }
 
         // At this point, the certificate signing request has completed and the connection client has recorded the newly signed certificates. The next time that
-        // the connection client needs to reconnect to IoT hub, the authentication provider pairs them with IssuedCertificatePrivateKey and presents them. No further
+        // the connection client needs to reconnect to IoT hub, the authentication provider pairs them with the CSR private key and presents them. No further
         // action is needed from the application layer for this to take effect.
     }
 }
