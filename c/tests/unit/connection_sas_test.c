@@ -3786,6 +3786,34 @@ static void an_https_hub_token_keeps_the_secondary_key_while_reconnecting(void**
   assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
 }
 
+/* A provider without a certificate: the primary key connected. From the
+ * reconnect's SETTING_UP, with no fallback selected, the primary key signs. */
+static void an_https_hub_token_keeps_the_primary_key_with_a_ca_only_provider(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static az_iot_certificate_provider provider = { .vtable = &k_ca_only_vtable };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+
+  memset(g_signed_token, 0, sizeof(g_signed_token));
+  g_signed_result = AZ_IOT_ERR_INTERNAL;
+  g_sign_on_state = AZ_IOT_CONN_STATE_SETTING_UP;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, sign_on_hub_state, &fx->client),
+      AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_int_equal(g_signed_result, AZ_IOT_OK);
+  assert_string_equal(g_signed_token, HUB_TOKEN);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3957,6 +3985,8 @@ int main(void)
         an_https_hub_token_keeps_the_secondary_key_while_reconnecting, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_https_hub_token_uses_the_fallback_key_once_selected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_https_hub_token_keeps_the_primary_key_with_a_ca_only_provider, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_rejected_certificate_falls_back_to_the_next_one, setup, teardown),
     cmocka_unit_test_setup_teardown(the_certificate_that_connected_is_kept, setup, teardown),

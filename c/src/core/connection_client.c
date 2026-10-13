@@ -1456,6 +1456,10 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
   {
     source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   }
+  if (source == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    source = c->auth[AZ_IOT_CONN_SCOPE_HUB].last_source;
+  }
   if (source == AZ_IOT_AUTH_SOURCE_NONE && c->opts.certificate_provider == NULL)
   {
     source = AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
@@ -5019,6 +5023,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 {
   /* A new session: no credential is selected yet, so none is reported. */
+  if (c->auth[AZ_IOT_CONN_SCOPE_HUB].source != AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    c->auth[AZ_IOT_CONN_SCOPE_HUB].last_source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  }
   c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
   c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);

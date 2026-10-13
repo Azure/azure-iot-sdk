@@ -178,7 +178,8 @@ extern "C"
   /**
    * @brief Signs a hub SAS token for an HTTPS request to the hub, with the key
    * the hub session authenticates with: the one a fallback selected (kept while
-   * it connects), else the key of its current or last attempt, else, without a
+   * it connects), else the key of its current attempt, else of its last one,
+   * else, without a
    * certificate provider, the primary key. The connection's own token area is
    * not used.
    *
