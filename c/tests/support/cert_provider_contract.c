@@ -362,8 +362,11 @@ static void csr_is_signed_and_names_the_subject(void** state)
 {
   (void)state;
   az_iot_certificate_provider* p = fresh();
-  EVP_PKEY_free(csr_key(p, CSR_SUBJECT));
-  EVP_PKEY_free(csr_key(p, "another-device"));
+  EVP_PKEY* a = csr_key(p, CSR_SUBJECT);
+  EVP_PKEY* b = csr_key(p, "another-device");
+  assert_int_equal(1, EVP_PKEY_eq(a, b)); /* the subject does not pick the key */
+  EVP_PKEY_free(a);
+  EVP_PKEY_free(b);
   finish(p);
 }
 
