@@ -193,7 +193,8 @@ extern "C"
     az_span duplicate; /**< TPM2B_PRIVATE: Import duplicate. */
     az_span in_sym_seed; /**< TPM2B_ENCRYPTED_SECRET: Import inSymSeed. */
     az_span object_public; /**< TPM2B_PUBLIC: Import objectPublic. */
-    /** UINT16-sized encrypted data that may follow; empty when absent. */
+    /** UINT16-sized encrypted data that may follow; empty when absent. Bytes
+     * after it are ignored, as later fields may be added. */
     az_span encrypted_data;
   } az_iot_dps_tpm_key_parts;
 

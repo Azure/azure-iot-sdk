@@ -40,8 +40,13 @@ enum
 #define DPS_TPM_HTTP_UNAUTHORIZED 401u
 #define DPS_TPM_HTTP_TOO_MANY_REQUESTS 429u
 
+/** @brief Between scope and registration ID in the SAS resource URI. */
+#define DPS_TPM_URI_INFIX "%2fregistrations%2f"
+
 /** @brief Room for `<scope>%2fregistrations%2f<encoded id>` and its terminator. */
-#define DPS_TPM_URI_SIZE (AZ_IOT_DPS_TPM_ID_MAX + 17 + 3 * AZ_IOT_DPS_TPM_ID_MAX + 1)
+#define DPS_TPM_URI_SIZE                                            \
+  ((size_t)AZ_IOT_DPS_TPM_ID_MAX + (sizeof(DPS_TPM_URI_INFIX) - 1u) \
+   + 3u * (size_t)AZ_IOT_DPS_TPM_ID_MAX + 1u)
 
 /** @brief Members of one DPS response that the client reads. Spans are slices
  * of the body. */
@@ -107,6 +112,22 @@ static bool is_base64_text(const char* s)
   return true;
 }
 
+/** @brief Whether only JSON whitespace follows @p last, a slice of @p doc. */
+static bool only_whitespace_after(az_span doc, az_span last)
+{
+  const uint8_t* begin = az_span_ptr(doc);
+  size_t consumed = (size_t)(az_span_ptr(last) - begin) + (size_t)az_span_size(last);
+  for (size_t i = consumed; i < (size_t)az_span_size(doc); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** @brief Whether @p payload is exactly one JSON object, optionally padded with whitespace. */
 static bool is_json_object(const char* payload)
 {
@@ -124,17 +145,7 @@ static bool is_json_object(const char* payload)
   {
     return false;
   }
-  size_t consumed = (size_t)(az_span_ptr(jr.token.slice) - (const uint8_t*)payload)
-      + (size_t)az_span_size(jr.token.slice);
-  for (size_t i = consumed; i < len; ++i)
-  {
-    char ch = payload[i];
-    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
-    {
-      return false;
-    }
-  }
-  return true;
+  return only_whitespace_after(span, jr.token.slice);
 }
 
 /** @brief Appends standard padded base64 of @p data. */
@@ -259,7 +270,7 @@ static az_iot_result build_token(
   az_iot_span_writer w;
   az_iot_span_writer_init(&w, AZ_SPAN_FROM_BUFFER(uri));
   az_iot_span_writer_append_str(&w, o->id_scope);
-  az_iot_span_writer_append_str(&w, "%2fregistrations%2f");
+  az_iot_span_writer_append_str(&w, DPS_TPM_URI_INFIX);
   az_iot_span_writer_append_url_encoded(&w, o->registration_id);
   size_t uri_len = 0;
   az_iot_result r = az_iot_span_writer_end_str(&w, &uri_len);
@@ -371,8 +382,9 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_get_request(
 /** @brief Copies JSON string @p token into @p out (@p out_size bytes, terminated). */
 static bool copy_json_string(const az_json_token* token, char* out, size_t out_size)
 {
+  /* The slice may hold escapes, so only the unescaped length is checked (by az_core). */
   if (token->kind != AZ_JSON_TOKEN_STRING || az_span_size(token->slice) <= 0
-      || (size_t)az_span_size(token->slice) >= out_size)
+      || out_size > (size_t)INT32_MAX)
   {
     return false;
   }
@@ -532,7 +544,7 @@ static bool read_fields(az_span body, dps_tpm_fields* f)
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
-      return true;
+      return only_whitespace_after(body, jr.token.slice);
     }
     az_json_token name = jr.token;
     if (az_result_failed(az_json_reader_next_token(&jr)))

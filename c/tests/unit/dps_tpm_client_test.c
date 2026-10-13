@@ -745,6 +745,14 @@ static void parse_key_splits_the_parts(void** state)
   assert_int_equal(az_span_size(p.object_public), 5);
   assert_int_equal(az_span_size(p.encrypted_data), 0);
 
+  /* Bytes after the encrypted data are ignored. */
+  uint8_t longer[sizeof(challenge_key) + 2];
+  memcpy(longer, challenge_key, sizeof(challenge_key));
+  longer[sizeof(challenge_key)] = 0x01;
+  longer[sizeof(challenge_key) + 1] = 0x02;
+  assert_int_equal(az_iot_dps_tpm_parse_key(longer, sizeof(longer), &p), AZ_IOT_OK);
+  assert_int_equal(az_span_size(p.encrypted_data), 3);
+
   /* Every truncation that cuts a part fails and zeroes the output. */
   for (size_t n = 1; n < sizeof(challenge_key); ++n)
   {
@@ -789,6 +797,118 @@ static void registration_id_is_base32_of_the_ek_hash(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+static void maximum_length_ids_fit(void** state)
+{
+  (void)state;
+  /* Every ':' is encoded as three characters in the path and the token. */
+  char scope[AZ_IOT_DPS_TPM_ID_MAX + 1];
+  char id[AZ_IOT_DPS_TPM_ID_MAX + 1];
+  memset(scope, 'a', AZ_IOT_DPS_TPM_ID_MAX);
+  scope[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
+  memset(id, ':', AZ_IOT_DPS_TPM_ID_MAX);
+  id[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
+  fake_tpm t = { 0 };
+  az_iot_dps_tpm_client_options o = options_for(&t);
+  o.id_scope = scope;
+  o.registration_id = id;
+  az_iot_dps_tpm_client c;
+  assert_int_equal(az_iot_dps_tpm_client_init(&c, &o), AZ_IOT_OK);
+  static char buf[4096];
+  az_iot_dps_tpm_request req;
+  az_iot_dps_tpm_next next;
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(
+      respond(&c, 401, "{\"authenticationKey\":\"" HUB_KEY_B64 "\"}", 0, &next), AZ_IOT_OK);
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_non_null(req.authorization);
+  assert_non_null(strstr(req.authorization, "%2fregistrations%2f%3A%3A"));
+}
+
+static void an_escaped_value_that_fits_unescaped_is_accepted(void** state)
+{
+  (void)state;
+  fake_tpm t = { 0 };
+  az_iot_dps_tpm_client c;
+  challenge(&c, &t);
+  char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+  az_iot_dps_tpm_request req;
+  az_iot_dps_tpm_next next;
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  /* A device ID of AZ_IOT_DPS_TPM_ID_MAX characters, one of them escaped. */
+  char device[AZ_IOT_DPS_TPM_ID_MAX + 2];
+  memset(device, 'd', sizeof(device) - 1);
+  device[0] = '\\';
+  device[1] = '/';
+  device[sizeof(device) - 1] = '\0';
+  char json[512];
+  const char* parts[] = { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":"
+                          "\"h\",\"deviceId\":\"",
+                          device,
+                          "\"}}" };
+  size_t len = 0;
+  for (size_t k = 0; k < sizeof(parts) / sizeof(parts[0]); ++k)
+  {
+    size_t n = strlen(parts[k]);
+    assert_true(len + n < sizeof(json));
+    memcpy(json + len, parts[k], n);
+    len += n;
+  }
+  json[len] = '\0';
+  assert_int_equal(respond(&c, 200, json, 0, &next), AZ_IOT_OK);
+  const char* got = az_iot_dps_tpm_client_get_assignment(&c)->device_id;
+  assert_int_equal(strlen(got), AZ_IOT_DPS_TPM_ID_MAX);
+  assert_int_equal(got[0], '/');
+}
+
+static void content_after_the_response_object_is_rejected(void** state)
+{
+  (void)state;
+  {
+    fake_tpm t = { 0 };
+    az_iot_dps_tpm_client_options o = options_for(&t);
+    az_iot_dps_tpm_client c;
+    assert_int_equal(az_iot_dps_tpm_client_init(&c, &o), AZ_IOT_OK);
+    char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+    az_iot_dps_tpm_request req;
+    az_iot_dps_tpm_next next;
+    assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+    assert_int_equal(
+        respond(&c, 401, "{\"authenticationKey\":\"" HUB_KEY_B64 "\"}{}", 0, &next),
+        AZ_IOT_ERR_PROTOCOL);
+    assert_int_equal(t.imports, 0);
+  }
+  {
+    fake_tpm t = { 0 };
+    az_iot_dps_tpm_client c;
+    challenge(&c, &t);
+    char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+    az_iot_dps_tpm_request req;
+    az_iot_dps_tpm_next next;
+    assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+    assert_int_equal(
+        respond(
+            &c,
+            200,
+            "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\","
+            "\"deviceId\":\"d\"}} x",
+            0,
+            &next),
+        AZ_IOT_ERR_PROTOCOL);
+    /* Trailing whitespace is fine. */
+    challenge(&c, &t);
+    assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+    assert_int_equal(
+        respond(
+            &c,
+            200,
+            "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\","
+            "\"deviceId\":\"d\"}} \r\n",
+            0,
+            &next),
+        AZ_IOT_OK);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -809,6 +929,9 @@ int main(void)
     cmocka_unit_test(null_arguments_are_rejected),
     cmocka_unit_test(parse_key_splits_the_parts),
     cmocka_unit_test(registration_id_is_base32_of_the_ek_hash),
+    cmocka_unit_test(maximum_length_ids_fit),
+    cmocka_unit_test(an_escaped_value_that_fits_unescaped_is_accepted),
+    cmocka_unit_test(content_after_the_response_object_is_rejected),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
