@@ -73,6 +73,14 @@ extern "C"
 #ifndef AZ_IOT_FILE_UPLOAD_CORR_ID_MAX
 #define AZ_IOT_FILE_UPLOAD_CORR_ID_MAX 192
 #endif
+/** @brief Size in bytes of the buffer for the hub SAS token passed to the
+ * transport hook as its authorization (incl. NUL). Must be at least
+ * AZ_IOT_SAS_TOKEN_SIZE(strlen(hub host) + strlen(device id)); the default fits
+ * 267 bytes of the two. Each operation places one buffer of this size on the
+ * stack. */
+#ifndef AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX
+#define AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX 1024
+#endif
 
   /**
    * @brief Delivers the result of get_sas_uri().
@@ -122,11 +130,14 @@ extern "C"
    * @brief Application HTTP transport for the control plane.
    *
    * Called synchronously by the SDK to perform one HTTPS request to IoT Hub and
-   * return its response. The hook owns authentication: this SDK authenticates
-   * devices with X.509, so the hook is expected to perform mutual TLS with the
-   * device certificate and @p authorization is always "". The parameter is kept
-   * for hooks that need to supply their own credential (for example a gateway
-   * that fronts the hub) and for future token-based authentication.
+   * return its response. @p authorization is never NULL:
+   * - When the connection authenticates the hub with a SAS key
+   *   (az_iot_auth::sas primary or secondary key), it is a hub SAS token signed
+   *   for this request (`SharedAccessSignature sr=...`). The hook sends it as
+   *   the `Authorization` header. Valid only during the call.
+   * - Otherwise it is "" and the hook authenticates: mutual TLS with the device
+   *   certificate for X.509, or the application's own token when tokens come
+   *   from az_iot_auth::sas::on_sas_token_required.
    *
    * The hook must also validate the hub's server certificate; the SDK cannot do it
    * on the application's behalf on this transport.
@@ -226,8 +237,11 @@ extern "C"
    *         could not be dispatched at all -- AZ_IOT_ERR_NOT_ENOUGH_SPACE for a
    *         blob name that does not fit, or AZ_IOT_ERR_NOT_CONNECTED while the
    *         connection has no hub address and device id to address the request to
-   *         (retry once it is connected). No callback fires when this returns
-   *         anything but AZ_IOT_OK.
+   *         (retry once it is connected); or, when the hub uses a SAS key, a
+   *         signing error -- AZ_IOT_ERR_BUSY while no Unix time is known (retry
+   *         later), AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token does not fit
+   *         AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX. No callback fires when this
+   *         returns anything but AZ_IOT_OK.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
       az_iot_mqttv3_file_upload_client* client,
@@ -248,7 +262,8 @@ extern "C"
    *         AZ_IOT_ERR_NOT_ENOUGH_SPACE for a correlation id that does not fit
    *         AZ_IOT_FILE_UPLOAD_BODY_MAX once JSON-escaped;
    *         AZ_IOT_ERR_NOT_CONNECTED while the connection has no hub address and
-   *         device id to address the request to (retry once it is connected). No
+   *         device id to address the request to (retry once it is connected); a
+   *         signing error as for get_sas_uri(). No
    *         callback fires when this returns anything but AZ_IOT_OK.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(

@@ -514,6 +514,14 @@ foreach(_backend openssl mbedtls)
         target_link_libraries(az_iot_tests_sas_token_${_backend} PRIVATE az_iot_crypto_${_backend})
         target_compile_definitions(az_iot_tests_sas_token_${_backend} PRIVATE
             AZ_IOT_TEST_CRYPTO_${_backend_upper})
+
+        # File upload authorization for SAS-authenticated devices.
+        az_iot_add_cmocka_test(az_iot_tests_mqttv3_file_upload_sas_${_backend}
+            unit/mqttv3_file_upload_sas_test.c)
+        target_link_libraries(az_iot_tests_mqttv3_file_upload_sas_${_backend} PRIVATE
+            az_iot_mqttv3 az_iot_crypto_${_backend} az_iot_test_support)
+        target_compile_definitions(az_iot_tests_mqttv3_file_upload_sas_${_backend} PRIVATE
+            AZ_IOT_TEST_CRYPTO_${_backend_upper})
     endif()
 endforeach()
 

@@ -1433,6 +1433,108 @@ static az_iot_result apply_sas_key(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client__sign_hub_sas_token(
+    const az_iot_connection_client* client,
+    char* out,
+    size_t out_size)
+{
+  if (client == NULL || out == NULL || out_size == 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  out[0] = '\0';
+  const az_iot_connection_client* c = client;
+  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  if (source == AZ_IOT_AUTH_SOURCE_NONE && c->opts.certificate_provider == NULL)
+  {
+    source = AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
+  }
+  const uint8_t* key = NULL;
+  size_t key_len = 0;
+  if (source == AZ_IOT_AUTH_SOURCE_PRIMARY_KEY)
+  {
+    key = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key;
+    key_len = c->auth[AZ_IOT_CONN_SCOPE_HUB].primary_key_len;
+  }
+  else if (source == AZ_IOT_AUTH_SOURCE_SECONDARY_KEY)
+  {
+    key = c->auth[AZ_IOT_CONN_SCOPE_HUB].secondary_key;
+    key_len = c->auth[AZ_IOT_CONN_SCOPE_HUB].secondary_key_len;
+  }
+  if (key == NULL || key_len == 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  if (!is_span_safe_cstr(c->opts.host) || !is_span_safe_cstr(c->opts.client_id))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  /* Checked before azure-sdk-for-c runs: its size preconditions never return. */
+  size_t ids = strlen(c->opts.host) + strlen(c->opts.client_id);
+  size_t size = out_size > (size_t)INT32_MAX ? (size_t)INT32_MAX : out_size;
+  if (ids > size || AZ_IOT_SAS_TOKEN_SIZE(ids) > size)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  uint64_t now = unix_now(c);
+  const az_iot_auth* auth = &c->opts.hub_auth;
+  uint32_t lifetime = auth->sas.token_lifetime_seconds != 0
+      ? auth->sas.token_lifetime_seconds
+      : (uint32_t)AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS;
+  if (now == 0 || now > UINT64_MAX - lifetime)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  uint64_t expiry = now + lifetime;
+
+  /* A local hub client: the connection's is left as its CONNECT set it. */
+  az_iot_hub_client hub;
+  az_iot_hub_client_options hub_opts = az_iot_hub_client_options_default();
+  if (az_result_failed(az_iot_hub_client_init(
+          &hub,
+          az_span_create_from_str((char*)(uintptr_t)c->opts.host),
+          az_span_create_from_str((char*)(uintptr_t)c->opts.client_id),
+          &hub_opts)))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  uint8_t mac[SAS_SCRATCH_MAC_SIZE];
+  uint8_t signature[SAS_SCRATCH_SIG_SIZE];
+  az_span to_sign = AZ_SPAN_EMPTY;
+  az_result ar = az_iot_hub_client_sas_get_signature(
+      &hub, expiry, az_span_create((uint8_t*)out, (int32_t)size), &to_sign);
+  az_iot_result r = az_result_succeeded(ar) ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_crypto__hmac_sha256(
+        c->opts.crypto, key, key_len, az_span_ptr(to_sign), (size_t)az_span_size(to_sign), mac);
+  }
+  int32_t sig_len = 0;
+  if (r == AZ_IOT_OK
+      && az_result_failed(az_base64_encode(
+          az_span_create(signature, (int32_t)sizeof(signature)),
+          az_span_create(mac, (int32_t)sizeof(mac)),
+          &sig_len)))
+  {
+    r = AZ_IOT_ERR_INTERNAL;
+  }
+  if (r == AZ_IOT_OK)
+  {
+    ar = az_iot_hub_client_sas_get_password(
+        &hub, expiry, az_span_create(signature, sig_len), AZ_SPAN_EMPTY, out, size, NULL);
+    r = az_result_succeeded(ar) ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  az_iot_crypto__wipe(mac, sizeof(mac));
+  az_iot_crypto__wipe(signature, sizeof(signature));
+  if (r != AZ_IOT_OK)
+  {
+    az_iot_crypto__wipe(out, size);
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_CONNECTION, "hub SAS token signing failed (%d)", (int)r);
+  }
+  return r;
+}
+
 /* Schedule a retry.
  *
  * @p failure_scope says WHERE the failure just happened, which is not always

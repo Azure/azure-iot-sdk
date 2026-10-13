@@ -12,7 +12,7 @@ counterpart.
 - Hub generation: mqttv3 (MQTT 3.1.1) only.
 - Three steps: `az_iot_mqttv3_file_upload_client_get_sas_uri()` returns a SAS URI and a correlation ID; the application PUTs the file to that URI on Azure Storage; `az_iot_mqttv3_file_upload_client_notify_complete()` reports the result to the hub.
 - The SDK ships no HTTP client. The hub calls go through an application HTTP hook, required at `init()`; this sample implements it, and the Storage PUT, with libcurl.
-- The hub calls authenticate with the device's X.509 certificate (mutual TLS), the same as MQTT. The Storage PUT is authenticated by the SAS token in the URI.
+- The hub calls authenticate with the device's X.509 certificate (mutual TLS), the same as MQTT. For a device that authenticates with a SAS key (`hub_auth.sas`), the SDK passes a hub SAS token to the hook as `authorization`, which the hook sends as the `Authorization` header. The Storage PUT is authenticated by the SAS token in the URI.
 - `init()` needs the assigned hub, so the client is built once `CONNECTED`, the way [`connect_first`](../connect_first/README.md) does. On an mqttv5 hub the sample reports that file upload is unavailable and exits 1.
 - One-shot: it uploads once and exits.
 - Platforms: Linux and Windows.

@@ -3512,6 +3512,145 @@ static void dps_falls_back_to_the_next_certificate(void** state)
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
 }
 
+/* ---- Hub SAS token for HTTPS (az_iot_connection_client__sign_hub_sas_token) ---- */
+
+static void init_only(fixture* fx, const az_iot_connection_client_options* opts)
+{
+  assert_int_equal(az_iot_connection_client_init(&fx->client, opts), AZ_IOT_OK);
+  fx->initialized = true;
+}
+
+/* Before any attempt, without a provider, the primary key signs; the token is
+ * the CONNECT one, and the connection's token area is not used. */
+static void an_https_hub_token_is_signed_with_the_primary_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, HUB_TOKEN);
+  assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, HUB_TOKEN);
+}
+
+/* The key the hub session fell back to signs. */
+static void an_https_hub_token_uses_the_secondary_key_in_use(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, SECONDARY_HUB_TOKEN);
+}
+
+static void an_https_hub_token_uses_the_derived_group_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.primary_key_base64 = GROUP_KEY_B64;
+  opts.hub_auth.sas.is_enrollment_group_key = true;
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, GROUP_HUB_TOKEN);
+}
+
+/* X.509, before and after its attempt: no key is in use. */
+static void no_https_hub_token_for_an_x509_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_test_provider provider;
+  az_iot_test_provider_init(&provider, "provider-ca.pem");
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider.base;
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(out, "");
+
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].source, AZ_IOT_AUTH_SOURCE_X509);
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
+/* The SDK cannot sign for user-provided tokens. */
+static void no_https_hub_token_for_user_tokens(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  opts.unix_time.get_time = fixed_time;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_USER_PROVIDED);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_NOT_FOUND);
+}
+
+static void an_https_hub_token_needs_unix_time(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = no_time;
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_ERR_BUSY);
+}
+
+/* Refused before signing when AZ_IOT_SAS_TOKEN_SIZE() of the IDs does not fit;
+ * nothing is left in the output. */
+static void an_https_hub_token_that_does_not_fit_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(sizeof("broker.example") - 1 + sizeof("ut-device") - 1)];
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out) - 1),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(out, "");
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  assert_string_equal(out, HUB_TOKEN);
+
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(NULL, out, sizeof(out)), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, NULL, sizeof(out)),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, 0), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3665,6 +3804,16 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         other_dps_registration_errors_do_not_fall_back, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_keys_and_tokens, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_https_hub_token_is_signed_with_the_primary_key, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_https_hub_token_uses_the_secondary_key_in_use, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_https_hub_token_uses_the_derived_group_key, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_https_hub_token_for_an_x509_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_https_hub_token_for_user_tokens, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_https_hub_token_needs_unix_time, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_https_hub_token_that_does_not_fit_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_rejected_certificate_falls_back_to_the_next_one, setup, teardown),
     cmocka_unit_test_setup_teardown(the_certificate_that_connected_is_kept, setup, teardown),
