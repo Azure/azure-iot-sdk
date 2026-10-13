@@ -5249,6 +5249,8 @@ static void a_saved_hub_profile_is_declared(void** state)
     assert_null(az_iot_mock_mqtt_factory_last_client(v5 ? f3 : f5));
     assert_string_equal(last_connect_host(used), SAVED_HUB);
     az_iot_connection_client_deinit(&c);
+    az_iot_mock_mqtt_factory_destroy(f3);
+    az_iot_mock_mqtt_factory_destroy(f5);
   }
 }
 
@@ -5273,6 +5275,7 @@ static void a_saved_hub_without_a_device_id_is_refused(void** state)
     assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
     assert_null(az_iot_mock_mqtt_factory_last_client(f3));
     az_iot_connection_client_deinit(&c);
+    az_iot_mock_mqtt_factory_destroy(f3);
   }
 }
 
@@ -5382,6 +5385,7 @@ static void a_saved_hub_uses_the_stored_operational_certificate(void** state)
   assert_string_equal(c->connect.client_cert_path, "bootstrap-cert.pem");
 
   az_iot_connection_client_deinit(fx.client);
+  az_iot_mock_mqtt_factory_destroy(fx.factory);
 }
 
 /* An assignment that fails before it is adopted (here: storing the issued
@@ -5445,6 +5449,8 @@ static void a_failed_enrollment_keeps_the_saved_profile(void** state)
   assert_non_null(hub);
   assert_string_equal(last_connect_host(hub), SAVED_HUB);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f3);
+  az_iot_mock_mqtt_factory_destroy(f5);
 }
 
 /* close() + open() from the DPS:DISCONNECTING that ends the registration. */
@@ -5509,6 +5515,8 @@ static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
   assert_non_null(hub);
   assert_string_equal(last_connect_host(hub), SAVED_HUB);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f3);
+  az_iot_mock_mqtt_factory_destroy(f5);
 }
 
 int main(void)
