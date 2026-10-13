@@ -103,10 +103,10 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the bootstrap certificate's CN. |
 | `AZ_IOT_CLIENT_CERT` | yes | Bootstrap certificate chain (PEM, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM). |
+| `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM) that validates the DPS and IoT Hub **server** certificates, e.g. the system bundle or DigiCert Global Root G2. Not the bootstrap CA. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning host. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_OPERATIONAL_KEY` | no | Operational key file. Default `operational_key.pem`. |
+| `AZ_IOT_OPERATIONAL_KEY` | no | Operational key file. Default `operational_key.pem`. A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued chain file. Default `operational_cert.pem`. |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` | no | JSON object sent with the CSR, e.g. `{"modelId":"dtmi:com:example:Thermostat;1"}`. A payload returned by the allocation policy is printed. |
 | `AZ_IOT_SAMPLE_LOG_TO_FILE` | no | Any non-empty value writes SDK logs to `azure-iot-sdk-c.log` instead of stderr. See [Logging](../../../docs/logging.md). |

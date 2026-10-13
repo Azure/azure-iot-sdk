@@ -43,7 +43,8 @@ To skip DPS and connect straight to a hub, set `host` and `client_id` instead of
 and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
 is mqttv3).
 
-[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example.
+[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example. It reads
+its key from a file; for production, see [Production keys](#production-keys).
 
 ## Connection states
 
@@ -227,8 +228,29 @@ Operational certificates:
 - At connect time the operational credential is preferred, with the bootstrap credential as a
   fallback.
 
-Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
-[`samples/authentication`](../samples/authentication/README.md).
+### Production keys
+
+The samples read the device's private key from a PEM file, so they run anywhere. A key in a file
+can be copied, and the device's identity with it. In production, keep each device's X.509 private
+key in hardware -- an HSM, a TPM or a secure element -- which signs with it but never releases it.
+The certificate can stay a file: it is public.
+
+| The key | The provider returns | Adapter | Sample |
+| --- | --- | --- | --- |
+| Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
+| Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
+
+- **Bootstrap keys** authenticate to DPS; keep them in hardware too.
+- **Operational keys.** `az_iot_certificate_provider_managed` generates the operational key in
+  software and stores it unencrypted in an owner-only file. To keep it in hardware, implement a
+  provider that creates the key there, signs the CSR with it in `get_csr()`, and returns a
+  reference to it from `load()`; start from
+  [`custom_provider_template`](../samples/authentication/custom_provider_template/README.md).
+- **SAS keys** are secrets too: sign tokens in hardware through `on_sas_token_required`; see
+  [Authentication](#authentication) and
+  [`user_provided_sas_token`](../samples/authentication/user_provided_sas_token/README.md).
+- **If a key must be a file**, give each device its own key and make the file readable only by
+  the account the device software runs as.
 
 ## Authentication
 
