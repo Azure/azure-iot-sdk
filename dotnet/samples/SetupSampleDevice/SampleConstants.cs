@@ -177,7 +177,9 @@ namespace SetupSampleDevice
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
 
-            return new(certificate, issuedCertificatePrivateKey: issuedCertificatePrivateKey);
+            return issuedCertificatePrivateKey == null
+                ? new(certificate)
+                : new(certificate, issuedCertificatePrivateKey);
         }
     }
 }

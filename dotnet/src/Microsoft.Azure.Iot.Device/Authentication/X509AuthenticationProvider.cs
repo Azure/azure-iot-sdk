@@ -14,7 +14,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     public class X509AuthenticationProvider : AuthenticationProvider
     {
         /// <summary>
-        /// Creates an instance of this class.
+        /// Creates an instance of this class that always presents <paramref name="clientCertificate"/>, even if a client
+        /// certificate is issued to this device. To present issued certificates, use a constructor that takes the
+        /// certificate signing request's private key or a certificate signing complete callback.
         /// </summary>
         /// <param name="clientCertificate">
         /// The client certificate used for authentication.
@@ -44,27 +46,56 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <paramref name="clientCertificate"/> is presented. The selected certificate must be able to sign with its
         /// associated (possibly HSM-backed) private key.
         /// </param>
-        /// <param name="issuedCertificatePrivateKey">
-        /// The private key that this device's certificate signing requests are generated with. When provided, and a
-        /// client certificate has been issued to this device (either by the device provisioning service during
-        /// provisioning or by IoT Hub), the issued device certificate is paired with this key and presented to IoT Hub
-        /// instead of <paramref name="clientCertificate"/>. When null, <paramref name="clientCertificate"/> is always presented.
-        /// </param>
         public X509AuthenticationProvider(
             X509Certificate2 clientCertificate,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
-            AsymmetricAlgorithm? issuedCertificatePrivateKey = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
             ClientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
-            IssuedCertificatePrivateKey = issuedCertificatePrivateKey;
-            HandleCertificateSigningCompleteAsync = issuedCertificatePrivateKey == null
-                ? PresentOriginalCertificateAsync
-                : IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
+            HandleCertificateSigningCompleteAsync = PresentOriginalCertificateAsync;
+            _issuedCertificateHandler = new IssuedCertificateHandler(HandleCertificateSigningCompleteAsync);
+        }
+
+        /// <summary>
+        /// Creates an instance of this class that presents client certificates issued to this device, paired with the
+        /// private key their certificate signing requests were generated with, to IoT Hub.
+        /// </summary>
+        /// <param name="clientCertificate">
+        /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
+        /// client certificate is issued to this device.
+        /// </param>
+        /// <param name="issuedCertificatePrivateKey">
+        /// The private key that this device's certificate signing requests are generated with. When a client certificate
+        /// is issued to this device (either by the device provisioning service during provisioning or by IoT Hub), the
+        /// issued device certificate is paired with this key and presented to IoT Hub instead of <paramref name="clientCertificate"/>.
+        /// </param>
+        /// <param name="certificateChain">
+        /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
+        /// </param>
+        /// <param name="remoteCertificateValidationCallback">
+        /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
+        /// When null, the platform's default validation is used.
+        /// </param>
+        /// <param name="localCertificateSelectionCallback">
+        /// An optional callback used to select which client certificate to present during the TLS handshake.
+        /// </param>
+        public X509AuthenticationProvider(
+            X509Certificate2 clientCertificate,
+            AsymmetricAlgorithm issuedCertificatePrivateKey,
+            X509Certificate2Collection? certificateChain = null,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+        {
+            ClientCertificate = clientCertificate
+                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
+
+            CertificateChain = certificateChain;
+            IssuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
+            HandleCertificateSigningCompleteAsync = IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
             _issuedCertificateHandler = new IssuedCertificateHandler(HandleCertificateSigningCompleteAsync);
         }
 
