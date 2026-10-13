@@ -53,8 +53,8 @@ extern "C"
    * @brief Key type used when a new operational key must be generated.
    *
    * The CSR digest follows the operational key actually in use (generated or
-   * loaded): SHA-384 for EC P-384, SHA-512 for larger EC curves, SHA-256
-   * otherwise.
+   * loaded). EC: SHA-256 up to 256 bits, SHA-384 up to 384 bits, SHA-512
+   * above. RSA: SHA-256.
    */
   typedef enum
   {

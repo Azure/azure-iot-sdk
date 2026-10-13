@@ -42,8 +42,8 @@
   `az_iot_sas_token_sign()` and `az_iot_sas_derive_device_key()`, for tokens supplied with
   `az_iot_connection_client_update_sas_token()`.
 - Managed certificate provider: `AZ_IOT_MANAGED_KEY_EC_P384` generates an ECDSA P-384 operational
-  key. The CSR digest now follows the key in use: SHA-384 for P-384, SHA-512 for larger EC curves,
-  SHA-256 otherwise (was always SHA-256). An unknown `key_type` fails init with
+  key. The CSR digest now follows the key in use: for EC keys, SHA-256 up to 256 bits, SHA-384 up
+  to 384 bits (P-384), SHA-512 above; SHA-256 for RSA (was always SHA-256). An unknown `key_type` fails init with
   `AZ_IOT_ERR_INVALID_ARG` (was treated as EC P-256). See
   [docs/connecting.md](docs/connecting.md#certificates).
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
