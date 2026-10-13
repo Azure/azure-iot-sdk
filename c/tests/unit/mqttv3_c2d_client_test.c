@@ -48,11 +48,31 @@ typedef struct message_record
   char keys[AZ_IOT_C2D_MAX_PROPERTIES][64];
   char values[AZ_IOT_C2D_MAX_PROPERTIES][64];
   bool value_was_null[AZ_IOT_C2D_MAX_PROPERTIES];
+  /* Typed system property fields. NULL is recorded as was_null. */
+  struct
+  {
+    bool was_null;
+    char value[64];
+  } message_id, correlation_id, expiry_time, content_encoding, user_id;
 } message_record;
+
+static void copy_optional(bool* was_null, char* dst, size_t dst_size, const char* src)
+{
+  *was_null = (src == NULL);
+  snprintf(dst, dst_size, "%s", src ? src : "");
+}
+
+#define COPY_FIELD(r, msg, f) \
+  copy_optional(&(r)->f.was_null, (r)->f.value, sizeof((r)->f.value), (msg)->f)
 
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
   message_record* r = (message_record*)user_ctx;
+  COPY_FIELD(r, msg, message_id);
+  COPY_FIELD(r, msg, correlation_id);
+  COPY_FIELD(r, msg, expiry_time);
+  COPY_FIELD(r, msg, content_encoding);
+  COPY_FIELD(r, msg, user_id);
   r->count++;
   r->payload_len = msg->payload_len;
   r->had_payload_pointer = (msg->payload != NULL);
@@ -577,6 +597,195 @@ static void a_property_can_be_looked_up_by_name(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* typed system properties                                                   */
+/* ------------------------------------------------------------------------- */
+
+static void system_properties_arrive_as_typed_fields(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* The shape IoT Hub sends, "$.to" and "iothub-ack" included. */
+  inject(
+      fx,
+      C2D_TOPIC "%24.mid=m-1&%24.to=%2Fdevices%2Fut-device%2Fmessages%2FdeviceBound"
+                "&%24.cid=c%2F1&%24.exp=2026-10-13T07%3A01%3A14.930Z&%24.ce=utf-8"
+                "&%24.uid=user-1&%24.ct=application%2Fjson&iothub-ack=full",
+      "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.message_id.value, "m-1");
+  assert_string_equal(rec.correlation_id.value, "c/1");
+  assert_string_equal(rec.expiry_time.value, "2026-10-13T07:01:14.930Z");
+  assert_string_equal(rec.content_encoding.value, "utf-8");
+  assert_string_equal(rec.user_id.value, "user-1");
+  assert_string_equal(rec.content_type, "application/json");
+  /* Still in the generic list, as received. */
+  assert_int_equal(rec.properties_count, 8);
+  assert_string_equal(rec.keys[0], AZ_IOT_MSG_PROP_MESSAGE_ID);
+  assert_string_equal(rec.keys[3], AZ_IOT_MSG_PROP_EXPIRY_TIME);
+}
+
+static void absent_or_valueless_system_properties_are_null(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* A bare key is a null value and stays NULL; a trailing '=' is an empty one.
+   * "$.mid" must also not match a longer key that starts with it. */
+  inject(fx, C2D_TOPIC "%24.mid&%24.cid=&%24.midx=1&mid=2", "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_true(rec.message_id.was_null);
+  assert_false(rec.correlation_id.was_null);
+  assert_string_equal(rec.correlation_id.value, "");
+  assert_true(rec.expiry_time.was_null);
+  assert_true(rec.content_encoding.was_null);
+  assert_true(rec.user_id.was_null);
+  assert_true(rec.content_type_was_null);
+}
+
+static void the_first_occurrence_of_a_system_property_wins(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* Same answer az_iot_c2d_message_property() gives. A first occurrence with
+   * no value is still the first. */
+  inject(fx, C2D_TOPIC "%24.mid=first&%24.mid=second&%24.cid&%24.cid=later", "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.message_id.value, "first");
+  assert_true(rec.correlation_id.was_null);
+}
+
+static void system_properties_survive_a_full_property_list(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* System properties after the generic list is full. */
+  char topic[512];
+  int n = snprintf(topic, sizeof(topic), "%s", C2D_TOPIC);
+  for (int i = 0; i < AZ_IOT_C2D_MAX_PROPERTIES; ++i)
+  {
+    n += snprintf(topic + n, sizeof(topic) - (size_t)n, "k%d=v%d&", i, i);
+  }
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "%%24.mid=m-9&%%24.ct=text%%2Fplain");
+  inject(fx, topic, "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.properties_count, AZ_IOT_C2D_MAX_PROPERTIES);
+  assert_string_equal(rec.message_id.value, "m-9");
+  assert_string_equal(rec.content_type, "text/plain");
+}
+
+static void system_properties_survive_a_property_buffer_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* A user property too large for AZ_IOT_C2D_PROPERTY_BUFFER drops the
+   * generic list; the typed fields are kept. */
+  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
+  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-1&big=", C2D_TOPIC);
+  memset(topic + n, 'x', AZ_IOT_C2D_PROPERTY_BUFFER);
+  n += AZ_IOT_C2D_PROPERTY_BUFFER;
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.mid=m-2");
+  inject(fx, topic, "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.properties_count, 0);
+  assert_string_equal(rec.correlation_id.value, "c-1");
+  assert_string_equal(rec.message_id.value, "m-2");
+}
+
+static void a_system_value_that_does_not_fit_or_decode_is_omitted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* An oversized $.mid and a malformed $.uid are omitted on their own; the
+   * space the failed one did not use is still there for $.cid. */
+  char topic[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER + 128];
+  int n = snprintf(topic, sizeof(topic), "%s%%24.mid=", C2D_TOPIC);
+  memset(topic + n, 'm', AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER);
+  n += AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER;
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.uid=%%zz&%%24.cid=c-3");
+  inject(fx, topic, "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.payload, "body");
+  assert_true(rec.message_id.was_null);
+  assert_true(rec.user_id.was_null);
+  assert_string_equal(rec.correlation_id.value, "c-3");
+}
+
+typedef struct length_probe
+{
+  int count;
+  size_t message_id_len;
+  bool content_encoding_was_null;
+  char correlation_id[16];
+} length_probe;
+
+static void on_c2d_lengths(const az_iot_c2d_message* msg, void* user_ctx)
+{
+  length_probe* p = (length_probe*)user_ctx;
+  p->count++;
+  p->message_id_len = msg->message_id ? strlen(msg->message_id) : 0;
+  p->content_encoding_was_null = (msg->content_encoding == NULL);
+  snprintf(
+      p->correlation_id,
+      sizeof(p->correlation_id),
+      "%s",
+      msg->correlation_id ? msg->correlation_id : "");
+}
+
+static void system_properties_fill_the_buffer_exactly(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  length_probe probe = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_lengths, &probe), AZ_IOT_OK);
+
+  /* "c-4" and its terminator take 4 bytes; a $.mid of the rest fits to the
+   * byte, and nothing is left for $.ce. */
+  const size_t mid_len = AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER - 4 - 1;
+  char topic[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER + 128];
+  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-4&%%24.mid=", C2D_TOPIC);
+  memset(topic + n, 'm', mid_len);
+  n += (int)mid_len;
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.ce=utf-8");
+  inject(fx, topic, "body");
+
+  assert_int_equal(probe.count, 1);
+  assert_string_equal(probe.correlation_id, "c-4");
+  assert_int_equal(probe.message_id_len, mid_len);
+  assert_true(probe.content_encoding_was_null);
+}
+
+/* ------------------------------------------------------------------------- */
 /* multiple clients and reconnects                                           */
 /* ------------------------------------------------------------------------- */
 
@@ -757,6 +966,18 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         properties_past_the_bound_are_dropped_and_the_message_survives, setup, teardown),
     cmocka_unit_test_setup_teardown(a_property_can_be_looked_up_by_name, setup, teardown),
+    cmocka_unit_test_setup_teardown(system_properties_arrive_as_typed_fields, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        absent_or_valueless_system_properties_are_null, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_first_occurrence_of_a_system_property_wins, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        system_properties_survive_a_full_property_list, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        system_properties_survive_a_property_buffer_overflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_system_value_that_does_not_fit_or_decode_is_omitted, setup, teardown),
+    cmocka_unit_test_setup_teardown(system_properties_fill_the_buffer_exactly, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_for_the_same_identity_fails_the_connect_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(

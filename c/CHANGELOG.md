@@ -96,3 +96,9 @@
   `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
   lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
   `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
+- mqttv3 C2D: `az_iot_c2d_message` gains typed system property fields `message_id` (`$.mid`),
+  `correlation_id` (`$.cid`), `expiry_time` (`$.exp`), `content_encoding` (`$.ce`) and `user_id`
+  (`$.uid`), plus `AZ_IOT_MSG_PROP_EXPIRY_TIME`. They and `content_type` are decoded into their own
+  buffer (`AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER`, default 256), so they are kept when the generic
+  property list is cut at `AZ_IOT_C2D_MAX_PROPERTIES` or dropped for overrunning
+  `AZ_IOT_C2D_PROPERTY_BUFFER`.

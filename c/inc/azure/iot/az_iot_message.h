@@ -46,6 +46,9 @@ extern "C"
 #define AZ_IOT_MSG_PROP_USER_ID "$.uid"
 #define AZ_IOT_MSG_PROP_CREATION_TIME "$.ctime"
 #define AZ_IOT_MSG_PROP_COMPONENT_NAME "$.sub"
+/* Absolute expiry time (ISO 8601 UTC) of a C2D message. Set by the service;
+ * receive only. */
+#define AZ_IOT_MSG_PROP_EXPIRY_TIME "$.exp"
 
   /* Shared by the mqttv3 and mqttv5 telemetry clients. Callers always pass plain
    * text: mqttv3 percent-encodes properties into the topic, while mqttv5 carries
@@ -79,6 +82,13 @@ extern "C"
 #ifndef AZ_IOT_C2D_PROPERTY_BUFFER
 #define AZ_IOT_C2D_PROPERTY_BUFFER 256
 #endif
+/* Bytes available to hold the decoded values of the system properties exposed
+ * as typed fields of az_iot_c2d_message. Separate from
+ * AZ_IOT_C2D_PROPERTY_BUFFER, so those fields survive an overflow of the
+ * generic property list. */
+#ifndef AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER
+#define AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER 256
+#endif
 
   /**
    * @brief One property carried by a cloud-to-device message.
@@ -102,16 +112,25 @@ extern "C"
    *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
+   *
+   * The system property fields are decoded into their own storage
+   * (AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER), so they are set even when
+   * @p properties was truncated or dropped. Each is NULL when the message
+   * carries no such property, carries it with no value, or its value did not
+   * fit or decode (logged). They also appear in @p properties, as received.
    */
   typedef struct az_iot_c2d_message
   {
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
-    /** Convenience view of the `$.ct` property. NULL when the message carries
-     * none. */
-    const char* content_type;
+    const char* content_type; /**< `$.ct`. */
     const az_iot_c2d_property* properties;
     size_t properties_count;
+    const char* message_id; /**< `$.mid`. */
+    const char* correlation_id; /**< `$.cid`. */
+    const char* expiry_time; /**< `$.exp`, ISO 8601 UTC, as sent by the service. */
+    const char* content_encoding; /**< `$.ce`. */
+    const char* user_id; /**< `$.uid`. */
   } az_iot_c2d_message;
 
   typedef void (*az_iot_c2d_handler_callback)(const az_iot_c2d_message* msg, void* user_ctx);

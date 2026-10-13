@@ -103,6 +103,19 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
     /* The "$.ct" property out of the topic. */
     printf(" [%s]", msg->content_type);
   }
+  /* Typed system properties: kept even when the generic list below is cut. */
+  if (msg->message_id)
+  {
+    printf(" mid=%s", msg->message_id);
+  }
+  if (msg->correlation_id)
+  {
+    printf(" cid=%s", msg->correlation_id);
+  }
+  if (msg->expiry_time)
+  {
+    printf(" exp=%s", msg->expiry_time);
+  }
 
   /* Plain text. Past AZ_IOT_C2D_MAX_PROPERTIES the rest are dropped with a
    * warning. A decoded bag that overruns AZ_IOT_C2D_PROPERTY_BUFFER, or a
