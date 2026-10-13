@@ -1108,6 +1108,41 @@ extern "C"
    * Copy anything that must outlive the call. */
   typedef void (*az_iot_registration_payload_callback)(az_span payload, void* user_ctx);
 
+  /**
+   * @brief A DPS assignment the client adopted. Persist it to connect straight
+   * to the hub after a restart; see docs/connecting.md.
+   *
+   * Every pointer is valid only during the callback; copy what must be kept.
+   */
+  typedef struct az_iot_dps_assignment
+  {
+    /** @brief Assigned IoT Hub hostname; restore as opts.iothub_hostname. */
+    const char* hub_hostname;
+    /** @brief Assigned device id; restore as opts.device_id. */
+    const char* device_id;
+    /** @brief Assigned profile; restore profile->connection_profile as
+     * opts.connection_profile. Never AZ_IOT_CONNECTION_PROFILE_UNKNOWN. */
+    const az_iot_hub_profile* profile;
+  } az_iot_dps_assignment;
+
+  /**
+   * @brief Fired each time the client adopts a DPS assignment: after the first
+   * registration and after every re-provision, before the hub connect starts.
+   * Not fired for an assignment the client rejects.
+   *
+   * With dps.request_operational_certificate, the issued chain is already
+   * stored in the certificate provider.
+   *
+   * Runs from az_iot_connection_client_do_work(). It may call
+   * az_iot_connection_client_close(), and then no hub connect follows; it must
+   * not call az_iot_connection_client_deinit().
+   *
+   * @param assignment The adopted assignment; valid only during the call.
+   * @param user_ctx   As registered.
+   */
+  typedef void (
+      *az_iot_dps_assignment_callback)(const az_iot_dps_assignment* assignment, void* user_ctx);
+
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
    * See docs/eng/connection-c.md section 9.3. */
@@ -1430,6 +1465,8 @@ extern "C"
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
     void* reg_payload_cb_ctx;
+    az_iot_dps_assignment_callback assignment_cb;
+    void* assignment_cb_ctx;
 
     bool user_close;
 
@@ -1983,6 +2020,20 @@ extern "C"
   az_iot_result az_iot_connection_client_set_registration_payload_callback(
       az_iot_connection_client* client,
       az_iot_registration_payload_callback cb,
+      void* user_ctx);
+
+  /**
+   * @brief Registers a callback fired when a DPS assignment is adopted. Optional;
+   * NULL @p cb unregisters.
+   *
+   * @param[in] client   Client.
+   * @param[in] cb       See az_iot_dps_assignment_callback.
+   * @param[in] user_ctx Passed to @p cb.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client.
+   */
+  az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+      az_iot_connection_client* client,
+      az_iot_dps_assignment_callback cb,
       void* user_ctx);
 
   /* Open a session to the configured host. Non-blocking; observe state via callback

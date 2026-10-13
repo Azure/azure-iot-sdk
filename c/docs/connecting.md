@@ -148,24 +148,32 @@ The cache lives only as long as the client. To keep using an assignment across a
 application saves it and supplies it with the `dps` fields:
 
 ```c
-opts.iothub_hostname = saved_hub;        /* az_iot_connection_client_get_iothub_address() */
-opts.device_id = saved_device_id;        /* az_iot_connection_client_get_device_id() */
-opts.connection_profile = saved_profile; /* az_iot_connection_client_get_hub_profile() */
+opts.iothub_hostname = saved_hub;        /* az_iot_dps_assignment::hub_hostname */
+opts.device_id = saved_device_id;        /* az_iot_dps_assignment::device_id */
+opts.connection_profile = saved_profile; /* az_iot_dps_assignment::profile */
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 ```
 
+- Save the values from the callback set with
+  `az_iot_connection_client_set_dps_assignment_callback()`. It fires each time an assignment is
+  adopted (first registration and every re-provision), before the hub connect. A rejected
+  assignment is not reported, and its issued certificate is not stored.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
 - It goes to DPS under the same conditions as a cached assignment (above). With
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
   is retried; set `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` to register again instead.
-- A registration replaces the hub, device id and profile. Save them again after `HUB:CONNECTED`.
+- A registration replaces the hub, device id and profile; the callback reports the new values.
 - `connection_profile` is declared, as for a direct connect: a feature client for the other
   generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - An empty `iothub_hostname`, or one without `device_id`, fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
 - Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
   returns the stored chain, the saved hub is connected with it and no certificate is requested.
-  DPS still authenticates with the bootstrap credential.
+  DPS still authenticates with the bootstrap credential. With
+  `dps.request_operational_certificate`, the issued chain is already stored in the provider when
+  the callback runs (the managed provider writes it to `operational_cert_pem_path`).
+
+Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
 
 ## Reconnection
 

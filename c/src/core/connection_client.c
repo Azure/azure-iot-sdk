@@ -4180,6 +4180,28 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
 
+  if (c->assignment_cb)
+  {
+    az_iot_hub_profile assigned_profile = {
+      .connection_profile = c->connection_profile,
+      .connection_profile_raw = c->connection_profile_raw,
+      .connection_profile_raw_truncated = c->connection_profile_raw_truncated,
+    };
+    az_iot_dps_assignment assignment = {
+      .hub_hostname = c->opts.iothub_hostname,
+      .device_id = c->opts.device_id,
+      .profile = &assigned_profile,
+    };
+    uint32_t closes_before_cb = c->close_count;
+    uint32_t seq_before_cb = c->open_seq;
+    c->assignment_cb(&assignment, c->assignment_cb_ctx);
+    /* The callback closed (or reopened) the client: no hub connect for this one. */
+    if (c->close_count != closes_before_cb || c->open_seq != seq_before_cb)
+    {
+      return;
+    }
+  }
+
   /* The assignment is kept, but no hub attempt starts past the bound. */
   if (identity_recovery_expired(c))
   {
@@ -6545,6 +6567,20 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   }
   client->reg_payload_cb = cb;
   client->reg_payload_cb_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+    az_iot_connection_client* client,
+    az_iot_dps_assignment_callback cb,
+    void* user_ctx)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->assignment_cb = cb;
+  client->assignment_cb_ctx = user_ctx;
   return AZ_IOT_OK;
 }
 

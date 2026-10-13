@@ -5,6 +5,11 @@
 ### Features Added
 
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
+- DPS assignment notification: `az_iot_connection_client_set_dps_assignment_callback()` reports the
+  hub, device id and profile each time an assignment is adopted, so an application can persist it
+  and connect directly after a restart. See
+  [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback) and
+  [samples/authentication/dps_persist_assignment](samples/authentication/dps_persist_assignment/README.md).
 - mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
   templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
   `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
