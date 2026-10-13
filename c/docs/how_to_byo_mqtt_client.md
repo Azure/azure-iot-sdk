@@ -125,6 +125,8 @@ Two obligations, and only one of them is a choice.
 >
 > An adapter still reading `opts.tls.verify_server` **will not compile**, and that is deliberate: a source alias would let such an adapter keep gating verification on a field that no longer means verification, so a caller who set only a certificate would get an *unverified* TLS session. The compile error puts the decision in front of you. The fix is to verify unconditionally and use `use_tls` solely as one of the TLS triggers.
 
+**Copy TLS material during `connect()`.** Like `username` and `password`, the `tls` strings are valid only while `connect()` runs: the SDK then releases them to the certificate provider, which may wipe `client_key_pem` and `client_key_password`.
+
 **Non-extractable keys.** If `tls.client_key_uri` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 
 ## Step 2 — Implement the factory

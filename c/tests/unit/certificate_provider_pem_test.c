@@ -157,15 +157,15 @@ static void test_load_returns_file_contents(void** state)
   assert_non_null(mat.client_key_password);
   assert_string_equal("hunter2", mat.client_key_password);
 
-  /* release() is documented as a no-op for this loader; calling it must not
-   * invalidate the buffers (a second load() must succeed and return the
-   * same content). */
+  /* release() drops the key; a later load() reads it again. */
   mgr.base.vtable->release(&mgr.base, &mat);
 
   az_iot_certificate_material mat2;
   memset(&mat2, 0, sizeof(mat2));
   assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat2));
   assert_string_equal(k_cert_pem, mat2.client_cert_pem);
+  assert_string_equal(k_key_pem, mat2.client_key_pem);
+  assert_string_equal("hunter2", mat2.client_key_password);
   mgr.base.vtable->release(&mgr.base, &mat2);
 
   az_iot_certificate_provider_pem_deinit(&mgr);
@@ -268,6 +268,160 @@ static void test_load_of_an_operational_credential_returns_the_static_material(v
   az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
+/* The key is read on load(), not kept from init(). */
+static void test_init_does_not_keep_the_key(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+  assert_null(mgr.client_key);
+  assert_int_equal(0, mgr.client_key_refs);
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
+/* Each load() is a loan of one key buffer; the last release() frees it and
+ * clears the material handed out. */
+static void test_the_last_release_drops_the_key(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+    .client_key_password = "hunter2",
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material a;
+  az_iot_certificate_material b;
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &a));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_OPERATIONAL, 0, &b));
+  assert_ptr_equal(a.client_key_pem, b.client_key_pem);
+  assert_int_equal(2, mgr.client_key_refs);
+
+  mgr.base.vtable->release(&mgr.base, &a);
+  assert_null(a.client_key_pem);
+  assert_null(a.client_key_password);
+  assert_null(a.client_cert_pem);
+  /* b still holds a loan. */
+  assert_string_equal(k_key_pem, b.client_key_pem);
+  assert_int_equal(1, mgr.client_key_refs);
+
+  mgr.base.vtable->release(&mgr.base, &b);
+  assert_null(mgr.client_key);
+  assert_int_equal(0, mgr.client_key_refs);
+  assert_null(b.client_key_pem);
+  /* The password is kept for the next load(). */
+  assert_string_equal("hunter2", mgr.key_password);
+
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
+/* A second release() of the same material must not end another loan. */
+static void test_a_repeated_release_is_a_no_op(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material a;
+  az_iot_certificate_material b;
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &a));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &b));
+  mgr.base.vtable->release(&mgr.base, &a);
+  mgr.base.vtable->release(&mgr.base, &a);
+  mgr.base.vtable->release(&mgr.base, NULL);
+  mgr.base.vtable->release(NULL, &b);
+  assert_int_equal(1, mgr.client_key_refs);
+  assert_string_equal(k_key_pem, b.client_key_pem);
+
+  mgr.base.vtable->release(&mgr.base, &b);
+  assert_null(mgr.client_key);
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
+/* Material that did not come from this provider's key ends no loan. */
+static void test_release_of_foreign_material_ends_no_loan(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material a;
+  memset(&a, 0, sizeof(a));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &a));
+  az_iot_certificate_material foreign;
+  memset(&foreign, 0, sizeof(foreign));
+  foreign.client_key_pem = "not this provider's key";
+  mgr.base.vtable->release(&mgr.base, &foreign);
+  assert_int_equal(1, mgr.client_key_refs);
+  assert_string_equal(k_key_pem, a.client_key_pem);
+
+  mgr.base.vtable->release(&mgr.base, &a);
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
+/* The key is read at load(), so a key file removed after init() fails the
+ * load() rather than handing out a stale copy, and nothing is loaned. */
+static void test_load_fails_when_the_key_file_is_gone(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+  assert_int_equal(0, remove(f->key_path));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_INITIALIZED, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
+  assert_null(mgr.client_key);
+  assert_int_equal(0, mgr.client_key_refs);
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
+/* deinit() frees a key still on loan, so a missing release() leaks nothing. */
+static void test_deinit_drops_a_key_still_on_loan(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+    .client_key_password = "hunter2",
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
+  assert_non_null(mgr.client_key);
+
+  az_iot_certificate_provider_pem_deinit(&mgr);
+  assert_null(mgr.client_key);
+  assert_null(mgr.key_password);
+  assert_int_equal(0, mgr.client_key_refs);
+}
+
 static void test_deinit_tolerates_null(void** state)
 {
   (void)state;
@@ -356,6 +510,17 @@ int main(void)
         test_load_of_an_operational_credential_returns_the_static_material,
         setup_files,
         teardown_files),
+    cmocka_unit_test_setup_teardown(test_init_does_not_keep_the_key, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_the_last_release_drops_the_key, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_a_repeated_release_is_a_no_op, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_release_of_foreign_material_ends_no_loan, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_load_fails_when_the_key_file_is_gone, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_deinit_drops_a_key_still_on_loan, setup_files, teardown_files),
     cmocka_unit_test(test_deinit_tolerates_null),
     cmocka_unit_test_setup_teardown(test_deinit_is_idempotent, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(

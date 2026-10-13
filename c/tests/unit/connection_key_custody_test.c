@@ -56,6 +56,11 @@ typedef struct custody_provider
    * forbidden from doing this; az_iot_mqtt_sign_callback is, which is what the
    * trampoline has to enforce. */
   bool scribbles_out_len_on_failure;
+  /* When set, load() hands out these buffers as the key PEM and password and
+   * release() wipes them, as az_iot_certificate_provider.h allows. */
+  bool wipes_on_release;
+  char key_pem[32];
+  char key_password[16];
 } custody_provider;
 
 static az_iot_result custody_load(
@@ -75,6 +80,13 @@ static az_iot_result custody_load(
     return p->operational_result;
   }
   *out = p->material;
+  if (p->wipes_on_release)
+  {
+    snprintf(p->key_pem, sizeof(p->key_pem), "%s", "KEY-PEM");
+    snprintf(p->key_password, sizeof(p->key_password), "%s", "KEY-PW");
+    out->client_key_pem = p->key_pem;
+    out->client_key_password = p->key_password;
+  }
   if (p->degrade_after_calls > 0 && p->load_calls > p->degrade_after_calls)
   {
     out->client_key_pem = NULL;
@@ -90,6 +102,11 @@ static void custody_release(az_iot_certificate_provider* s, az_iot_certificate_m
   custody_provider* p = (custody_provider*)s;
   (void)m;
   p->release_calls++;
+  if (p->wipes_on_release)
+  {
+    memset(p->key_pem, 0, sizeof(p->key_pem));
+    memset(p->key_password, 0, sizeof(p->key_password));
+  }
 }
 
 static void custody_deinit(az_iot_certificate_provider* s) { (void)s; }
@@ -591,6 +608,38 @@ static void a_plain_pem_credential_is_unaffected(void** state)
   assert_false(c->connect.has_sign);
 }
 
+/* release() may wipe the key it handed out, so the client releases the material
+ * only after the adapter's connect() has read it, on both connect paths, and
+ * releases every successful load(). */
+static void material_is_released_after_the_adapter_connect(bool with_dps, void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  memset(&fx->provider.material, 0, sizeof(fx->provider.material));
+  fx->provider.material.client_cert_pem = "cert";
+  fx->provider.wipes_on_release = true;
+  init_client(fx, with_dps);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_string_equal(c->connect.client_key_pem, "KEY-PEM");
+  assert_string_equal(c->connect.client_key_password, "KEY-PW");
+  assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
+  assert_string_equal(fx->provider.key_pem, "");
+  assert_string_equal(fx->provider.key_password, "");
+}
+
+static void dps_material_is_released_after_the_adapter_connect(void** state)
+{
+  material_is_released_after_the_adapter_connect(true, state);
+}
+
+static void hub_material_is_released_after_the_adapter_connect(void** state)
+{
+  material_is_released_after_the_adapter_connect(false, state);
+}
+
 /* A provider that holds no material yet is not a configuration error: it may
  * have one by the time the connect attempt runs. open() proceeds. */
 static void a_provider_with_no_material_yet_is_not_refused(void** state)
@@ -713,6 +762,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         material_without_a_client_certificate_is_not_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plain_pem_credential_is_unaffected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_material_is_released_after_the_adapter_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_material_is_released_after_the_adapter_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provider_with_no_material_yet_is_not_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_provider_without_load_is_rejected, setup, teardown),

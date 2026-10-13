@@ -98,6 +98,10 @@ extern "C"
       bool has_trusted_ca_pem;
       bool has_client_cert_pem;
       bool has_client_key_pem;
+      /* Key PEM and password as read during connect(), so a test can tell they
+       * were still intact then (truncated to the buffer). */
+      char client_key_pem[256];
+      char client_key_password[64];
       /* Non-extractable key custody (D8), captured so a test can assert the
        * core forwarded the key reference and the sign() hook rather than
        * dropping them on the way to the adapter. */

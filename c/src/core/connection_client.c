@@ -1198,6 +1198,22 @@ static void keep_provider_trust(
   copts->tls.trusted_ca_path = mat->trusted_ca_path;
 }
 
+/**
+ * @brief Releases @p mat when @p *held and clears @p *held. Called once the
+ * adapter's connect() has copied the material, or when the attempt ends first.
+ */
+static void release_material(
+    az_iot_connection_client* c,
+    az_iot_certificate_material* mat,
+    bool* held)
+{
+  if (*held)
+  {
+    *held = false;
+    c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, mat);
+  }
+}
+
 /** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
 static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_connect_options* copts)
 {
@@ -3488,9 +3504,11 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         "no certificate provider and no SAS key or token callback");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
+  /* Material from load(), held until connect() has copied it. */
+  az_iot_certificate_material mat = { 0 };
+  bool mat_held = false;
   if (c->opts.certificate_provider)
   {
-    az_iot_certificate_material mat = { 0 };
     uint8_t x509_index
         = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_DPS].first_x509_index : 0u;
     recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_DPS, &first, &x509_index);
@@ -3521,7 +3539,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      mat_held = true;
     }
     else if (lr == AZ_IOT_OK)
     {
@@ -3540,9 +3558,10 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
           key_uri,
           key_query != NULL ? "?<redacted>" : "",
           text_or_none(mat.crypto_engine_id));
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      mat_held = true;
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, &mat, &mat_held);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, cr, "certificate material rejected");
         return cr;
@@ -3570,6 +3589,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, &mat, &mat_held);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -3583,6 +3603,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, &mat, &mat_held);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
@@ -3631,11 +3652,13 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
      * bookkeeping; recreating it here would undo the caller's own close. */
     c->dps_start_cancelled = true;
     sas_wipe_token(c);
+    release_material(c, &mat, &mat_held);
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, &mat, &mat_held);
   if (r != AZ_IOT_OK)
   {
     dps_teardown_mqtt(c);
@@ -5019,10 +5042,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         "no certificate provider and no SAS key or token callback");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
+  /* Material from load(), held until connect() has copied it. */
+  az_iot_certificate_material mat = { 0 };
+  bool mat_held = false;
   if (c->opts.certificate_provider)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
-    az_iot_certificate_material mat = { 0 };
     uint8_t x509_index
         = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_HUB].first_x509_index : 0u;
     recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_HUB, &first, &x509_index);
@@ -5062,14 +5087,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      prov->vtable->release(prov, &mat);
+      mat_held = true;
     }
     else
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-      prov->vtable->release(prov, &mat);
+      mat_held = true;
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, &mat, &mat_held);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, cr, "certificate material rejected");
         return cr;
@@ -5087,6 +5113,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, &mat, &mat_held);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -5100,6 +5127,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, &mat, &mat_held);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
@@ -5126,11 +5154,13 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     AZ_IOT_LOG_DEBUG(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "attempt closed from the state callback; abandoned");
     sas_wipe_token(c);
+    release_material(c, &mat, &mat_held);
     mc->iface->destroy(mc);
     return AZ_IOT_OK;
   }
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, &mat, &mat_held);
   if (r != AZ_IOT_OK)
   {
     mc->iface->destroy(mc);
