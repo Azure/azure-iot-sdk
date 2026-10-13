@@ -88,7 +88,7 @@ are the reference.
 | Slot | Since | Purpose |
 | --- | --- | --- |
 | `load(self, role, index, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3), certificate `index` of the role (0 first; `AZ_IOT_ERR_NOT_FOUND` past the last). |
-| `release`, `deinit` | v1 | Release material once the adapter's `connect()` has copied it; the provider should then wipe any in-memory private key or password it handed out. Tear down the provider, wiping what it kept. |
+| `release`, `deinit` | v1 | Release material: for a connection attempt, once the adapter's `connect()` has copied it (or the attempt ends first); for a validation or certificate-index probe, at once. The provider should then wipe any in-memory private key or password it handed out. Tear down the provider, wiping what it kept. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
 | `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: each entry base64 of DER or of a whole PEM certificate, leaf first, valid for the call only; decode before persisting, PEM-wrapping DER). |
