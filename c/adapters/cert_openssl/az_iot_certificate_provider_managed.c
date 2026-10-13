@@ -44,7 +44,8 @@
 
 /* Operational key parameters. */
 #define MANAGED_RSA_KEY_BITS 2048
-#define MANAGED_EC_CURVE_NAME "P-256"
+#define MANAGED_EC_P256_CURVE_NAME "P-256"
+#define MANAGED_EC_P384_CURVE_NAME "P-384"
 
 /* An optional C string a caller may leave unset either way: NULL and "" both
  * mean "not supplied". Stated positively so call sites read as "this was
@@ -110,13 +111,54 @@ static char* dup_str(const char* s)
   return out;
 }
 
+/** @brief Whether @p key_type is a member of az_iot_certificate_managed_key_type. */
+static bool is_known_key_type(az_iot_certificate_managed_key_type key_type)
+{
+  switch (key_type)
+  {
+    case AZ_IOT_MANAGED_KEY_EC_P256:
+    case AZ_IOT_MANAGED_KEY_RSA_2048:
+    case AZ_IOT_MANAGED_KEY_EC_P384:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** @brief Generates a key of @p key_type, which must be known. NULL on failure. */
 static EVP_PKEY* generate_key(int key_type)
 {
-  if (key_type == AZ_IOT_MANAGED_KEY_RSA_2048)
+  switch (key_type)
   {
-    return EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)MANAGED_RSA_KEY_BITS);
+    case AZ_IOT_MANAGED_KEY_RSA_2048:
+      return EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)MANAGED_RSA_KEY_BITS);
+    case AZ_IOT_MANAGED_KEY_EC_P384:
+      return EVP_PKEY_Q_keygen(NULL, NULL, "EC", MANAGED_EC_P384_CURVE_NAME);
+    default:
+      return EVP_PKEY_Q_keygen(NULL, NULL, "EC", MANAGED_EC_P256_CURVE_NAME);
   }
-  return EVP_PKEY_Q_keygen(NULL, NULL, "EC", MANAGED_EC_CURVE_NAME);
+}
+
+/**
+ * @brief CSR digest for @p key: matched to the curve size for EC keys (RFC 5480
+ * section 4), SHA-256 otherwise. Follows the key in use, which may have been
+ * loaded rather than generated from key_type.
+ */
+static const EVP_MD* csr_digest(EVP_PKEY* key)
+{
+  if (EVP_PKEY_is_a(key, "EC"))
+  {
+    int bits = EVP_PKEY_get_bits(key);
+    if (bits > 384)
+    {
+      return EVP_sha512();
+    }
+    if (bits > 256)
+    {
+      return EVP_sha384();
+    }
+  }
+  return EVP_sha256();
 }
 
 static EVP_PKEY* load_key_file(const char* path)
@@ -795,7 +837,7 @@ static az_iot_result managed_get_csr(
   {
     goto done;
   }
-  if (X509_REQ_sign(req, key, EVP_sha256()) == 0)
+  if (X509_REQ_sign(req, key, csr_digest(key)) == 0)
   {
     goto done;
   }
@@ -1146,7 +1188,7 @@ az_iot_result az_iot_certificate_provider_managed_init(
   /* Bootstrap identity: both or neither (SAS onboarding has none). */
   bool has_bootstrap = is_nonempty_cstr(opts->bootstrap_cert_pem_path);
   if (has_bootstrap != is_nonempty_cstr(opts->bootstrap_key_pem_path)
-      || !has_file_name(opts->operational_key_pem_path)
+      || !is_known_key_type(opts->key_type) || !has_file_name(opts->operational_key_pem_path)
       || !has_file_name(opts->operational_cert_pem_path) || paths_collide(opts))
   {
     return AZ_IOT_ERR_INVALID_ARG;

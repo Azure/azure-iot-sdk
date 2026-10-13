@@ -389,6 +389,12 @@ static void test_dps_csr_enrollment_rsa(void** state)
   run_csr_enrollment(AZ_IOT_MANAGED_KEY_RSA_2048, "rsa", false);
 }
 
+static void test_dps_csr_enrollment_ec_p384(void** state)
+{
+  (void)state;
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P384, "ec_p384", false);
+}
+
 /* A refused certificate first for DPS and for the hub: each falls back to the
  * next one at once, and connects with it (x509_index 1). */
 static void test_each_role_falls_back_to_its_next_certificate(void** state)
@@ -412,6 +418,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_dps_csr_enrollment_ec),
     cmocka_unit_test(test_dps_csr_enrollment_rsa),
+    cmocka_unit_test(test_dps_csr_enrollment_ec_p384),
     cmocka_unit_test(test_each_role_falls_back_to_its_next_certificate),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

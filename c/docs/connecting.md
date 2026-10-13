@@ -259,6 +259,13 @@ Operational certificates:
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.
+- CSR profile. The service requires a PKCS#10 CSR, base64 DER without PEM framing, with the
+  common name set to the DPS registration ID. It does not specify a key algorithm. Certificate
+  authorities created in Azure Device Registry sign the certificates they issue with ECDSA
+  P-384/SHA-384, whatever key the CSR carries. The managed provider generates an EC P-256 (the
+  default), EC P-384 or RSA 2048 key (`key_type`). It signs the CSR with SHA-384 for P-384,
+  SHA-512 for larger EC curves and SHA-256 otherwise, following the key in use, which may have
+  been loaded from disk.
 - At connect time the operational credential is preferred, with the bootstrap credential as a
   fallback.
 
