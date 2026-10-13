@@ -51,6 +51,9 @@
 - DPS: `az_iot_connection_client_get_device_id()` returns the device id the client connects to
   the hub with: the DPS-assigned one once the assignment is adopted, which can differ from the
   registration id. `NULL` while no hub is established.
+- Hub certificate renewal: `AZ_IOT_CSR_FAILED` now carries the hub's `info.credentialError`,
+  `info.credentialMessage` and `trackingId` as `credential_error`, `credential_message` and
+  `tracking_id` on `az_iot_csr_event` (never NULL; empty when absent).
 - PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An mqttv5
   refusal the broker will repeat (`0x87`, `0x90`, `0x99`), or `0x95` for a publish over the
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay

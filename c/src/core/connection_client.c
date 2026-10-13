@@ -1037,6 +1037,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
+static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind);
 
 /* Forward decls — used in dps_apply_deferred(). */
 static az_iot_result check_owned_string(size_t buf_cap, const char* s);
@@ -7163,8 +7164,7 @@ az_iot_result az_iot_connection_client_do_work(
     client->csr_op.in_use = false;
     puback_abandon(client, &client->csr_op);
     az_iot_csr_event evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.kind = AZ_IOT_CSR_FAILED;
+    csr_event_init(&evt, AZ_IOT_CSR_FAILED);
     evt.status = AZ_IOT_ERR_TIMEOUT;
     if (cb)
     {
@@ -8524,12 +8524,99 @@ static void drop_subscriptions_from_other_generations(az_iot_connection_client* 
 #define CSR_JSON_CERTIFICATES "certificates"
 #define CSR_JSON_ERROR_CODE "errorCode"
 #define CSR_JSON_RETRY_AFTER "retryAfter"
+#define CSR_JSON_TRACKING_ID "trackingId"
+#define CSR_JSON_INFO "info"
+#define CSR_JSON_CREDENTIAL_ERROR "credentialError"
+#define CSR_JSON_CREDENTIAL_MESSAGE "credentialMessage"
 
-/* Parse errorCode + retryAfter (both optional) from an error response body. */
-static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_retry)
+/** @brief Fields of a hub renewal error body; strings are NUL-terminated, "" when absent. */
+typedef struct csr_error_info
 {
-  *out_code = 0;
-  *out_retry = 0;
+  int32_t code; /**< errorCode; 0 when absent. */
+  int32_t retry_after_s; /**< retryAfter; 0 when absent. */
+  char credential_error[64]; /**< info.credentialError. */
+  char credential_message[256]; /**< info.credentialMessage. */
+  char tracking_id[128]; /**< trackingId. */
+} csr_error_info;
+
+/** @brief Zero @p evt, set its kind and its string fields to "". */
+static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind)
+{
+  memset(evt, 0, sizeof(*evt));
+  evt->kind = kind;
+  evt->credential_error = "";
+  evt->credential_message = "";
+  evt->tracking_id = "";
+}
+
+/**
+ * @brief Copy the string at the reader's token into @p dst, unescaped; as received when it
+ *        has a UTF-16 escape az_core cannot decode. Left "" when the token is not a
+ *        string or does not fit: never truncated.
+ */
+static void csr_json_copy_string(const az_json_reader* jr, char* dst, size_t dst_size)
+{
+  int32_t len = 0;
+  az_span raw = jr->token.slice; /* the reader has one segment: the whole value */
+  dst[0] = '\0';
+  if (jr->token.kind == AZ_JSON_TOKEN_STRING
+      && az_result_failed(az_json_token_get_string(&jr->token, dst, (int32_t)dst_size, &len)))
+  {
+    dst[0] = '\0';
+    if ((size_t)az_span_size(raw) < dst_size)
+    {
+      az_span_to_str(dst, (int32_t)dst_size, raw);
+    }
+  }
+}
+
+/**
+ * @brief Read `info.credentialError` and `info.credentialMessage`; the reader is at the
+ *        object's BEGIN_OBJECT and is left at its END_OBJECT.
+ * @return false if the body ended or is malformed.
+ */
+static bool csr_parse_error_info(az_json_reader* jr, csr_error_info* out)
+{
+  while (az_result_succeeded(az_json_reader_next_token(jr)))
+  {
+    if (jr->token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      return true;
+    }
+    if (jr->token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      continue;
+    }
+    bool is_error
+        = az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR(CSR_JSON_CREDENTIAL_ERROR));
+    bool is_message
+        = az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR(CSR_JSON_CREDENTIAL_MESSAGE));
+    if (az_result_failed(az_json_reader_next_token(jr)))
+    {
+      return false;
+    }
+    if (is_error)
+    {
+      csr_json_copy_string(jr, out->credential_error, sizeof(out->credential_error));
+    }
+    else if (is_message)
+    {
+      csr_json_copy_string(jr, out->credential_message, sizeof(out->credential_message));
+    }
+    if ((jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT
+         || jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+        && az_result_failed(az_json_reader_skip_children(jr)))
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** @brief Parse a hub renewal error body into @p out. Every field is optional. */
+static void csr_parse_error(az_span payload, csr_error_info* out)
+{
+  memset(out, 0, sizeof(*out));
   az_json_reader jr;
   if (az_span_size(payload) <= 0 /* az_json_reader_init() would spin on it */
       || az_result_failed(az_json_reader_init(&jr, payload, NULL))
@@ -8547,22 +8634,36 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
     }
     bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_ERROR_CODE));
     bool is_retry = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_RETRY_AFTER));
+    bool is_tracking
+        = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_TRACKING_ID));
+    bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_INFO));
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
       return;
     }
     if (is_code && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
-      if (az_result_failed(az_json_token_get_int32(&jr.token, out_code)))
+      if (az_result_failed(az_json_token_get_int32(&jr.token, &out->code)))
       {
-        *out_code = 0;
+        out->code = 0;
       }
     }
     else if (is_retry && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
-      if (az_result_failed(az_json_token_get_int32(&jr.token, out_retry)))
+      if (az_result_failed(az_json_token_get_int32(&jr.token, &out->retry_after_s)))
       {
-        *out_retry = 0;
+        out->retry_after_s = 0;
+      }
+    }
+    else if (is_tracking && jr.token.kind == AZ_JSON_TOKEN_STRING)
+    {
+      csr_json_copy_string(&jr, out->tracking_id, sizeof(out->tracking_id));
+    }
+    else if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      if (!csr_parse_error_info(&jr, out))
+      {
+        return;
       }
     }
     else if (
@@ -8600,8 +8701,7 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
       c->csr_op.request_id,
       az_iot_result_to_string(status));
   az_iot_csr_event evt;
-  memset(&evt, 0, sizeof(evt));
-  evt.kind = AZ_IOT_CSR_FAILED;
+  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
   evt.status = status;
   if (cb)
   {
@@ -8694,7 +8794,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       ? az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len)
       : AZ_SPAN_EMPTY;
   az_iot_csr_event evt;
-  memset(&evt, 0, sizeof(evt));
+  csr_event_init(&evt, AZ_IOT_CSR_ACCEPTED);
 
   if (status == 202)
   {
@@ -8788,12 +8888,22 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 
   /* Error response (4xx/5xx). */
   {
-    int32_t code = 0, retry = 0;
-    csr_parse_error(payload, &code, &retry);
+    csr_error_info err;
+    csr_parse_error(payload, &err);
     evt.kind = AZ_IOT_CSR_FAILED;
     evt.status = AZ_IOT_ERR_MQTT;
-    evt.service_code = code;
-    evt.retry_after_s = (uint32_t)(retry > 0 ? retry : 0);
+    evt.service_code = err.code;
+    evt.retry_after_s = (uint32_t)(err.retry_after_s > 0 ? err.retry_after_s : 0);
+    evt.credential_error = err.credential_error;
+    evt.credential_message = err.credential_message;
+    evt.tracking_id = err.tracking_id;
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "certificate renewal failed: status=%d errorCode=%d credentialError=%s trackingId=%s",
+        status,
+        (int)err.code,
+        err.credential_error[0] != '\0' ? err.credential_error : "-",
+        err.tracking_id[0] != '\0' ? err.tracking_id : "-");
     if (cb)
     {
       cb(&evt, uc);
