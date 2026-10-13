@@ -26,7 +26,7 @@ built for constrained and embedded devices.
 flowchart TB
     APP["Application"]
     V3["mqttv3 feature clients<br/>telemetry, twin, direct methods,<br/>cloud-to-device, file upload"]
-    V5["mqttv5 feature clients<br/>telemetry, twin, direct methods"]
+    V5["mqttv5 feature clients<br/>telemetry, twin, direct methods,<br/>custom topics"]
     SU["Software updates client"]
     CONN["Connection client<br/>DPS provisioning, connect, reconnect,<br/>certificates, adapter registry"]
     CORE["Core<br/>results, logging, dispatch, messages"]
@@ -87,6 +87,7 @@ The samples under [`samples/unified`](../samples/unified) handle both generation
 | Device twin | Yes | Yes |
 | Direct methods | Yes | Yes |
 | Cloud-to-device messages | Yes | No |
+| Custom topics (publish) | No | Yes |
 | File upload | Yes | No |
 | Certificate renewal over the hub | Yes | No |
 | Software updates | Yes, over DPS | Yes, over DPS |

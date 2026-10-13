@@ -43,7 +43,6 @@
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
 #include "internal/dispatch.h"
-#include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
@@ -129,7 +128,6 @@
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_MQTT_V3_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
-#define DPS_CONNECTION_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
@@ -1104,6 +1102,17 @@ static bool provider_has_sign(const az_iot_certificate_provider* p)
 {
   return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
       && p->vtable->sign != NULL;
+}
+
+/**
+ * @brief True when @p p makes CSRs and stores the issued chains: the only
+ * source of CSRs for DPS enrollment and hub renewal.
+ */
+static bool provider_owns_csr(const az_iot_certificate_provider* p)
+{
+  return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
+      && p->vtable->get_csr != NULL && p->vtable->release_csr != NULL
+      && p->vtable->store_issued_certificate != NULL;
 }
 
 /* Can this credential set possibly complete a TLS handshake? A client
@@ -2483,17 +2492,17 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
     if (c->dps_enrolling)
     {
       provider = c->opts.certificate_provider;
-      if (provider == NULL || provider->vtable->get_csr == NULL)
+      if (!provider_owns_csr(provider))
       {
         AZ_IOT_LOG_ERROR(
             AZ_IOT_LOG_COMPONENT_DPS,
             "register: request_operational_certificate is set but the certificate "
-            "provider does not implement get_csr");
+            "provider does not implement get_csr, release_csr and store_issued_certificate");
         stage_local_error(
             c,
             AZ_IOT_CONN_SCOPE_DPS,
             AZ_IOT_ERR_NOT_SUPPORTED,
-            "certificate provider has no get_csr()");
+            "certificate provider cannot make CSRs and store chains");
         return AZ_IOT_ERR_NOT_SUPPORTED;
       }
 
@@ -2501,8 +2510,18 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
           = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
       if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
       {
-        AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
-        csr_result = (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
+        if (csr_result == AZ_IOT_OK)
+        {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr returned no CSR");
+          provider->vtable->release_csr(provider, &csr);
+          csr_result = AZ_IOT_ERR_INTERNAL;
+        }
+        else
+        {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
+        }
         stage_local_error(
             c, AZ_IOT_CONN_SCOPE_DPS, csr_result, "certificate provider get_csr() failed");
         return csr_result;
@@ -2876,60 +2895,24 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
   }
 }
 
-/* Development bridge while the DPS api-version that carries connectionProfile
- * is not deployed. It applies only when the property is absent/null; an actual
- * wire value always wins, so enabling this cannot mask service rollout. */
-static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
-{
-  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
-
-  if (az_iot_env_read(DPS_CONNECTION_PROFILE_OVERRIDE_ENV, value, sizeof(value)) != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_DPS, "" DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (value[0] == '\0')
-  {
-    return AZ_IOT_OK;
-  }
-
-  if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
-      && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "%s must be \"classic\" or \"mqttV5\", not \"%s\"",
-        DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-        value);
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  AZ_IOT_LOG_WARNF(
-      AZ_IOT_LOG_COMPONENT_DPS,
-      "connectionProfile was absent/null; applying development override %s=%s",
-      DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-      value);
-  connection_profile_set(c, az_span_create_from_str(value));
-  return AZ_IOT_OK;
-}
-
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
- * meaning "classic" -- so the caller is left with the MQTTv3 default it was
- * seeded with. Only a malformed payload fails here; an unrecognised *value*
- * fails later, at the point the session role is chosen, so the profile is
- * already recorded and readable when it does. */
+ * meaning "classic" -- so it leaves the MQTTv3 default set on entry. Only a malformed payload fails
+ * here; an unrecognised *value* fails later, at the point the session role is chosen, so the
+ * profile is already recorded and readable when it does. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
+  /* Each assignment starts from the default: an absent profile must not keep
+   * the one an earlier, failed assignment recorded. */
+  connection_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+
   az_json_reader jr;
   az_iot_result r = dps_enter_registration_state(&jr, payload);
   if (r != AZ_IOT_OK)
   {
-    /* No registrationState at all: nothing to read, keep the default unless a
-     * development override was requested. */
-    return (r == AZ_IOT_ERR_NOT_FOUND) ? dps_apply_connection_profile_override(c) : r;
+    /* No registrationState at all: nothing to read, keep the default. */
+    return (r == AZ_IOT_ERR_NOT_FOUND) ? AZ_IOT_OK : r;
   }
 
   while (az_result_succeeded(az_json_reader_next_token(&jr))
@@ -2951,9 +2934,8 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
         connection_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
-      /* null (or any non-string) resolves to the MQTTv3 default unless the
-       * development bridge explicitly supplies the profile. */
-      return dps_apply_connection_profile_override(c);
+      /* null (or any non-string) resolves to the MQTTv3 default. */
+      return AZ_IOT_OK;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
@@ -2963,15 +2945,20 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
       }
     }
   }
-  return dps_apply_connection_profile_override(c);
+  return AZ_IOT_OK;
 }
 
-/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
- * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
+/* Parse registrationState.issuedCertificateChain (an array of base64 DER or PEM
+ * certs) from the DPS ASSIGNED payload and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
  * does not surface this field, so we walk the raw payload with az_json. */
 static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)
 {
+  /* A truncated or malformed payload never reaches the provider. */
+  if (!az_iot_cert_util_json_is_complete(payload))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
   az_json_reader jr;
   az_iot_result entered = dps_enter_registration_state(&jr, payload);
   if (entered != AZ_IOT_OK)
@@ -3029,22 +3016,17 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   issued.certificates = certs;
   issued.count = count;
 
-  /* Persist via the provider (if capable) and/or notify the app (D4). The
-   * issued chain must be handled by at least one of the two. */
-  bool handled = false;
-  if (p && p->vtable && p->vtable->store_issued_certificate)
+  /* Store in the provider (open() guarantees it can), then notify the app with
+   * the outcome (D4). A failed store fails the registration. */
+  rc = p->vtable->store_issued_certificate(p, &issued);
+  if (rc != AZ_IOT_OK)
   {
-    rc = p->vtable->store_issued_certificate(p, &issued);
-    handled = (rc == AZ_IOT_OK);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_DPS, "storing the issued certificate failed (%d)", (int)rc);
   }
-  if (rc == AZ_IOT_OK && c->op_cert_cb)
+  if (c->op_cert_cb)
   {
-    c->op_cert_cb(&issued, c->op_cert_cb_ctx);
-    handled = true;
-  }
-  if (rc == AZ_IOT_OK && !handled)
-  {
-    rc = AZ_IOT_ERR_NOT_SUPPORTED;
+    c->op_cert_cb(&issued, rc, c->op_cert_cb_ctx);
   }
   return rc;
 }
@@ -3229,6 +3211,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         case AZ_IOT_PROVISIONING_STATUS_ASSIGNED:
         {
+          /* An issued chain is stored only from a complete payload; check it
+           * before any assignment field is read or cached, so a rejected
+           * payload leaves nothing (hub, profile) behind for the retry. */
+          if (c->dps_enrolling && !az_iot_cert_util_json_is_complete(payload_span))
+          {
+            dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+            return;
+          }
           int32_t hub_n = az_span_size(resp.registration_state.assigned_hub_hostname);
           int32_t dev_n = az_span_size(resp.registration_state.device_id);
           if (hub_n < 0 || (size_t)hub_n + 1 > sizeof(c->dps_assigned_hub) || dev_n < 0
@@ -5825,108 +5815,6 @@ static void apply_deferred(az_iot_connection_client* c)
 }
 
 /* ------------------------------------------------------------------------- */
-/* MQTTv5 mock bypass (env-var-driven, for local dev/test only)            */
-/* ------------------------------------------------------------------------- */
-
-/* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
- * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
- * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development. */
-#define MQTT_V5_MOCK_ENDPOINT_ENV "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT"
-#define MQTT_V5_MOCK_DEVICE_ID_ENV "AZ_IOT_DEVICE_ID"
-/** @brief Capacity for the mock endpoint ("host:port"). */
-#define MQTT_V5_MOCK_ENDPOINT_BUF 256
-
-static bool mock_mqtt_v5_configured(void)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  /* Too long still counts as set: the bypass then rejects it. */
-  return az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || endpoint[0] != '\0';
-}
-
-/* Parse "host:port" into host string and port. Writes host into out_host
- * (up to cap), returns the port, or 0 when the endpoint carries none -- 0 means
- * "derive from the transport" at connect time, so a DPS-assigned hub endpoint
- * does not pin the connection to 8883 when WebSockets were selected. */
-static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap)
-{
-  uint16_t port = 0;
-  const char* colon = strrchr(endpoint, ':');
-  size_t host_len;
-  if (colon && colon != endpoint)
-  {
-    host_len = (size_t)(colon - endpoint);
-    unsigned long p = strtoul(colon + 1, NULL, 10);
-    if (p > 0 && p <= 65535)
-    {
-      port = (uint16_t)p;
-    }
-  }
-  else
-  {
-    host_len = strlen(endpoint);
-  }
-  if (host_len >= cap)
-  {
-    host_len = cap - 1;
-  }
-  memcpy(out_host, endpoint, host_len);
-  out_host[host_len] = '\0';
-  return port;
-}
-
-static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-
-  if (az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf)) != AZ_IOT_OK)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* Falls back to the DPS registration id when AZ_IOT_DEVICE_ID is unset. */
-  const char* device_id = id_buf[0] != '\0' ? id_buf : c->opts.dps.registration_id;
-
-  if (endpoint[0] == '\0' || !is_nonempty_cstr(device_id))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  char host[256];
-  uint16_t port = parse_host_port(endpoint, host, sizeof(host));
-
-  az_iot_result r = replace_owned_string(
-      c->provisioned_iot_hub_hostname,
-      sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
-      host);
-  if (r == AZ_IOT_OK)
-  {
-    c->opts.port = port;
-    r = replace_owned_string(
-        c->provisioned_device_id, sizeof(c->provisioned_device_id), &c->opts.client_id, device_id);
-  }
-  if (r == AZ_IOT_OK)
-  {
-    c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    c->dps_phase = DPS_PHASE_DONE;
-
-    /* Warn, not debug: provisioning was skipped entirely, so anyone reading
-     * the log needs to know this session never talked to DPS. */
-    AZ_IOT_LOG_WARNF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "mqttv5 mock bypass active; host=%s port=%u device=%s",
-        host,
-        (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
-        device_id);
-  }
-
-  return r;
-}
-
-/* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -6237,26 +6125,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
-   * during their init (which happens before open()). When the mqttv5 mock is
-   * configured, also resolve the device_id so subscriptions can be built. */
-  if (mock_mqtt_v5_configured())
-  {
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
-    char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-    (void)az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf));
-    const char* dev_id = id_buf[0] != '\0' ? id_buf : client->opts.dps.registration_id;
-    if (is_nonempty_cstr(dev_id))
-    {
-      (void)replace_owned_string(
-          client->provisioned_device_id,
-          sizeof(client->provisioned_device_id),
-          &client->opts.client_id,
-          dev_id);
-    }
-  }
-  else if (
-      client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+   * during their init (which happens before open()). */
+  if (client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
      * (host == NULL) the profile is learned during provisioning, so
@@ -6560,14 +6430,12 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
  * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
  *
  * @param[in] c Client.
- * @param[in] mock_bypass The mqttv5 mock bypass has replaced host, device id and profile.
  */
-static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass)
+static void log_open_summary(const az_iot_connection_client* c)
 {
   const char* transport
       = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
-  if (!mock_bypass && dps_configured(c)
-      && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6585,12 +6453,11 @@ static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass
   }
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "open: sdk=%s route=%s host=%s device_id=%s profile=%s model_id=%s transport=%s",
+      "open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
       az_iot_version_string(),
-      mock_bypass ? "mock" : "hub",
       text_or_none(c->opts.host),
       text_or_none(c->opts.client_id),
-      mock_bypass ? "mqttv5" : profile_name(c->connection_profile),
+      profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
 }
@@ -6675,17 +6542,15 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   }
 
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
-   * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
+   * that makes the CSR and stores the issued chain. Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
   {
-    az_iot_certificate_provider* p = client->opts.certificate_provider;
-    if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2
-        || p->vtable->get_csr == NULL)
+    if (!provider_owns_csr(client->opts.certificate_provider))
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "open: request_operational_certificate set but provider "
-          "does not support CSR enrollment");
+          "open: request_operational_certificate needs a certificate provider with "
+          "get_csr, release_csr and store_issued_certificate");
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     if (az_span_size(client->opts.csr_payload_buffer) <= 0)
@@ -6791,33 +6656,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
-  /* --- MQTTv5 mock bypass: when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock MQTTv5 (MQTT v5). ---
-   *
-   * Never for provision_only: the bypass makes a hostless client a hub
-   * connection, and an environment variable must not override a declared
-   * device shape. */
-  bool mock_bypass = mock_mqtt_v5_configured() && !client->opts.dps.provision_only;
-  if (mock_bypass)
-  {
-    az_iot_result r = apply_mqtt_v5_mock_bypass(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-      return r;
-    }
-    /* After the bypass, so the summary shows the endpoint actually used. */
-    log_open_summary(client, true);
-    /* host + client_id are set, session_role = HUB_MQTT_V5 → fall through
-     * to start_connect_attempt which will resolve the v5 factory. */
-    r = start_connect_attempt(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-    }
-    return r;
-  }
-  log_open_summary(client, false);
+  log_open_summary(client);
 
   /* No hub: bring the provisioning session up and stop there. No registration
    * ref is taken. The standing ref alone gives both behaviours the pump needs
@@ -8664,7 +8503,8 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
   *out_code = 0;
   *out_retry = 0;
   az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+  if (az_span_size(payload) <= 0 /* az_json_reader_init() would spin on it */
+      || az_result_failed(az_json_reader_init(&jr, payload, NULL))
       || az_result_failed(az_json_reader_next_token(&jr))
       || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
   {
@@ -8741,6 +8581,34 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
   }
 }
 
+/**
+ * @brief Store a hub-issued chain in the certificate provider. Never touches the
+ * live session: on failure the previous credential stays in use for the next
+ * connect.
+ *
+ * @return AZ_IOT_OK if stored, else the provider's error (AZ_IOT_ERR_NOT_SUPPORTED
+ * if the provider can no longer store).
+ */
+static az_iot_result csr_store_issued(
+    az_iot_connection_client* c,
+    const az_iot_issued_certificate* issued)
+{
+  az_iot_certificate_provider* p = c->opts.certificate_provider;
+  if (!provider_owns_csr(p))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  az_iot_result rc = p->vtable->store_issued_certificate(p, issued);
+  if (rc != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "storing the renewed certificate failed (%s); keeping the current one",
+        az_iot_result_to_string(rc));
+  }
+  return rc;
+}
+
 /* Inbound handler for $iothub/credentials/res/{status}/?$rid={rid}. */
 static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 {
@@ -8750,20 +8618,41 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  /* Parse the status code and $rid from the topic. */
+  /* Parse "<status>/?<properties>" after the prefix: a 3-digit status, then
+   * $rid as one of the '&'-separated properties. Anything else is not a
+   * response to this client's request. */
   const char* p = msg->topic + (sizeof(CSR_RES_PREFIX) - 1);
   int status = 0;
-  while (*p >= '0' && *p <= '9')
+  int digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 3)
   {
     status = status * 10 + (*p - '0');
     ++p;
+    ++digits;
   }
-  const char* rid = strstr(p, "$rid=");
+  if (digits != 3 || p[0] != '/' || p[1] != '?')
+  {
+    return;
+  }
+  p += 2;
+  const char* rid = NULL;
+  for (const char* prop = p; prop != NULL;)
+  {
+    if (strncmp(prop, "$rid=", 5) == 0)
+    {
+      rid = prop + 5;
+      break;
+    }
+    prop = strchr(prop, '&');
+    if (prop != NULL)
+    {
+      ++prop; /* past the separator; empty properties are skipped in turn */
+    }
+  }
   if (!rid)
   {
     return;
   }
-  rid += 5;
   size_t rid_len = strcspn(rid, "&");
   if (rid_len != strlen(c->csr_op.request_id) || strncmp(rid, c->csr_op.request_id, rid_len) != 0)
   {
@@ -8772,7 +8661,10 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 
   az_iot_csr_callback cb = c->csr_op.cb;
   void* uc = c->csr_op.user_ctx;
-  az_span payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
+  /* An empty message may carry a NULL payload: az_span_create() must not see it. */
+  az_span payload = (msg->payload != NULL && msg->payload_len > 0)
+      ? az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len)
+      : AZ_SPAN_EMPTY;
   az_iot_csr_event evt;
   memset(&evt, 0, sizeof(evt));
 
@@ -8801,7 +8693,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     size_t count = 0;
     az_iot_result rc = AZ_IOT_ERR_PROTOCOL;
     az_json_reader jr;
-    if (az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
+    /* A truncated or malformed response is never treated as ISSUED. */
+    if (az_iot_cert_util_json_is_complete(payload)
+        && az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
         && az_result_succeeded(az_json_reader_next_token(&jr))
         && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
@@ -8846,6 +8740,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       evt.kind = AZ_IOT_CSR_ISSUED;
       evt.status = AZ_IOT_OK;
       evt.issued = &issued;
+      evt.store_status = csr_store_issued(c, &issued);
       if (cb)
       {
         cb(&evt, uc);
@@ -8878,39 +8773,24 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 }
 
-AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
+/**
+ * @brief Validate @p csr_base64, then subscribe (once), build and publish the
+ * renewal request, and open the in-flight slot.
+ */
+static az_iot_result csr_publish(
     az_iot_connection_client* client,
-    const az_iot_certificate_signing_request* csr,
+    const char* csr_base64,
+    const char* device_id,
     const char* request_id,
-    const char* replace,
-    az_iot_csr_callback cb,
-    void* user_ctx)
+    const char* replace)
 {
-  if (!client || !csr || !csr->csr_base64 || !cb)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (!az_iot_connection_client__is_connected(client))
-  {
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
-  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
-  }
-  if (client->csr_op.in_use)
-  {
-    return AZ_IOT_ERR_BUSY;
-  }
-  if (az_span_size(client->opts.csr_payload_buffer) <= 0)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
-  }
-
   /* Validate the CSR: base64 and within the 8 KB service cap. */
   size_t csr_len = 0;
-  if (!az_iot_cert_util_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
+  if (!az_iot_cert_util_is_base64(csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
   {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: the certificate provider's CSR is not base64 or exceeds 8 KB");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -8950,15 +8830,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   }
 
   /* Build the request body into the caller-provided payload buffer. */
-  const char* device_id = az_iot_connection_client__device_id(client);
-  if (!device_id)
-  {
-    device_id = "";
-  }
   char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
   size_t body_len = 0;
   const char* body_parts[]
-      = { CSR_RENEW_BODY_ID_PREFIX,     device_id, CSR_RENEW_BODY_CSR_INFIX, csr->csr_base64,
+      = { CSR_RENEW_BODY_ID_PREFIX,     device_id, CSR_RENEW_BODY_CSR_INFIX, csr_base64,
           CSR_RENEW_BODY_REPLACE_INFIX, replace,   CSR_RENEW_BODY_SUFFIX };
   /* Without a replacement id the body stops after the csr field, so the last
    * three parts collapse to the closing brace. */
@@ -8990,8 +8865,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_1;
 
-  client->csr_op.cb = cb;
-  client->csr_op.user_ctx = user_ctx;
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
@@ -9003,6 +8876,73 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
     return r;
   }
   return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
+    az_iot_connection_client* client,
+    const char* request_id,
+    const char* replace,
+    az_iot_csr_callback cb,
+    void* user_ctx)
+{
+  if (!client || !cb)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!az_iot_connection_client__is_connected(client))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
+  }
+  if (client->csr_op.in_use)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  if (az_span_size(client->opts.csr_payload_buffer) <= 0)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
+  }
+  az_iot_certificate_provider* provider = client->opts.certificate_provider;
+  if (!provider_owns_csr(provider))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: the certificate provider does not implement get_csr, release_csr and "
+        "store_issued_certificate");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  const char* device_id = az_iot_connection_client__device_id(client);
+  if (!device_id)
+  {
+    device_id = "";
+  }
+  az_iot_certificate_signing_request csr = { 0 };
+  az_iot_result r = provider->vtable->get_csr(provider, device_id, &csr);
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: certificate provider get_csr failed (%s)",
+        az_iot_result_to_string(r));
+    return r;
+  }
+  if (!csr.csr_base64)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "send_csr: certificate provider get_csr returned no CSR");
+    provider->vtable->release_csr(provider, &csr);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+
+  client->csr_op.cb = cb;
+  client->csr_op.user_ctx = user_ctx;
+  r = csr_publish(client, csr.csr_base64, device_id, request_id, replace);
+  provider->vtable->release_csr(provider, &csr);
+  return r;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)

@@ -5,6 +5,11 @@
 ### Features Added
 
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
+- mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
+  templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
+  `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
+  Topics the hub would refuse are rejected locally. Publish only. Sample:
+  [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
@@ -48,3 +53,16 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
+  4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
+  decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
+  signature that fits the request buffer verifies unless its SJWK header alone exceeds a quarter
+  of it, and the verifier's stack drops from about 6.5 KiB to under 1 KiB.
+  `az_iot_su_parse_update_request()` uses `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` (8192) bytes of stack
+  instead. A part that does not fit is logged as too large, not as invalid. The ESP32 sample sets
+  the request buffer to 8192 and its NVS partition to 36 KB (erase the flash to move to it).
+- Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
+  `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
+  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and
+  `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
+  scripts (`tests/manual`) are removed.

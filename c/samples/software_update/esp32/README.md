@@ -49,7 +49,7 @@ sequenceDiagram
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
 | `apply` | No-op; the new image is already running |
 | `restore` | Rollback to the running partition |
-| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot) |
+| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [CMakeLists.txt](CMakeLists.txt) sets `AZ_IOT_SU_REQUEST_BUFFER_SIZE` to 8192 to bound it. Erase the flash when moving from the earlier 24 KB layout. |
 
 Once connected to its hub, the new image calls `su_esp32_ota_mark_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the

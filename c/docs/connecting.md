@@ -193,6 +193,7 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 | `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
+| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. |
 
 ## Certificates
 
@@ -205,14 +206,17 @@ Operational certificates:
 
 - **Issued at provisioning.** Set `dps.request_operational_certificate` and provide
   `csr_payload_buffer` (`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes is enough for any CSR the service
-  accepts). The device sends a CSR with its registration. The issued chain goes to the provider's
-  `store_issued_certificate()`, if it has one, and then to the callback set with
-  `az_iot_connection_client_set_operational_cert_callback()`, if set. At least one must be
-  present. If storage fails, the callback is skipped and the registration fails.
+  accepts). The provider must implement `get_csr()`, `release_csr()` and
+  `store_issued_certificate()`. The device sends the provider's CSR with its registration. The
+  issued chain is stored with the provider's `store_issued_certificate()`, then passed with the
+  store result to the callback set with `az_iot_connection_client_set_operational_cert_callback()`,
+  if set. If storage fails, the registration fails.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
-  `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
-  copy or persist it in the callback (it is valid only there), for example through the
-  provider, then `close()` and `open()` to use it. See
+  `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
+  at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
+  the callback, which reports the result in `store_status`. The session is kept either way. If
+  the store succeeded, `close()` then `open()` connects with the renewed chain; if it failed, the
+  provider keeps the previous credential and the next connect uses it. See
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.

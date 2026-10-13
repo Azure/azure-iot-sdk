@@ -35,23 +35,6 @@
 #define DPS_RESPONSE_TOPIC_ASSIGNED "$dps/registrations/res/200/?$rid=1"
 #define DPS_RESPONSE_TOPIC_ACCEPTED "$dps/registrations/res/202/?$rid=1&retry-after=1"
 #define DPS_RESPONSE_TOPIC_ACCEPTED_NOW "$dps/registrations/res/202/?$rid=1&retry-after=0"
-#define DPS_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
-
-static void set_dps_profile_override(const char* value)
-{
-#ifdef _WIN32
-  assert_int_equal(_putenv_s(DPS_PROFILE_OVERRIDE_ENV, value ? value : ""), 0);
-#else
-  if (value)
-  {
-    assert_int_equal(setenv(DPS_PROFILE_OVERRIDE_ENV, value, 1), 0);
-  }
-  else
-  {
-    assert_int_equal(unsetenv(DPS_PROFILE_OVERRIDE_ENV), 0);
-  }
-#endif
-}
 
 static const char k_assigned_body[]
     = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
@@ -2179,7 +2162,6 @@ typedef struct profile_fixture
 
 static void profile_fixture_open(profile_fixture* pf)
 {
-  set_dps_profile_override(NULL);
   az_iot_connection_client_options opts = dps_options();
   assert_int_equal(az_iot_test_connection_client_init(&pf->c, &opts), AZ_IOT_OK);
   assert_int_equal(
@@ -2231,17 +2213,7 @@ static void assert_hub_leg_used(profile_fixture* pf, az_iot_mqtt_factory* expect
   }
 }
 
-static void profile_fixture_close(profile_fixture* pf)
-{
-  az_iot_connection_client_deinit(&pf->c);
-  set_dps_profile_override(NULL);
-}
-
-static void profile_fixture_open_with_override(profile_fixture* pf, const char* profile)
-{
-  profile_fixture_open(pf);
-  set_dps_profile_override(profile);
-}
+static void profile_fixture_close(profile_fixture* pf) { az_iot_connection_client_deinit(&pf->c); }
 
 /* Carry the hub leg all the way to CONNECTED, which is what makes the profile
  * readable. MQTTv3 needs only a CONNACK; MQTTv5 additionally has to complete
@@ -2412,113 +2384,6 @@ static void dps_null_profile_defaults_to_mqtt_v3(void** state)
   az_iot_hub_profile hp;
   assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
   assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
-
-  profile_fixture_close(&pf);
-}
-
-/* Development can exercise a real MQTTv5 assignment before the DPS api-version
- * carrying connectionProfile ships: keep the assigned host and identity, but
- * synthesize only the missing profile at the same parser boundary. */
-static void dps_absent_profile_can_be_overridden_to_mqtt_v5(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  profile_fixture_open_with_override(&pf, "mqttV5");
-  profile_assign(&pf, k_assigned_body);
-
-  assert_hub_leg_used(&pf, pf.v5);
-  profile_finish_hub_leg(&pf, true);
-
-  az_iot_hub_profile hp;
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
-  assert_string_equal(hp.connection_profile_raw, "mqttV5");
-
-  profile_fixture_close(&pf);
-}
-
-static void dps_null_profile_can_be_overridden_to_mqtt_v5(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  profile_fixture_open_with_override(&pf, "mqttV5");
-  profile_assign(&pf, k_assigned_profile_null);
-
-  assert_hub_leg_used(&pf, pf.v5);
-  profile_finish_hub_leg(&pf, true);
-
-  profile_fixture_close(&pf);
-}
-
-/* Once DPS sends the property, the wire is authoritative. Leaving an override
- * in a developer's environment must not mask service rollout or a real profile. */
-static void dps_wire_profile_wins_over_the_development_override(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  /* Deliberately invalid: proving a wire value wins means proving the
-   * environment is not even validated once that value exists. */
-  profile_fixture_open_with_override(&pf, "not-a-profile");
-  profile_assign(&pf, k_assigned_mqtt_v3);
-
-  assert_hub_leg_used(&pf, pf.v3);
-  profile_finish_hub_leg(&pf, false);
-
-  az_iot_hub_profile hp;
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
-  assert_string_equal(hp.connection_profile_raw, "classic");
-
-  profile_fixture_close(&pf);
-}
-
-static void dps_mqtt_v3_development_override_is_accepted(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  profile_fixture_open_with_override(&pf, "classic");
-  profile_assign(&pf, k_assigned_body);
-
-  assert_hub_leg_used(&pf, pf.v3);
-  profile_finish_hub_leg(&pf, false);
-
-  az_iot_hub_profile hp;
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&pf.c, &hp), AZ_IOT_OK);
-  assert_int_equal(hp.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
-  assert_string_equal(hp.connection_profile_raw, "classic");
-
-  profile_fixture_close(&pf);
-}
-
-/* A typo must fail at the assignment instead of silently selecting MQTTv3,
- * which would connect with the wrong MQTT version and surface much later. */
-static void dps_invalid_development_override_faults_before_the_hub(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  profile_fixture_open_with_override(&pf, "mqtt-v5");
-  profile_assign(&pf, k_assigned_body);
-
-  assert_true(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED));
-  assert_int_equal(
-      az_iot_test_reason_for(&pf.log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
-  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
-
-  profile_fixture_close(&pf);
-}
-
-static void dps_overlong_development_override_faults_before_the_hub(void** state)
-{
-  (void)state;
-  profile_fixture pf = { 0 };
-  profile_fixture_open_with_override(
-      &pf, "mqttV5-with-an-absurdly-long-development-override-that-will-not-fit-in-the-buffer");
-  profile_assign(&pf, k_assigned_body);
-
-  assert_true(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED));
-  assert_int_equal(
-      az_iot_test_reason_for(&pf.log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
-  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
 
   profile_fixture_close(&pf);
 }
@@ -2849,7 +2714,6 @@ static void close_during_provisioning_drops_the_pending_outcome(void** state)
 static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
 {
   (void)state;
-  set_dps_profile_override(NULL);
 
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -2905,7 +2769,6 @@ static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_reprovision_mode(fx);
-  set_dps_profile_override(NULL);
 
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
   assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
@@ -2952,7 +2815,6 @@ static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
 static void a_half_usable_assignment_is_not_partially_adopted(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  set_dps_profile_override(NULL);
 
   static const char k_assigned_no_device_id[]
       = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
@@ -3772,94 +3634,6 @@ static void provision_only_rejects_a_second_open_while_backing_off(void** state)
   assert_int_equal(fx->client->dps_user_retry._internal.attempt, attempts_before);
   assert_null(fx->client->dps_mqtt);
 
-  (void)az_iot_connection_client_close(fx->client);
-}
-
-/* The mock bypass makes a hostless client a hub connection; an environment
- * variable must not override a declared device shape. */
-static void the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-
-#if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "localhost:8883");
-#else
-  setenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "localhost:8883", 1);
-#endif
-
-  fx->client->opts.dps.provision_only = true;
-  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-
-  /* Took the provisioning route, not the hub one. */
-  assert_true(fx->client->dps_standing_ref);
-  assert_non_null(fx->client->dps_mqtt);
-  assert_null(fx->client->active_client);
-  assert_int_equal(
-      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_IDLE);
-
-#if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "");
-#else
-  unsetenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-#endif
-  (void)az_iot_connection_client_close(fx->client);
-}
-
-/* Keeps the last INFO "open:" summary. */
-static void capture_open_summary(
-    void* user_ctx,
-    az_iot_log_level level,
-    const char* component,
-    const char* file,
-    int line,
-    const char* msg)
-{
-  char* out = (char*)user_ctx;
-  (void)file;
-  (void)line;
-  if (level == AZ_IOT_LOG_LEVEL_INFO && strcmp(component, AZ_IOT_LOG_COMPONENT_CONNECTION) == 0
-      && strncmp(msg, "open: ", 6) == 0)
-  {
-    size_t n = strlen(msg);
-    n = n < 511u ? n : 511u;
-    memcpy(out, msg, n);
-    out[n] = '\0';
-  }
-}
-
-/* The open summary reports what the mock bypass connects to, not the DPS
- * configuration it replaced. */
-static void the_open_summary_reports_the_mqtt_v5_mock_bypass(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  char summary[512] = { 0 };
-  az_iot_log_sink sink
-      = { .sink = capture_open_summary, .user_ctx = summary, .min_level = AZ_IOT_LOG_LEVEL_INFO };
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-
-#if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "mock.example:1883");
-#else
-  setenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "mock.example:1883", 1);
-#endif
-  az_iot_log_set_global_sink(&sink);
-  /* The fixture has no MQTT v5 factory, so the connect itself may fail. */
-  az_iot_result r = az_iot_connection_client_open(fx->client);
-  (void)r;
-  az_iot_log_set_global_sink(NULL);
-#if defined(_MSC_VER)
-  _putenv_s("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT", "");
-#else
-  unsetenv("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-#endif
-
-  assert_non_null(strstr(summary, " route=mock host=mock.example "));
-  assert_non_null(strstr(summary, " profile=mqttv5 "));
-  assert_null(strstr(summary, "route=dps"));
   (void)az_iot_connection_client_close(fx->client);
 }
 
@@ -5339,12 +5113,6 @@ int main(void)
     cmocka_unit_test(mqtt_v5_state_events_carry_profile_only_on_connected),
     cmocka_unit_test(dps_absent_profile_defaults_to_mqtt_v3),
     cmocka_unit_test(dps_null_profile_defaults_to_mqtt_v3),
-    cmocka_unit_test(dps_absent_profile_can_be_overridden_to_mqtt_v5),
-    cmocka_unit_test(dps_null_profile_can_be_overridden_to_mqtt_v5),
-    cmocka_unit_test(dps_wire_profile_wins_over_the_development_override),
-    cmocka_unit_test(dps_mqtt_v3_development_override_is_accepted),
-    cmocka_unit_test(dps_invalid_development_override_faults_before_the_hub),
-    cmocka_unit_test(dps_overlong_development_override_faults_before_the_hub),
     cmocka_unit_test(dps_unknown_profile_faults_the_connection),
     cmocka_unit_test(dps_unknown_profile_is_still_reported_verbatim),
     cmocka_unit_test(dps_overlong_profile_is_flagged_as_truncated),
@@ -5426,12 +5194,6 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         provision_only_rejects_a_second_open_while_backing_off, setup_with_reconnect, teardown),
-    cmocka_unit_test_setup_teardown(
-        the_mqtt_v5_mock_bypass_does_not_capture_a_provision_only_client,
-        setup_with_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        the_open_summary_reports_the_mqtt_v5_mock_bypass, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         closing_from_the_dps_connected_callback_is_safe, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

@@ -18,6 +18,10 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_ID_SCOPE        DPS ID scope
   E2E_SHARED_SAS_GROUP_KEY   primary key of the DPS symmetric-key enrollment group
 
+-Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same variables under that prefix except
+SAS_GROUP_KEY (mqttv5 hubs accept X.509 only; no SAS key is written), and optionally
+E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
+
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
                              private key, then any CA certificates above it (issuer first)
@@ -30,6 +34,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
     [ValidateRange(0, 99)][int]$DeviceIndex = 0,
     [ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
+    # Variable prefix for the default (non -Csr) mode.
+    [ValidateSet('E2E_SHARED', 'E2E_MQTTV5_SHARED')][string]$Prefix = 'E2E_SHARED',
     [switch]$Csr,
     [string]$OutFile = 'test_config/set_test_env_vars.ps1'
 )
@@ -37,24 +43,28 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Prefix = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
-$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') } else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
-$Missing = $Required | ForEach-Object { "${Prefix}_$_" } |
+$Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { $Prefix }
+function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
+$Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
+$Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+            elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
+            else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+$Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
 
 if (-not $Csr) {
-    foreach ($Name in 'E2E_SHARED_IOTHUB_CS', 'E2E_SHARED_EVENTHUB_CS') {
+    foreach ($Name in "${Vars}_IOTHUB_CS", "${Vars}_EVENTHUB_CS") {
         if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
             throw "$Name uses the iothubowner policy; use the 'service' policy."
         }
     }
 }
 
-$CaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Environment]::GetEnvironmentVariable("${Prefix}_GROUP_CA")))
+$CaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Environment]::GetEnvironmentVariable("${Vars}_GROUP_CA")))
 # The first certificate is the issuer; the key must match it.
 $Ca = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($CaPem, $CaPem)
-if (-not $Ca.HasPrivateKey) { throw "${Prefix}_GROUP_CA has no private key." }
+if (-not $Ca.HasPrivateKey) { throw "${Vars}_GROUP_CA has no private key." }
 $CaChain = [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
 $CaChain.ImportFromPem($CaPem)
 
@@ -104,14 +114,15 @@ $Lines = if ($Csr) {
     )
 } else {
     @(
-        Format-Assignment 'IOTHUB_CONNECTION_STRING' $env:E2E_SHARED_IOTHUB_CS
-        Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' $env:E2E_SHARED_EVENTHUB_CS
+        Format-Assignment 'IOTHUB_CONNECTION_STRING' (Get-Shared 'IOTHUB_CS')
+        Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
-        Format-Assignment 'IOT_DPS_ID_SCOPE' $env:E2E_SHARED_ID_SCOPE
+        Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
+        if ($Mqttv5 -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
-        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' $env:E2E_SHARED_SAS_GROUP_KEY
+        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY') }
     )
 }
 $OutDir = Split-Path -Parent $OutFile

@@ -157,7 +157,7 @@ fails with `unknown target`; the configure output must include
   `managed certificate provider init failed` and exits 1.
 - Every run registers again, and DPS issues a new certificate over the same key;
   `AZ_IOT_OPERATIONAL_CERT` is overwritten.
-- To rotate the key, delete both files.
+- To rotate the key, delete both files before a run.
 
 ## How it ends
 

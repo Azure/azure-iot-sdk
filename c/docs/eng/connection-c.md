@@ -143,9 +143,9 @@ sequenceDiagram
             Conn->>DPS: PUBLISH get operation status
         end
         DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain)
-        opt issued chain present
+        opt request_operational_certificate (complete payload, chain required)
             Conn->>Cert: store_issued_certificate(chain)
-            Conn-->>App: operational_cert_callback(chain)
+            Conn-->>App: operational_cert_callback(chain, store_result)
         end
         alt no ref held (dps_refs_held() false)
             Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
@@ -545,10 +545,10 @@ flowchart TD
     A["open with DPS +<br/>request_operational_certificate"] --> B[get_csr from provider]
     B --> C["DPS register with csr in payload"]
     C --> D{assigned?}
-    D -->|"yes, chain present"| E["store_issued_certificate +<br/>operational_cert_callback"]
-    D -->|"yes, no chain"| F["continue with bootstrap credential"]
-    E --> G["Hub CONNECT using operational credential"]
-    F --> G
+    D -->|"yes, complete payload with chain"| E["store_issued_certificate, then<br/>operational_cert_callback(chain, store_result)"]
+    D -->|"no chain, malformed, or store failed"| F["registration fails"]
+    E -->|"stored"| G["Hub CONNECT using operational credential"]
+    E -->|"store failed"| F
 
     G --> H[CONNECTED]
     H --> I["send_csr renewal<br/>MQTTv3 hub only"]
@@ -556,9 +556,10 @@ flowchart TD
     J --> K{credentials response}
     K -->|202 accepted| L["CSR_ACCEPTED callback,<br/>keep waiting"]
     L --> K
-    K -->|200 issued| M["CSR_ISSUED callback with chain,<br/>app persists"]
+    K -->|"200 issued, complete JSON"| M["store_issued_certificate, then<br/>CSR_ISSUED callback (chain, store_status)"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
-    M --> O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status OK| O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status error| P["Previous certificate stays<br/>in use"]
 ```
 
 Renewal topics (MQTTv3 hub):
@@ -567,13 +568,15 @@ Renewal topics (MQTTv3 hub):
 | --- | --- |
 | Publish | `$iothub/credentials/POST/issueCertificate/?$rid={request_id}` |
 | Subscribe | `$iothub/credentials/res/#` |
-| Response | `$iothub/credentials/res/{status}/{request_id}` |
+| Response | `$iothub/credentials/res/{status}/?$rid={request_id}` |
 
 Rules every client must implement. The C client meets all of them.
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
-- The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
-  callback — the application must copy or persist it.
+- The issued chain is stored through the provider's `store_issued_certificate` before the callback,
+  which reports the result in `store_status`. The chain is delivered leaf-first, each entry base64
+  of DER or of a whole PEM certificate, and is only valid for the duration of the callback; the
+  application need not persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
@@ -976,7 +979,7 @@ connection client itself, or a feature client.
 | Polling | `operation_id` longer than its buffer | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
 | Assignment | `issuedCertificateChain` absent when a CSR was sent | `AZ_IOT_ERR_NOT_FOUND` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Reported non-retriable by `reason_is_retriable()`. |
 | Assignment | No handler to store the issued chain | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | `dps_finalize(..., false)`, then the registration-failure path: retried on the DPS ladder; `FAULTED` only with no policy or after `close()` | Neither the provider vtable hook nor the callback was supplied. Reported non-retriable by `reason_is_retriable()`. |
-| Assignment | `registrationState.connectionProfile` absent or null (or no `registrationState`) | none | `dps_read_connection_profile()` | continues, profile stays classic unless the development override applies | Deliberate: the service contract defines absence as `classic`. |
+| Assignment | `registrationState.connectionProfile` absent or null (or no `registrationState`) | none | `dps_read_connection_profile()` | continues, profile stays classic | Deliberate: the service contract defines absence as `classic`. |
 | Polling | `assigning` with a `retry-after` | `AZ_IOT_OK` | connection client | `dps_poll_due_ms = now + retry_after_seconds * 1000`; the pump re-publishes the query when it elapses | The service-supplied delay is honoured verbatim, with no reconnect backoff on top and no SDK-side cap on the number of polls. |
 | Assignment | Unrecognised `connectionProfile`, or one that does not fit the 64-byte buffer (63 bytes plus NUL) | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | `connection_profile_set()`, detected in `dps_apply_deferred()` | `FAULTED` | The raw string stays readable through the profile getter even in `FAULTED`; `connection_profile_raw_truncated` says when it was cut. Terminal regardless of policy, via `reject_assignment()`. Implemented; depends on the service returning the field. |
 | Registration SUBACK | The `$dps/registrations/res/#` subscription is refused | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `dps_finalize(status, false)`, then the registration-failure path above — **retried under the policy** | `dps_apply_deferred()` branches on `status != AZ_IOT_OK`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
@@ -1090,10 +1093,6 @@ ASSIGNED payload in `dps_apply_deferred()`. Every connecting sample uses it.
 a value of `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` bytes or more (63 fit, plus the NUL), becomes `UNKNOWN` and faults the connection
 with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. `az_iot_connection_client_get_hub_profile()`
 reports the result, and the raw string stays readable.
-
-`dps_apply_connection_profile_override()` lets a development build replace the `classic` default
-when the assignment carries no `connectionProfile`. It applies **only** when the property is absent
-or null, so an actual wire value always wins.
 
 ---
 

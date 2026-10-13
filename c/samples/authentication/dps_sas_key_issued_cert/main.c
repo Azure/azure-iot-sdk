@@ -103,13 +103,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
-  ((sample_context*)user_ctx)->issued = true;
+  ((sample_context*)user_ctx)->issued = (store_result == AZ_IOT_OK);
   fprintf(
       stderr,
-      "[dps_sas_key_issued_cert] certificate issued (%zu in chain)\n",
-      issued != NULL ? issued->count : (size_t)0);
+      "[dps_sas_key_issued_cert] certificate issued (%zu in chain), store: %s\n",
+      issued != NULL ? issued->count : (size_t)0,
+      az_iot_result_to_string(store_result));
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -209,11 +213,11 @@ int main(void)
   az_iot_connection_client client = { 0 };
 
   /* CSR key and issued chain only; no bootstrap certificate. */
-  az_iot_certificate_provider_managed_options op_opts = {
-    .operational_key_pem_path = config.op_key,
-    .operational_cert_pem_path = config.op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options op_opts
+      = az_iot_certificate_provider_managed_options_default();
+  op_opts.operational_key_pem_path = config.op_key;
+  op_opts.operational_cert_pem_path = config.op_cert;
+  op_opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&operational, &op_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key_issued_cert] managed provider init failed\n");

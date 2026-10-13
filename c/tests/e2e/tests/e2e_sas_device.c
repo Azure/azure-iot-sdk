@@ -126,6 +126,20 @@ void e2e_sas_config_load(e2e_sas_config* cfg)
   cfg->registration_id = az_iot_test_env_dup("AZ_IOT_DPS_SAS_REGISTRATION_ID");
   cfg->trusted_ca = az_iot_test_env_dup("AZ_IOT_TRUSTED_CA");
   cfg->global_endpoint = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+  cfg->proxy_host = az_iot_test_env_dup("AZ_IOT_PROXY_HOST");
+  cfg->proxy_username = az_iot_test_env_dup("AZ_IOT_PROXY_USERNAME");
+  cfg->proxy_password = az_iot_test_env_dup("AZ_IOT_PROXY_PASSWORD");
+  cfg->proxy_port = 0;
+  char* proxy_port = az_iot_test_env_dup("AZ_IOT_PROXY_PORT");
+  if (proxy_port != NULL)
+  {
+    unsigned long p = strtoul(proxy_port, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      cfg->proxy_port = (uint16_t)p;
+    }
+    free(proxy_port);
+  }
   assert_non_null(cfg->id_scope);
   assert_non_null(cfg->group_key);
   assert_non_null(cfg->registration_id);
@@ -139,6 +153,9 @@ void e2e_sas_config_free(e2e_sas_config* cfg)
   free(cfg->registration_id);
   free(cfg->trusted_ca);
   free(cfg->global_endpoint);
+  free(cfg->proxy_host);
+  free(cfg->proxy_username);
+  free(cfg->proxy_password);
 }
 
 void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_options* copts)
@@ -149,6 +166,10 @@ void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_optio
   {
     copts->dps.global_endpoint = cfg->global_endpoint;
   }
+  copts->proxy.host = cfg->proxy_host;
+  copts->proxy.port = cfg->proxy_port;
+  copts->proxy.username = cfg->proxy_username;
+  copts->proxy.password = cfg->proxy_password;
   copts->trusted_ca.path = cfg->trusted_ca;
   copts->crypto = az_iot_crypto_openssl();
   copts->sas_buffer.buffer = g_sas_buffer;

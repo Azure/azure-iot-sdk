@@ -58,6 +58,9 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
+# The mqttv5 e2e suites need an mqttv5 hub configured for them (custom topic
+# templates), which only the ci-c-e2e-mqttv5 workflow has. Same rule as above.
+option(AZ_IOT_BUILD_E2E_MQTTV5 "Build the mqttv5 e2e tests (needs the mqttv5 e2e environment)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
 # OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
 # built when it is going to be run, not built-and-skipped. The token URI comes

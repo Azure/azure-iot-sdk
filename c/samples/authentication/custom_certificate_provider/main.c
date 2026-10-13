@@ -7,8 +7,8 @@
  *
  * The COMPLETE, app-owned certificate-provider path (vs. the shipped "managed"
  * provider used by dps_csr_managed). It wires sample_cert_provider - a real
- * az_iot_certificate_provider implemented in samples/common with platform-
- * native CSR issuance (OpenSSL on Linux, CNG on Windows) - into a full DPS CSR
+ * az_iot_certificate_provider implemented in samples/common with OpenSSL CSR
+ * issuance - into a full DPS CSR
  * enrollment: authenticate to DPS with the bootstrap identity, send a real
  * PKCS#10 CSR, persist the issued operational chain, and connect to the assigned
  * hub with the OPERATIONAL identity.
@@ -64,13 +64,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ((user_context*)user_ctx)->conn_state = s;
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
-  ((user_context*)user_ctx)->issued = 1;
+  ((user_context*)user_ctx)->issued = (store_result == AZ_IOT_OK);
   fprintf(
       stderr,
-      "[custom_cert] operational certificate issued: %zu cert(s) in chain\n",
-      issued ? issued->count : (size_t)0);
+      "[custom_cert] operational certificate issued: %zu cert(s) in chain, store: %s\n",
+      issued ? issued->count : (size_t)0,
+      az_iot_result_to_string(store_result));
 }
 
 int main(void)

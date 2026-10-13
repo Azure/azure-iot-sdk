@@ -169,8 +169,9 @@ Defaults used when the matching option is left at 0:
 
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_SU_MAX_ROOT_KEYS` | 4 | Root keys in the trust store. |
-| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
+| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 16384 | Copy of the update metadata (manifest, signature and file URLs) for the current deployment; a one-file offer is about 5 KiB. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also sizes `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` and the scratch the client verifies the signature in, so the client holds about twice this value. |
+| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures). A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
@@ -222,7 +223,7 @@ always the same thing.
 | `az_iot_retry_policy` (`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()`, `_get_fixed_interval_retry_policy()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection), [az_iot_retry_policy.h](../inc/azure/iot/az_iot_retry_policy.h) |
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
-| `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
+| `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties, replacement policy. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
 | `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 
 ### Setters on feature clients

@@ -163,6 +163,9 @@ target_include_directories(az_iot_tests_retry_policy PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_base64 unit/base64_test.c)
+target_include_directories(az_iot_tests_base64 PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -185,6 +188,10 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_telemetry_client unit/mqttv5_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv5_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv5)
+az_iot_add_cmocka_test(
+    az_iot_tests_mqttv5_custom_topic_client unit/mqttv5_custom_topic_client_test.c)
+target_link_libraries(
+    az_iot_tests_mqttv5_custom_topic_client PRIVATE az_iot_test_support az_iot_mqttv5)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
@@ -485,6 +492,22 @@ if(TARGET az_iot_certificate_provider_managed)
         unit/certificate_provider_managed_test.c)
     target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE
         az_iot_certificate_provider_managed OpenSSL::Crypto)
+    if(WIN32)
+        # GetNamedSecurityInfoA and friends, to check the written files' DACLs.
+        target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE advapi32)
+    endif()
+endif()
+
+# The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+    set(_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
+        unit/sample_cert_provider_test.c
+        ${_sample_common}/sample_cert_provider.c
+        ${_sample_common}/sample_csr_openssl.c)
+    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
+    target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
 endif()
 
 # ---------------------------------------------------------------------------

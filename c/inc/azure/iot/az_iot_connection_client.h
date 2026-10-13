@@ -30,9 +30,6 @@ extern "C"
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
-   *     Until that DPS api-version ships, local development can synthesize an
-   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
-   *     explicit service value always wins.
    *   - Direct connect (host set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
@@ -80,7 +77,7 @@ extern "C"
      * verbatim, which keeps the extensible union from becoming lossy at the C
      * boundary: a profile this SDK has never heard of still reports UNKNOWN
      * *and* the text the service sent. For absent/null it is the resolved
-     * contract default ("classic"), or the exact development override value.
+     * contract default ("classic").
      * Points into the connection client and stays valid until deinit().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
@@ -439,7 +436,9 @@ extern "C"
      * first for each role (az_iot_auth_source); a role for which it has no
      * certificate moves on to SAS. A load() failure other than
      * AZ_IOT_ERR_NOT_FOUND fails the attempt instead of connecting without
-     * TLS.
+     * TLS. Its keys must not change while the client is open; load() is called
+     * on every connect, so a key changed while closed is used on the next
+     * open().
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -501,8 +500,9 @@ extern "C"
                                              * from the certificate_provider during DPS
                                              * registration and connect to the assigned
                                              * hub with the issued operational cert.
-                                             * Requires a provider whose vtable exposes
-                                             * get_csr (version >= 2). */
+                                             * Requires a provider with get_csr,
+                                             * release_csr and store_issued_certificate;
+                                             * the chain is always stored there. */
 
       /* Consecutive failed hub connect attempts after which the assignment is
        * treated as stale and re-provisioning is forced. Defaults to
@@ -649,9 +649,12 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only). With push_desired, the service pushes
-     * the desired snapshot on connect instead of the mqttv5 twin client fetching
-     * it. With push_reported, a pushed reported section reaches
+     * Both default to false. With push_desired, the service pushes the desired
+     * snapshot on connect and each desired patch while connected. Without it
+     * (pull mode) the service sends no desired patches: the mqttv5 twin client
+     * fetches the snapshot on connect when behind, and later changes are seen
+     * only on reconnect or after az_iot_mqttv5_twin_client_get(). With
+     * push_reported, a pushed reported section reaches
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
@@ -1045,15 +1048,28 @@ extern "C"
     int32_t service_code; /* hub errorCode on FAILED; 0 otherwise     */
     uint32_t retry_after_s; /* suggested retry delay; 0 if none         */
     const az_iot_issued_certificate* issued; /* non-NULL on ISSUED          */
+    /* ISSUED only: result of storing the chain in the certificate provider.
+     * AZ_IOT_OK if the next connect uses it. */
+    az_iot_result store_status;
   } az_iot_csr_event;
 
   typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
-  /* Fired when the connection client obtains a DPS/provider-issued operational
-   * certificate during provisioning (D4). Optional; use for app-side persistence
-   * or to react (e.g. inventory). The chain is valid only during the callback. */
-  typedef void (
-      *az_iot_operational_cert_callback)(const az_iot_issued_certificate* issued, void* user_ctx);
+  /**
+   * @brief Fired when DPS issues an operational certificate (D4), after the
+   * attempt to store the chain in the certificate provider. Optional.
+   *
+   * @param issued The chain; valid only during the callback.
+   * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
+   * chain is stored. On failure the registration fails.
+   *
+   * Runs while the provisioning message is being processed: do not call
+   * az_iot_connection_client_close() or _deinit() from it.
+   */
+  typedef void (*az_iot_operational_cert_callback)(
+      const az_iot_issued_certificate* issued,
+      az_iot_result store_result,
+      void* user_ctx);
 
   /* Fired when a DPS registration completes and the assignment carries a custom
    * payload -- `registrationState.payload`, the counterpart of
@@ -2002,23 +2018,29 @@ extern "C"
       az_iot_connection_client* client,
       uint32_t timeout_ms);
 
-  /* Request a renewed operational certificate from the connected (MQTTv3) hub by
-   * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
-   * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
-   *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
-   *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
-   * The request's device id is taken from the connected client_id. Only one CSR
-   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The request is
-   * always tracked: if the
-   * broker rejects it, the callback fires at once with AZ_IOT_CSR_FAILED and the
-   * PUBACK status. The issued
-   * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
-   * If no terminal (200/error) response arrives within an internal timeout, the
-   * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
-   * is released, so a lost response can never wedge renewal permanently. */
+  /**
+   * @brief Request a renewed operational certificate from the connected (MQTTv3)
+   * hub.
+   *
+   * The CSR comes from the certificate provider's get_csr(), with the device id
+   * as subject; the provider needs get_csr, release_csr and
+   * store_issued_certificate, else AZ_IOT_ERR_NOT_SUPPORTED before anything is
+   * sent. Two-phase: @p cb fires with AZ_IOT_CSR_ACCEPTED (202), then
+   * AZ_IOT_CSR_ISSUED (200) or AZ_IOT_CSR_FAILED. On ISSUED the chain is stored
+   * with store_issued_certificate() before @p cb, which reports the result in
+   * az_iot_csr_event::store_status. The live session is kept; the next connect
+   * uses the stored chain, or the previous credential if the store failed.
+   *
+   * Only one operation may be in flight (AZ_IOT_ERR_BUSY). A request the broker
+   * rejects fails at once with the PUBACK status; one with no terminal response
+   * within an internal timeout fails with AZ_IOT_ERR_TIMEOUT.
+   *
+   * @param request_id NULL to generate one, or a prior id to resubmit.
+   * @param replace NULL, or "*" / a request id to supersede an active hub-side
+   * operation.
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
       az_iot_connection_client* client,
-      const az_iot_certificate_signing_request* csr,
       const char* request_id,
       const char* replace,
       az_iot_csr_callback cb,

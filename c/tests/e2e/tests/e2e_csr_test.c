@@ -122,10 +122,13 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       (unsigned)reason);
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   csr_ctx* c = (csr_ctx*)user_ctx;
-  c->issued = 1;
+  c->issued = (store_result == AZ_IOT_OK);
   c->issued_count = issued ? issued->count : 0;
 }
 
@@ -254,14 +257,14 @@ static void run_csr_enrollment(
   az_iot_connection_client conn = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
 
-  az_iot_certificate_provider_managed_options mopts = {
-    .bootstrap_cert_pem_path = cert,
-    .bootstrap_key_pem_path = key,
-    .trusted_ca_pem_path = ca,
-    .operational_key_pem_path = op_key,
-    .operational_cert_pem_path = op_cert,
-    .key_type = key_type,
-  };
+  az_iot_certificate_provider_managed_options mopts
+      = az_iot_certificate_provider_managed_options_default();
+  mopts.bootstrap_cert_pem_path = cert;
+  mopts.bootstrap_key_pem_path = key;
+  mopts.trusted_ca_pem_path = ca;
+  mopts.operational_key_pem_path = op_key;
+  mopts.operational_cert_pem_path = op_cert;
+  mopts.key_type = key_type;
   assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&provider, &mopts));
 
   char* rejected_cert = rejected_first ? az_iot_test_env_dup("AZ_IOT_REJECTED_CLIENT_CERT") : NULL;
