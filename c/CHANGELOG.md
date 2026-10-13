@@ -14,7 +14,7 @@
   requests and parses the responses, with no I/O or allocation; the application sends them and
   runs the TPM (key import, HMAC-SHA256). Also splits the DPS key into TPM command inputs and
   derives a registration ID from the endorsement key. See
-  [docs/eng/dps-tpm-attestation.md](docs/eng/dps-tpm-attestation.md).
+  [docs/connecting.md](docs/connecting.md#authentication).
 - mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
   templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
   `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.

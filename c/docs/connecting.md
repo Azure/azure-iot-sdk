@@ -446,8 +446,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   runs the TPM (import the DPS key, HMAC-SHA256). Then connect directly to the assigned hub
   (`host`, `client_id`, `connection_profile` from the assignment) and sign hub tokens with the TPM
   key from `on_sas_token_required`. The connection client does not re-provision such a device; on
-  `AZ_IOT_ERR_IDENTITY_REJECTED`, register again. See
-  [DPS TPM attestation](eng/dps-tpm-attestation.md).
+  `AZ_IOT_ERR_IDENTITY_REJECTED`, register again.
 
 ## Crypto backend
 

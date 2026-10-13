@@ -48,7 +48,7 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | X.509 | X.509 | Supported | `unified/`, `mqttv5/` samples |
 | X.509 | SAS | Not provisioned by DPS | Expressible; no sample |
 | SAS | SAS, mqttv5 | Not supported by the service yet | Designed for; the token request carries the hub generation. Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED` |
-| TPM attestation | SAS signed by the TPM, mqttv3 | Over HTTPS only, not MQTT | `az_iot_dps_tpm_client.h` registers; the hub token is signed as in `user_provided_sas_token`. No sample yet. See [DPS TPM attestation](../../docs/eng/dps-tpm-attestation.md) |
+| TPM attestation | SAS signed by the TPM, mqttv3 | Over HTTPS only, not MQTT | `az_iot_dps_tpm_client.h` registers; the hub token is signed as in `user_provided_sas_token`. No sample yet. See [Authentication](../../docs/connecting.md#authentication) |
 
 ## Which non-extractable key route applies
 

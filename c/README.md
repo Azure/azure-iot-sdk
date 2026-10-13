@@ -32,7 +32,7 @@ built for constrained and embedded devices.
 - **X.509 authentication:** certificates from files, certificates issued by DPS from a CSR,
   renewal over IoT Hub (mqttv3 only), and private keys held in a PKCS#11 token or TPM.
 - **DPS TPM attestation:** registration over HTTPS with any HTTPS stack and TPM software stack
-  ([design](docs/eng/dps-tpm-attestation.md)).
+  ([connecting](docs/connecting.md#authentication)).
 - **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
   proxy support.
 - **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
