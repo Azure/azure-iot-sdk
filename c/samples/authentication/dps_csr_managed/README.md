@@ -121,11 +121,9 @@ export AZ_IOT_TRUSTED_CA=/etc/ssl/certs/ca-certificates.crt
 
 ### Security notes
 
-- `operational_key.pem` is written **unencrypted**, with permissions from the
-  process umask when the file is created (world-readable under the common `022`).
-  Set `umask 077` before the first run, or keep the files in a directory only the
-  device user can read. A later run does not change an existing file's mode; restrict
-  it explicitly, e.g. `chmod 600 operational_key.pem`.
+- `operational_key.pem` is written **unencrypted**, readable only by the current user
+  (0600 on POSIX, owner-only DACL on Windows). An existing key file is loaded as is and
+  keeps its mode; restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
 - For keys that must not exist as files, see
   [`hsm_pkcs11`](../hsm_pkcs11/README.md) and
   [`custom_certificate_provider`](../custom_certificate_provider/README.md).
