@@ -315,7 +315,8 @@ Rules both clients must implement:
 
 > The SDK now sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session,
 > including CSR and provision-only update sessions. This allows DPS to return `connectionProfile`;
-> absent/null values still resolve to `classic`.
+> absent/null values still resolve to `classic`. mqttv3 hub sessions send hub `2025-08-01-preview`,
+> which hub certificate renewal requires.
 >
 > **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
 > every feature client the application holds becomes invalid at that moment and it must be told.

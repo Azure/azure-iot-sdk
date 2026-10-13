@@ -520,13 +520,15 @@ static void the_username_carries_the_host_and_device_id(void** state)
 static void the_username_carries_an_api_version(void** state)
 {
   (void)state;
-  /* The service documents omitting api-version as a source of "unexpected
-   * behaviour", and the SDK gets it from azure-sdk-for-c rather than building
-   * it here -- so a dependency bump could drop it without anything failing. */
+  /* Hub certificate renewal ($iothub/credentials) is refused on an older
+   * api-version (errorCode 400001), so the exact value is pinned. */
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "api-version="));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING);
 }
 
 static void the_model_id_is_announced_in_the_username(void** state)
@@ -538,8 +540,11 @@ static void the_model_id_is_announced_in_the_username(void** state)
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "model-id="));
-  assert_non_null(strstr(c.username, "deviceUpdateContractModel"));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING
+      "&model-id=dtmi%3Aazure%3Aiot%3AdeviceUpdateContractModel%3B2");
 }
 
 static void no_model_id_means_none_in_the_username(void** state)

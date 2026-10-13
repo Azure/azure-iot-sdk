@@ -111,6 +111,13 @@
 #define DPS_REGISTER_CSR_MEMBER_SUFFIX "\""
 #define DPS_REGISTER_PAYLOAD_MEMBER_PREFIX "\"payload\":"
 
+/** @brief mqttv3 hub CONNECT api-version. Hub certificate management
+ * ($iothub/credentials) requires 2025-08-01-preview; the pinned azure-sdk-for-c
+ * username helper emits 2020-09-30, so the username is built here. */
+#define HUB_API_VERSION "2025-08-01-preview"
+/** @brief DeviceClientType value, unchanged from the azure-sdk-for-c default. */
+#define HUB_DEVICE_CLIENT_TYPE "azsdk-c%2F" AZ_SDK_VERSION_STRING
+
 /* The pinned azure-sdk-for-c helper emits 2019-03-31. Build the CONNECT
  * username here for every DPS session, including CSR and provision-only software updates. */
 #define DPS_API_VERSION "2026-11-02-preview"
@@ -1274,6 +1281,30 @@ static bool ensure_hub_client(az_iot_connection_client* c)
         az_iot_hub_client_init(&c->hub_client, host_span, id_span, &hub_opts));
   }
   return c->hub_client_initialized;
+}
+
+/**
+ * @brief Builds the mqttv3 hub CONNECT username
+ * "{host}/{client_id}/?api-version=HUB_API_VERSION&DeviceClientType=...[&model-id=...]",
+ * the azure-sdk-for-c layout with HUB_API_VERSION.
+ * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit @p buf.
+ */
+static az_iot_result hub_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
+{
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
+  az_iot_span_writer_append_str(&writer, c->opts.host);
+  az_iot_span_writer_append_str(&writer, "/");
+  az_iot_span_writer_append_str(&writer, c->opts.client_id);
+  az_iot_span_writer_append_str(
+      &writer, "/?api-version=" HUB_API_VERSION "&DeviceClientType=" HUB_DEVICE_CLIENT_TYPE);
+  if (is_nonempty_cstr(c->opts.model_id))
+  {
+    az_iot_span_writer_append_str(&writer, "&model-id=");
+    az_iot_span_writer_append_url_encoded(&writer, c->opts.model_id);
+  }
+  return az_iot_span_writer_end_str(&writer, NULL) == AZ_IOT_OK ? AZ_IOT_OK
+                                                                : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
 }
 
 /**
@@ -4946,8 +4977,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   resolve_connect_transport(c, &copts, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
-  /* Build hub MQTT username via azure-sdk-for-c (MQTTv3 only).
-   * MQTTv5 does not use the MQTTv3 username format. */
+  /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
   if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
   {
     /* IoT Hub requires the username: fail locally rather than CONNECT without it. */
@@ -4959,9 +4989,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
           c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_INVALID_ARG, "invalid host, client ID or model ID");
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    size_t ulen = 0;
-    if (az_result_failed(az_iot_hub_client_get_user_name(
-            &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen)))
+    if (hub_build_username(c, c->hub_username, sizeof(c->hub_username)) != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
