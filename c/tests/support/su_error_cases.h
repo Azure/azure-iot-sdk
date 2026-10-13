@@ -197,6 +197,12 @@ typedef struct
       400,                                                                                         \
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,                                                    \
       AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
+  SU_FETCH_ROUTES(                                                                                 \
+      X,                                                                                           \
+      OUTDATED_SERVICE_CONFIG,                                                                     \
+      400,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG,                                             \
+      AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
   SU_ALL_ROUTES(                                                                                   \
       X,                                                                                           \
       UPDATE_ACCOUNT_NOT_LINKED,                                                                   \

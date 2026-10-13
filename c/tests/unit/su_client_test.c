@@ -6708,7 +6708,8 @@ static void catalog_engine_error(void** state)
     assert_memory_equal(fx->log.persist_blob, checkpoint, checkpoint_len);
   }
   bool corrective = row->action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
-  if (!corrective)
+  bool drop_config = row->action == AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG;
+  if (!corrective && !drop_config)
   {
     if (row->delay_ms != 0)
     {
@@ -6746,6 +6747,13 @@ static void catalog_engine_error(void** state)
     assert_non_null(strstr((const char*)pub->payload, "\"manufacturer\":\"Contoso\""));
     assert_non_null(strstr((const char*)pub->payload, "\"model\":\"Foobar\""));
     assert_null(strstr((const char*)pub->payload, "Etag"));
+  }
+  else if (drop_config)
+  {
+    assert_string_equal(wire_channel(fx)->agent_info_etag, "cached-agent");
+    assert_string_equal(wire_channel(fx)->service_config_etag, "");
+    assert_non_null(strstr((const char*)pub->payload, "\"agentInfoEtag\":\"cached-agent\""));
+    assert_null(strstr((const char*)pub->payload, "serviceConfigEtag"));
   }
   else
   {

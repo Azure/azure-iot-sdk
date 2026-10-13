@@ -2928,8 +2928,10 @@ static void catalog_channel_error(void** state)
   assert_int_equal(fx->update_count, 0);
 
   bool corrective = row->action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
+  bool drop_config = row->action == AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG;
   assert_string_equal(fx->channel_state.agent_info_etag, corrective ? "" : "cached-agent");
-  assert_string_equal(fx->channel_state.service_config_etag, corrective ? "" : "cached-config");
+  assert_string_equal(
+      fx->channel_state.service_config_etag, (corrective || drop_config) ? "" : "cached-config");
   uint8_t saved[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
   size_t saved_len = 999;
   assert_int_equal(
@@ -2979,6 +2981,11 @@ static void catalog_channel_error(void** state)
     assert_non_null(strstr((const char*)pub->payload, "\"manufacturer\":\"Contoso\""));
     assert_non_null(strstr((const char*)pub->payload, "\"model\":\"Foobar\""));
     assert_null(strstr((const char*)pub->payload, "Etag"));
+  }
+  if (drop_config)
+  {
+    assert_non_null(strstr((const char*)pub->payload, "\"agentInfoEtag\":\"cached-agent\""));
+    assert_null(strstr((const char*)pub->payload, "serviceConfigEtag"));
   }
   char newer_rid[64];
   last_rid(m, newer_rid, sizeof(newer_rid));
