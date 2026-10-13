@@ -741,7 +741,7 @@ static void test_sas_key_device_uploads_a_file(void** state)
       snprintf(registration_id, sizeof(registration_id), "%s-fu", cfg.registration_id)
       < (int)sizeof(registration_id));
 
-  az_iot_connection_client_options copts = { 0 };
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   e2e_sas_apply_dps(&cfg, &copts);
   copts.dps.registration_id = registration_id;
   copts.hub_auth = copts.dps_auth;
