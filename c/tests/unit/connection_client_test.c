@@ -223,6 +223,87 @@ static void get_device_id_returns_the_direct_client_id(void** state)
   assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), "broker.example");
 }
 
+/* Factory whose destroy hook only counts, so ownership is observable. */
+typedef struct counting_factory
+{
+  az_iot_mqtt_factory f;
+  int destroyed;
+} counting_factory;
+
+static az_iot_mqtt_client* counting_factory_create(void* ctx)
+{
+  (void)ctx;
+  return NULL;
+}
+
+static void counting_factory_destroy(void* ctx) { ((counting_factory*)ctx)->destroyed++; }
+
+static void counting_factory_init(counting_factory* cf)
+{
+  memset(cf, 0, sizeof(*cf));
+  cf->f.version = AZ_IOT_MQTT_VERSION_3_1_1;
+  cf->f.create = counting_factory_create;
+  cf->f.factory_ctx = cf;
+  cf->f.destroy = counting_factory_destroy;
+}
+
+static void init_bare_client(az_iot_connection_client* client)
+{
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
+}
+
+static void deinit_destroys_a_registered_factory_exactly_once(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  counting_factory cf;
+  counting_factory_init(&cf);
+  init_bare_client(&client);
+
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, &cf.f), AZ_IOT_OK);
+  /* A repeated registration must not take ownership a second time. */
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, &cf.f), AZ_IOT_OK);
+  assert_int_equal(cf.destroyed, 0);
+
+  az_iot_connection_client_deinit(&client);
+  /* Released by deinit(): an application destroy after this is a double free. */
+  assert_int_equal(cf.destroyed, 1);
+}
+
+static void a_rejected_factory_stays_owned_by_the_application(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  counting_factory adopted[AZ_IOT_MAX_MQTT_FACTORIES];
+  counting_factory rejected;
+  init_bare_client(&client);
+
+  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES; ++i)
+  {
+    counting_factory_init(&adopted[i]);
+    assert_int_equal(
+        az_iot_connection_client_register_mqtt_factory(&client, &adopted[i].f), AZ_IOT_OK);
+  }
+  counting_factory_init(&rejected);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&client, &rejected.f),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(NULL, &rejected.f), AZ_IOT_ERR_INVALID_ARG);
+
+  az_iot_connection_client_deinit(&client);
+  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES; ++i)
+  {
+    assert_int_equal(adopted[i].destroyed, 1);
+  }
+  /* Never adopted, so deinit() leaves it to the application. */
+  assert_int_equal(rejected.destroyed, 0);
+}
+
 static void open_without_factory_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3516,6 +3597,8 @@ int main(void)
         a_duplicate_registration_leaves_the_connection_usable, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_distinct_factory_for_the_same_version_still_registers, setup, teardown),
+    cmocka_unit_test(deinit_destroys_a_registered_factory_exactly_once),
+    cmocka_unit_test(a_rejected_factory_stays_owned_by_the_application),
     cmocka_unit_test_setup_teardown(open_without_factory_returns_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         open_invokes_connect_and_transitions_to_connecting, setup, teardown),

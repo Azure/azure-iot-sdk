@@ -5,7 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Construction-level smoke test for the Paho adapter. Does not touch the
  * network; verifies that the factory advertises the right version and that a
- * created client carries a fully-populated iface vtable. */
+ * created client carries a fully-populated iface vtable, and that a factory
+ * registered with the connection client is released by its deinit(). */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -15,6 +16,9 @@
 
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_connection_client.h"
+
+#include "support/test_provider.h"
 
 static void v3_factory_creates_v3_client(void** state)
 {
@@ -59,11 +63,46 @@ static void v5_factory_creates_v5_client(void** state)
   az_iot_paho_factory_destroy(f);
 }
 
+/* Registration hands the factories to the connection client: deinit() frees
+ * them, and the application must not call az_iot_paho_factory_destroy() too.
+ * Under valgrind/ASan, a leak here means deinit() did not release them. */
+static void registered_factories_are_destroyed_by_deinit(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  az_iot_connection_client_options opts = { 0 };
+  opts.host = "broker.example";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
+
+  az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
+  az_iot_mqtt_factory* v5 = az_iot_paho_factory_create_v5();
+  assert_non_null(v3);
+  assert_non_null(v5);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v3), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v5), AZ_IOT_OK);
+
+  az_iot_connection_client_deinit(&client);
+}
+
+/* A factory whose registration failed is still the application's to destroy. */
+static void a_factory_that_failed_to_register_is_destroyed_by_the_application(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(NULL, f), AZ_IOT_ERR_INVALID_ARG);
+  az_iot_paho_factory_destroy(f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_factory_creates_v3_client),
     cmocka_unit_test(v5_factory_creates_v5_client),
+    cmocka_unit_test(registered_factories_are_destroyed_by_deinit),
+    cmocka_unit_test(a_factory_that_failed_to_register_is_destroyed_by_the_application),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -149,11 +149,12 @@ az_iot_mqtt_factory* az_iot_mymqtt_factory_create_v3_1_1(void)
     st->public_.version = AZ_IOT_MQTT_VERSION_3_1_1;
     st->public_.create = mymqtt_factory_create;
     st->public_.factory_ctx = st;
+    st->public_.destroy = free; /* called by az_iot_connection_client_deinit() once registered */
     return &st->public_;
 }
 ```
 
-The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time.
+The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time. `destroy` frees `factory_ctx`; the connection client calls it from `az_iot_connection_client_deinit()` for every registered factory (leave it NULL if there is nothing to free).
 
 ## Step 3 — Wire it into CMake
 
@@ -315,11 +316,16 @@ Once the conformance suite is green, plug the factory into the connection client
 
 ```c
 az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-az_iot_connection_client_register_mqtt_factory(client, f);
+if (az_iot_connection_client_register_mqtt_factory(client, f) != AZ_IOT_OK)
+{
+    az_iot_mymqtt_factory_destroy(f); /* not registered: still yours */
+}
 /* register a v5 factory too if you support HUB_MQTT_V5 */
 ```
 
 The connection client picks the right factory at session-open time based on the MQTT version required for the target Azure service.
+
+Once registration returns `AZ_IOT_OK`, the connection client owns the factory and `az_iot_connection_client_deinit()` destroys it through `destroy`. Do not destroy it yourself as well.
 
 ## Common pitfalls
 
@@ -330,6 +336,7 @@ The connection client picks the right factory at session-open time based on the 
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
 - **Wrong version.** Registering only a v3.1.1 factory when you need MQTTv5 (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- **Destroying a registered factory.** After a successful registration, `az_iot_connection_client_deinit()` frees it; a second destroy by the application is a double free.
 
 ## Feature clients and what they need from the adapter
 

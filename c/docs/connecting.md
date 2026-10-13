@@ -15,13 +15,15 @@ opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
 
-if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
-    || az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v3_1_1())
-        != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-        != AZ_IOT_OK)
+if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
+  return 1;
+}
+if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
+    || register_factory(&client, az_iot_paho_factory_create_v3_1_1()) != AZ_IOT_OK
+    || register_factory(&client, az_iot_paho_factory_create_v5()) != AZ_IOT_OK)
+{
+  az_iot_connection_client_deinit(&client); /* destroys the factories already registered */
   return 1;
 }
 
@@ -38,6 +40,39 @@ for (;;)
 
 Start from `az_iot_connection_client_options_default()`. A zero-initialized options struct has
 reconnection disabled.
+
+`register_factory()` is an application helper that keeps the failure path leak-free:
+
+```c
+static az_iot_result register_factory(az_iot_connection_client* client, az_iot_mqtt_factory* f)
+{
+  az_iot_result r = az_iot_connection_client_register_mqtt_factory(client, f);
+  if (r != AZ_IOT_OK)
+  {
+    az_iot_paho_factory_destroy(f); /* not registered: still owned by the application */
+  }
+  return r;
+}
+```
+
+## MQTT factory ownership
+
+- A factory from `az_iot_paho_factory_create_*()` belongs to the application until
+  `az_iot_connection_client_register_mqtt_factory()` returns `AZ_IOT_OK`. If registration fails, or
+  setup stops before it, destroy it with `az_iot_paho_factory_destroy()`.
+- A registered factory belongs to the connection client. `az_iot_connection_client_deinit()`
+  destroys it. Do not call `az_iot_paho_factory_destroy()` on it: that is a double free.
+- Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
+
+The same rules apply to the az_mqtt and Rust adapter factories.
+
+Teardown:
+
+```c
+/* deinit feature clients, then: */
+az_iot_connection_client_deinit(&client); /* destroys the registered factories */
+/* no az_iot_paho_factory_destroy() here */
+```
 
 To skip DPS and connect straight to a hub, set `host` and `client_id` instead of the `dps` fields,
 and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default

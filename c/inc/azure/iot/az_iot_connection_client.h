@@ -1854,12 +1854,29 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_connection_client_options* opts);
 
+  /**
+   * @brief Deinitialize the client. Destroys every factory registered with
+   * az_iot_connection_client_register_mqtt_factory() through its destroy hook.
+   */
   void az_iot_connection_client_deinit(az_iot_connection_client* client);
 
-  /* Register an MQTT factory in the client's adapter registry. The client may hold
-   * multiple factories; at session-open time it picks the one whose
-   * (version, supported_roles_mask) matches the required (version, role) for that
-   * session. Adapters for DPS+MQTTv3 must be v3.1.1; adapters for MQTTv5 must be v5. */
+  /**
+   * @brief Register an MQTT factory in the client's adapter registry.
+   *
+   * The client may hold multiple factories; at session-open time it picks the one whose version
+   * matches the session (DPS and mqttv3: v3.1.1; mqttv5: v5).
+   *
+   * Ownership: on AZ_IOT_OK the client owns the factory and az_iot_connection_client_deinit()
+   * destroys it; the application must not destroy it (e.g. with az_iot_paho_factory_destroy()).
+   * Registering the same factory again returns AZ_IOT_OK and changes nothing. On any other result
+   * the factory is not registered and the application still owns it.
+   *
+   * @param client A client initialized with az_iot_connection_client_init().
+   * @param factory The factory. The struct is copied.
+   * @retval AZ_IOT_OK Registered (or already registered).
+   * @retval AZ_IOT_ERR_INVALID_ARG NULL client, factory, or factory->create.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The registry is full (AZ_IOT_MAX_MQTT_FACTORIES).
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
       az_iot_connection_client* client,
       const az_iot_mqtt_factory* factory);
