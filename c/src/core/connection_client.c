@@ -2983,7 +2983,7 @@ static void connection_profile_save(
   out->raw_truncated = c->connection_profile_raw_truncated;
 }
 
-/** @brief Restores the profile saved in @p in, undoing an assignment that is not adopted. */
+/** @brief Makes the profile saved in @p in the recorded profile of @p c. */
 static void connection_profile_restore(
     az_iot_connection_client* c,
     const connection_profile_snapshot* in)
@@ -2991,6 +2991,23 @@ static void connection_profile_restore(
   c->connection_profile = in->profile;
   memcpy(c->connection_profile_raw, in->raw, sizeof(c->connection_profile_raw));
   c->connection_profile_raw_truncated = in->raw_truncated;
+}
+
+/** @brief Holds the recorded profile of @p c as the pending assignment's. */
+static void dps_assigned_profile_stash(az_iot_connection_client* c)
+{
+  c->dps_assigned_profile = c->connection_profile;
+  memcpy(
+      c->dps_assigned_profile_raw, c->connection_profile_raw, sizeof(c->dps_assigned_profile_raw));
+  c->dps_assigned_profile_raw_truncated = c->connection_profile_raw_truncated;
+}
+
+/** @brief Records the pending assignment's profile, as it is adopted. */
+static void dps_assigned_profile_commit(az_iot_connection_client* c)
+{
+  c->connection_profile = c->dps_assigned_profile;
+  memcpy(c->connection_profile_raw, c->dps_assigned_profile_raw, sizeof(c->connection_profile_raw));
+  c->connection_profile_raw_truncated = c->dps_assigned_profile_raw_truncated;
 }
 
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
@@ -3335,15 +3352,16 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
-          /* Which hub generation we were assigned to. A failure before the
-           * assignment is handed on restores the previous profile: the cached
-           * or saved hub may still be connected to, with its own profile. */
+          /* Which hub generation we were assigned to. Held pending and recorded
+           * only when the assignment is adopted (dps_apply_deferred()): until
+           * then the cached or saved hub, and its profile, still apply. */
           connection_profile_snapshot prev;
           connection_profile_save(c, &prev);
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
+          dps_assigned_profile_stash(c);
+          connection_profile_restore(c, &prev);
           if (pr != AZ_IOT_OK)
           {
-            connection_profile_restore(c, &prev);
             dps_finalize(c, pr, false);
             return;
           }
@@ -3352,7 +3370,6 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)
             {
-              connection_profile_restore(c, &prev);
               dps_finalize(c, sc, false);
               return;
             }
@@ -3369,7 +3386,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               "assigned hub=%s device_id=%s profile=%s",
               c->dps_assigned_hub,
               c->dps_assigned_device_id,
-              profile_name(c->connection_profile));
+              profile_name(c->dps_assigned_profile));
           if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
           {
             c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
@@ -4051,6 +4068,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
+  dps_assigned_profile_commit(c);
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
    * -- a device that appears to connect and then misbehaves is far worse to
