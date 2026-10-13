@@ -162,20 +162,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public void IotHubAuthenticationPresentsTheIssuedCertificateWhenItsPrivateKeyIsSet()
+        public async Task IotHubAuthenticationPresentsTheIssuedCertificateWhenItsPrivateKeyIsSet()
         {
             using RSA operationalKey = RSA.Create(2048);
             using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
             string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
 
             X509AuthenticationProvider authentication = CreateAuthenticationProvider(operationalKey);
+            Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
+
+            await authentication.HandleClientCertificatesIssuedAsync(issuedChain);
 
             AuthenticationCredentials hubCredentials = authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain);
             Assert.NotNull(hubCredentials.ClientCertificate);
             Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
             Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
 
-            // The same chain and key reuse the same certificate rather than rebuilding it on every connect.
+            // Handling the same chain again reuses the same certificate rather than rebuilding it on every connect.
+            await authentication.HandleClientCertificatesIssuedAsync(issuedChain);
             Assert.Same(hubCredentials.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
 
             // DPS is always authenticated with the original client certificate.
@@ -183,13 +187,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public void IotHubAuthenticationPresentsTheOriginalCertificateWithoutAnIssuedCertificateOrPrivateKey()
+        public async Task IotHubAuthenticationPresentsTheOriginalCertificateWithoutAnIssuedCertificateOrPrivateKey()
         {
             using RSA operationalKey = RSA.Create(2048);
             using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
             string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
 
+            // Without a private key, the default callback presents the original certificate.
             X509AuthenticationProvider authentication = CreateAuthenticationProvider();
+            Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
+            await authentication.HandleClientCertificatesIssuedAsync(issuedChain);
 
             Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
 
@@ -264,6 +271,176 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.Null(hubCredentials.ClientCertificate);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(hubCredentials.Password));
+        }
+
+        [Fact]
+        public async Task X509ProvisioningWithACallbackConnectsToTheHubWithTheCertificateTheCallbackReturns()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            using X509Certificate2 issuedCertificateWithKey = issuedCertificate.CopyWithPrivateKey(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
+            Assert.NotNull(mockDps);
+
+            MqttConnect? hubConnect = null;
+            int connectCount = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (++connectCount == 2)
+                {
+                    hubConnect = connect;
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            List<IReadOnlyList<string>> callbackInvocations = new();
+            X509AuthenticationProvider authentication = new(
+                CreateAuthenticationProvider().ClientCertificate,
+                issuedCertificates =>
+                {
+                    callbackInvocations.Add(issuedCertificates);
+                    return Task.FromResult(issuedCertificateWithKey);
+                });
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            await connectionClient
+                .ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The callback runs once for the issued chain, even though the chain is also seen on the hub CONNECT.
+            IReadOnlyList<string> handledChain = Assert.Single(callbackInvocations);
+            Assert.Equal(issuedChain, handledChain);
+
+            Assert.NotNull(hubConnect);
+            Assert.Same(issuedCertificateWithKey, hubConnect.ClientCertificate);
+        }
+
+        [Fact]
+        public async Task SymmetricKeyProvisioningWithACallbackConnectsToTheHubWithTheCertificateTheCallbackReturns()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            using X509Certificate2 issuedCertificateWithKey = issuedCertificate.CopyWithPrivateKey(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
+            Assert.NotNull(mockDps);
+
+            MqttConnect? hubConnect = null;
+            int connectCount = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (++connectCount == 2)
+                {
+                    hubConnect = connect;
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            int callbackInvocations = 0;
+            SymmetricKeyWithIssuedCertificateAuthenticationProvider authentication = new(
+                RegistrationId,
+                IdScope,
+                SymmetricKey,
+                issuedCertificates =>
+                {
+                    callbackInvocations++;
+                    return Task.FromResult(issuedCertificateWithKey);
+                });
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            await connectionClient
+                .ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, callbackInvocations);
+            Assert.NotNull(hubConnect);
+            Assert.Same(issuedCertificateWithKey, hubConnect.ClientCertificate);
+            Assert.Empty(hubConnect.Password);
+        }
+
+        [Fact]
+        public async Task ProvisioningFailsWhenTheCertificateSigningCompleteCallbackThrows()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
+            Assert.NotNull(mockDps);
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            X509AuthenticationProvider authentication = new(
+                CreateAuthenticationProvider().ClientCertificate,
+                _ => throw new InvalidOperationException("callback failed"));
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.Equal("callback failed", exception.Message);
+        }
+
+        [Fact]
+        public async Task CallbackProvidersFallBackToTheirOriginalCredentialsUntilTheCallbackHasRun()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            using X509Certificate2 issuedCertificateWithKey = issuedCertificate.CopyWithPrivateKey(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+            Func<IReadOnlyList<string>, Task<X509Certificate2>> callback = _ => Task.FromResult(issuedCertificateWithKey);
+
+            X509AuthenticationProvider x509 = new(CreateAuthenticationProvider().ClientCertificate, callback);
+            Assert.Same(x509.ClientCertificate, x509.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
+
+            await x509.HandleClientCertificatesIssuedAsync(issuedChain);
+            Assert.Same(issuedCertificateWithKey, x509.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
+            Assert.Same(x509.ClientCertificate, x509.GetDeviceProvisioningServiceAuthentication().ClientCertificate);
+
+            SymmetricKeyWithIssuedCertificateAuthenticationProvider symmetricKey = new(RegistrationId, IdScope, SymmetricKey, callback);
+            AuthenticationCredentials beforeCallback = symmetricKey.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain);
+            Assert.Null(beforeCallback.ClientCertificate);
+            Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(beforeCallback.Password));
+
+            await symmetricKey.HandleClientCertificatesIssuedAsync(issuedChain);
+            Assert.Same(issuedCertificateWithKey, symmetricKey.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
         }
 
         private static X509Certificate2 CreateIssuedCertificate(RSA key)

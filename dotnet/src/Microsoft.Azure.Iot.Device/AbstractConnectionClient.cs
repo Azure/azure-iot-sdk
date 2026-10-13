@@ -457,8 +457,14 @@ namespace Microsoft.Azure.Iot.Device
                 ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
-            // Any certificates DPS issued are passed to the authentication provider on every connection to IoT hub, so the
-            // provider decides whether to present them (operational certificates) or its own (boot certificates).
+            // Let the provider prepare any certificates DPS issued (for example by invoking its certificate signing complete
+            // callback) before they are passed to it on every connection to IoT hub, so the provider decides whether to
+            // present them (operational certificates) or its own (boot certificates).
+            if (provisioningResult.IssuedClientCertificateChain is { Count: > 0 } issuedClientCertificates)
+            {
+                await authentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates);
+            }
+
             await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
@@ -556,13 +562,13 @@ namespace Microsoft.Azure.Iot.Device
         /// <summary>
         /// Patch the CONNECT packet that is about to be sent, including on every reconnect attempt.
         /// </summary>
-        private Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit)
+        private async Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit)
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
                 // The CONNECT sent to DPS is fully formed before the first connect attempt and nothing about it changes
                 // between attempts or between the generation of Hub that the inheriting class uses, so there is nothing to inject here.
-                return Task.FromResult(connectPacketToEdit);
+                return connectPacketToEdit;
             }
 
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
@@ -570,14 +576,30 @@ namespace Microsoft.Azure.Iot.Device
             // connect with the operational certificate DPS issued rather than its boot credentials.
             ConnectionContext connectionContext = CurrentConnectionContext!;
             AuthenticationProvider hubAuthentication = connectionContext.AuthenticationProvider;
+            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
+
+            // Normally a no-op since providers are notified when certificates are issued, but covers a provider that was
+            // swapped into the connection context afterwards.
+            if (issuedClientCertificates is { Count: > 0 })
+            {
+                try
+                {
+                    await hubAuthentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Authentication provider failed to handle the issued client certificates; connecting with its fallback credentials. {0}", ex);
+                }
+            }
+
             AuthenticationCredentials hubCredentials = hubAuthentication.GetIotHubAuthentication(
                 connectPacketToEdit.HostName,
                 connectPacketToEdit.ClientId ?? hubAuthentication.GetRegistrationId(),
-                connectionContext.IssuedClientCertificates);
+                issuedClientCertificates);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
-            return Task.FromResult(IotHubMqttConnectOverride(connectPacketToEdit));
+            return IotHubMqttConnectOverride(connectPacketToEdit);
         }
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet

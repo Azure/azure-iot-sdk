@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Mqtt;
-using System;
 using System.Diagnostics;
 using System.Net.Security;
 using System.Security.Cryptography;
@@ -65,6 +62,51 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
             CertificateChain = certificateChain;
             IssuedCertificatePrivateKey = issuedCertificatePrivateKey;
+            HandleCertificateSigningCompleteAsync = issuedCertificatePrivateKey == null
+                ? PresentOriginalCertificateAsync
+                : IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
+            _issuedCertificateHandler = new IssuedCertificateHandler(HandleCertificateSigningCompleteAsync);
+        }
+
+        /// <summary>
+        /// Creates an instance of this class that delegates handling of issued client certificates to a callback.
+        /// </summary>
+        /// <param name="clientCertificate">
+        /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
+        /// client certificate is issued to this device.
+        /// </param>
+        /// <param name="handleCertificateSigningCompleteAsync">
+        /// Invoked when a client certificate chain is issued to this device, either by the device provisioning service
+        /// during provisioning or by IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
+        /// returns the certificate, with its private key, to present to IoT Hub, so it can apply custom logic such as
+        /// persisting the certificate or pairing it with an HSM-backed key. It is invoked once per issued chain.
+        /// If it throws during provisioning, provisioning fails; if it throws for a certificate signing request sent to
+        /// IoT Hub, that certificate signing operation fails.
+        /// </param>
+        /// <param name="certificateChain">
+        /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
+        /// </param>
+        /// <param name="remoteCertificateValidationCallback">
+        /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
+        /// When null, the platform's default validation is used.
+        /// </param>
+        /// <param name="localCertificateSelectionCallback">
+        /// An optional callback used to select which client certificate to present during the TLS handshake.
+        /// </param>
+        public X509AuthenticationProvider(
+            X509Certificate2 clientCertificate,
+            Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
+            X509Certificate2Collection? certificateChain = null,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+        {
+            ClientCertificate = clientCertificate
+                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
+
+            CertificateChain = certificateChain;
+            HandleCertificateSigningCompleteAsync = handleCertificateSigningCompleteAsync
+                ?? throw new ArgumentNullException(nameof(handleCertificateSigningCompleteAsync));
+            _issuedCertificateHandler = new IssuedCertificateHandler(handleCertificateSigningCompleteAsync);
         }
 
         /// <summary>
@@ -92,23 +134,34 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </remarks>
         public AsymmetricAlgorithm? IssuedCertificatePrivateKey { get; }
 
-        private readonly IssuedCertificateCache _issuedCertificateCache = new();
+        /// <summary>
+        /// Produces the certificate to present to IoT Hub from an issued client certificate chain. Either the callback
+        /// this provider was created with or, by default, one that pairs the issued device certificate with
+        /// <see cref="IssuedCertificatePrivateKey"/> (or presents <see cref="ClientCertificate"/> if there is no such key).
+        /// </summary>
+        public Func<IReadOnlyList<string>, Task<X509Certificate2>> HandleCertificateSigningCompleteAsync { get; }
+
+        private readonly IssuedCertificateHandler _issuedCertificateHandler;
+
+        public override Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates)
+        {
+            return _issuedCertificateHandler.HandleAsync(issuedClientCertificates);
+        }
 
         public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
-            AsymmetricAlgorithm? privateKey = IssuedCertificatePrivateKey;
             if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
             {
                 return CreateCredentials(ClientCertificate);
             }
 
-            if (privateKey == null)
-            {
-                Trace.TraceWarning("A client certificate was issued to this device, but this provider was created without an issuedCertificatePrivateKey, so the original client certificate will be presented to IoT Hub instead.");
-                return CreateCredentials(ClientCertificate);
-            }
+            return CreateCredentials(_issuedCertificateHandler.GetCertificate(issuedClientCertificates) ?? ClientCertificate);
+        }
 
-            return CreateCredentials(_issuedCertificateCache.GetOrCreate(issuedClientCertificates, privateKey));
+        private Task<X509Certificate2> PresentOriginalCertificateAsync(IReadOnlyList<string> issuedClientCertificates)
+        {
+            Trace.TraceWarning("A client certificate was issued to this device, but this provider was created without an issuedCertificatePrivateKey or handleCertificateSigningCompleteAsync callback, so the original client certificate will be presented to IoT Hub instead.");
+            return Task.FromResult(ClientCertificate);
         }
 
         public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()

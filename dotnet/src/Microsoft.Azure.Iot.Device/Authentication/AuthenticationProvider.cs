@@ -33,6 +33,12 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public abstract string GetRegistrationId();
 
         /// <summary>
+        /// Called (asynchronously) when a client certificate chain is issued to this device, and before each connection
+        /// attempt to IoT Hub, so providers can prepare the certificate to present. Must be idempotent per chain.
+        /// </summary>
+        public virtual Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates) => Task.CompletedTask;
+
+        /// <summary>
         /// An optional callback for custom validation of the server (remote) certificate during the TLS handshake.
         /// When null, the platform's default validation is used.
         /// </summary>

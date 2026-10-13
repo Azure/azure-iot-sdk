@@ -174,6 +174,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         if (CurrentConnectionContext != null)
                         {
                             CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+
+                            if (response.Certificates is { Count: > 0 })
+                            {
+                                try
+                                {
+                                    await CurrentConnectionContext.AuthenticationProvider.HandleClientCertificatesIssuedAsync(response.Certificates);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.TraceError("Authentication provider failed to handle the client certificates issued by IoT hub. {0}", ex);
+                                    pendingCertificateSigningOperation.SetFailed(ex);
+                                    return;
+                                }
+                            }
                         }
 
                         pendingCertificateSigningOperation.SetCompleted(response);
