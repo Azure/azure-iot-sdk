@@ -11,6 +11,10 @@
 # Search with CMAKE_PREFIX_PATH or azure-sdk-for-c_ROOT. The cache variables
 # AZURE_SDK_FOR_C_INCLUDE_DIR and AZURE_SDK_FOR_C_<NAME>_LIBRARY override it.
 #
+# Debug libraries of the same names are looked for in <prefix>/debug/lib (vcpkg
+# layout) or set with AZURE_SDK_FOR_C_<NAME>_LIBRARY_DEBUG; the Debug
+# configuration links them. Otherwise every configuration links the ones above.
+#
 # Defines imported targets az::core, az::iot::common, az::iot::hub,
 # az::iot::provisioning and az::platform, and azure-sdk-for-c_VERSION.
 
@@ -53,10 +57,22 @@ foreach(_i RANGE 0 ${_last} 2)
     list(APPEND _az_sdk_for_c_lib_vars AZURE_SDK_FOR_C_${_var}_LIBRARY)
 endforeach()
 find_library(AZURE_SDK_FOR_C_PLATFORM_LIBRARY NAMES ${_az_sdk_for_c_platform_names} NAMES_PER_DIR)
-mark_as_advanced(AZURE_SDK_FOR_C_INCLUDE_DIR AZURE_SDK_FOR_C_PLATFORM_LIBRARY ${_az_sdk_for_c_lib_vars})
+list(APPEND _az_sdk_for_c_lib_vars AZURE_SDK_FOR_C_PLATFORM_LIBRARY)
+
+# The Debug counterpart of each library found: same file name, in ../debug/lib.
+set(_az_sdk_for_c_debug_vars "")
+foreach(_v IN LISTS _az_sdk_for_c_lib_vars)
+    if(${_v})
+        get_filename_component(_dir "${${_v}}" DIRECTORY)
+        get_filename_component(_file "${${_v}}" NAME)
+        find_library(${_v}_DEBUG NAMES "${_file}" PATHS "${_dir}/../debug/lib" NO_DEFAULT_PATH)
+    endif()
+    list(APPEND _az_sdk_for_c_debug_vars ${_v}_DEBUG)
+endforeach()
+mark_as_advanced(AZURE_SDK_FOR_C_INCLUDE_DIR ${_az_sdk_for_c_lib_vars} ${_az_sdk_for_c_debug_vars})
 
 find_package_handle_standard_args(azure-sdk-for-c
-    REQUIRED_VARS AZURE_SDK_FOR_C_INCLUDE_DIR ${_az_sdk_for_c_lib_vars} AZURE_SDK_FOR_C_PLATFORM_LIBRARY
+    REQUIRED_VARS AZURE_SDK_FOR_C_INCLUDE_DIR ${_az_sdk_for_c_lib_vars}
     VERSION_VAR azure-sdk-for-c_VERSION
 )
 
@@ -73,6 +89,10 @@ if(azure-sdk-for-c_FOUND AND NOT TARGET az::core)
         set_target_properties(az::${_name} PROPERTIES
             IMPORTED_LOCATION "${AZURE_SDK_FOR_C_${_var}_LIBRARY}"
             IMPORTED_LINK_INTERFACE_LANGUAGES C)
+        if(AZURE_SDK_FOR_C_${_var}_LIBRARY_DEBUG)
+            set_target_properties(az::${_name} PROPERTIES
+                IMPORTED_LOCATION_DEBUG "${AZURE_SDK_FOR_C_${_var}_LIBRARY_DEBUG}")
+        endif()
     endforeach()
     unset(_az_sdk_for_c_targets)
     # az_core and the platform library call each other.
@@ -90,6 +110,10 @@ unset(_az_sdk_for_c_version)
 unset(_az_sdk_for_c_platform_names)
 unset(_az_sdk_for_c_libs)
 unset(_az_sdk_for_c_lib_vars)
+unset(_az_sdk_for_c_debug_vars)
+unset(_v)
+unset(_dir)
+unset(_file)
 unset(_n)
 unset(_last)
 unset(_i)

@@ -46,7 +46,9 @@ and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`
 - azure-sdk-for-c ships no CMake package. [Findazure-sdk-for-c.cmake](../cmake/Findazure-sdk-for-c.cmake)
   looks for `azure/core/az_version.h` under `include` or `include/azure-sdk-for-c`, and for the
   `az_core`, `az_iot_common`, `az_iot_hub`, `az_iot_provisioning` and platform (`az_posix`,
-  `az_win32` or `az_noplatform`) libraries under `lib`.
+  `az_win32` or `az_noplatform`) libraries under `lib`. Debug builds link libraries of the same
+  names from `debug/lib` (vcpkg layout) when present. Consumers of the installed SDK need exactly the
+  azure-sdk-for-c version it was built with.
   [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
   commits.
 - Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target

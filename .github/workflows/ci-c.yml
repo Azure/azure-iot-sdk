@@ -706,6 +706,57 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
+  # Paho from vcpkg (c/vcpkg.json `installed-paho`, static triplet for /MT[d])
+  # instead of fetched: AZ_IOT_USE_INSTALLED_PAHO on MSVC, Debug and Release.
+  installed-paho-windows:
+    name: windows-msvc / installed Paho (vcpkg)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      # The runner's vcpkg clone must contain the manifest's builtin-baseline.
+      - name: Locate vcpkg
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
+          if ($LASTEXITCODE) {
+            $fetch = @('fetch', '--quiet', 'origin')
+            if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
+              $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
+            }
+            git -C $root @fetch
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          "AZ_IOT_VCPKG=$root" >> $env:GITHUB_ENV
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build/installed-paho -G "Ninja Multi-Config"
+          -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_VCPKG/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_MANIFEST_FEATURES=installed-paho
+          -DAZ_IOT_USE_INSTALLED_PAHO=ON
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_BUILD_SAMPLES=OFF
+      - name: Build and test (Debug)
+        shell: bash
+        run: |
+          cmake --build build/installed-paho --config Debug
+          ctest --test-dir build/installed-paho -C Debug --output-on-failure
+      - name: Build and test (Release)
+        shell: bash
+        run: |
+          cmake --build build/installed-paho --config Release
+          ctest --test-dir build/installed-paho -C Release --output-on-failure
+
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
   #

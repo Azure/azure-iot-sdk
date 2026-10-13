@@ -14,7 +14,8 @@ if(@AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C@)
     # Built against an installed azure-sdk-for-c: find it the same way.
     set(_az_iot_module_path "${CMAKE_MODULE_PATH}")
     list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
-    find_dependency(azure-sdk-for-c @AZ_IOT_PACKAGE_AZURE_SDK_FOR_C_VERSION@)
+    # Exactly the version built against: its types are embedded in public SDK structs.
+    find_dependency(azure-sdk-for-c @AZ_IOT_PACKAGE_AZURE_SDK_FOR_C_VERSION@ EXACT)
     set(CMAKE_MODULE_PATH "${_az_iot_module_path}")
     unset(_az_iot_module_path)
 endif()
