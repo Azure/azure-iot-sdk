@@ -4100,6 +4100,24 @@ int az_iot_conformance_run_with_options(
     failed = cmocka_run_group_tests(v3_tests, NULL, NULL);
   }
 
+  /* Before the custody groups: they load the key's provider process-wide, after
+   * which the suite's own mutual-TLS handshakes no longer complete. */
+  if (adapter_claims_tls_pem())
+  {
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+    const struct CMUnitTest pem_tests[]
+        = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
+    failed += cmocka_run_group_tests(pem_tests, NULL, NULL);
+#else
+    char allow[16];
+    failed += az_iot_conformance_report_unproven_capability(
+        "AZ_IOT_CONFORMANCE_CAP_TLS_PEM",
+        "this build has no TLS support. Configure with"
+        " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.",
+        read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+#endif
+  }
+
   /* The end-to-end key custody case is a separate group because whether it runs
    * is a run-time fact -- it needs a real key -- and a cmocka test list is a
    * fixed array. */
@@ -4202,22 +4220,6 @@ int az_iot_conformance_run_with_options(
           " (and websocket_path when the broker does not serve the Azure default).",
           read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }
-  }
-
-  if (adapter_claims_tls_pem())
-  {
-#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
-    const struct CMUnitTest pem_tests[]
-        = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += cmocka_run_group_tests(pem_tests, NULL, NULL);
-#else
-    char allow[16];
-    failed += az_iot_conformance_report_unproven_capability(
-        "AZ_IOT_CONFORMANCE_CAP_TLS_PEM",
-        "this build has no TLS support. Configure with"
-        " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.",
-        read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
-#endif
   }
 
   if (adapter_claims_proxy())
