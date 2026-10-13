@@ -1618,6 +1618,11 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
   {
     r = az_iot_crypto__hmac_sha256(
         c->opts.crypto, key, key_len, az_span_ptr(to_sign), (size_t)az_span_size(to_sign), mac);
+    /* NOT_FOUND is reserved for "no key in use": callers then send no token. */
+    if (r == AZ_IOT_ERR_NOT_FOUND)
+    {
+      r = AZ_IOT_ERR_INTERNAL;
+    }
   }
   int32_t sig_len = 0;
   if (r == AZ_IOT_OK

@@ -3769,6 +3769,36 @@ static void no_https_hub_token_before_a_hub_is_assigned(void** state)
 }
 
 static char g_signed_token[AZ_IOT_SAS_TOKEN_SIZE(256)];
+
+static az_iot_result not_found_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  (void)out;
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+/* A backend's NOT_FOUND is a signing failure, not "no key in use". */
+static void a_crypto_not_found_is_not_a_keyless_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_only(fx, &opts);
+  static az_iot_crypto failing;
+  failing = *TEST_CRYPTO();
+  failing.sha256_final = not_found_sha256_final;
+  fx->client.opts.crypto = &failing;
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_INTERNAL);
+  assert_true(all_zero(out, sizeof(out)));
+  fx->client.opts.crypto = TEST_CRYPTO();
+}
 static az_iot_result g_signed_result;
 static az_iot_connection_state g_sign_on_state;
 
@@ -4001,6 +4031,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_failed_https_hub_token_leaves_no_earlier_token, setup, teardown),
     cmocka_unit_test_setup_teardown(no_https_hub_token_before_a_hub_is_assigned, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_crypto_not_found_is_not_a_keyless_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_https_hub_token_keeps_the_secondary_key_while_reconnecting, setup, teardown),
     cmocka_unit_test_setup_teardown(

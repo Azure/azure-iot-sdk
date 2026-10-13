@@ -192,7 +192,8 @@ extern "C"
    *         no hub address or device id; AZ_IOT_ERR_BUSY while no Unix time is
    *         known; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out_size is below
    *         AZ_IOT_SAS_TOKEN_SIZE() of the two IDs; AZ_IOT_ERR_INVALID_ARG for a
-   *         NULL argument; the crypto backend's error otherwise.
+   *         NULL argument; the crypto backend's error otherwise, its
+   *         AZ_IOT_ERR_NOT_FOUND as AZ_IOT_ERR_INTERNAL.
    */
   az_iot_result az_iot_connection_client__sign_hub_sas_token(
       const az_iot_connection_client* client,

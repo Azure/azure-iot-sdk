@@ -201,6 +201,40 @@ static void a_token_that_cannot_be_signed_is_not_dispatched(void** state)
   assert_int_equal(g_http.calls, 0);
 }
 
+static az_iot_result not_found_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  (void)out;
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+/* A crypto backend's NOT_FOUND fails the request; it is never sent unsigned. */
+static void a_crypto_not_found_is_not_sent_unsigned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = sas_options();
+  start(fx, &opts);
+  static az_iot_crypto failing;
+  failing = *TEST_CRYPTO();
+  failing.sha256_final = not_found_sha256_final;
+  fx->conn.opts.crypto = &failing;
+
+  az_iot_result status = AZ_IOT_ERR_BUSY;
+  assert_int_equal(
+      az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &status),
+      AZ_IOT_ERR_INTERNAL);
+  assert_int_equal(
+      az_iot_mqttv3_file_upload_client_notify_complete(&fx->fu, "c", true, on_notify, &status),
+      AZ_IOT_ERR_INTERNAL);
+  assert_int_equal(status, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_http.calls, 0);
+  fx->conn.opts.crypto = TEST_CRYPTO();
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -208,6 +242,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_x509_device_gets_an_empty_authorization, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_token_that_cannot_be_signed_is_not_dispatched, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_crypto_not_found_is_not_sent_unsigned, setup, teardown),
   };
   return cmocka_run_group_tests_name("mqttv3_file_upload_sas", tests, NULL, NULL);
 }
