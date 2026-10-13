@@ -5,8 +5,9 @@
 /* SPDX-License-Identifier: MIT */
 /* Construction-level smoke test for the Paho adapter. Does not touch the
  * network; verifies that the factory advertises the right version and that a
- * created client carries a fully-populated iface vtable, and that a factory
- * registered with the connection client is released by its deinit(). */
+ * created client carries a fully-populated iface vtable, and that the
+ * application destroys a registered factory after the connection client's
+ * deinit(). */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
