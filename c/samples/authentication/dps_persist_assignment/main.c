@@ -266,6 +266,8 @@ int main(void)
   saved_assignment saved = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
 
   if (op_key == NULL || op_cert == NULL)
   {
@@ -321,16 +323,15 @@ int main(void)
         SAMPLE_ASSIGNMENT_FILE);
   }
 
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  factory_v5 = az_iot_paho_factory_create_v5();
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_dps_assignment_callback(&client, on_assignment, &ctx)
           != AZ_IOT_OK
       /* DPS and an mqttv3 hub use MQTT 3.1.1; an mqttv5 hub uses MQTT 5. */
-      || az_iot_connection_client_register_mqtt_factory(
-             &client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK)
   {
     fprintf(stderr, "[persist] connection client setup failed\n");
     goto cleanup;
@@ -379,6 +380,8 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

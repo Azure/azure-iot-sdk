@@ -1651,6 +1651,7 @@ static void a_rejected_assignment_does_not_store_its_issued_chain(void** state)
       az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_FAULTED);
   az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* Changes a profile pin while an assignment is pending. */
@@ -1717,6 +1718,7 @@ static void a_stored_chain_blocks_the_other_generation_until_adoption(void** sta
   assert_string_equal(
       az_iot_connection_client_get_iothub_address(&client), "myhub.azure-devices.net");
   az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* A chain withheld for an assignment that was to be rejected is not adopted
@@ -1746,6 +1748,7 @@ static void a_withheld_chain_is_not_adopted_after_the_pin_is_released(void** sta
       az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
       AZ_IOT_CONN_STATE_FAULTED);
   az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* Requires mqttv5 from the operational-certificate callback. */
@@ -1797,6 +1800,7 @@ static void the_op_cert_callback_cannot_require_the_other_generation(void** stat
   assert_string_equal(
       az_iot_connection_client_get_iothub_address(&client), "myhub.azure-devices.net");
   az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* Caches a hub as a previous assignment would, then close() + open() at the
@@ -1846,6 +1850,7 @@ static void a_reopen_before_adoption_registers_again(void** state)
   assert_non_null(connect);
   assert_non_null(strstr(connect->username, "/registrations/"));
   az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* A failed store must not hide the chain from the app: the callback still fires,
