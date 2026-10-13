@@ -161,7 +161,10 @@ support it.
 - **Recovery:** pass a prior `request_id` to resubmit after a dropped connection; `replace`
   supersedes an active hub-side operation.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
-  is surfaced as `service_code`, and `retryAfter` as `retry_after_s`.
+  is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
+  `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
+  `tracking_id`. The strings are never NULL, empty when absent or too long, and valid only
+  during the callback.
 
   | Code | Meaning | Transient |
   |---|---|---|
@@ -185,7 +188,8 @@ The CSR always comes from the provider's `get_csr()` (subject: the device id), r
 `release_csr()` once the request is built; a provider without `get_csr`, `release_csr` and
 `store_issued_certificate` gets `AZ_IOT_ERR_NOT_SUPPORTED` before anything is sent. The callback
 receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CSR_ISSUED` with the chain and
-`store_status`, or `AZ_IOT_CSR_FAILED` with `status`, `service_code` and `retry_after_s`. One
+`store_status`, or `AZ_IOT_CSR_FAILED` with `status`, `service_code`, `retry_after_s`,
+`credential_error`, `credential_message` and `tracking_id`. One
 renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
 internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
 Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a

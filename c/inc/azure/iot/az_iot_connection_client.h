@@ -1038,7 +1038,7 @@ extern "C"
   {
     AZ_IOT_CSR_ACCEPTED = 0, /* 202: hub accepted; signing in progress      */
     AZ_IOT_CSR_ISSUED, /* 200: issued chain delivered (evt->issued)   */
-    AZ_IOT_CSR_FAILED /* rejected/failed (evt->status, service_code)  */
+    AZ_IOT_CSR_FAILED /* rejected/failed (evt->status, service_code, ...) */
   } az_iot_csr_event_kind;
 
   typedef struct az_iot_csr_event
@@ -1051,6 +1051,15 @@ extern "C"
     /* ISSUED only: result of storing the chain in the certificate provider.
      * AZ_IOT_OK if the next connect uses it. */
     az_iot_result store_status;
+    /** @brief FAILED: the hub's `info.credentialError`. Never NULL; empty when
+     * absent or too long. Valid only during the callback. */
+    const char* credential_error;
+    /** @brief FAILED: the hub's `info.credentialMessage`, free text. Never
+     * NULL; empty when absent or too long. Valid only during the callback. */
+    const char* credential_message;
+    /** @brief FAILED: the hub's `trackingId`, for support requests. Never
+     * NULL; empty when absent or too long. Valid only during the callback. */
+    const char* tracking_id;
   } az_iot_csr_event;
 
   typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
