@@ -514,6 +514,14 @@ foreach(_backend openssl mbedtls)
         target_link_libraries(az_iot_tests_sas_token_${_backend} PRIVATE az_iot_crypto_${_backend})
         target_compile_definitions(az_iot_tests_sas_token_${_backend} PRIVATE
             AZ_IOT_TEST_CRYPTO_${_backend_upper})
+
+        # DPS registration with TPM attestation over this backend.
+        az_iot_add_cmocka_test(az_iot_tests_dps_tpm_client_${_backend} unit/dps_tpm_client_test.c)
+        target_link_libraries(az_iot_tests_dps_tpm_client_${_backend} PRIVATE az_iot_crypto_${_backend})
+        target_include_directories(az_iot_tests_dps_tpm_client_${_backend} PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/core)
+        target_compile_definitions(az_iot_tests_dps_tpm_client_${_backend} PRIVATE
+            AZ_IOT_TEST_CRYPTO_${_backend_upper})
     endif()
 endforeach()
 
