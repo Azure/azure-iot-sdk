@@ -46,18 +46,19 @@ extern "C"
   /**
    * @brief Create a factory of MQTTv5 Rust clients.
    * @return The factory, or NULL until a non-NULL FFI table is installed via
-   * az_iot_rust_mqtt_install() (or when out of memory). Ownership matches the
-   * Paho factory: the caller owns it until
-   * az_iot_connection_client_register_mqtt_factory() returns AZ_IOT_OK, then
-   * the connection client owns it and az_iot_connection_client_deinit()
-   * destroys it.
+   * az_iot_rust_mqtt_install() (or when out of memory). Owned by the caller;
+   * az_iot_connection_client_register_mqtt_factory() only lends it to the
+   * connection client.
    */
   az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void);
 
   /**
-   * @brief Destroy a factory from az_iot_rust_mqtt_factory_create_v5() that is
-   * not registered with a connection client (a registered one is destroyed by
-   * az_iot_connection_client_deinit()). Does not destroy clients handed out.
+   * @brief Destroy a factory from az_iot_rust_mqtt_factory_create_v5() (NULL:
+   * no-op). Does not destroy clients handed out.
+   *
+   * A registered factory must stay alive until az_iot_connection_client_deinit()
+   * returns; destroy it after that, or at any time if it was never registered
+   * or registration failed.
    */
   void az_iot_rust_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 

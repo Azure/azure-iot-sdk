@@ -12,14 +12,11 @@
  * connection time (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each factory
  * creates a fresh Paho client per session.
  *
- * Factory ownership:
- * - The application owns a created factory until
- *   az_iot_connection_client_register_mqtt_factory() returns AZ_IOT_OK. If
- *   setup stops before that, or registration fails, release it with
- *   az_iot_paho_factory_destroy().
- * - Once registered, the connection client owns it and
- *   az_iot_connection_client_deinit() destroys it. Calling
- *   az_iot_paho_factory_destroy() on it as well is a double free.
+ * Factory ownership: the application owns every factory it creates.
+ * az_iot_connection_client_register_mqtt_factory() lends it to the connection
+ * client, so it must stay alive until az_iot_connection_client_deinit()
+ * returns. Destroy it with az_iot_paho_factory_destroy() after deinit(), or
+ * at any time if it was never registered or registration failed.
  *
  * A factory does not own the clients it produced; those follow the
  * az_iot_mqtt_iface destroy() contract.
@@ -28,12 +25,11 @@
  * az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
  * if (az_iot_connection_client_register_mqtt_factory(&client, v3) != AZ_IOT_OK)
  * {
- *   az_iot_paho_factory_destroy(v3); // not registered: still owned here (NULL: no-op)
  *   // handle the error
  * }
  * // ... use the client ...
- * az_iot_connection_client_deinit(&client); // destroys every registered factory
- * // no az_iot_paho_factory_destroy(v3) here
+ * az_iot_connection_client_deinit(&client);
+ * az_iot_paho_factory_destroy(v3); // NULL: no-op
  * @endcode
  */
 #ifndef AZ_IOT_ADAPTER_PAHO_H
@@ -48,13 +44,13 @@ extern "C"
 
   /**
    * @brief Create a factory of MQTT 3.1.1 Paho clients.
-   * @return The factory, or NULL when out of memory. Owned by the caller until registered.
+   * @return The factory, or NULL when out of memory. Owned by the caller.
    */
   az_iot_mqtt_factory* az_iot_paho_factory_create_v3_1_1(void);
 
   /**
    * @brief Create a factory of MQTT 5 Paho clients.
-   * @return The factory, or NULL when out of memory. Owned by the caller until registered.
+   * @return The factory, or NULL when out of memory. Owned by the caller.
    */
   az_iot_mqtt_factory* az_iot_paho_factory_create_v5(void);
 
@@ -62,8 +58,8 @@ extern "C"
    * @brief Destroy a factory from either function above (NULL: no-op). Clients it created are
    * not destroyed.
    *
-   * Only for a factory not registered with a connection client: a registered factory is owned by
-   * the connection client and destroyed by az_iot_connection_client_deinit().
+   * A registered factory must outlive the connection client: destroy it only after
+   * az_iot_connection_client_deinit() returns.
    */
   void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory);
 

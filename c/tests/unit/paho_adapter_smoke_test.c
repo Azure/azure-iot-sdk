@@ -63,10 +63,10 @@ static void v5_factory_creates_v5_client(void** state)
   az_iot_paho_factory_destroy(f);
 }
 
-/* Registration hands the factories to the connection client: deinit() frees
- * them, and the application must not call az_iot_paho_factory_destroy() too.
- * Under valgrind/ASan, a leak here means deinit() did not release them. */
-static void registered_factories_are_destroyed_by_deinit(void** state)
+/* Registration only lends the factories to the connection client: the
+ * application destroys them after deinit(). Under valgrind/ASan, a double free
+ * here means deinit() released them; a leak means nothing did. */
+static void registered_factories_are_destroyed_by_the_application_after_deinit(void** state)
 {
   (void)state;
   az_iot_connection_client client;
@@ -84,6 +84,8 @@ static void registered_factories_are_destroyed_by_deinit(void** state)
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v5), AZ_IOT_OK);
 
   az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(v3);
+  az_iot_paho_factory_destroy(v5);
 }
 
 /* A factory whose registration failed is still the application's to destroy. */
@@ -101,7 +103,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_factory_creates_v3_client),
     cmocka_unit_test(v5_factory_creates_v5_client),
-    cmocka_unit_test(registered_factories_are_destroyed_by_deinit),
+    cmocka_unit_test(registered_factories_are_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(a_factory_that_failed_to_register_is_destroyed_by_the_application),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

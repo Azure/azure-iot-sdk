@@ -350,18 +350,15 @@ extern "C"
    * factory by version at connection time based on the service being targeted (DPS and mqttv3
    * require v3.1.1, mqttv5 requires v5).
    *
-   * az_iot_connection_client_register_mqtt_factory() copies this struct and, on AZ_IOT_OK, takes
-   * ownership of factory_ctx.
+   * az_iot_connection_client_register_mqtt_factory() copies this struct and borrows factory_ctx.
+   * The application keeps the factory valid until az_iot_connection_client_deinit() returns, then
+   * destroys it with the adapter's destroy function.
    */
   typedef struct az_iot_mqtt_factory
   {
     az_iot_mqtt_version version;
     az_iot_mqtt_client* (*create)(void* factory_ctx);
     void* factory_ctx;
-    /** Called once per registered factory by az_iot_connection_client_deinit() to free
-     * factory_ctx. NULL means no cleanup needed (e.g. stack-allocated factory). After a
-     * successful registration the application must not free factory_ctx itself. */
-    void (*destroy)(void* factory_ctx);
   } az_iot_mqtt_factory;
 
   const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);

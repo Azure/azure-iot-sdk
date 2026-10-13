@@ -258,14 +258,8 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->conn.factory_count > 0);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -621,6 +615,7 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_mqttv5_direct_method_client_deinit(&dm);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void init_does_not_subscribe_a_redundant_methods_filter(void** state)

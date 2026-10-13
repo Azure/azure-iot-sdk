@@ -36,6 +36,7 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
   az_iot_mqttv3_c2d_client c2d;
   int c2d_initialized;
 } sample_state;
@@ -58,6 +59,7 @@ static void sample_state_destroy(sample_state* s)
     s->c2d_initialized = 0;
   }
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -163,8 +165,8 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* v3.1.1 serves both DPS and an MQTTv3 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
