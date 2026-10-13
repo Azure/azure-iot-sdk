@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -16,7 +17,13 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         private string _idScope;
 
-        public SymmetricKeyAuthenticationProvider(string registrationId, string idScope, string symmetricKey) //TODO primary + secondary keys?
+        public SymmetricKeyAuthenticationProvider(
+            string registrationId,
+            string idScope,
+            string symmetricKey,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) //TODO primary + secondary keys?
+            : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         { 
             _idScope = idScope;
             _registrationId = registrationId;

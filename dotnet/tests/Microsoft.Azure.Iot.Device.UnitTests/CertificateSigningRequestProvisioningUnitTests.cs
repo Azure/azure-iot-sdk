@@ -27,6 +27,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private const string RegistrationId = "someRegistrationId";
         private const string DeviceId = "someDeviceId";
         private const string AssignedHub = "some-hub.azure-devices.net";
+        private static readonly string SymmetricKey = Convert.ToBase64String(Encoding.UTF8.GetBytes("some-symmetric-key-for-unit-tests"));
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
 
@@ -196,6 +197,75 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             authentication.IssuedCertificatePrivateKey = operationalKey;
             Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, null).ClientCertificate);
+        }
+
+        [Fact]
+        public async Task SymmetricKeyProvisioningWithACertificateSigningRequestConnectsToTheHubWithTheIssuedCertificate()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
+
+            MqttConnect? dpsConnect = null;
+            MqttConnect? hubConnect = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (dpsConnect == null)
+                {
+                    dpsConnect = connect;
+                }
+                else
+                {
+                    hubConnect ??= connect;
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            SymmetricKeyWithIssuedCertificateAuthenticationProvider authentication = new(RegistrationId, IdScope, SymmetricKey, operationalKey);
+
+            ProvisioningSettings provisioningSettings = new(IdScope)
+            {
+                RegistrationId = RegistrationId,
+                GlobalEndpointAddress = GlobalDeviceEndpoint,
+                CertificateSigningRequest = new(operationalKey, csrBase64),
+            };
+
+            await connectionClient
+                .ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(csrBase64, mockDps.RegistrationRequestPayload?.ClientCertificateSigningRequest);
+
+            // DPS is authenticated with a SAS token derived from the symmetric key.
+            Assert.NotNull(dpsConnect);
+            Assert.Null(dpsConnect.ClientCertificate);
+            Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsConnect.Password));
+
+            // IoT hub is authenticated with the DPS-issued certificate instead.
+            Assert.NotNull(hubConnect);
+            Assert.NotNull(hubConnect.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubConnect.ClientCertificate.Thumbprint);
+            Assert.True(hubConnect.ClientCertificate.HasPrivateKey);
+            Assert.Empty(hubConnect.Password);
+        }
+
+        [Fact]
+        public void SymmetricKeyWithIssuedCertificateAuthenticatesTheHubWithASasTokenUntilACertificateIsIssued()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            SymmetricKeyWithIssuedCertificateAuthenticationProvider authentication = new(RegistrationId, IdScope, SymmetricKey, operationalKey);
+
+            AuthenticationCredentials hubCredentials = authentication.GetIotHubAuthentication(AssignedHub, DeviceId, null);
+
+            Assert.Null(hubCredentials.ClientCertificate);
+            Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(hubCredentials.Password));
         }
 
         private static X509Certificate2 CreateIssuedCertificate(RSA key)
