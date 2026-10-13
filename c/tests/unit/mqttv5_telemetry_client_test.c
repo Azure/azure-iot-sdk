@@ -752,6 +752,7 @@ static void the_correlation_id_travels_as_correlation_data(void** state)
       AZ_IOT_OK);
 
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_int_equal(publish->correlation_data_offered_len, strlen("order-42"));
   assert_int_equal(publish->correlation_data_len, strlen("order-42"));
   assert_memory_equal(publish->correlation_data, "order-42", strlen("order-42"));
   assert_null(az_iot_mock_call_user_property(publish, AZ_IOT_MSG_PROP_CORRELATION_ID));
@@ -809,6 +810,12 @@ static void a_correlation_id_past_the_mqtt_limit_is_refused(void** state)
   assert_false(record.fired);
   assert_int_equal(at_limit, AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_call_count(test->mock), 1);
+  const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
+  assert_int_equal(publish->correlation_data_offered_len, UINT16_MAX);
+  assert_int_equal(publish->correlation_data_len, sizeof(publish->correlation_data));
+  uint8_t expected[sizeof(publish->correlation_data)];
+  memset(expected, 'a', sizeof(expected));
+  assert_memory_equal(publish->correlation_data, expected, sizeof(expected));
 }
 
 /* Nothing is buffered: a send before the connection is up fails, and is not
