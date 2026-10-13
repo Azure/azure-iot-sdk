@@ -88,7 +88,8 @@ files are placeholders.
 
 > The device key is compiled into the image. Use a per-device key and treat the
 > binary as a secret. The [security profile](#production-security-profile-optional)
-> encrypts flash, but does not move the key into hardware.
+> encrypts flash, but does not move the key into hardware. For production key custody, see
+> [Production keys](../../../docs/connecting.md#production-keys).
 
 ### Settings
 
