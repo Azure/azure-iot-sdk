@@ -6686,10 +6686,9 @@ static void catalog_engine_error(void** state)
       assert_true(n > 0 && (size_t)n < sizeof(next_offer));
       wire_pending_response(fx, 200, "", next_offer);
       assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
-      assert_memory_equal(
-          fx->su._internal.active_workflow_id,
-          "bbbbbbbb-0000-0000-0000-000000000002",
-          fx->su._internal.active_workflow_id_len);
+      static const char next_id[] = "bbbbbbbb-0000-0000-0000-000000000002";
+      assert_int_equal(fx->su._internal.active_workflow_id_len, sizeof(next_id) - 1);
+      assert_memory_equal(fx->su._internal.active_workflow_id, next_id, sizeof(next_id) - 1);
     }
     else
     {
