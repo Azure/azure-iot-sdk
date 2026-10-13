@@ -6611,7 +6611,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
 
   /* A host names a hub only together with its device id, whichever route this
    * open() takes. */
-  if (client->opts.host && !client->opts.client_id)
+  if (client->opts.host && !is_nonempty_cstr(client->opts.client_id))
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "open: host is set without client_id");
     return AZ_IOT_ERR_INVALID_ARG;

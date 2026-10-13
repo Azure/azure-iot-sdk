@@ -5252,15 +5252,16 @@ static void a_saved_hub_profile_is_declared(void** state)
   }
 }
 
-/* host without client_id is not a usable saved result, also when a
- * re-provision is due. */
+/* host without client_id (NULL or empty) is not a usable saved result, also
+ * when a re-provision is due. */
 static void a_saved_hub_without_a_device_id_is_refused(void** state)
 {
   (void)state;
-  for (int reprovision = 0; reprovision < 2; ++reprovision)
+  for (int i = 0; i < 4; ++i)
   {
+    int reprovision = i & 1;
     az_iot_connection_client_options opts = saved_hub_options();
-    opts.client_id = NULL;
+    opts.client_id = (i & 2) ? "" : NULL;
     az_iot_connection_client c;
     assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
     az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
