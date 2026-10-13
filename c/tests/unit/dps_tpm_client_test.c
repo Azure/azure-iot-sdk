@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "azure/iot/az_iot_dps_tpm_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_sas_token.h"
 #include "internal/crypto.h"
 
@@ -473,6 +474,45 @@ static void service_failures_report_the_error_code(void** state)
   }
 }
 
+static char last_log[256];
+
+static void capture_log(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)user_ctx;
+  (void)level;
+  (void)component;
+  (void)file;
+  (void)line;
+  size_t n = strlen(msg);
+  n = n < sizeof(last_log) - 1 ? n : sizeof(last_log) - 1;
+  memcpy(last_log, msg, n);
+  last_log[n] = '\0';
+}
+
+static void a_response_without_status_fails_and_logs_it(void** state)
+{
+  (void)state;
+  az_iot_log_sink sink = { capture_log, NULL, AZ_IOT_LOG_LEVEL_TRACE };
+  az_iot_log_set_global_sink(&sink);
+  fake_tpm t = { 0 };
+  az_iot_dps_tpm_client c;
+  challenge(&c, &t);
+  char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+  az_iot_dps_tpm_request req;
+  az_iot_dps_tpm_next next;
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  last_log[0] = '\0';
+  assert_int_equal(respond(&c, 200, "{}", 0, &next), AZ_IOT_ERR_DPS);
+  az_iot_log_set_global_sink(NULL);
+  assert_non_null(strstr(last_log, "status \"\", errorCode 0"));
+}
+
 static void assignment_problems_are_protocol_errors(void** state)
 {
   (void)state;
@@ -922,6 +962,7 @@ int main(void)
     cmocka_unit_test(a_2xx_before_the_challenge_is_a_protocol_error),
     cmocka_unit_test(service_failures_report_the_error_code),
     cmocka_unit_test(assignment_problems_are_protocol_errors),
+    cmocka_unit_test(a_response_without_status_fails_and_logs_it),
     cmocka_unit_test(tpm_failures_end_the_registration),
     cmocka_unit_test(a_short_buffer_or_zero_time_is_rejected),
     cmocka_unit_test(optional_members_and_options_are_sent),

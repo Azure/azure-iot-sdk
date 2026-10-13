@@ -84,9 +84,10 @@ extern "C"
 
   /**
    * @brief TPM operations, implemented with the application's TSS. Each
-   * returns AZ_IOT_OK on success; any other value fails the registration and
-   * is returned by az_iot_dps_tpm_client_handle_response() or
-   * az_iot_dps_tpm_client_get_request().
+   * returns AZ_IOT_OK on success. An import_key error ends the registration
+   * and is returned by az_iot_dps_tpm_client_handle_response(). An
+   * hmac_sha256 error is returned by az_iot_dps_tpm_client_get_request() and
+   * leaves the request to be built again.
    */
   typedef struct az_iot_dps_tpm_ops
   {
@@ -247,7 +248,7 @@ extern "C"
    * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL pointer or a 0 time
    * when a token is needed; AZ_IOT_ERR_NOT_INITIALIZED when there is nothing
    * to send (assigned or failed); AZ_IOT_ERR_NOT_ENOUGH_SPACE; the result of
-   * az_iot_dps_tpm_ops::hmac_sha256.
+   * az_iot_dps_tpm_ops::hmac_sha256. None of these change the client state.
    */
   AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_get_request(
       az_iot_dps_tpm_client* client,
