@@ -74,6 +74,19 @@ static int device_config_load(e2e_device* dev)
    * what every existing leg uses. */
   if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
   {
+    char* profile = az_iot_test_env_dup("AZ_IOT_HUB_CONNECTION_PROFILE");
+    dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    if (profile != NULL && strcmp(profile, "mqttv5") == 0)
+    {
+      dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    }
+    else if (profile != NULL && strcmp(profile, "mqttv3") != 0)
+    {
+      fprintf(stderr, "[e2e] AZ_IOT_HUB_CONNECTION_PROFILE must be mqttv3 or mqttv5\n");
+      free(profile);
+      return 1;
+    }
+    free(profile);
     dev->device_id = dev->hub_device_id;
     return 0;
   }
@@ -111,7 +124,9 @@ void e2e_device_do_work(e2e_device* dev, int ms)
   (void)az_iot_connection_client_do_work(&dev->conn, ms);
 }
 
-int e2e_device_connect(e2e_device* dev)
+int e2e_device_connect(e2e_device* dev) { return e2e_device_connect_with(dev, NULL); }
+
+int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* opts)
 {
   if (device_config_load(dev) != 0)
   {
@@ -134,6 +149,7 @@ int e2e_device_connect(e2e_device* dev)
   {
     copts.host = dev->hub_hostname;
     copts.client_id = dev->hub_device_id;
+    copts.connection_profile = dev->hub_profile;
   }
   else
   {
@@ -151,6 +167,7 @@ int e2e_device_connect(e2e_device* dev)
   copts.proxy.port = dev->proxy_port;
   copts.proxy.username = dev->proxy_username;
   copts.proxy.password = dev->proxy_password;
+  copts.twin_push.push_desired = opts != NULL && opts->twin_push_desired;
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {
@@ -167,6 +184,13 @@ int e2e_device_connect(e2e_device* dev)
           != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] MQTT factory registration failed\n");
+    return 1;
+  }
+
+  if (opts != NULL && opts->before_open != NULL
+      && opts->before_open(dev, opts->before_open_ctx) != 0)
+  {
+    fprintf(stderr, "[e2e] before_open failed\n");
     return 1;
   }
 
