@@ -599,9 +599,9 @@ extern "C"
      *
      * The exception is a TERMINAL report the service rejected permanently
      * (`service_error` names the cause, e.g. REPORT_CONFLICT or
-     * UNKNOWN_WORKFLOW_ID): it is retired and never sent again, and the
-     * service keeps its own record of that workflow. Call
-     * az_iot_su_client_request_update() to learn the current state. */
+     * UNKNOWN_WORKFLOW_ID): it is retired and never sent again. The
+     * service's view is authoritative; call az_iot_su_client_request_update()
+     * to learn it. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
     /* persist_state_fn failed. Raised on the first failure of an episode
