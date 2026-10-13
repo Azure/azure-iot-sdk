@@ -1465,8 +1465,6 @@ extern "C"
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
     void* reg_payload_cb_ctx;
-    az_iot_dps_assignment_callback assignment_cb;
-    void* assignment_cb_ctx;
 
     bool user_close;
 
@@ -1882,6 +1880,9 @@ extern "C"
     az_iot_connection_profile dps_assigned_profile;
     char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool dps_assigned_profile_raw_truncated;
+
+    az_iot_dps_assignment_callback assignment_cb;
+    void* assignment_cb_ctx;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
