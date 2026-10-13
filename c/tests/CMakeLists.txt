@@ -272,6 +272,12 @@ target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_suppor
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
+# An application built with a different AZ_IOT_SU_REQUEST_BUFFER_SIZE than
+# az_iot_core: az_iot_su_client_init() must refuse the client.
+az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_layout_mismatch_test.c)
+target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
+    AZ_IOT_SU_REQUEST_BUFFER_SIZE=4100
+    AZ_IOT_TEST_SU_MISMATCHED_REQUEST_BUFFER_SIZE=4100)
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
 target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a

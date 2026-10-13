@@ -87,7 +87,9 @@ extern "C"
 
 /* --- Compile-time capacities --------------------------------------------- */
 
-/* Maximum number of RSA root public keys the core trust store holds. */
+/* Maximum number of RSA root public keys the core trust store holds. Sizes
+ * az_iot_su_client: define it identically for the application and the SDK
+ * (az_iot_su_client_init() rejects a mismatch). */
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
 #define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
@@ -100,7 +102,9 @@ extern "C"
  * outlive the callback. Holds the escaped manifest, its JWS signature and the
  * file URLs; a one-file offer is about 5 KiB. Override if your deployments are
  * larger. It also bounds the scratch the client verifies the signature in (see
- * AZ_IOT_SU_PERSIST_BLOB_SIZE). No heap is used. */
+ * AZ_IOT_SU_PERSIST_BLOB_SIZE). No heap is used. Sizes az_iot_su_client:
+ * define it identically for the application and the SDK
+ * (az_iot_su_client_init() rejects a mismatch). */
 #ifndef AZ_IOT_SU_REQUEST_BUFFER_SIZE
 #define AZ_IOT_SU_REQUEST_BUFFER_SIZE 16384
 #endif
@@ -994,7 +998,31 @@ extern "C"
   AZ_NODISCARD az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
 
   /**
+   * @brief Exported initializer behind az_iot_su_client_init(); call that instead.
+   *
+   * The build-time arguments describe az_iot_su_client as compiled where it is
+   * allocated. If any differs from the SDK build, the client is not touched.
+   *
+   * @param[in] client_size sizeof(az_iot_su_client).
+   * @param[in] request_buffer_size AZ_IOT_SU_REQUEST_BUFFER_SIZE.
+   * @param[in] max_root_keys AZ_IOT_SU_MAX_ROOT_KEYS.
+   * @return See az_iot_su_client_init().
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_client__init_checked(
+      az_iot_su_client* client,
+      az_iot_connection_client* connection,
+      const az_iot_su_client_config_options* options,
+      size_t client_size,
+      size_t request_buffer_size,
+      size_t max_root_keys);
+
+  /**
    * @brief Initializes the software updates client.
+   *
+   * Inline, so the SDK can check that az_iot_su_client was compiled with the
+   * same capacity macros (e.g. AZ_IOT_SU_REQUEST_BUFFER_SIZE,
+   * AZ_IOT_SU_MAX_ROOT_KEYS) in the application as in the SDK: define them
+   * identically for both builds.
    *
    * @param[out] client Client to initialize.
    * @param[in] connection Connection client the device-update channel is built
@@ -1007,17 +1035,29 @@ extern "C"
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
    *   (including zero compatibility properties), or replacement_policy is not
-   *   an az_iot_su_replacement_policy value.
+   *   an az_iot_su_replacement_policy value. Also returned, with an error log
+   *   and the client untouched, when az_iot_su_client's size,
+   *   AZ_IOT_SU_REQUEST_BUFFER_SIZE or AZ_IOT_SU_MAX_ROOT_KEYS differs between
+   *   the application and SDK builds.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
    *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
    */
-  AZ_NODISCARD az_iot_result az_iot_su_client_init(
+  AZ_NODISCARD AZ_INLINE az_iot_result az_iot_su_client_init(
       az_iot_su_client* client,
       az_iot_connection_client* connection,
-      const az_iot_su_client_config_options* options);
+      const az_iot_su_client_config_options* options)
+  {
+    return az_iot_su_client__init_checked(
+        client,
+        connection,
+        options,
+        sizeof(az_iot_su_client),
+        (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE,
+        (size_t)AZ_IOT_SU_MAX_ROOT_KEYS);
+  }
 
   /**
    * Return Microsoft's compiled-in software updates root public keys (const, static storage).

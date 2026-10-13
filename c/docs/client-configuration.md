@@ -191,6 +191,12 @@ Defaults used when the matching option is left at 0:
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
+Every macro here except `AZ_IOT_SU_VERIFY_SCRATCH_SIZE`, `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` and
+`AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` sizes `az_iot_su_client`, which the application
+allocates: define them identically for the application and the SDK. `az_iot_su_client_init()`
+returns `AZ_IOT_ERR_INVALID_ARG`, with an `ERROR` log, when `sizeof(az_iot_su_client)`,
+`AZ_IOT_SU_REQUEST_BUFFER_SIZE` or `AZ_IOT_SU_MAX_ROOT_KEYS` differs between the two builds.
+
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
