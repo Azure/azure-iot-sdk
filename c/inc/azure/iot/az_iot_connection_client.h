@@ -1128,7 +1128,8 @@ extern "C"
   /**
    * @brief Fired each time the client adopts a DPS assignment: after the first
    * registration and after every re-provision, before the hub connect starts.
-   * Not fired for an assignment the client rejects.
+   * Not fired for an assignment the client rejects; its issued certificate,
+   * if any, is not stored either.
    *
    * With dps.request_operational_certificate, the issued chain is already
    * stored in the certificate provider.

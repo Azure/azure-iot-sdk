@@ -3062,6 +3062,21 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Whether dps_apply_deferred() would adopt the parsed assignment: a
+ * supported profile the attached feature clients accept, and a hub and device id.
+ *
+ * @param[in] c Client, with dps_assigned_* and the profile already parsed.
+ * @return true if the assignment would be adopted.
+ */
+static bool dps_assignment_acceptable(const az_iot_connection_client* c)
+{
+  return (c->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+          || c->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      && (c->required_profile_refs == 0 || c->required_profile == c->connection_profile)
+      && is_nonempty_cstr(c->dps_assigned_hub) && is_nonempty_cstr(c->dps_assigned_device_id);
+}
+
 /* Parse registrationState.issuedCertificateChain (an array of base64 DER or PEM
  * certs) from the DPS ASSIGNED payload and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
@@ -3360,7 +3375,15 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             dps_finalize(c, pr, false);
             return;
           }
-          if (c->dps_enrolling)
+          /* An assignment dps_apply_deferred() will reject keeps the stored
+           * certificate: it must stay paired with the adopted assignment. */
+          if (c->dps_enrolling && !dps_assignment_acceptable(c))
+          {
+            AZ_IOT_LOG_WARN(
+                AZ_IOT_LOG_COMPONENT_DPS,
+                "the assignment will be rejected; not storing its issued certificate");
+          }
+          else if (c->dps_enrolling)
           {
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)

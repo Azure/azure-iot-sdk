@@ -1617,6 +1617,32 @@ static void drive_dps_csr_assignment(
   }
 }
 
+/* An assignment the client will reject is not adopted, so its issued chain is
+ * not stored: the provider keeps the certificate that goes with the assignment
+ * the application already holds. */
+static void a_rejected_assignment_does_not_store_its_issued_chain(void** state)
+{
+  (void)state;
+  static const char k_unknown_profile_with_chain[]
+      = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+        "\"connectionProfile\":\"mqttV9-quantum\","
+        "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_unknown_profile_with_chain);
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(g_dps_op_cert_count, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_deinit(&client);
+}
+
 /* A failed store must not hide the chain from the app: the callback still fires,
  * carrying the provider's error, and the registration fails. */
 static void dps_store_failure_still_delivers_the_chain_with_the_error(void** state)
@@ -3686,6 +3712,7 @@ int main(void)
         hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+    cmocka_unit_test(a_rejected_assignment_does_not_store_its_issued_chain),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
