@@ -39,6 +39,10 @@ static az_iot_certificate_provider* fresh(void)
   az_iot_certificate_provider* p = g_fixture->create(g_fixture->ctx);
   assert_non_null(p);
   assert_non_null(p->vtable);
+  /* Every case calls these; a missing one fails here instead of crashing. */
+  assert_non_null(p->vtable->load);
+  assert_non_null(p->vtable->release);
+  assert_non_null(p->vtable->deinit);
   return p;
 }
 
@@ -183,7 +187,8 @@ static EVP_PKEY* material_key(const az_iot_certificate_material* m)
 
 /**
  * @brief Check a credential load() returned: a client certificate, and a key
- * that certificate certifies (or a key reference / sign() hook).
+ * that certificate certifies, or a key reference / sign() hook the connection
+ * client accepts.
  *
  * @return The client certificate; caller frees.
  */
@@ -191,6 +196,10 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
 {
   X509* x = material_cert(m);
   assert_non_null(x);
+  /* As the connection client: sign() counts from vtable v2, and a key URI
+   * needs crypto_engine_id unless sign() is offered. */
+  bool has_sign = p->vtable->version >= 2 && p->vtable->sign != NULL;
+  assert_false(m->client_key_uri != NULL && m->crypto_engine_id == NULL && !has_sign);
   if (m->client_key_pem || m->client_key_path)
   {
     EVP_PKEY* k = material_key(m);
@@ -200,7 +209,7 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   }
   else
   {
-    assert_true(m->client_key_uri != NULL || p->vtable->sign != NULL);
+    assert_true(m->client_key_uri != NULL || has_sign);
   }
   return x;
 }
@@ -467,8 +476,10 @@ int cert_provider_contract_run(const cert_provider_contract_fixture* fixture)
 
   fixture->reset(fixture->ctx);
   az_iot_certificate_provider* p = fixture->create(fixture->ctx);
-  bool has_csr = p && p->vtable && p->vtable->version >= 2 && p->vtable->get_csr;
-  if (p && p->vtable)
+  /* A missing CSR hook already fails vtable_is_well_formed. */
+  bool has_csr = p && p->vtable && p->vtable->version >= 2 && p->vtable->get_csr
+      && p->vtable->release_csr && p->vtable->store_issued_certificate;
+  if (p && p->vtable && p->vtable->deinit)
   {
     p->vtable->deinit(p);
   }
