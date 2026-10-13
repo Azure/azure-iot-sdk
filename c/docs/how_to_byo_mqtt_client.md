@@ -341,7 +341,7 @@ The following feature clients depend on v5 adapter properties being correctly pa
 |----------------|----------------------------|---------------------------------|
 | Direct Method  | `correlation_data`, `response_topic` | `correlation_data`, `response_topic` |
 | Twin           | `correlation_data` | `correlation_data` |
-| Telemetry      | `content_type`, `user_properties` | (none — send only) |
+| Telemetry      | `content_type`, `correlation_data`, `user_properties` | (none — send only) |
 
 If your v5 adapter does not propagate these properties, the feature clients will silently fail to correlate responses or deliver incomplete data to the application.
 

@@ -67,6 +67,7 @@ extern "C"
     /* MQTT v5 PUBLISH extras, captured for presence/birth tests. */
     uint8_t correlation_data[64];
     size_t correlation_data_len;
+    size_t correlation_data_offered_len; /* before truncation to correlation_data */
     char user_type[64]; /* value of the "type" User Property, "" if none */
     /* Every User Property in order, so a test can assert what a feature client
      * actually forwarded rather than only the "type" marker. Properties past

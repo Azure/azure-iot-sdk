@@ -101,10 +101,11 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
+  /* No device id yet: a provisioning connection has not been assigned one. */
   const char* device_id = az_iot_connection_client__device_id(client->_internal.conn);
   if (device_id == NULL)
   {
-    return AZ_IOT_ERR_NOT_INITIALIZED;
+    return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   char topic[AZ_IOT_MQTTV3_TELEMETRY_TOPIC_MAX];
