@@ -67,6 +67,12 @@
   `az_iot_su_parse_update_request()` uses `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` (8192) bytes of stack
   instead. A part that does not fit is logged as too large, not as invalid. The ESP32 sample sets
   the request buffer to 8192 and its NVS partition to 36 KB (erase the flash to move to it).
+- Software updates events: entering Failed carries `reason` and `extended_result_code`; a manifest
+  verification failure carries an `AZ_IOT_SU_MANIFEST_ERROR_*` sub-code (also in the report,
+  was 0). New `AZ_IOT_SU_EVENT_NO_UPDATE` (check answered with no update),
+  `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` (redelivery of the current workflow ignored) and
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`report_terminal` marks the final report). An undecodable
+  update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and

@@ -316,8 +316,9 @@ superseded. The client MUST distinguish:
 |-----------|---------|----------|
 | New `workflowId`, before the first `install_fn` call, or once the workflow ended (Idle / Failed) | **Replacement** | MUST restart from ManifestReceived with the new deployment |
 | New `workflowId`, from the first `install_fn` call until the workflow ends, or after a last apply that returned `REBOOT_REQUIRED` until re-initialization (the reboot) | **Deferred** | MUST NOT process; the current workflow runs to its end; raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`) on each delivery. The application requests an update again later |
-| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
+| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore; raises `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` on each delivery |
 | `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
+| Payload that cannot be decoded (not JSON, required field missing or mistyped, invalid escape) | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_PROTOCOL`) |
 
 A deployment is validated as a whole, so from its first `install_fn` call it is
 not interleaved with another: a partly applied or not yet activated deployment
@@ -371,6 +372,25 @@ The low 28 bits MUST carry the originating hook's raw return value (or an SDK
 sub-code for internal failures) so a device-side failure can be diagnosed from
 the cloud without on-device logs. When a failure has no meaningful sub-code, the
 low bits MUST be `0`.
+
+Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification failed:
+
+| Sub-code | Name | Cause |
+|---|---|---|
+| `0x1` | `CRYPTO` | backend has no `verify_rs256`, or SHA-256 failed |
+| `0x2` | `MALFORMED` | signature, `sjwk` or signing key missing, not a 3-part token, or not valid base64/JSON |
+| `0x3` | `TOO_LARGE` | a decoded part exceeds the scratch or its field limit |
+| `0x4` | `ALG` | `alg` ≠ `RS256` |
+| `0x5` | `UNKNOWN_KID` | `kid` matches no enabled root key |
+| `0x6` | `ROOT_SIGNATURE` | `sjwk` does not verify with the root key |
+| `0x7` | `SIGNATURE` | manifest does not verify with the `sjwk` signing key |
+| `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
+
+Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
+`extended_result_code` (the first failed step's code, else the overall one) and
+`reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
+`AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
+otherwise.
 
 **`result_details`.** OPTIONAL free-form string. When set, it MUST be a copy into
 a client-owned buffer (no pointer into hook-owned memory), consistent with the
@@ -828,7 +848,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  * SDK. Every observer receives every event; read `kind` first.
  *
  *   WORKFLOW_STATE_CHANGED -- the deployment moved. Otherwise observable only
- *     by polling az_iot_su_client_get_state().
+ *     by polling az_iot_su_client_get_state(). Entering FAILED carries why
+ *     (`reason`, `extended_result_code`).
  *   OPERATION_ABANDONED    -- an operation reached a verdict that stops the
  *     CLIENT re-arming it. It does NOT mean the application may not ask again;
  *     that is the intended response, which is why the event carries the route:
@@ -838,10 +859,16 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
  *   UPDATE_REFUSED         -- a delivered update was not processed because it
- *     does not fit a compile-time limit (workflow id or request buffer).
+ *     does not fit a compile-time limit (workflow id or request buffer) or
+ *     cannot be decoded.
  *   UPDATE_DEFERRED        -- a delivered update with a new workflow id was not
  *     started: the current workflow has changed the device, or a reboot its
  *     last apply asked for is owed.
+ *   NO_UPDATE              -- an update check was answered with no update.
+ *   UPDATE_DUPLICATE       -- a delivered update repeats the current workflow
+ *     id and was ignored.
+ *   REPORT_ACCEPTED        -- the service accepted a status report;
+ *     `report_terminal` marks the workflow's final one.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one

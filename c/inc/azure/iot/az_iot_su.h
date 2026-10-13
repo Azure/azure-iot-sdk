@@ -75,6 +75,16 @@ extern "C"
 #define AZ_IOT_SU_EXTENDED_RESULT(facility, code) \
   (int32_t)((((uint32_t)(facility) & 0xFu) << 28) | ((uint32_t)(code) & 0x0FFFFFFFu))
 
+/* Sub-codes of AZ_IOT_SU_FACILITY_MANIFEST: why manifest verification failed. */
+#define AZ_IOT_SU_MANIFEST_ERROR_CRYPTO 0x1u /* no verify_rs256, or SHA-256 failed */
+#define AZ_IOT_SU_MANIFEST_ERROR_MALFORMED 0x2u /* signature, sjwk or key missing or invalid */
+#define AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE 0x3u /* a part exceeds its scratch or field limit */
+#define AZ_IOT_SU_MANIFEST_ERROR_ALG 0x4u /* alg is not RS256 */
+#define AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID 0x5u /* sjwk kid matches no enabled root key */
+#define AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE 0x6u /* sjwk does not verify with the root key */
+#define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
+#define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
+
 /* --- Compile-time capacities --------------------------------------------- */
 
 /* Maximum number of RSA root public keys the core trust store holds. */
@@ -567,7 +577,9 @@ extern "C"
   typedef enum az_iot_su_event_kind
   {
     /* The deployment workflow moved. Carries `state` and `previous_state`.
-     * Otherwise observable only by polling az_iot_su_client_get_state(). */
+     * Otherwise observable only by polling az_iot_su_client_get_state().
+     * Entering AZ_IOT_SU_STATE_FAILED also carries `reason` and
+     * `extended_result_code`; other transitions carry AZ_IOT_OK and 0. */
     AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED = 0,
 
     /* An operation was ABANDONED: it reached a verdict that stops the client
@@ -625,7 +637,9 @@ extern "C"
      * installed or reported for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
-     * AZ_IOT_SU_REQUEST_BUFFER_SIZE. Raised again on each redelivery. */
+     * AZ_IOT_SU_REQUEST_BUFFER_SIZE; AZ_IOT_ERR_PROTOCOL when the payload
+     * cannot be decoded (not JSON, a required field missing or of the wrong
+     * type, or an invalid string escape). Raised again on each redelivery. */
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
@@ -635,7 +649,22 @@ extern "C"
      * it, request an update again once the current workflow has ended (Idle
      * or Failed) and, when its last apply asked for a reboot, after that
      * reboot. */
-    AZ_IOT_SU_EVENT_UPDATE_DEFERRED
+    AZ_IOT_SU_EVENT_UPDATE_DEFERRED,
+
+    /* An update check was answered with no update. Carries `state` and
+     * `operation` (the route that asked). */
+    AZ_IOT_SU_EVENT_NO_UPDATE,
+
+    /* A delivered update carried the workflow id of the current (or last
+     * finished) workflow and was ignored as a redelivery: nothing was
+     * processed or reported for it. Carries `state` (unchanged). Raised again
+     * on each redelivery. */
+    AZ_IOT_SU_EVENT_UPDATE_DUPLICATE,
+
+    /* The service accepted a status report. Carries `state` and
+     * `report_terminal`. Once a terminal report is accepted, nothing more is
+     * owed to the service for that workflow. */
+    AZ_IOT_SU_EVENT_REPORT_ACCEPTED
   } az_iot_su_event_kind;
 
   /**
@@ -693,8 +722,9 @@ extern "C"
     /** WORKFLOW_STATE_CHANGED only; other events repeat `state`. */
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED,
-     * UPDATE_REFUSED and UPDATE_DEFERRED. */
+    /* `operation`: OPERATION_ABANDONED and NO_UPDATE only; unspecified for
+     * other events. `reason` is also set by PERSIST_FAILED, UPDATE_REFUSED,
+     * UPDATE_DEFERRED and WORKFLOW_STATE_CHANGED into FAILED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
@@ -702,6 +732,18 @@ extern "C"
     /* PERSIST_FAILED / PERSIST_RECOVERED only. */
     uint32_t persist_attempts; /**< Consecutive failed writes. */
     bool persist_retrying; /**< PERSIST_FAILED: whether the client retries. */
+
+    /** WORKFLOW_STATE_CHANGED into FAILED: the failed step's extended result
+     * code (AZ_IOT_SU_EXTENDED_RESULT() layout: facility in bits 31..28, e.g.
+     * AZ_IOT_SU_FACILITY_MANIFEST with an AZ_IOT_SU_MANIFEST_ERROR_* sub-code),
+     * else the overall one. `reason` is then AZ_IOT_ERR_AUTH when the manifest
+     * or a file failed verification (a file hash that cannot be read
+     * included), AZ_IOT_ERR_PROTOCOL for a manifest that cannot be decoded or
+     * parsed, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
+     * included). 0 for other events. */
+    int32_t extended_result_code;
+    /** REPORT_ACCEPTED: the report carried a terminal outcome. */
+    bool report_terminal;
   } az_iot_su_event;
 
   /**
@@ -822,6 +864,8 @@ extern "C"
        * same encoding. Its deadline is pending_fetch_deadline_ms: the timeout
        * bounds the whole wait, not only the part before the channel accepts. */
       uint8_t fetch_in_flight;
+      /** An update was delivered since fetch_in_flight was last issued. */
+      bool fetch_delivered;
 
       /* When the pending fetch stops being retried, as a monotonic instant.
        *
