@@ -81,7 +81,7 @@ The sample [reads](../../../common/sample_utils.c) these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration id / device id |
 | `AZ_IOT_CLIENT_CERT` | yes | Path to the device certificate PEM |
-| `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM |
+| `AZ_IOT_CLIENT_KEY` | yes | Path to the device private key PEM. A key file is for development; see [Production keys](../../../../docs/connecting.md#production-keys) |
 | `AZ_IOT_TRUSTED_CA` | yes | Trusted CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | The provisioning endpoint to use. Unset means the SDK default, `global.azure-devices-provisioning.net`; set it when your environment uses a different one. Leaving it unset for an environment that needs it fails as a repeating `TCP/TLS connect failure` against the default host. |
 
