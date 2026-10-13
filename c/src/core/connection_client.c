@@ -1547,11 +1547,12 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const az_iot_connection_client* c = client;
-  /* Between attempts source is NONE; first keeps a source fallback selected. */
-  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  /* first: the source a fallback selected, kept while it connects; it
+   * replaces a rejected source before the next attempt starts. */
+  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].first;
   if (source == AZ_IOT_AUTH_SOURCE_NONE)
   {
-    source = c->auth[AZ_IOT_CONN_SCOPE_HUB].first;
+    source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
   }
   if (source == AZ_IOT_AUTH_SOURCE_NONE && c->opts.certificate_provider == NULL)
   {
