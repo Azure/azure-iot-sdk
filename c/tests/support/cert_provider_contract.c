@@ -153,75 +153,76 @@ static az_iot_result store(az_iot_certificate_provider* p, X509* leaf, entry_fn 
 
 /* ---- reading what the provider hands out ---- */
 
+/** @brief Open @p pem (in memory) if set, else the file at @p path; NULL if neither. */
 static BIO* open_material(const char* pem, const char* path)
 {
-  BIO* b = pem ? BIO_new_mem_buf(pem, -1) : (path ? BIO_new_file(path, "rb") : NULL);
-  return b;
-}
-
-/** @brief The client certificate in @p m (PEM string or file), or NULL. */
-static X509* material_cert(const az_iot_certificate_material* m)
-{
-  BIO* b = open_material(m->client_cert_pem, m->client_cert_path);
-  if (!b)
-  {
-    return NULL;
-  }
-  X509* x = PEM_read_bio_X509(b, NULL, NULL, NULL);
-  BIO_free(b);
-  return x;
-}
-
-/** @brief The private key in @p m (PEM string or file), or NULL. */
-static EVP_PKEY* material_key(const az_iot_certificate_material* m)
-{
-  BIO* b = open_material(m->client_key_pem, m->client_key_path);
-  if (!b)
-  {
-    return NULL;
-  }
-  EVP_PKEY* k = PEM_read_bio_PrivateKey(b, NULL, NULL, (void*)m->client_key_password);
-  BIO_free(b);
-  return k;
+  return pem ? BIO_new_mem_buf(pem, -1) : (path ? BIO_new_file(path, "rb") : NULL);
 }
 
 /**
  * @brief Check a credential load() returned: a client certificate, and a key
  * that certificate certifies, or a key reference / sign() hook the connection
- * client accepts.
+ * client accepts. Every form set (PEM string and file path) is checked: an
+ * adapter may use either.
  *
  * @return The client certificate; caller frees.
  */
 static X509* check_material(az_iot_certificate_provider* p, const az_iot_certificate_material* m)
 {
-  X509* x = material_cert(m);
+  const char* cert_pem[2] = { m->client_cert_pem, NULL };
+  const char* cert_path[2] = { NULL, m->client_cert_path };
+  X509* x = NULL;
+  for (size_t i = 0; i < 2; ++i)
+  {
+    BIO* b = open_material(cert_pem[i], cert_path[i]);
+    if (!b)
+    {
+      continue;
+    }
+    X509* c = PEM_read_bio_X509(b, NULL, NULL, NULL);
+    BIO_free(b);
+    assert_non_null(c);
+    if (!x)
+    {
+      x = c;
+    }
+    else
+    {
+      assert_int_equal(0, X509_cmp(x, c));
+      X509_free(c);
+    }
+  }
   assert_non_null(x);
+
   /* As the connection client: sign() counts from vtable v2, and a key URI
    * needs crypto_engine_id unless sign() is offered. */
   bool has_sign = p->vtable->version >= 2 && p->vtable->sign != NULL;
   assert_false(m->client_key_uri != NULL && m->crypto_engine_id == NULL && !has_sign);
-  if (m->client_key_pem || m->client_key_path)
+  const char* key_pem[2] = { m->client_key_pem, NULL };
+  const char* key_path[2] = { NULL, m->client_key_path };
+  for (size_t i = 0; i < 2; ++i)
   {
-    EVP_PKEY* k = material_key(m);
+    BIO* b = open_material(key_pem[i], key_path[i]);
+    if (!b)
+    {
+      continue;
+    }
+    EVP_PKEY* k = PEM_read_bio_PrivateKey(b, NULL, NULL, (void*)m->client_key_password);
+    BIO_free(b);
     assert_non_null(k);
     assert_int_equal(1, X509_check_private_key(x, k));
     EVP_PKEY_free(k);
   }
-  else
+  if (!m->client_key_pem && !m->client_key_path)
   {
     assert_true(m->client_key_uri != NULL || has_sign);
   }
   return x;
 }
 
-/** @brief Assert load(OPERATIONAL, 0) is checked and serves exactly [@p leaf, CA]. */
-static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
+/** @brief Assert the PEM in @p b is exactly [@p leaf, CA]. Frees @p b. */
+static void assert_chain(BIO* b, X509* leaf)
 {
-  az_iot_certificate_material m;
-  memset(&m, 0, sizeof(m));
-  assert_int_equal(AZ_IOT_OK, p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, 0, &m));
-  X509_free(check_material(p, &m));
-  BIO* b = open_material(m.client_cert_pem, m.client_cert_path);
   assert_non_null(b);
   X509* expected[] = { leaf, g_ca };
   size_t count = 0;
@@ -236,6 +237,24 @@ static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
   }
   assert_int_equal(2, count);
   BIO_free(b);
+}
+
+/** @brief Assert load(OPERATIONAL, 0) is checked and serves exactly [@p leaf, CA] in every form
+ * set. */
+static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
+{
+  az_iot_certificate_material m;
+  memset(&m, 0, sizeof(m));
+  assert_int_equal(AZ_IOT_OK, p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, 0, &m));
+  X509_free(check_material(p, &m));
+  if (m.client_cert_pem)
+  {
+    assert_chain(open_material(m.client_cert_pem, NULL), leaf);
+  }
+  if (m.client_cert_path)
+  {
+    assert_chain(open_material(NULL, m.client_cert_path), leaf);
+  }
   p->vtable->release(p, &m);
 }
 
