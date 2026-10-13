@@ -27,7 +27,9 @@
  *    tokens with the TPM key from az_iot_auth::sas::on_sas_token_required.
  *    mqttv5 hubs do not accept SAS; they need an X.509 certificate, which DPS
  *    does not document issuing (az_iot_dps_tpm_client_options::csr) under TPM
- *    attestation.
+ *    attestation. An mqttv5 assignment is still reported as assigned, since the
+ *    registration succeeded: without issued_certificate_chain, the application
+ *    must hold its own X.509 credential for the hub.
  *
  * Send each request to the DPS endpoint (`global.azure-devices-provisioning.net`
  * unless the enrollment says otherwise) with headers `Accept: application/json`,
