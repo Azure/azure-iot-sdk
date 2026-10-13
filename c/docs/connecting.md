@@ -243,10 +243,15 @@ The certificate can stay a file: it is public.
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.
 - **Operational keys.** `az_iot_certificate_provider_managed` generates the operational key in
   software and stores it unencrypted in an owner-only file. To keep it in hardware, implement a
-  provider that creates the key there, signs the CSR with it in `get_csr()`, and returns a
-  reference to it from `load()`; start from
+  provider that creates the key there and signs the CSR with it in `get_csr()`. For TLS, `load()`
+  returns a reference to the key, or the provider implements `sign()` and `load()` returns the
+  certificate with no key, as in the table above. Start from
   [`custom_provider_template`](../samples/authentication/custom_provider_template/README.md).
-- **SAS keys** are secrets too: sign tokens in hardware through `on_sas_token_required`; see
+- **SAS keys** are secrets too; keep them in hardware with a user-provided token.
+  `on_sas_token_required` only notifies and must not block: sign the
+  `az_iot_sas_token_string_to_sign()` output in hardware outside the callback, build the token
+  with `az_iot_sas_token_from_signature()`, and supply it with
+  `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. See
   [Authentication](#authentication) and
   [`user_provided_sas_token`](../samples/authentication/user_provided_sas_token/README.md).
 - **If a key must be a file**, give each device its own key and make the file readable only by
