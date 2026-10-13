@@ -90,3 +90,9 @@ option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       O
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.
+#
+# Dependencies are built from source (FetchContent) by default. These use an
+# installed copy instead, found through CMAKE_PREFIX_PATH (e.g. a vcpkg or
+# package-feed prefix); see docs/client-configuration.md.
+option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (cmake/Findazure-sdk-for-c.cmake) instead of fetching it" OFF)
+option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
