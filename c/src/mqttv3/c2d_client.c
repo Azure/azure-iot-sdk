@@ -234,8 +234,11 @@ static void on_c2d(void* user_ctx, const az_iot_mqtt_message* msg)
   c2d_property_scratch scratch;
   scratch.count = 0;
   scratch.system_used = 0;
-  memset(scratch.system, 0, sizeof(scratch.system));
-  memset(scratch.system_seen, 0, sizeof(scratch.system_seen));
+  for (size_t i = 0; i < C2D_SYS_COUNT; ++i)
+  {
+    scratch.system[i] = NULL;
+    scratch.system_seen[i] = false;
+  }
   if (msg->topic != NULL)
   {
     static const char k_marker[] = "/messages/devicebound/";
