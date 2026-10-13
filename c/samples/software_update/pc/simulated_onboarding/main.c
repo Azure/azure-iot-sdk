@@ -172,10 +172,8 @@ static void on_connection_state_event_received(
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
-    /* Says only that the provisioning session came up, never whether the
-     * update check has been answered. The SDK raises no event for a
-     * successful "no update available", so the sample cannot tell pending
-     * from answered and does not claim to. */
+    /* Says only that the provisioning session came up. The check's answer is
+     * an update or AZ_IOT_SU_EVENT_NO_UPDATE. */
     if (scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
       printf("Provisioning session up. Running (Ctrl-C to exit)...\n");
@@ -199,6 +197,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Update workflow: %s -> %s\n",
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
+      if (event->state == AZ_IOT_SU_STATE_FAILED)
+      {
+        fprintf(
+            stderr,
+            "Update failed: %s, extended result 0x%08x\n",
+            az_iot_result_to_string(event->reason),
+            (unsigned)event->extended_result_code);
+      }
       state->su_workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
       if (!state->su_workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
@@ -246,6 +252,15 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       printf(
           "New update deferred until %s.\n",
           event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
+      break;
+    case AZ_IOT_SU_EVENT_NO_UPDATE:
+      printf("%s: no update available.\n", su_sample_operation_name(event->operation));
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_DUPLICATE:
+      printf("Update ignored: it repeats the current workflow.\n");
+      break;
+    case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
+      printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
       break;
   }
 }
