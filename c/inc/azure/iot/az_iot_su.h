@@ -76,7 +76,7 @@ extern "C"
   (int32_t)((((uint32_t)(facility) & 0xFu) << 28) | ((uint32_t)(code) & 0x0FFFFFFFu))
 
 /* Sub-codes of AZ_IOT_SU_FACILITY_MANIFEST: why manifest verification failed. */
-#define AZ_IOT_SU_MANIFEST_ERROR_CRYPTO 0x1u /* no verify_rs256, or SHA-256 failed */
+#define AZ_IOT_SU_MANIFEST_ERROR_CRYPTO 0x1u /* crypto backend fault, not a rejection */
 #define AZ_IOT_SU_MANIFEST_ERROR_MALFORMED 0x2u /* signature, sjwk or key missing or invalid */
 #define AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE 0x3u /* a part exceeds its scratch or field limit */
 #define AZ_IOT_SU_MANIFEST_ERROR_ALG 0x4u /* alg is not RS256 */
@@ -866,6 +866,8 @@ extern "C"
       uint8_t fetch_in_flight;
       /** An update was delivered since fetch_in_flight was last issued. */
       bool fetch_delivered;
+      /** The report last handed to the channel is terminal; kept until its verdict. */
+      bool report_sent_terminal;
 
       /* When the pending fetch stops being retried, as a monotonic instant.
        *

@@ -132,6 +132,9 @@ static void pad_property(char* dst, size_t cap, const char* name, size_t len)
  * `jwk_pad` and `hdr_pad` add that many bytes of an unknown property to the
  * signing JWK and to the manifest JWS header. `escaped_n` encodes the modulus as
  * standard base64 with JSON-escaped slashes, as some serializers emit it. */
+/* alg written into both JWS headers. */
+static const char* g_jws_alg = "RS256";
+
 static void build_jws_ex(
     char* out,
     int32_t out_cap,
@@ -157,9 +160,9 @@ static void build_jws_ex(
   char pl_b64[256];
   b64url_str(pl_json, (int32_t)strlen(pl_json), pl_b64, (int32_t)sizeof(pl_b64));
 
-  char sjwk_hdr[64];
-  snprintf(sjwk_hdr, sizeof(sjwk_hdr), "{\"alg\":\"RS256\",\"kid\":\"%s\"}", root_kid);
-  char shdr_b64[128];
+  char sjwk_hdr[320];
+  snprintf(sjwk_hdr, sizeof(sjwk_hdr), "{\"alg\":\"%s\",\"kid\":\"%s\"}", g_jws_alg, root_kid);
+  char shdr_b64[448];
   b64url_str(sjwk_hdr, (int32_t)strlen(sjwk_hdr), shdr_b64, (int32_t)sizeof(shdr_b64));
 
   char n_b64[32];
@@ -189,7 +192,8 @@ static void build_jws_ex(
 
   pad_property(pad, sizeof(pad), "x5c", hdr_pad);
   static char mhdr_json[49152];
-  n = snprintf(mhdr_json, sizeof(mhdr_json), "{\"alg\":\"RS256\",%s\"sjwk\":\"%s\"}", pad, sjwk);
+  n = snprintf(
+      mhdr_json, sizeof(mhdr_json), "{\"alg\":\"%s\",%s\"sjwk\":\"%s\"}", g_jws_alg, pad, sjwk);
   assert_true(n > 0 && (size_t)n < sizeof(mhdr_json));
   static char mhdr_b64[65536];
   b64url_str(mhdr_json, (int32_t)strlen(mhdr_json), mhdr_b64, (int32_t)sizeof(mhdr_b64));
@@ -255,6 +259,10 @@ typedef struct
   int32_t restore_result;
   int32_t is_installed_result;
   int32_t verify_result;
+  int verify_calls;
+  int verify_fail_call; /* when non-zero, only this 1-based verify_rs256 call fails */
+  az_iot_result verify_error; /* what a failing verify returns; AZ_IOT_OK means AZ_IOT_ERR_AUTH */
+  bool manifest_sha256_wrong; /* the manifest digest differs from the signed one */
   int sha256_calls; /* SHA-256 digests of something other than a file (the manifest) */
   bool manifest_sha256_fails; /* the manifest digest returns AZ_IOT_ERR_INTERNAL */
 
@@ -427,7 +435,14 @@ static az_iot_result mock_verify_rs256(
   memcpy(l->verify_sig, sig, sig_len < sizeof(l->verify_sig) ? sig_len : sizeof(l->verify_sig));
   l->verify_sig_len = sig_len;
   log_op(l, OP_VERIFY, 0);
-  return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
+  l->verify_calls++;
+  bool fail = (l->verify_fail_call != 0) ? (l->verify_calls == l->verify_fail_call)
+                                         : (l->verify_result != AZ_IOT_SU_RESULT_SUCCESS);
+  if (!fail)
+  {
+    return AZ_IOT_OK;
+  }
+  return (l->verify_error != AZ_IOT_OK) ? l->verify_error : AZ_IOT_ERR_AUTH;
 }
 
 /* Serve fx->log.file_len bytes of dummy content in chunks, then EOF. */
@@ -496,6 +511,10 @@ static az_iot_result mock_sha_final(
     {
       mock_log(self)->sha256_calls++;
       memset(out, SU_TEST_HASH_BYTE, AZ_IOT_SHA256_SIZE);
+      if (mock_log(self)->manifest_sha256_wrong)
+      {
+        out[0] ^= 0xFFu;
+      }
       if (mock_log(self)->manifest_sha256_fails)
       {
         return AZ_IOT_ERR_INTERNAL;
@@ -1583,59 +1602,83 @@ static void manifest_verification_failures_carry_their_cause(void** state)
   open_to_connected(fx);
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
+  static char long_kid[201];
+  memset(long_kid, 'k', sizeof(long_kid) - 1);
+
   struct
   {
     const char* id;
-    const char* kid;
-    const char* jws;
-    int32_t verify_result;
+    const char* kid; /* NULL: "testkid" */
+    const char* jws; /* NULL: built */
+    const char* alg; /* NULL: "RS256" */
+    int verify_fail_call; /* 0: none fails */
+    az_iot_result verify_error; /* AZ_IOT_OK: AZ_IOT_ERR_AUTH */
+    bool sha256_fails;
+    bool sha256_wrong;
     uint32_t sub_code;
-    bool manifest_sha256_fails;
     az_iot_result reason;
   } cases[] = {
-    { "wf-root-signature",
-      "testkid",
-      NULL,
-      AZ_IOT_SU_RESULT_FAILURE,
-      AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE,
-      false,
-      AZ_IOT_ERR_AUTH },
-    { "wf-unknown-kid",
-      "not-a-root",
-      NULL,
-      AZ_IOT_SU_RESULT_SUCCESS,
-      AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID,
-      false,
-      AZ_IOT_ERR_AUTH },
-    { "wf-two-parts",
-      NULL,
-      "aGVhZGVy.cGF5bG9hZA",
-      AZ_IOT_SU_RESULT_SUCCESS,
-      AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
-      false,
-      AZ_IOT_ERR_AUTH },
-    { "wf-not-base64",
-      NULL,
-      "!!!.cGF5bG9hZA.c2ln",
-      AZ_IOT_SU_RESULT_SUCCESS,
-      AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
-      false,
-      AZ_IOT_ERR_AUTH },
-    /* A backend fault is not an authentication failure. */
-    { "wf-sha-fails",
-      "testkid",
-      NULL,
-      AZ_IOT_SU_RESULT_SUCCESS,
-      AZ_IOT_SU_MANIFEST_ERROR_CRYPTO,
-      true,
-      AZ_IOT_ERR_INTERNAL },
+    { .id = "wf-root-signature",
+      .verify_fail_call = 1,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-signature",
+      .verify_fail_call = 2,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-unsupported-key",
+      .verify_fail_call = 2,
+      .verify_error = AZ_IOT_ERR_INVALID_ARG,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-unknown-kid",
+      .kid = "not-a-root",
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-alg",
+      .alg = "RS512",
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_ALG,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-long-kid",
+      .kid = long_kid,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-hash",
+      .sha256_wrong = true,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_HASH,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-two-parts",
+      .jws = "aGVhZGVy.cGF5bG9hZA",
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
+      .reason = AZ_IOT_ERR_AUTH },
+    { .id = "wf-not-base64",
+      .jws = "!!!.cGF5bG9hZA.c2ln",
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
+      .reason = AZ_IOT_ERR_AUTH },
+    /* Backend faults are not authentication failures. */
+    { .id = "wf-sha-fails",
+      .sha256_fails = true,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_CRYPTO,
+      .reason = AZ_IOT_ERR_INTERNAL },
+    { .id = "wf-verify-out-of-memory",
+      .verify_fail_call = 1,
+      .verify_error = AZ_IOT_ERR_OUT_OF_MEMORY,
+      .sub_code = AZ_IOT_SU_MANIFEST_ERROR_CRYPTO,
+      .reason = AZ_IOT_ERR_INTERNAL },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
-    fx->log.verify_result = cases[i].verify_result;
-    fx->log.manifest_sha256_fails = cases[i].manifest_sha256_fails;
+    fx->log.verify_calls = 0;
+    fx->log.verify_fail_call = cases[i].verify_fail_call;
+    fx->log.verify_error = cases[i].verify_error;
+    fx->log.manifest_sha256_fails = cases[i].sha256_fails;
+    fx->log.manifest_sha256_wrong = cases[i].sha256_wrong;
+    g_jws_alg = (cases[i].alg != NULL) ? cases[i].alg : "RS256";
     int failed_before = fx->failed_count;
-    inject_patch(fx, patch_with_jws(cases[i].id, cases[i].kid, cases[i].jws));
+    const char* patch = patch_with_jws(
+        cases[i].id, (cases[i].kid != NULL) ? cases[i].kid : "testkid", cases[i].jws);
+    g_jws_alg = "RS256";
+    inject_patch(fx, patch);
     pump(fx, 40);
 
     int32_t expected
@@ -5873,6 +5916,22 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 1);
   assert_int_equal(fx->accepted_terminal_count, 2);
+
+  /* A workflow that supersedes one whose terminal verdict is pending does not
+   * change what that verdict reports. */
+  inject_patch(fx, build_patch("dddddddd-0000-0000-0000-000000000004"));
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  inject_patch(fx, build_patch("eeeeeeee-0000-0000-0000-000000000005"));
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->accepted_count, accepted + 2);
+  assert_int_equal(fx->accepted_terminal_count, 3);
 }
 
 /* A LATE verdict must not resurrect an operation after the slot was abandoned.

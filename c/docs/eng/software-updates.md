@@ -377,13 +377,13 @@ Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification fai
 
 | Sub-code | Name | Cause |
 |---|---|---|
-| `0x1` | `CRYPTO` | backend has no `verify_rs256`, or SHA-256 failed |
+| `0x1` | `CRYPTO` | backend fault: no `verify_rs256`, SHA-256 failed, or `verify_rs256` failed with other than `AZ_IOT_ERR_AUTH`/`AZ_IOT_ERR_INVALID_ARG` |
 | `0x2` | `MALFORMED` | signature, `sjwk` or signing key missing, not a 3-part token, or not valid base64/JSON |
 | `0x3` | `TOO_LARGE` | a decoded part exceeds the scratch or its field limit |
 | `0x4` | `ALG` | `alg` ≠ `RS256` |
 | `0x5` | `UNKNOWN_KID` | `kid` matches no enabled root key |
-| `0x6` | `ROOT_SIGNATURE` | `sjwk` does not verify with the root key |
-| `0x7` | `SIGNATURE` | manifest does not verify with the `sjwk` signing key |
+| `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
+| `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
 | `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
 
 Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with

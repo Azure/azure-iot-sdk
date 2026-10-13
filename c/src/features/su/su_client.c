@@ -57,16 +57,17 @@ static void raise_simple(
     az_iot_su_operation operation,
     bool report_terminal);
 
-/* fetch_in_flight and fetch_delivered occupy padding after pending_fetch, so
- * adding them left the caller-allocated client's size and offsets unchanged.
- * Fails the build if that padding is ever gone. */
+/* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
+ * after pending_fetch, so adding them left the caller-allocated client's size and offsets
+ * unchanged. Fails the build if that padding is ever gone. */
 typedef struct
 {
   char c;
   uint64_t v;
 } su_u64_alignment_probe;
 typedef char az_iot_su_fetch_in_flight_uses_padding
-    [(offsetof(az_iot_su_client, _internal.fetch_delivered) % offsetof(su_u64_alignment_probe, v)
+    [(offsetof(az_iot_su_client, _internal.report_sent_terminal)
+          % offsetof(su_u64_alignment_probe, v)
       != 0u)
          ? 1
          : -1];
@@ -490,6 +491,18 @@ static const az_iot_su_root_key* resolve_root_key(
   return NULL;
 }
 
+/**
+ * @brief Map a failed verify_rs256() result to an AZ_IOT_SU_MANIFEST_ERROR_* sub-code.
+ *
+ * A rejected signature (AZ_IOT_ERR_AUTH) or key (AZ_IOT_ERR_INVALID_ARG) is @p rejected;
+ * any other error is a backend fault (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO).
+ */
+static uint32_t signature_error(az_iot_result r, uint32_t rejected)
+{
+  return (r == AZ_IOT_ERR_AUTH || r == AZ_IOT_ERR_INVALID_ARG) ? rejected
+                                                               : AZ_IOT_SU_MANIFEST_ERROR_CRYPTO;
+}
+
 /* Log why a manifest fails verification, store its AZ_IOT_SU_MANIFEST_ERROR_*
  * sub-code in *out_error, then bail. */
 #define SU_VERIFY_FAIL(code, why)                                                          \
@@ -664,20 +677,20 @@ static int32_t verify_manifest_core(
   {
     az_span s_sig;
     SU_VERIFY_DECODED(b64_decode_in_place(s_sig_b64, false, &s_sig), &s, "step 3: sjwk signature");
-    if (crypto->verify_rs256(
-            crypto,
-            root->modulus,
-            root->modulus_len,
-            root->exponent,
-            root->exponent_len,
-            az_span_ptr(s_signed),
-            (size_t)az_span_size(s_signed),
-            az_span_ptr(s_sig),
-            (size_t)az_span_size(s_sig))
-        != AZ_IOT_OK)
+    az_iot_result vr = crypto->verify_rs256(
+        crypto,
+        root->modulus,
+        root->modulus_len,
+        root->exponent,
+        root->exponent_len,
+        az_span_ptr(s_signed),
+        (size_t)az_span_size(s_signed),
+        az_span_ptr(s_sig),
+        (size_t)az_span_size(s_sig));
+    if (vr != AZ_IOT_OK)
     {
       SU_VERIFY_FAIL(
-          AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE,
+          signature_error(vr, AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE),
           "step 3: sjwk signature does not verify against the root key");
     }
   }
@@ -719,20 +732,20 @@ static int32_t verify_manifest_core(
     az_span m_sig;
     SU_VERIFY_DECODED(
         scratch_b64_decode(&s, m_sig_b64, false, &m_sig), &s, "step 5: manifest signature");
-    if (crypto->verify_rs256(
-            crypto,
-            az_span_ptr(n_raw),
-            (size_t)az_span_size(n_raw),
-            az_span_ptr(e_raw),
-            (size_t)az_span_size(e_raw),
-            az_span_ptr(m_signed),
-            (size_t)az_span_size(m_signed),
-            az_span_ptr(m_sig),
-            (size_t)az_span_size(m_sig))
-        != AZ_IOT_OK)
+    az_iot_result vr = crypto->verify_rs256(
+        crypto,
+        az_span_ptr(n_raw),
+        (size_t)az_span_size(n_raw),
+        az_span_ptr(e_raw),
+        (size_t)az_span_size(e_raw),
+        az_span_ptr(m_signed),
+        (size_t)az_span_size(m_signed),
+        az_span_ptr(m_sig),
+        (size_t)az_span_size(m_sig));
+    if (vr != AZ_IOT_OK)
     {
       SU_VERIFY_FAIL(
-          AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE,
+          signature_error(vr, AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE),
           "step 5: manifest signature does not verify against the signing key");
     }
   }
@@ -1955,7 +1968,7 @@ static void on_channel_result(
     }
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
-      bool terminal = SU_I(client).terminal_report_in_flight;
+      bool terminal = SU_I(client).report_sent_terminal;
       settle_terminal_report(client, result);
       if (result == AZ_IOT_OK)
       {
