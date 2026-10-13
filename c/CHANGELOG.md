@@ -117,3 +117,8 @@
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (with the size needed), `AZ_IOT_ERR_PROTOCOL` or
   `AZ_IOT_ERR_NOT_FOUND`, so nothing is dropped silently and there is no limit on the number or
   size of properties. Adds `AZ_IOT_MSG_PROP_EXPIRY_TIME`.
+- Saved hub with DPS fallback: `host`, `client_id` and `connection_profile` set together with the
+  `dps` fields connect to that hub first and use DPS only when a re-provision is due. The saved
+  `connection_profile` is now declared, so a feature client for the other hub generation fails
+  with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
+  generation. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).

@@ -12,7 +12,9 @@
  *     (IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE,
  *      with RETRY_PENDING and FAULTED side branches)
  *   - DPS provisioning (when opts.dps.id_scope is set and opts.host is NULL,
- *     open() internally provisions via DPS before connecting to the hub)
+ *     open() internally provisions via DPS before connecting to the hub; with
+ *     opts.host set too, open() connects to that saved hub and DPS is the
+ *     fallback)
  *
  * Single-threaded contract: every state transition and every user state-callback
  * fires from inside az_iot_connection_client_do_work(). The MQTT adapter's
@@ -6220,8 +6222,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
       client->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5
           ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
           : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
-  /* A direct connect has no service to ask, so the seed above is the answer. */
-  client->connection_profile_resolved = !dps_configured(client);
+  /* A direct connect has no service to ask, and a saved hub (host with DPS
+   * configured) declares its profile, so the seed above is the answer until a
+   * registration replaces it. */
+  client->connection_profile_resolved
+      = !dps_configured(client) || is_nonempty_cstr(client->opts.host);
   /* send_csr() needs opts.csr_payload_buffer, so its presence is what marks a device that may
    * renew. Reserving now, with nothing in flight, cannot fail and keeps every renewal tracked. */
   if (az_span_size(client->opts.csr_payload_buffer) > 0)
@@ -6802,7 +6807,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "open: host or client_id not set (and DPS not configured)");
+        "open: host or client_id not set, and no DPS registration is due");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
