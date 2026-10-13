@@ -213,7 +213,8 @@ extern "C"
     const char* connection_profile_raw;
     /** The value was longer than connection_profile_raw holds. */
     bool connection_profile_raw_truncated;
-    /** True when DPS sent a hub key and import_key took it. */
+    /** True when DPS sent a hub key and import_key took it. An mqttv3
+     * assignment without one is rejected unless issued_certificate_chain is set. */
     bool hub_key_imported;
     /** `registrationState.issuedCertificateChain` JSON array, a slice of the
      * last response body; empty when absent. */
@@ -333,7 +334,8 @@ extern "C"
       const az_iot_dps_tpm_client* client);
 
   /**
-   * @brief HTTP status and DPS `errorCode` of the last failed response.
+   * @brief HTTP status and DPS `errorCode` of the most recently handled
+   * response, failed or not.
    *
    * @param[in]  client      Client.
    * @param[out] http_status HTTP status; 0 when none. May be NULL.

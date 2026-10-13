@@ -807,6 +807,15 @@ static az_iot_result on_assigned(az_iot_dps_tpm_client* client, const dps_tpm_fi
     }
     a->hub_key_imported = true;
   }
+  else if (
+      a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+      && az_span_size(a->issued_certificate_chain) <= 0)
+  {
+    /* An mqttv3 hub needs the hub key for SAS, or an issued certificate. */
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_DPS, "TPM registration: mqttv3 assignment without a hub key");
+    return fail(client, AZ_IOT_ERR_PROTOCOL);
+  }
   client->_internal.state = DPS_TPM_STATE_ASSIGNED;
   return AZ_IOT_OK;
 }

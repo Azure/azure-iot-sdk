@@ -274,7 +274,7 @@ static void assigned_from_register_needs_no_poll(void** state)
           &c,
           200,
           "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h.x\","
-          "\"deviceId\":\"d\\/1\"}}",
+          "\"tpm\":{\"authenticationKey\":\"" HUB_KEY_B64 "\"},\"deviceId\":\"d\\/1\"}}",
           0,
           &next),
       AZ_IOT_OK);
@@ -283,9 +283,44 @@ static void assigned_from_register_needs_no_poll(void** state)
   assert_string_equal(a->assigned_hub, "h.x");
   assert_string_equal(a->device_id, "d/1");
   assert_int_equal(a->connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
-  assert_false(a->hub_key_imported);
+  assert_true(a->hub_key_imported);
   assert_int_equal(az_span_size(a->issued_certificate_chain), 0);
-  assert_int_equal(t.imports, 1);
+  assert_int_equal(t.imports, 2);
+}
+
+static void an_mqttv3_assignment_needs_a_hub_key_or_a_certificate(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    const char* body;
+    az_iot_result result;
+  } cases[] = {
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\"}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ==\"]}}",
+      AZ_IOT_OK },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"connectionProfile\":\"mqttV5\"}}",
+      AZ_IOT_OK },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    fake_tpm t = { 0 };
+    az_iot_dps_tpm_client c;
+    challenge(&c, &t);
+    char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+    az_iot_dps_tpm_request req;
+    az_iot_dps_tpm_next next;
+    assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+    assert_int_equal(respond(&c, 200, cases[i].body, 0, &next), cases[i].result);
+    assert_int_equal(next.assigned, cases[i].result == AZ_IOT_OK);
+    if (cases[i].result == AZ_IOT_OK)
+    {
+      assert_false(az_iot_dps_tpm_client_get_assignment(&c)->hub_key_imported);
+    }
+  }
 }
 
 static void connection_profiles_map_to_the_enum(void** state)
@@ -325,7 +360,8 @@ static void connection_profiles_map_to_the_enum(void** state)
     char json[256];
     const char* parts[] = { "{\"status\":\"assigned\",\"registrationState\":{",
                             cases[i].member,
-                            "\"assignedHub\":\"h\",\"deviceId\":\"d\"}}" };
+                            "\"tpm\":{\"authenticationKey\":\"" HUB_KEY_B64
+                            "\"},\"assignedHub\":\"h\",\"deviceId\":\"d\"}}" };
     size_t len = 0;
     for (size_t k = 0; k < sizeof(parts) / sizeof(parts[0]); ++k)
     {
@@ -1083,10 +1119,11 @@ static void an_escaped_value_that_fits_unescaped_is_accepted(void** state)
   device[1] = '/';
   device[sizeof(device) - 1] = '\0';
   char json[512];
-  const char* parts[] = { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":"
-                          "\"h\",\"deviceId\":\"",
-                          device,
-                          "\"}}" };
+  const char* parts[]
+      = { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":"
+          "\"h\",\"tpm\":{\"authenticationKey\":\"" HUB_KEY_B64 "\"},\"deviceId\":\"",
+          device,
+          "\"}}" };
   size_t len = 0;
   for (size_t k = 0; k < sizeof(parts) / sizeof(parts[0]); ++k)
   {
@@ -1144,7 +1181,7 @@ static void content_after_the_response_object_is_rejected(void** state)
             &c,
             200,
             "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\","
-            "\"deviceId\":\"d\"}} \r\n",
+            "\"tpm\":{\"authenticationKey\":\"" HUB_KEY_B64 "\"},\"deviceId\":\"d\"}} \r\n",
             0,
             &next),
         AZ_IOT_OK);
@@ -1156,6 +1193,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(full_flow_registers_and_imports_both_keys),
     cmocka_unit_test(assigned_from_register_needs_no_poll),
+    cmocka_unit_test(an_mqttv3_assignment_needs_a_hub_key_or_a_certificate),
     cmocka_unit_test(connection_profiles_map_to_the_enum),
     cmocka_unit_test(throttling_and_server_errors_keep_the_request),
     cmocka_unit_test(error_codes_are_numbers_and_the_registration_state_one_wins),
