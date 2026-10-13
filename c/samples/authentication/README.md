@@ -9,7 +9,7 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 | Scenario | Sample | Provider |
 | --- | --- | --- |
-| X.509 certificate and key from files | every [`unified/`](../unified/) and [`mqttv5/`](../mqttv5/) sample | `az_iot_certificate_provider_pem` |
+| X.509 certificate and key from files (development) | every [`unified/`](../unified/) and [`mqttv5/`](../mqttv5/) sample | `az_iot_certificate_provider_pem` |
 | DPS issues an operational certificate from a CSR | [`dps_csr_managed`](dps_csr_managed/README.md) | managed (OpenSSL) |
 | Same, with the CSR built by application code | [`custom_certificate_provider`](custom_certificate_provider/README.md) | `sample_cert_provider` (in `samples/common`) |
 | Renew the operational certificate over an mqttv3 hub | [`hub_renew`](hub_renew/README.md) | managed (OpenSSL) |
@@ -50,6 +50,9 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | TPM attestation | any | Not available over MQTT | Out of scope. A TPM can hold the X.509 key (`hsm_pkcs11`) or sign SAS tokens (`user_provided_sas_token`) |
 
 ## Which non-extractable key route applies
+
+In production, keep device private keys in hardware rather than in files; see
+[Production keys](../../docs/connecting.md#production-keys).
 
 - **The key can be named** (a PKCS#11 URI, a TPM 2.0 object) and an OpenSSL 3.x provider for it is
   installed: return `client_key_uri` + `crypto_engine_id`, as in `hsm_pkcs11`. The Paho adapter

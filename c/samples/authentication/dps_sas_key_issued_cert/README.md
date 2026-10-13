@@ -31,12 +31,12 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY` | this or the previous | Enrollment-group key (base64). |
 | `AZ_IOT_TRUSTED_CA` | no | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates. Default: the system trust store. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated (EC P-256). Default `operational_key.pem`. |
+| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated (EC P-256). Default `operational_key.pem`. A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued operational chain file. Default `operational_cert.pem`. |
 
-The operational key is written **unencrypted**, with permissions from the process umask when
-the file is created (world-readable under the common `022`). Set `umask 077` before the first
-run; an existing file keeps its mode, so restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
+The operational key is written **unencrypted**, restricted to its owner (0600) on POSIX and to
+its owner and SYSTEM on Windows. An existing key file is loaded as is and keeps its mode;
+restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
 
 ```sh
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'

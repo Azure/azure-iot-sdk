@@ -112,6 +112,12 @@ The `unified/` and `mqttv5/` samples read:
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 | `AZ_IOT_SAMPLE_LOG_TO_FILE` | no | Any non-empty value writes SDK logs to `azure-iot-sdk-c.log` in the working directory, rotated, instead of stderr. See [Logging](../docs/logging.md). |
 
+> **Production.** Reading the private key from a file is for development: a key file can be
+> copied, and the device's identity with it. In production, keep device keys in an HSM, TPM or
+> secure element; see [Production keys](../docs/connecting.md#production-keys) and the
+> [`hsm_pkcs11`](authentication/hsm_pkcs11/README.md) and
+> [`hsm_sign_callback`](authentication/hsm_sign_callback/README.md) samples.
+
 A sample with a missing required variable names it and exits 1. Other samples add or replace
 variables; their READMEs list them. `AZ_IOT_SAMPLE_LOG_TO_FILE` applies to every sample except
 `authentication/hsm_sign_callback`, `authentication/custom_provider_template` and the ESP32 one.
