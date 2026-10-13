@@ -30,6 +30,8 @@ if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IO
 /* Create feature clients, then: */
 if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
 {
+  /* deinit feature clients, then: */
+  az_iot_connection_client_deinit(&client);
   return 1;
 }
 for (;;)

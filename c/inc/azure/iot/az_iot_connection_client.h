@@ -1855,8 +1855,8 @@ extern "C"
       const az_iot_connection_client_options* opts);
 
   /**
-   * @brief Deinitialize the client. Destroys every factory registered with
-   * az_iot_connection_client_register_mqtt_factory() through its destroy hook.
+   * @brief Deinitialize the client. Passes the factory_ctx of every factory registered with
+   * az_iot_connection_client_register_mqtt_factory() to its destroy hook.
    */
   void az_iot_connection_client_deinit(az_iot_connection_client* client);
 
@@ -1866,13 +1866,15 @@ extern "C"
    * The client may hold multiple factories; at session-open time it picks the one whose version
    * matches the session (DPS and mqttv3: v3.1.1; mqttv5: v5).
    *
-   * Ownership: on AZ_IOT_OK the client owns the factory and az_iot_connection_client_deinit()
-   * destroys it; the application must not destroy it (e.g. with az_iot_paho_factory_destroy()).
+   * Ownership: the struct is copied, so it need not outlive the call. On AZ_IOT_OK the client owns
+   * factory->factory_ctx and az_iot_connection_client_deinit() passes it to factory->destroy (if
+   * not NULL); the application must not free it. Adapter factories (Paho, az_mqtt, Rust) use the
+   * factory itself as factory_ctx, so do not call their *_factory_destroy() after registering.
    * Registering the same factory again returns AZ_IOT_OK and changes nothing. On any other result
-   * the factory is not registered and the application still owns it.
+   * nothing is registered and the application still owns factory_ctx.
    *
    * @param client A client initialized with az_iot_connection_client_init().
-   * @param factory The factory. The struct is copied.
+   * @param factory The factory.
    * @retval AZ_IOT_OK Registered (or already registered).
    * @retval AZ_IOT_ERR_INVALID_ARG NULL client, factory, or factory->create.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The registry is full (AZ_IOT_MAX_MQTT_FACTORIES).
