@@ -163,8 +163,8 @@ static BIO* open_material(const char* pem, const char* path)
  * @brief Check a credential load() returned: a client certificate, and a key
  * that certificate certifies, or a key reference / sign() hook the connection
  * client accepts. Every form set (PEM string and file path) is checked: an
- * adapter may use either. A sign()-only key must sign a digest; its signature
- * format belongs to the adapter and is not verified.
+ * adapter may use either. A v2 sign() must sign a digest; its signature format
+ * belongs to the adapter and is not verified.
  *
  * @return The client certificate; caller frees.
  */
@@ -217,17 +217,18 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   if (!m->client_key_pem && !m->client_key_path)
   {
     assert_true(m->client_key_uri != NULL || has_sign);
-    if (has_sign)
-    {
-      /* The signature format is the adapter's; only that sign() signs is checked. */
-      uint8_t digest[32];
-      memset(digest, 0x5a, sizeof(digest));
-      uint8_t sig[1024];
-      size_t sig_len = 0;
-      assert_int_equal(
-          AZ_IOT_OK, p->vtable->sign(p, digest, sizeof(digest), sig, sizeof(sig), &sig_len));
-      assert_true(sig_len > 0 && sig_len <= sizeof(sig));
-    }
+  }
+  if (has_sign)
+  {
+    /* The client forwards sign() whenever set. Its signature format is the
+     * adapter's; only that it signs is checked. */
+    uint8_t digest[32];
+    memset(digest, 0x5a, sizeof(digest));
+    uint8_t sig[1024];
+    size_t sig_len = 0;
+    assert_int_equal(
+        AZ_IOT_OK, p->vtable->sign(p, digest, sizeof(digest), sig, sizeof(sig), &sig_len));
+    assert_true(sig_len > 0 && sig_len <= sizeof(sig));
   }
   return x;
 }
