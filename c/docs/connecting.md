@@ -43,8 +43,9 @@ To skip DPS and connect straight to a hub, set `host` and `client_id` instead of
 and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
 is mqttv3).
 
-[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example. It reads
-its key from a file; for production, see [Production keys](#production-keys).
+[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example, but not
+production-ready code. It reads its key from a file; for production, see
+[Production keys](#production-keys).
 
 ## Connection states
 
