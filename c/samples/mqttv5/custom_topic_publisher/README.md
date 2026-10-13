@@ -111,7 +111,7 @@ SDK warnings and errors go to stderr. On an mqttv3 hub it prints
 | --- | --- |
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | `Cannot build a topic from '<template>': AZ_IOT_ERR_INVALID_ARG` | The template has a `{` or `}` that is not part of `{deviceId}`. The variable is case-sensitive. |
-| `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a leading `$`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
+| `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
 | `The hub refused '<topic>'.` | No topic template on the hub matches the topic. Shown only with an MQTT adapter that reports PUBACK reason codes, such as az_mqtt; the Paho adapter registered here does not yet. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed and the MQTT adapter did not report why. With the Paho adapter this includes a topic no template matches. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_NOT_CONNECTED` | The connection ended before the hub acknowledged; the hub may also close the connection on a refused publish. |
