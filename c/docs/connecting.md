@@ -149,7 +149,7 @@ application saves it and supplies it with the `dps` fields:
 
 ```c
 opts.host = saved_hub;                   /* az_iot_connection_client_get_iothub_address() */
-opts.client_id = saved_device_id;        /* the assigned device id; see below */
+opts.client_id = saved_device_id;        /* az_iot_connection_client_get_device_id() */
 opts.connection_profile = saved_profile; /* az_iot_connection_client_get_hub_profile() */
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
@@ -160,8 +160,6 @@ opts.dps.registration_id = "<registration-id>";
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
   is retried; set `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` to register again instead.
 - A registration replaces the hub, device id and profile. Save them again after `HUB:CONNECTED`.
-  The public API has no getter for the assigned device id yet; it can differ from
-  `registration_id`, so the application must obtain and persist it separately.
 - `connection_profile` is declared, as for a direct connect: a feature client for the other
   generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - `host` without `client_id` fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
