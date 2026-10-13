@@ -8550,24 +8550,64 @@ static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind)
 }
 
 /**
- * @brief Copy the string at the reader's token into @p dst, unescaped; as received when it
- *        has a UTF-16 escape az_core cannot decode. Left "" when the token is not a
- *        string or does not fit: never truncated.
+ * @brief Copy the string at the reader's token into @p dst with JSON escapes decoded, except
+ *        `\` `u` + 4 hex digits, kept as received. Left "" when the token is not a string or
+ *        does not fit: never truncated.
  */
 static void csr_json_copy_string(const az_json_reader* jr, char* dst, size_t dst_size)
 {
-  int32_t len = 0;
-  az_span raw = jr->token.slice; /* the reader has one segment: the whole value */
+  /* The reader has one segment, so the slice is the whole value, already validated. */
+  const uint8_t* src = az_span_ptr(jr->token.slice);
+  int32_t src_len = az_span_size(jr->token.slice);
+  size_t out = 0;
   dst[0] = '\0';
-  if (jr->token.kind == AZ_JSON_TOKEN_STRING
-      && az_result_failed(az_json_token_get_string(&jr->token, dst, (int32_t)dst_size, &len)))
+  if (jr->token.kind != AZ_JSON_TOKEN_STRING)
   {
-    dst[0] = '\0';
-    if ((size_t)az_span_size(raw) < dst_size)
-    {
-      az_span_to_str(dst, (int32_t)dst_size, raw);
-    }
+    return;
   }
+  for (int32_t i = 0; i < src_len; ++i)
+  {
+    char ch = (char)src[i];
+    if (ch == '\\' && i + 1 < src_len)
+    {
+      ch = (char)src[++i];
+      switch (ch)
+      {
+        case 'b':
+          ch = '\b';
+          break;
+        case 'f':
+          ch = '\f';
+          break;
+        case 'n':
+          ch = '\n';
+          break;
+        case 'r':
+          ch = '\r';
+          break;
+        case 't':
+          ch = '\t';
+          break;
+        case 'u':
+          if (out + 2 >= dst_size)
+          {
+            dst[0] = '\0';
+            return;
+          }
+          dst[out++] = '\\';
+          break;
+        default: /* '"', '\\', '/' */
+          break;
+      }
+    }
+    if (out + 1 >= dst_size)
+    {
+      dst[0] = '\0';
+      return;
+    }
+    dst[out++] = ch;
+  }
+  dst[out] = '\0';
 }
 
 /**

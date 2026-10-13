@@ -2842,11 +2842,16 @@ static void a_renewal_error_reports_the_credential_error_and_tracking_id(void** 
   assert_string_equal(
       tc.tracking_id, "0f1e2d3c4b5a69788796a5b4c3d2e1f0-G:3-TimeStamp:10/13/2026 07:01:16");
 
-  /* A UTF-16 escape az_core cannot decode is kept as received, not dropped. */
+  /* A UTF-16 escape az_core cannot decode is kept as received, not dropped;
+   * the other escapes in the same value are still decoded. */
   csr_fail_with_body(
-      fx, m, &tc, "{\"errorCode\":400040,\"info\":{\"credentialMessage\":\"device\\u0027s CSR\"}}");
+      fx,
+      m,
+      &tc,
+      "{\"errorCode\":400040,\"info\":{\"credentialMessage\":"
+      "\"line\\n\\u0027\\\"quoted\\\"\\t\\\\ \\/\"}}");
   assert_int_equal(tc.failed, 2);
-  assert_string_equal(tc.credential_message, "device\\u0027s CSR");
+  assert_string_equal(tc.credential_message, "line\n\\u0027\"quoted\"\t\\ /");
   assert_string_equal(tc.credential_error, "");
   assert_string_equal(tc.tracking_id, "");
 }
@@ -2877,6 +2882,20 @@ static void a_renewal_error_reports_empty_details_when_absent_or_too_long(void**
   assert_string_equal(tc.credential_error, "");
   assert_string_equal(tc.credential_message, "");
 
+  /* 127 characters fit tracking_id; 128 do not. */
+  const char* id_tail = "\"}";
+  at = strlen(head);
+  memset(body + at, 'b', 127);
+  at += 127;
+  memcpy(body + at, id_tail, strlen(id_tail) + 1);
+  csr_fail_with_body(fx, m, &tc, body);
+  assert_int_equal((int)strlen(tc.tracking_id), 127);
+  body[at] = 'b';
+  memcpy(body + at + 1, id_tail, strlen(id_tail) + 1);
+  csr_fail_with_body(fx, m, &tc, body);
+  assert_string_equal(tc.tracking_id, "");
+  assert_int_equal(tc.failed, 3);
+
   /* Non-string trackingId and non-object info are skipped whole. */
   csr_fail_with_body(
       fx,
@@ -2884,7 +2903,7 @@ static void a_renewal_error_reports_empty_details_when_absent_or_too_long(void**
       &tc,
       "{\"trackingId\":{\"errorCode\":1},\"info\":[\"credentialError\"],"
       "\"errorCode\":409005,\"credentialError\":\"top-level is not info\"}");
-  assert_int_equal(tc.failed, 2);
+  assert_int_equal(tc.failed, 4);
   assert_int_equal(tc.service_code, 409005);
   assert_string_equal(tc.tracking_id, "");
   assert_string_equal(tc.credential_error, "");
@@ -2895,7 +2914,7 @@ static void a_renewal_error_reports_empty_details_when_absent_or_too_long(void**
       m,
       &tc,
       "{\"errorCode\":400040,\"trackingId\":\"t-1\",\"info\":{\"credentialError\":\"E\"");
-  assert_int_equal(tc.failed, 3);
+  assert_int_equal(tc.failed, 5);
   assert_int_equal(tc.service_code, 400040);
   assert_string_equal(tc.tracking_id, "t-1");
   assert_string_equal(tc.credential_error, "E");
