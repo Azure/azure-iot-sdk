@@ -113,6 +113,24 @@ extern "C"
       const uint8_t* payload,
       size_t payload_len);
 
+  /* AMQP system properties of a C2D message; NULL / 0 leaves one unset. */
+  typedef struct az_iot_e2e_c2d_properties
+  {
+    const char* message_id;
+    const char* correlation_id;
+    const char* content_type;
+    const char* content_encoding;
+    int64_t absolute_expiry_time_ms; /* ms since the Unix epoch */
+  } az_iot_e2e_c2d_properties;
+
+  /* As az_iot_e2e_service_send_c2d(), with @p properties (may be NULL). */
+  bool az_iot_e2e_service_send_c2d_with_properties(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const uint8_t* payload,
+      size_t payload_len,
+      const az_iot_e2e_c2d_properties* properties);
+
   /* ---- Direct methods & twin (HTTPS REST, non-blocking / pumpable) ---------- */
 
   /* Begin a direct-method invocation on @p device_id. @p json_payload is the raw

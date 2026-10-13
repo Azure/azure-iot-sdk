@@ -13,6 +13,7 @@
  * survives a round trip through az_iot_telemetry_property unchanged.
  */
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -44,98 +45,156 @@ static const char* const k_system_keys[C2D_SYS_COUNT] = {
   AZ_IOT_MSG_PROP_EXPIRY_TIME,  AZ_IOT_MSG_PROP_CONTENT_ENCODING, AZ_IOT_MSG_PROP_USER_ID,
 };
 
-/* Longest system key ("$.mid") plus its terminator, with headroom; a key that
- * does not fit is not a system key. */
+/* Longest system key ("$.mid") with headroom; a longer key is not a system key. */
 #define C2D_SYSTEM_KEY_MAX 8
 
-/* Scratch for one delivery: the decoded property text plus the key/value
- * pointers into it. Lives on the dispatch stack, so it costs nothing per
- * client and its lifetime matches what the public header promises -- valid for
- * the duration of the handler callback. */
-typedef struct c2d_property_scratch
+/**
+ * @brief Decoded properties of one delivery.
+ *
+ * Lives on the dispatch stack, so it costs nothing per client and is valid for
+ * the duration of the handler callback. @p text is shared: typed system
+ * property values are stored from its end and the generic list from its start,
+ * so the typed values survive a generic list that does not fit.
+ */
+typedef struct c2d_property_parse_result
 {
   char text[AZ_IOT_C2D_PROPERTY_BUFFER];
+  size_t system_property_values_size; /**< Bytes used at the end of @p text. */
+  const char* system_property_values[C2D_SYS_COUNT];
+  /** Pair each typed value was taken from; NULL when the key was not found. */
+  const char* system_property_found_at[C2D_SYS_COUNT];
   az_iot_c2d_property properties[AZ_IOT_C2D_MAX_PROPERTIES];
-  size_t count;
-  /* Typed system properties, in storage of their own so a full generic list
-   * cannot crowd them out. */
-  char system_text[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER];
-  size_t system_used;
-  const char* system[C2D_SYS_COUNT];
-  bool system_seen[C2D_SYS_COUNT];
-} c2d_property_scratch;
+  size_t properties_count;
+} c2d_property_parse_result;
 
 /**
- * @brief Record @p pair in its typed field when its key is a known system
- *        property.
+ * @brief Length @p value percent-decodes to.
+ *
+ * @return The decoded length, or SIZE_MAX when an escape is truncated. Bad hex
+ *         digits are left to the decoder to reject.
+ */
+static size_t c2d_url_decoded_length(const char* value, size_t length)
+{
+  size_t decoded = 0;
+  size_t i = 0;
+  while (i < length)
+  {
+    if (value[i] == '%')
+    {
+      if (length - i < 3)
+      {
+        return SIZE_MAX;
+      }
+      i += 3;
+    }
+    else
+    {
+      i++;
+    }
+    decoded++;
+  }
+  return decoded;
+}
+
+/**
+ * @brief Store @p pair's value at the end of @p r->text when its key is a known
+ *        system property.
  *
  * Only the first occurrence of a key counts, matching
- * az_iot_c2d_message_property(). A value that does not fit or does not decode
- * leaves the field NULL and is logged; the generic list is unaffected.
+ * az_iot_c2d_message_property(). A value that does not fit, does not decode or
+ * decodes to an embedded NUL leaves the field NULL and is logged.
  */
-static void c2d_capture_system_property(c2d_property_scratch* s, const char* pair, size_t pair_len)
+static void c2d_capture_system_property(
+    c2d_property_parse_result* r,
+    const char* pair,
+    size_t pair_len)
 {
   const char* eq = (const char*)memchr(pair, '=', pair_len);
   size_t key_len = eq ? (size_t)(eq - pair) : pair_len;
 
-  char key[C2D_SYSTEM_KEY_MAX];
-  az_iot_span_writer kw;
-  az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
-  az_iot_span_writer_append_url_decoded(&kw, pair, key_len);
-  size_t decoded_key_len = 0;
-  if (az_iot_span_writer_end_str(&kw, &decoded_key_len) != AZ_IOT_OK
-      || strlen(key) != decoded_key_len)
+  uint8_t key_buffer[C2D_SYSTEM_KEY_MAX];
+  az_iot_span_writer key_writer;
+  az_iot_span_writer_init(&key_writer, AZ_SPAN_FROM_BUFFER(key_buffer));
+  az_iot_span_writer_append_url_decoded(&key_writer, pair, key_len);
+  az_span key;
+  if (az_iot_span_writer_end(&key_writer, &key) != AZ_IOT_OK)
   {
-    return; /* Too long, malformed, or holds a decoded NUL: not a system key. */
+    return; /* Too long or malformed: not a system key. */
   }
 
   size_t id = 0;
-  while (id < C2D_SYS_COUNT && strcmp(key, k_system_keys[id]) != 0)
+  while (id < C2D_SYS_COUNT
+         && !az_span_is_content_equal(
+             key, az_span_create_from_str((char*)(uintptr_t)k_system_keys[id])))
   {
     ++id;
   }
-  if (id == C2D_SYS_COUNT || s->system_seen[id])
+  if (id == C2D_SYS_COUNT || r->system_property_found_at[id] != NULL)
   {
     return;
   }
-  s->system_seen[id] = true;
+  r->system_property_found_at[id] = pair;
   if (eq == NULL)
   {
     return; /* Sent with no value. */
   }
 
-  char* dst = s->system_text + s->system_used;
-  az_iot_span_writer vw;
-  az_iot_span_writer_init(
-      &vw, az_span_create((uint8_t*)dst, (int32_t)(sizeof(s->system_text) - s->system_used)));
-  az_iot_span_writer_append_url_decoded(&vw, eq + 1, pair_len - key_len - 1);
-  size_t len = 0;
-  if (az_iot_span_writer_end_str(&vw, &len) != AZ_IOT_OK || strlen(dst) != len)
+  const char* encoded = eq + 1;
+  size_t encoded_len = pair_len - key_len - 1;
+  size_t available = sizeof(r->text) - r->system_property_values_size;
+  size_t decoded_len = c2d_url_decoded_length(encoded, encoded_len);
+  bool stored = false;
+  if (decoded_len < available)
+  {
+    char* dst = r->text + available - decoded_len - 1;
+    az_iot_span_writer value_writer;
+    az_iot_span_writer_init(
+        &value_writer, az_span_create((uint8_t*)dst, (int32_t)(decoded_len + 1)));
+    az_iot_span_writer_append_url_decoded(&value_writer, encoded, encoded_len);
+    if (az_iot_span_writer_end(&value_writer, NULL) == AZ_IOT_OK
+        && memchr(dst, '\0', decoded_len) == NULL)
+    {
+      dst[decoded_len] = '\0';
+      r->system_property_values[id] = dst;
+      r->system_property_values_size += decoded_len + 1;
+      stored = true;
+    }
+  }
+  if (!stored)
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_C2D,
         "omitting %s from a message -- it did not decode into the remaining "
-        "AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER bytes, or it carried a malformed or NUL "
-        "percent-escape",
+        "AZ_IOT_C2D_PROPERTY_BUFFER bytes, or it carried a malformed or NUL percent-escape",
         k_system_keys[id]);
-    return;
   }
-  s->system[id] = dst;
-  s->system_used += len + 1;
 }
 
-/* Decode one "key" / "key=" / "key=value" pair into the scratch and record it.
- * Returns false when the scratch is full, which is the caller's signal to stop
+/* Decode one "key" / "key=" / "key=value" pair into the generic list. A pair a
+ * typed value was taken from reuses that value instead of decoding it again.
+ * Returns false when the list is full, which is the caller's signal to stop
  * and warn rather than to fail the delivery. */
 static bool c2d_add_property(
-    c2d_property_scratch* s,
+    c2d_property_parse_result* r,
     az_iot_span_writer* writer,
     const char* pair,
     size_t pair_len)
 {
-  if (pair_len == 0 || s->count >= AZ_IOT_C2D_MAX_PROPERTIES)
+  if (pair_len == 0 || r->properties_count >= AZ_IOT_C2D_MAX_PROPERTIES)
   {
     return false;
+  }
+
+  az_iot_c2d_property* p = &r->properties[r->properties_count];
+  for (size_t id = 0; id < C2D_SYS_COUNT; ++id)
+  {
+    if (r->system_property_found_at[id] == pair && r->system_property_values[id] != NULL)
+    {
+      p->key = k_system_keys[id];
+      p->value = r->system_property_values[id];
+      r->properties_count++;
+      return true;
+    }
   }
 
   /* IoT Hub represents a null value as a bare key and an empty value as a
@@ -148,9 +207,7 @@ static bool c2d_add_property(
     return false; /* "=value" has no name; not something the service emits. */
   }
 
-  az_iot_c2d_property* p = &s->properties[s->count];
-
-  p->key = s->text + az_iot_span_writer_length(writer);
+  p->key = r->text + az_iot_span_writer_length(writer);
   az_iot_span_writer_append_url_decoded(writer, pair, key_len);
   az_iot_span_writer_append_u8(writer, 0);
 
@@ -160,34 +217,23 @@ static bool c2d_add_property(
   }
   else
   {
-    p->value = s->text + az_iot_span_writer_length(writer);
+    p->value = r->text + az_iot_span_writer_length(writer);
     az_iot_span_writer_append_url_decoded(writer, eq + 1, pair_len - key_len - 1);
     az_iot_span_writer_append_u8(writer, 0);
   }
 
-  s->count++;
+  r->properties_count++;
   return true;
 }
 
-/* Split "a=1&b&c=" into pairs and decode each one.
- *
- * A malformed escape latches on the writer and is reported once at the end:
- * the message itself is still delivered, because losing a payload over an
- * unreadable property would be a worse outcome than delivering it with fewer
- * properties. */
-static void c2d_parse_property_bag(c2d_property_scratch* s, const char* bag, size_t bag_len)
+/** @brief Calls @p fn on each non-empty '&'-separated pair of @p bag. */
+static void c2d_for_each_pair(
+    const char* bag,
+    size_t bag_len,
+    void (*fn)(void* ctx, const char* pair, size_t pair_len),
+    void* ctx)
 {
-  s->count = 0;
-  if (bag == NULL || bag_len == 0)
-  {
-    return;
-  }
-
-  az_iot_span_writer writer;
-  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(s->text));
-
   size_t start = 0;
-  bool truncated = false;
   for (size_t i = 0; i <= bag_len; ++i)
   {
     if (i != bag_len && bag[i] != '&')
@@ -196,16 +242,59 @@ static void c2d_parse_property_bag(c2d_property_scratch* s, const char* bag, siz
     }
     if (i > start)
     {
-      c2d_capture_system_property(s, bag + start, i - start);
-      if (!c2d_add_property(s, &writer, bag + start, i - start))
-      {
-        truncated = (s->count >= AZ_IOT_C2D_MAX_PROPERTIES);
-      }
+      fn(ctx, bag + start, i - start);
     }
     start = i + 1;
   }
+}
 
-  if (az_iot_span_writer_end(&writer, NULL) != AZ_IOT_OK)
+static void c2d_capture_pair(void* ctx, const char* pair, size_t pair_len)
+{
+  c2d_capture_system_property((c2d_property_parse_result*)ctx, pair, pair_len);
+}
+
+typedef struct c2d_generic_pass
+{
+  c2d_property_parse_result* result;
+  az_iot_span_writer writer;
+  bool truncated;
+} c2d_generic_pass;
+
+static void c2d_add_pair(void* ctx, const char* pair, size_t pair_len)
+{
+  c2d_generic_pass* pass = (c2d_generic_pass*)ctx;
+  if (!c2d_add_property(pass->result, &pass->writer, pair, pair_len))
+  {
+    pass->truncated = (pass->result->properties_count >= AZ_IOT_C2D_MAX_PROPERTIES);
+  }
+}
+
+/* Split "a=1&b&c=" into pairs and decode them: typed system properties first,
+ * into the end of the buffer, then the generic list into what is left.
+ *
+ * A malformed escape latches on the writer and is reported once at the end:
+ * the message itself is still delivered, because losing a payload over an
+ * unreadable property would be a worse outcome than delivering it with fewer
+ * properties. */
+static void c2d_parse_property_bag(c2d_property_parse_result* r, const char* bag, size_t bag_len)
+{
+  if (bag == NULL || bag_len == 0)
+  {
+    return;
+  }
+
+  c2d_for_each_pair(bag, bag_len, c2d_capture_pair, r);
+
+  c2d_generic_pass pass;
+  pass.result = r;
+  pass.truncated = false;
+  az_iot_span_writer_init(
+      &pass.writer,
+      az_span_create(
+          (uint8_t*)r->text, (int32_t)(sizeof(r->text) - r->system_property_values_size)));
+  c2d_for_each_pair(bag, bag_len, c2d_add_pair, &pass);
+
+  if (az_iot_span_writer_end(&pass.writer, NULL) != AZ_IOT_OK)
   {
     /* Either the text did not fit or an escape was malformed. Whatever was
      * decoded before the failure may be incomplete, so surface none of it
@@ -214,9 +303,9 @@ static void c2d_parse_property_bag(c2d_property_scratch* s, const char* bag, siz
         AZ_IOT_LOG_COMPONENT_C2D,
         "dropping the properties of a message -- the bag did not decode into "
         "AZ_IOT_C2D_PROPERTY_BUFFER bytes, or it carried a malformed percent-escape");
-    s->count = 0;
+    r->properties_count = 0;
   }
-  else if (truncated)
+  else if (pass.truncated)
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_C2D,
@@ -234,13 +323,13 @@ static void on_c2d(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  c2d_property_scratch scratch;
-  scratch.count = 0;
-  scratch.system_used = 0;
+  c2d_property_parse_result parsed;
+  parsed.properties_count = 0;
+  parsed.system_property_values_size = 0;
   for (size_t i = 0; i < C2D_SYS_COUNT; ++i)
   {
-    scratch.system[i] = NULL;
-    scratch.system_seen[i] = false;
+    parsed.system_property_values[i] = NULL;
+    parsed.system_property_found_at[i] = NULL;
   }
   if (msg->topic != NULL)
   {
@@ -249,21 +338,21 @@ static void on_c2d(void* user_ctx, const az_iot_mqtt_message* msg)
     if (bag != NULL)
     {
       bag += sizeof(k_marker) - 1;
-      c2d_parse_property_bag(&scratch, bag, strlen(bag));
+      c2d_parse_property_bag(&parsed, bag, strlen(bag));
     }
   }
 
   az_iot_c2d_message out;
   out.payload = msg->payload;
   out.payload_len = msg->payload_len;
-  out.properties = scratch.properties;
-  out.properties_count = scratch.count;
-  out.content_type = scratch.system[C2D_SYS_CONTENT_TYPE];
-  out.message_id = scratch.system[C2D_SYS_MESSAGE_ID];
-  out.correlation_id = scratch.system[C2D_SYS_CORRELATION_ID];
-  out.expiry_time = scratch.system[C2D_SYS_EXPIRY_TIME];
-  out.content_encoding = scratch.system[C2D_SYS_CONTENT_ENCODING];
-  out.user_id = scratch.system[C2D_SYS_USER_ID];
+  out.properties = parsed.properties;
+  out.properties_count = parsed.properties_count;
+  out.content_type = parsed.system_property_values[C2D_SYS_CONTENT_TYPE];
+  out.message_id = parsed.system_property_values[C2D_SYS_MESSAGE_ID];
+  out.correlation_id = parsed.system_property_values[C2D_SYS_CORRELATION_ID];
+  out.expiry_time = parsed.system_property_values[C2D_SYS_EXPIRY_TIME];
+  out.content_encoding = parsed.system_property_values[C2D_SYS_CONTENT_ENCODING];
+  out.user_id = parsed.system_property_values[C2D_SYS_USER_ID];
   CI(c2d).handler(&out, CI(c2d).handler_ctx);
 }
 

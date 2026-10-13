@@ -728,10 +728,10 @@ static void a_system_value_that_does_not_fit_or_decode_is_omitted(void** state)
   /* An oversized $.mid, a malformed $.uid and a $.ct with a decoded NUL are
    * omitted on their own; the space the failed ones did not use is still there
    * for $.cid. */
-  char topic[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER + 128];
+  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
   int n = snprintf(topic, sizeof(topic), "%s%%24.mid=", C2D_TOPIC);
-  memset(topic + n, 'm', AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER);
-  n += AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER;
+  memset(topic + n, 'm', AZ_IOT_C2D_PROPERTY_BUFFER);
+  n += AZ_IOT_C2D_PROPERTY_BUFFER;
   snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.uid=%%zz&%%24.ct=a%%00b&%%24.cid=c-3");
   inject(fx, topic, "body");
 
@@ -775,8 +775,8 @@ static void system_properties_fill_the_buffer_exactly(void** state)
 
   /* "c-4" and its terminator take 4 bytes; a $.mid of the rest fits to the
    * byte, and nothing is left for $.ce. */
-  const size_t mid_len = AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER - 4 - 1;
-  char topic[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER + 128];
+  const size_t mid_len = AZ_IOT_C2D_PROPERTY_BUFFER - 4 - 1;
+  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
   int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-4&%%24.mid=", C2D_TOPIC);
   memset(topic + n, 'm', mid_len);
   n += (int)mid_len;
@@ -787,6 +787,37 @@ static void system_properties_fill_the_buffer_exactly(void** state)
   assert_string_equal(probe.correlation_id, "c-4");
   assert_int_equal(probe.message_id_len, mid_len);
   assert_true(probe.content_encoding_was_null);
+}
+
+typedef struct sharing_probe
+{
+  int count;
+  bool shared;
+} sharing_probe;
+
+static void on_c2d_sharing(const az_iot_c2d_message* msg, void* user_ctx)
+{
+  sharing_probe* p = (sharing_probe*)user_ctx;
+  p->count++;
+  p->shared = msg->properties_count == 2 && msg->message_id != NULL
+      && strcmp(msg->properties[0].key, AZ_IOT_MSG_PROP_MESSAGE_ID) == 0
+      && msg->properties[0].value == msg->message_id;
+}
+
+static void a_system_value_is_shared_with_the_property_list(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  sharing_probe probe = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_sharing, &probe), AZ_IOT_OK);
+
+  /* Decoded once: both views point at the same text. */
+  inject(fx, C2D_TOPIC "%24.mid=m-5&k=v", "body");
+
+  assert_int_equal(probe.count, 1);
+  assert_true(probe.shared);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -982,6 +1013,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_system_value_that_does_not_fit_or_decode_is_omitted, setup, teardown),
     cmocka_unit_test_setup_teardown(system_properties_fill_the_buffer_exactly, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_system_value_is_shared_with_the_property_list, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_for_the_same_identity_fails_the_connect_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(

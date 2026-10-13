@@ -77,17 +77,11 @@ extern "C"
 #define AZ_IOT_C2D_MAX_PROPERTIES 8
 #endif
 /* Bytes available to hold the decoded property names and values of one
- * message. Decoding never grows the text, so this only has to cover the
- * property-bag portion of an mqttv3 topic. */
+ * message, typed system property values included. Decoding never grows the
+ * text, so this only has to cover the property-bag portion of an mqttv3
+ * topic. */
 #ifndef AZ_IOT_C2D_PROPERTY_BUFFER
 #define AZ_IOT_C2D_PROPERTY_BUFFER 256
-#endif
-/* Bytes available to hold the decoded values of the system properties exposed
- * as typed fields of az_iot_c2d_message. Separate from
- * AZ_IOT_C2D_PROPERTY_BUFFER, so those fields survive an overflow of the
- * generic property list. */
-#ifndef AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER
-#define AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER 256
 #endif
 
   /**
@@ -113,8 +107,8 @@ extern "C"
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
    *
-   * The system property fields are decoded into their own storage
-   * (AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER), so they are set even when
+   * The system property fields are decoded before @p properties and take
+   * AZ_IOT_C2D_PROPERTY_BUFFER space first, so they are set even when
    * @p properties was truncated or dropped. Each is NULL when the message
    * carries no such property, carries it with no value, or its value did not
    * fit or decode, or holds an encoded NUL (logged). A key holding an encoded

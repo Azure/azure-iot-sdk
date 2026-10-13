@@ -98,7 +98,7 @@
   `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
 - mqttv3 C2D: `az_iot_c2d_message` gains typed system property fields `message_id` (`$.mid`),
   `correlation_id` (`$.cid`), `expiry_time` (`$.exp`), `content_encoding` (`$.ce`) and `user_id`
-  (`$.uid`), plus `AZ_IOT_MSG_PROP_EXPIRY_TIME`. They and `content_type` are decoded into their own
-  buffer (`AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER`, default 256), so they are kept when the generic
-  property list is cut at `AZ_IOT_C2D_MAX_PROPERTIES` or dropped for overrunning
-  `AZ_IOT_C2D_PROPERTY_BUFFER`.
+  (`$.uid`), plus `AZ_IOT_MSG_PROP_EXPIRY_TIME`. They and `content_type` are decoded first, into
+  the end of `AZ_IOT_C2D_PROPERTY_BUFFER`, and shared with the generic list rather than decoded
+  twice, so they are kept when the generic property list is cut at `AZ_IOT_C2D_MAX_PROPERTIES` or
+  dropped for overrunning the buffer.
