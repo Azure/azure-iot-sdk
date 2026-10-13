@@ -121,9 +121,9 @@ export AZ_IOT_TRUSTED_CA=/etc/ssl/certs/ca-certificates.crt
 
 ### Security notes
 
-- `operational_key.pem` is written **unencrypted**, accessible only to its owner
-  (0600 on POSIX; on Windows, the owner and SYSTEM). An existing key file is loaded as is and
-  keeps its mode; restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
+- `operational_key.pem` is written **unencrypted**, restricted to its owner (0600) on POSIX
+  and to its owner and SYSTEM on Windows. An existing key file is loaded as is and keeps its
+  mode; restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
 - For keys that must not exist as files, see
   [`hsm_pkcs11`](../hsm_pkcs11/README.md) and
   [`custom_certificate_provider`](../custom_certificate_provider/README.md).
