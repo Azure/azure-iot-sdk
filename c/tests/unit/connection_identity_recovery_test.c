@@ -108,6 +108,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_connection_client_deinit(&fx->client_storage);
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;

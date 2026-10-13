@@ -345,17 +345,22 @@ extern "C"
     /* adapter-specific state follows */
   };
 
-  /* Factory: produces a client that speaks a specific MQTT version. The SDK
-   * selects a factory by version at connection time based on the service being
-   * targeted (DPS/MQTTv3 require v3.1.1, MQTTv5 requires v5). */
+  /**
+   * @brief Factory: produces a client that speaks a specific MQTT version. The SDK selects a
+   * factory by version at connection time based on the service being targeted (DPS and mqttv3
+   * require v3.1.1, mqttv5 requires v5).
+   *
+   * az_iot_connection_client_register_mqtt_factory() copies this struct, so the struct itself need
+   * not outlive the call. factory_ctx is borrowed: the application keeps it valid until
+   * az_iot_connection_client_deinit() returns, then releases it. Adapter factories (Paho, az_mqtt,
+   * Rust) are their own factory_ctx: destroy them with the adapter's destroy function after
+   * deinit().
+   */
   typedef struct az_iot_mqtt_factory
   {
     az_iot_mqtt_version version;
     az_iot_mqtt_client* (*create)(void* factory_ctx);
     void* factory_ctx;
-    /* Called by az_iot_connection_client_deinit() to free factory resources.
-     * NULL means no cleanup needed (e.g. stack-allocated factory). */
-    void (*destroy)(void* factory_ctx);
   } az_iot_mqtt_factory;
 
   const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);

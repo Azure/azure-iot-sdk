@@ -277,10 +277,11 @@ void app_main(void)
   }
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
 
-  if (az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
+  /* The factories must outlive conn. This task never returns, so they are never destroyed. */
+  az_iot_mqtt_factory* factory_v3 = az_iot_esp_mqtt_factory_create_v3_1_1();
+  az_iot_mqtt_factory* factory_v5 = az_iot_esp_mqtt_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&conn, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&conn, factory_v5) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "register mqtt factory failed");
     esp_restart();

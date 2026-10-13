@@ -439,8 +439,6 @@ static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
   return &m->base;
 }
 
-static void mock_factory_cleanup(void* ctx) { free(ctx); }
-
 az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version)
 {
   az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)calloc(1, sizeof(*st));
@@ -451,7 +449,6 @@ az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version
   st->public_.version = version;
   st->public_.create = mock_factory_create;
   st->public_.factory_ctx = st;
-  st->public_.destroy = mock_factory_cleanup;
   return &st->public_;
 }
 

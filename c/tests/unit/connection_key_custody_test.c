@@ -171,7 +171,6 @@ typedef struct fixture
 {
   az_iot_connection_client client;
   az_iot_mqtt_factory* factory;
-  bool factory_registered;
   custody_provider provider;
 } fixture;
 
@@ -192,10 +191,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_connection_client_deinit(&fx->client);
-    if (!fx->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -220,7 +216,6 @@ static void init_client(fixture* fx, bool with_dps)
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
 }
 
 static const az_iot_mock_call* last_connect(const fixture* fx)
@@ -639,7 +634,6 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
 
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
 }

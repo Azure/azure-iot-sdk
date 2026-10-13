@@ -1026,18 +1026,10 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    /* A registered factory is adopted by the connection client and freed by
-     * its deinit(); an unregistered one (tests that never call
-     * open_to_connected) is still owned by the test and must be destroyed
-     * here. Check before deinit() clears factory_count. */
-    bool factory_adopted = (fx->conn.factory_count > 0);
     az_iot_su_client_deinit(&fx->su);
 
     az_iot_connection_client_deinit(&fx->conn);
-    if (!factory_adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;

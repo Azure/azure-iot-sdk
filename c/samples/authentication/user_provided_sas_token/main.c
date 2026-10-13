@@ -243,6 +243,8 @@ int main(void)
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
 
   int32_t key_len = 0;
   if (id_scope == NULL || reg_id == NULL || key_b64 == NULL
@@ -276,13 +278,12 @@ int main(void)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  factory_v5 = az_iot_paho_factory_create_v5();
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[user_provided_sas_token] connection client setup failed\n");
@@ -312,6 +313,8 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
   OPENSSL_cleanse(&ctx.store, sizeof(ctx.store));
   free(id_scope);
   free(reg_id);

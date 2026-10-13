@@ -1112,9 +1112,7 @@ az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void)
   {
     factory->version = _AZM_VERSION;
     factory->create = _azm_create;
-    // The connection client frees a registered factory through destroy(factory_ctx).
     factory->factory_ctx = factory;
-    factory->destroy = az_iot_az_mqtt_factory_free;
   }
   return factory;
 }
