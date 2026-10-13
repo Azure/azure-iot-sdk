@@ -95,6 +95,19 @@ static bool is_base64_char(uint8_t ch)
       || ch == '+' || ch == '/' || ch == '=';
 }
 
+/** @brief Whether @p s is a DPS registration ID: is_valid_id(), last character
+ * alphanumeric or '-'. */
+static bool is_valid_registration_id(const char* s)
+{
+  if (!is_valid_id(s, AZ_IOT_DPS_TPM_ID_MAX, true))
+  {
+    return false;
+  }
+  char last = s[strlen(s) - 1];
+  return last == '-' || (last >= 'A' && last <= 'Z') || (last >= 'a' && last <= 'z')
+      || (last >= '0' && last <= '9');
+}
+
 /** @brief Whether @p s is non-empty standard base64 text, so safe in a JSON string. */
 static bool is_base64_text(const char* s)
 {
@@ -165,10 +178,10 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_init(
   }
   memset(client, 0, sizeof(*client));
   if (!is_valid_id(options->id_scope, AZ_IOT_DPS_TPM_ID_MAX, false)
-      || !is_valid_id(options->registration_id, AZ_IOT_DPS_TPM_ID_MAX, true)
-      || options->endorsement_key == NULL || options->endorsement_key_len == 0
-      || options->endorsement_key_len > UINT16_MAX + 2u || options->storage_root_key == NULL
-      || options->storage_root_key_len == 0 || options->storage_root_key_len > UINT16_MAX + 2u
+      || !is_valid_registration_id(options->registration_id) || options->endorsement_key == NULL
+      || options->endorsement_key_len == 0 || options->endorsement_key_len > UINT16_MAX + 2u
+      || options->storage_root_key == NULL || options->storage_root_key_len == 0
+      || options->storage_root_key_len > UINT16_MAX + 2u
       || (options->payload != NULL && !is_json_object(options->payload))
       || (options->csr != NULL && !is_base64_text(options->csr))
       || (options->api_version != NULL

@@ -127,8 +127,9 @@ extern "C"
   typedef struct az_iot_dps_tpm_client_options
   {
     const char* id_scope; /**< DPS ID scope. Required. */
-    /** Registration ID of the enrollment. Required; `A-Z a-z 0-9 - . _ :`.
-     * See az_iot_dps_tpm_registration_id_from_ek(). */
+    /** Registration ID of the enrollment. Required; `A-Z a-z 0-9 - . _ :`,
+     * the last one alphanumeric or `-`. See
+     * az_iot_dps_tpm_registration_id_from_ek(). */
     const char* registration_id;
     /** Endorsement key public area, marshalled TPM2B_PUBLIC. Required. */
     const uint8_t* endorsement_key;
@@ -226,7 +227,8 @@ extern "C"
    * @param[out] client  Client.
    * @param[in]  options Options; copied.
    * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL pointer, a missing
-   * required option, an ID with other characters or longer than
+   * required option, an ID with other characters (or, for the registration
+   * ID, a last character other than alphanumeric or `-`) or longer than
    * AZ_IOT_DPS_TPM_ID_MAX, a payload that is not one JSON object, or a CSR or
    * API version with characters JSON or a URL query would need escaped.
    */
