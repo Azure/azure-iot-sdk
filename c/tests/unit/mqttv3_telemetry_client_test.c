@@ -35,6 +35,7 @@ typedef struct fixture
 typedef struct send_record
 {
   bool fired;
+  int calls;
   az_iot_result status;
 } send_record;
 
@@ -48,6 +49,7 @@ static void on_send(az_iot_result status, void* user_ctx)
 {
   send_record* record = (send_record*)user_ctx;
   record->fired = true;
+  record->calls++;
   record->status = status;
 }
 
@@ -555,12 +557,23 @@ static void a_send_while_not_connected_is_refused_and_not_queued(void** state)
   assert_int_equal(
       az_iot_mqttv3_telemetry_client_send(&test->telemetry, &message, on_send, &record),
       AZ_IOT_ERR_NOT_CONNECTED);
-  az_iot_mqttv3_telemetry_client_deinit(&test->telemetry);
 
-  open_mqtt_v3(test);
+  /* Same client instance, so a queue it owned would still be there. */
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
+  test->factory_registered = true;
+  assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
+  test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
+  assert_non_null(test->mock);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(test->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   assert_null(find_publish(test, "devices/ut-device/messages/events/"));
   assert_false(record.fired);
+  /* Connected now: the same client sends. */
+  assert_int_equal(
+      az_iot_mqttv3_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
 }
 
 /* A provisioning connection has no device id until it is assigned one. */
@@ -609,6 +622,8 @@ static void deinit_does_not_cancel_an_accepted_send(void** state)
   assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   assert_true(dropped.fired);
   assert_int_equal(dropped.status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(acked.calls, 1);
+  assert_int_equal(dropped.calls, 1);
 }
 
 /* Connection deinit drops pending sends without calling back: their context
