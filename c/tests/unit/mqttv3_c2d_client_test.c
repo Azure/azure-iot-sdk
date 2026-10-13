@@ -638,15 +638,17 @@ static void absent_or_valueless_system_properties_are_null(void** state)
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* A bare key is a null value and stays NULL; a trailing '=' is an empty one.
-   * "$.mid" must also not match a longer key that starts with it. */
-  inject(fx, C2D_TOPIC "%24.mid&%24.cid=&%24.midx=1&mid=2", "body");
+   * "$.mid" must also not match a longer key that starts with it, nor one
+   * that decodes to it followed by a NUL; the latter is not a first
+   * occurrence either. */
+  inject(fx, C2D_TOPIC "%24.mid&%24.cid=&%24.midx=1&mid=2&%24.ce%00x=bad&%24.ce=utf-8", "body");
 
   assert_int_equal(rec.count, 1);
   assert_true(rec.message_id.was_null);
   assert_false(rec.correlation_id.was_null);
   assert_string_equal(rec.correlation_id.value, "");
   assert_true(rec.expiry_time.was_null);
-  assert_true(rec.content_encoding.was_null);
+  assert_string_equal(rec.content_encoding.value, "utf-8");
   assert_true(rec.user_id.was_null);
   assert_true(rec.content_type_was_null);
 }
@@ -723,19 +725,21 @@ static void a_system_value_that_does_not_fit_or_decode_is_omitted(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  /* An oversized $.mid and a malformed $.uid are omitted on their own; the
-   * space the failed one did not use is still there for $.cid. */
+  /* An oversized $.mid, a malformed $.uid and a $.ct with a decoded NUL are
+   * omitted on their own; the space the failed ones did not use is still there
+   * for $.cid. */
   char topic[AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER + 128];
   int n = snprintf(topic, sizeof(topic), "%s%%24.mid=", C2D_TOPIC);
   memset(topic + n, 'm', AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER);
   n += AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER;
-  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.uid=%%zz&%%24.cid=c-3");
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.uid=%%zz&%%24.ct=a%%00b&%%24.cid=c-3");
   inject(fx, topic, "body");
 
   assert_int_equal(rec.count, 1);
   assert_string_equal(rec.payload, "body");
   assert_true(rec.message_id.was_null);
   assert_true(rec.user_id.was_null);
+  assert_true(rec.content_type_was_null);
   assert_string_equal(rec.correlation_id.value, "c-3");
 }
 

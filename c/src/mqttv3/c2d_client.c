@@ -82,9 +82,11 @@ static void c2d_capture_system_property(c2d_property_scratch* s, const char* pai
   az_iot_span_writer kw;
   az_iot_span_writer_init(&kw, AZ_SPAN_FROM_BUFFER(key));
   az_iot_span_writer_append_url_decoded(&kw, pair, key_len);
-  if (az_iot_span_writer_end_str(&kw, NULL) != AZ_IOT_OK)
+  size_t decoded_key_len = 0;
+  if (az_iot_span_writer_end_str(&kw, &decoded_key_len) != AZ_IOT_OK
+      || strlen(key) != decoded_key_len)
   {
-    return; /* Too long or malformed: not a system key. */
+    return; /* Too long, malformed, or holds a decoded NUL: not a system key. */
   }
 
   size_t id = 0;
@@ -108,12 +110,13 @@ static void c2d_capture_system_property(c2d_property_scratch* s, const char* pai
       &vw, az_span_create((uint8_t*)dst, (int32_t)(sizeof(s->system_text) - s->system_used)));
   az_iot_span_writer_append_url_decoded(&vw, eq + 1, pair_len - key_len - 1);
   size_t len = 0;
-  if (az_iot_span_writer_end_str(&vw, &len) != AZ_IOT_OK)
+  if (az_iot_span_writer_end_str(&vw, &len) != AZ_IOT_OK || strlen(dst) != len)
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_C2D,
         "omitting %s from a message -- it did not decode into the remaining "
-        "AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER bytes, or it carried a malformed percent-escape",
+        "AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER bytes, or it carried a malformed or NUL "
+        "percent-escape",
         k_system_keys[id]);
     return;
   }

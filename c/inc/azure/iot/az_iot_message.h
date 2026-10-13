@@ -117,7 +117,8 @@ extern "C"
    * (AZ_IOT_C2D_SYSTEM_PROPERTY_BUFFER), so they are set even when
    * @p properties was truncated or dropped. Each is NULL when the message
    * carries no such property, carries it with no value, or its value did not
-   * fit or decode (logged). They also appear in @p properties, as received.
+   * fit or decode, or holds an encoded NUL (logged). A key holding an encoded
+   * NUL matches no field. They also appear in @p properties, as received.
    */
   typedef struct az_iot_c2d_message
   {
