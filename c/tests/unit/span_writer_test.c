@@ -578,6 +578,74 @@ static void build_str_reports_its_failures(void** state)
   assert_int_equal(length, 0);
 }
 
+/* ---- base64 ---------------------------------------------------------------- */
+
+static void base64_matches_rfc4648_vectors(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    const char* in;
+    const char* out;
+  } cases[] = {
+    { "f", "Zg==" },        { "fo", "Zm8=" },        { "foo", "Zm9v" },
+    { "foob", "Zm9vYg==" }, { "fooba", "Zm9vYmE=" }, { "foobar", "Zm9vYmFy" },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    char buffer[16];
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+    az_iot_span_writer_append_base64(&writer, (const uint8_t*)cases[i].in, strlen(cases[i].in));
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+    assert_string_equal(buffer, cases[i].out);
+  }
+  /* The standard alphabet's last two characters. */
+  const uint8_t high[] = { 0xFB, 0xFF, 0xFF };
+  char buffer[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, high, sizeof(high));
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+  assert_string_equal(buffer, "+///");
+}
+
+static void base64_is_all_or_nothing_on_overflow(void** state)
+{
+  (void)state;
+  /* "foo" + "foobar" needs 4 + 8 bytes and a terminator; 11 cannot take the second. */
+  char buffer[11];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foo", 3);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foobar", 6);
+  assert_int_equal(az_iot_span_writer_length(&writer), 4);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(buffer, "");
+
+  char exact[13];
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(exact));
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foo", 3);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foobar", 6);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+  assert_string_equal(exact, "Zm9vZm9vYmFy");
+}
+
+static void base64_rejects_null_and_skips_empty(void** state)
+{
+  (void)state;
+  char buffer[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, NULL, 0);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"x", 0);
+  assert_int_equal(az_iot_span_writer_length(&writer), 0);
+  az_iot_span_writer_append_base64(&writer, NULL, 1);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_INVALID_ARG);
+  /* A NULL writer is ignored. */
+  az_iot_span_writer_append_base64(NULL, (const uint8_t*)"x", 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -612,6 +680,9 @@ int main(void)
     cmocka_unit_test(build_str_concatenates_parts),
     cmocka_unit_test(build_str_reports_its_failures),
     cmocka_unit_test(u64_matches_snprintf_and_fails_whole),
+    cmocka_unit_test(base64_matches_rfc4648_vectors),
+    cmocka_unit_test(base64_is_all_or_nothing_on_overflow),
+    cmocka_unit_test(base64_rejects_null_and_skips_empty),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

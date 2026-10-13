@@ -148,29 +148,6 @@ static bool is_json_object(const char* payload)
   return only_whitespace_after(span, jr.token.slice);
 }
 
-/** @brief Appends standard padded base64 of @p data. */
-static void append_base64(az_iot_span_writer* w, const uint8_t* data, size_t len)
-{
-  static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  for (size_t i = 0; i < len; i += 3)
-  {
-    uint32_t v = (uint32_t)data[i] << 16;
-    size_t n = len - i;
-    if (n > 1)
-    {
-      v |= (uint32_t)data[i + 1] << 8;
-    }
-    if (n > 2)
-    {
-      v |= data[i + 2];
-    }
-    az_iot_span_writer_append_u8(w, (uint8_t)alphabet[(v >> 18) & 0x3Fu]);
-    az_iot_span_writer_append_u8(w, (uint8_t)alphabet[(v >> 12) & 0x3Fu]);
-    az_iot_span_writer_append_u8(w, n > 1 ? (uint8_t)alphabet[(v >> 6) & 0x3Fu] : (uint8_t)'=');
-    az_iot_span_writer_append_u8(w, n > 2 ? (uint8_t)alphabet[v & 0x3Fu] : (uint8_t)'=');
-  }
-}
-
 AZ_NODISCARD az_iot_dps_tpm_client_options az_iot_dps_tpm_client_options_default(void)
 {
   az_iot_dps_tpm_client_options options;
@@ -229,9 +206,9 @@ static void append_register_body(az_iot_span_writer* w, const az_iot_dps_tpm_cli
   az_iot_span_writer_append_str(w, "{\"registrationId\":\"");
   az_iot_span_writer_append_str(w, o->registration_id);
   az_iot_span_writer_append_str(w, "\",\"tpm\":{\"endorsementKey\":\"");
-  append_base64(w, o->endorsement_key, o->endorsement_key_len);
+  az_iot_span_writer_append_base64(w, o->endorsement_key, o->endorsement_key_len);
   az_iot_span_writer_append_str(w, "\",\"storageRootKey\":\"");
-  append_base64(w, o->storage_root_key, o->storage_root_key_len);
+  az_iot_span_writer_append_base64(w, o->storage_root_key, o->storage_root_key_len);
   az_iot_span_writer_append_str(w, "\"}");
   if (o->csr != NULL)
   {
