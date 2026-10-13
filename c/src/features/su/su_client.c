@@ -51,17 +51,22 @@ static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
 static void raise_refused(az_iot_su_client* client, az_iot_result reason);
 static void raise_deferred(az_iot_su_client* client);
+static void raise_simple(
+    az_iot_su_client* client,
+    az_iot_su_event_kind kind,
+    az_iot_su_operation operation,
+    bool report_terminal);
 
-/* fetch_in_flight occupies padding after pending_fetch, so adding it left the
- * caller-allocated client's size and offsets unchanged. Fails the build if that
- * padding is ever gone. */
+/* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
+ * after pending_fetch, so adding them left the caller-allocated client's size and offsets
+ * unchanged. Fails the build if that padding is ever gone. */
 typedef struct
 {
   char c;
   uint64_t v;
 } su_u64_alignment_probe;
 typedef char az_iot_su_fetch_in_flight_uses_padding
-    [((offsetof(az_iot_su_client, _internal.pending_fetch) + 1u)
+    [(offsetof(az_iot_su_client, _internal.report_sent_terminal)
           % offsetof(su_u64_alignment_probe, v)
       != 0u)
          ? 1
@@ -486,13 +491,25 @@ static const az_iot_su_root_key* resolve_root_key(
   return NULL;
 }
 
-/* Log the reason a manifest fails verification, then bail. Verification has
- * many independent failure paths; naming each one makes a Failed deployment
- * diagnosable from the application's log instead of a single opaque "Failed". */
-#define SU_VERIFY_FAIL(why)                                                                \
+/**
+ * @brief Map a failed verify_rs256() result to an AZ_IOT_SU_MANIFEST_ERROR_* sub-code.
+ *
+ * A rejected signature (AZ_IOT_ERR_AUTH) or key (AZ_IOT_ERR_INVALID_ARG) is @p rejected;
+ * any other error is a backend fault (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO).
+ */
+static uint32_t signature_error(az_iot_result r, uint32_t rejected)
+{
+  return (r == AZ_IOT_ERR_AUTH || r == AZ_IOT_ERR_INVALID_ARG) ? rejected
+                                                               : AZ_IOT_SU_MANIFEST_ERROR_CRYPTO;
+}
+
+/* Log why a manifest fails verification, store its AZ_IOT_SU_MANIFEST_ERROR_*
+ * sub-code in *out_error, then bail. */
+#define SU_VERIFY_FAIL(code, why)                                                          \
   do                                                                                       \
   {                                                                                        \
     AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "manifest verification failed: %s", (why)); \
+    *out_error = (code);                                                                   \
     return AZ_IOT_SU_RESULT_FAILURE;                                                       \
   } while (0)
 
@@ -522,15 +539,17 @@ static void log_decode_failure(const su_scratch* s, az_iot_result r, const char*
 }
 
 /* Fail verification unless scratch_b64_decode() result `r` is AZ_IOT_OK. */
-#define SU_VERIFY_DECODED(r, s, what)      \
-  do                                       \
-  {                                        \
-    az_iot_result r_ = (r);                \
-    if (r_ != AZ_IOT_OK)                   \
-    {                                      \
-      log_decode_failure((s), r_, (what)); \
-      return AZ_IOT_SU_RESULT_FAILURE;     \
-    }                                      \
+#define SU_VERIFY_DECODED(r, s, what)                                                        \
+  do                                                                                         \
+  {                                                                                          \
+    az_iot_result r_ = (r);                                                                  \
+    if (r_ != AZ_IOT_OK)                                                                     \
+    {                                                                                        \
+      log_decode_failure((s), r_, (what));                                                   \
+      *out_error = (r_ == AZ_IOT_ERR_NOT_ENOUGH_SPACE) ? AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE  \
+                                                       : AZ_IOT_SU_MANIFEST_ERROR_MALFORMED; \
+      return AZ_IOT_SU_RESULT_FAILURE;                                                       \
+    }                                                                                        \
   } while (0)
 
 /**
@@ -543,6 +562,7 @@ static void log_decode_failure(const su_scratch* s, az_iot_result r, const char*
  * @param jws            The compact updateManifestSignature.
  * @param scratch        Decoded segments are written here; not read before.
  * @param scratch_size   Size of @p scratch.
+ * @param out_error      On failure, the AZ_IOT_SU_MANIFEST_ERROR_* sub-code.
  * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE, with the reason logged.
  */
 static int32_t verify_manifest_core(
@@ -552,11 +572,13 @@ static int32_t verify_manifest_core(
     az_span manifest,
     az_span jws,
     uint8_t* scratch,
-    size_t scratch_size)
+    size_t scratch_size,
+    uint32_t* out_error)
 {
   if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || crypto->verify_rs256 == NULL)
   {
-    SU_VERIFY_FAIL("crypto backend missing or without verify_rs256");
+    SU_VERIFY_FAIL(
+        AZ_IOT_SU_MANIFEST_ERROR_CRYPTO, "crypto backend missing or without verify_rs256");
   }
 
   /* `manifest` is the UNESCAPED manifest body. decode_manifest() unescapes the
@@ -567,7 +589,8 @@ static int32_t verify_manifest_core(
    * update-manifest signature. */
   if (az_span_size(jws) <= 0 || az_span_size(manifest) <= 0)
   {
-    SU_VERIFY_FAIL("empty updateManifest or updateManifestSignature");
+    SU_VERIFY_FAIL(
+        AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "empty updateManifest or updateManifestSignature");
   }
 
   su_scratch s = { scratch, (int32_t)(scratch_size > INT32_MAX ? INT32_MAX : scratch_size), 0, 0 };
@@ -577,7 +600,8 @@ static int32_t verify_manifest_core(
   az_span m_hdr_b64, m_pl_b64, m_sig_b64, m_signed;
   if (!jws_split(jws, &m_hdr_b64, &m_pl_b64, &m_sig_b64, &m_signed))
   {
-    SU_VERIFY_FAIL("step 1: manifest JWS is not a valid 3-part token");
+    SU_VERIFY_FAIL(
+        AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "step 1: manifest JWS is not a valid 3-part token");
   }
 
   az_span sjwk;
@@ -592,12 +616,12 @@ static int32_t verify_manifest_core(
             != AZ_IOT_OK
         || !az_span_is_content_equal(alg, k_alg_rs256))
     {
-      SU_VERIFY_FAIL("step 1: manifest JWS alg is not RS256");
+      SU_VERIFY_FAIL(AZ_IOT_SU_MANIFEST_ERROR_ALG, "step 1: manifest JWS alg is not RS256");
     }
 
     if (jws_json_str_in_place(hdr, AZ_SPAN_FROM_STR("sjwk"), &sjwk) != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 1: manifest JWS header has no sjwk");
+      SU_VERIFY_FAIL(AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "step 1: manifest JWS header has no sjwk");
     }
   }
 
@@ -605,7 +629,7 @@ static int32_t verify_manifest_core(
   az_span s_hdr_b64, s_pl_b64, s_sig_b64, s_signed;
   if (!jws_split(sjwk, &s_hdr_b64, &s_pl_b64, &s_sig_b64, &s_signed))
   {
-    SU_VERIFY_FAIL("step 2: sjwk is not a valid 3-part token");
+    SU_VERIFY_FAIL(AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "step 2: sjwk is not a valid 3-part token");
   }
 
   /* Only the SJWK header is decoded beside the outer header; the SJWK signature
@@ -622,7 +646,7 @@ static int32_t verify_manifest_core(
             != AZ_IOT_OK
         || !az_span_is_content_equal(salg, k_alg_rs256))
     {
-      SU_VERIFY_FAIL("step 2: sjwk alg is not RS256");
+      SU_VERIFY_FAIL(AZ_IOT_SU_MANIFEST_ERROR_ALG, "step 2: sjwk alg is not RS256");
     }
 
     char kid_buf[128];
@@ -631,17 +655,20 @@ static int32_t verify_manifest_core(
         = jws_json_str(shdr, AZ_SPAN_FROM_STR("kid"), kid_buf, (int32_t)sizeof(kid_buf), &kid);
     if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
     {
-      SU_VERIFY_FAIL("step 2: sjwk kid too large (127 bytes max)");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE, "step 2: sjwk kid too large (127 bytes max)");
     }
     if (r != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 2: sjwk header has no kid");
+      SU_VERIFY_FAIL(AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "step 2: sjwk header has no kid");
     }
 
     root = resolve_root_key(root_keys, root_key_count, kid);
     if (root == NULL)
     {
-      SU_VERIFY_FAIL("step 2: sjwk kid does not match any known (enabled) root key");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID,
+          "step 2: sjwk kid does not match any known (enabled) root key");
     }
   }
   s.used = after_hdr;
@@ -650,19 +677,21 @@ static int32_t verify_manifest_core(
   {
     az_span s_sig;
     SU_VERIFY_DECODED(b64_decode_in_place(s_sig_b64, false, &s_sig), &s, "step 3: sjwk signature");
-    if (crypto->verify_rs256(
-            crypto,
-            root->modulus,
-            root->modulus_len,
-            root->exponent,
-            root->exponent_len,
-            az_span_ptr(s_signed),
-            (size_t)az_span_size(s_signed),
-            az_span_ptr(s_sig),
-            (size_t)az_span_size(s_sig))
-        != AZ_IOT_OK)
+    az_iot_result vr = crypto->verify_rs256(
+        crypto,
+        root->modulus,
+        root->modulus_len,
+        root->exponent,
+        root->exponent_len,
+        az_span_ptr(s_signed),
+        (size_t)az_span_size(s_signed),
+        az_span_ptr(s_sig),
+        (size_t)az_span_size(s_sig));
+    if (vr != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 3: sjwk signature does not verify against the root key");
+      SU_VERIFY_FAIL(
+          signature_error(vr, AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE),
+          "step 3: sjwk signature does not verify against the root key");
     }
   }
 
@@ -682,11 +711,15 @@ static int32_t verify_manifest_core(
         = jws_json_str(spl, AZ_SPAN_FROM_STR("e"), e_b64, (int32_t)sizeof(e_b64), &e_field);
     if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
     {
-      SU_VERIFY_FAIL("step 4: signing JWK exponent (e) too large (63 bytes max)");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE,
+          "step 4: signing JWK exponent (e) too large (63 bytes max)");
     }
     if (r != AZ_IOT_OK || jws_json_str_in_place(spl, AZ_SPAN_FROM_STR("n"), &n_field) != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 4: signing JWK is missing modulus (n) or exponent (e)");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
+          "step 4: signing JWK is missing modulus (n) or exponent (e)");
     }
     SU_VERIFY_DECODED(
         b64_decode_in_place(n_field, true, &n_raw), &s, "step 4: signing JWK modulus (n)");
@@ -699,19 +732,21 @@ static int32_t verify_manifest_core(
     az_span m_sig;
     SU_VERIFY_DECODED(
         scratch_b64_decode(&s, m_sig_b64, false, &m_sig), &s, "step 5: manifest signature");
-    if (crypto->verify_rs256(
-            crypto,
-            az_span_ptr(n_raw),
-            (size_t)az_span_size(n_raw),
-            az_span_ptr(e_raw),
-            (size_t)az_span_size(e_raw),
-            az_span_ptr(m_signed),
-            (size_t)az_span_size(m_signed),
-            az_span_ptr(m_sig),
-            (size_t)az_span_size(m_sig))
-        != AZ_IOT_OK)
+    az_iot_result vr = crypto->verify_rs256(
+        crypto,
+        az_span_ptr(n_raw),
+        (size_t)az_span_size(n_raw),
+        az_span_ptr(e_raw),
+        (size_t)az_span_size(e_raw),
+        az_span_ptr(m_signed),
+        (size_t)az_span_size(m_signed),
+        az_span_ptr(m_sig),
+        (size_t)az_span_size(m_sig));
+    if (vr != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 5: manifest signature does not verify against the signing key");
+      SU_VERIFY_FAIL(
+          signature_error(vr, AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE),
+          "step 5: manifest signature does not verify against the signing key");
     }
   }
   s.used = after_hdr;
@@ -729,25 +764,31 @@ static int32_t verify_manifest_core(
         pl, AZ_SPAN_FROM_STR("sha256"), hash_b64, (int32_t)sizeof(hash_b64), &hash_field);
     if (r == AZ_IOT_ERR_NOT_FOUND)
     {
-      SU_VERIFY_FAIL("step 6: manifest JWS payload has no sha256");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_MALFORMED, "step 6: manifest JWS payload has no sha256");
     }
 
     az_span expected = AZ_SPAN_EMPTY;
     if (r != AZ_IOT_OK || b64_decode_in_place(hash_field, true, &expected) != AZ_IOT_OK
         || az_span_size(expected) != 32)
     {
-      SU_VERIFY_FAIL("step 6: manifest sha256 field is not a 32-byte base64 hash");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_MALFORMED,
+          "step 6: manifest sha256 field is not a 32-byte base64 hash");
     }
 
     uint8_t actual[32];
     if (az_iot_crypto__sha256(crypto, az_span_ptr(manifest), (size_t)az_span_size(manifest), actual)
         != AZ_IOT_OK)
     {
-      SU_VERIFY_FAIL("step 6: SHA-256 failed over the manifest body");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_CRYPTO, "step 6: SHA-256 failed over the manifest body");
     }
     if (!az_span_is_content_equal(expected, AZ_SPAN_FROM_BUFFER(actual)))
     {
-      SU_VERIFY_FAIL("step 6: computed manifest SHA-256 does not match the signed hash");
+      SU_VERIFY_FAIL(
+          AZ_IOT_SU_MANIFEST_ERROR_HASH,
+          "step 6: computed manifest SHA-256 does not match the signed hash");
     }
   }
 
@@ -756,8 +797,9 @@ static int32_t verify_manifest_core(
 
 /* Thin wrapper: verify the current deployment's manifest using the client's
  * crypto backend + root-key store. The persistence scratch is free here: it
- * only holds data within one persist or resume call. */
-static int32_t verify_manifest(az_iot_su_client* client)
+ * only holds data within one persist or resume call. On failure *out_error is
+ * the AZ_IOT_SU_MANIFEST_ERROR_* sub-code. */
+static int32_t verify_manifest(az_iot_su_client* client, uint32_t* out_error)
 {
   return verify_manifest_core(
       SU_I(client).crypto,
@@ -766,7 +808,8 @@ static int32_t verify_manifest(az_iot_su_client* client)
       SU_I(client).manifest_text,
       SU_I(client).current_request.update_manifest_signature,
       SU_I(client).persist_scratch,
-      sizeof(SU_I(client).persist_scratch));
+      sizeof(SU_I(client).persist_scratch),
+      out_error);
 }
 
 /* Verify a downloaded file's SHA-256 against the signed manifest by streaming
@@ -1485,6 +1528,7 @@ static void process_update_metadata(
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_SU, "update payload not understood (%d); ignored", (int)pr);
+    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
     return;
   }
 
@@ -1500,6 +1544,7 @@ static void process_update_metadata(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable workflowId; ignored");
+    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
     return;
   }
   if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
@@ -1515,12 +1560,15 @@ static void process_update_metadata(
   }
   if (dr == AZ_IOT_OK && same_workflow_id(client, probe_id))
   {
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "update redelivers the current workflowId; ignored");
+    raise_simple(client, AZ_IOT_SU_EVENT_UPDATE_DUPLICATE, AZ_IOT_SU_OP_GET_UPDATE, false);
     return;
   }
 
   if (check_request_strings(client, &probe) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable string; ignored");
+    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
     return;
   }
 
@@ -1596,6 +1644,7 @@ static void on_channel_update(
         AZ_IOT_LOG_COMPONENT_SU, "ignoring an update that arrived after its check's deadline");
     return;
   }
+  SU_I(client).fetch_delivered = true;
   process_update_metadata(client, update_payload, update_payload_len);
 }
 
@@ -1688,9 +1737,73 @@ static void raise_deferred(az_iot_su_client* client)
   dispatch_event(client, &event);
 }
 
+/**
+ * @brief Raise NO_UPDATE, UPDATE_DUPLICATE or REPORT_ACCEPTED with the current `state`.
+ *
+ * @param client          The client.
+ * @param kind            AZ_IOT_SU_EVENT_NO_UPDATE, _UPDATE_DUPLICATE or _REPORT_ACCEPTED.
+ * @param operation       The operation the event refers to.
+ * @param report_terminal REPORT_ACCEPTED: the accepted report was terminal.
+ */
+static void raise_simple(
+    az_iot_su_client* client,
+    az_iot_su_event_kind kind,
+    az_iot_su_operation operation,
+    bool report_terminal)
+{
+  az_iot_su_event event = {
+    .kind = kind,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .operation = operation,
+    .reason = AZ_IOT_OK,
+    .service_error = k_no_service_error,
+    .report_terminal = report_terminal,
+  };
+  dispatch_event(client, &event);
+}
+
+/**
+ * @brief The extended result code that explains why the workflow failed.
+ *
+ * The first failed step's code, else the overall one: the overall code may
+ * have been replaced by a later rollback failure.
+ */
+static int32_t failure_extended_result(const az_iot_su_client* client)
+{
+  for (int32_t i = 0; i < SU_I(client).step_results_count; ++i)
+  {
+    if (SU_I(client).step_results[i].outcome == AZ_IOT_SU_OUTCOME_FAILED
+        && SU_I(client).step_results[i].extended_result_code != 0)
+    {
+      return SU_I(client).step_results[i].extended_result_code;
+    }
+  }
+  return SU_I(client).install_result.extended_result_code;
+}
+
+/** @brief Map an extended result code to the FAILED event's `reason`. */
+static az_iot_result failure_reason(int32_t extended_result_code)
+{
+  uint32_t code = (uint32_t)extended_result_code;
+  switch ((code >> 28) & 0xFu)
+  {
+    case AZ_IOT_SU_FACILITY_MANIFEST:
+      return ((code & 0x0FFFFFFFu) == AZ_IOT_SU_MANIFEST_ERROR_CRYPTO) ? AZ_IOT_ERR_INTERNAL
+                                                                       : AZ_IOT_ERR_AUTH;
+    case AZ_IOT_SU_FACILITY_HASH:
+      return AZ_IOT_ERR_AUTH;
+    case AZ_IOT_SU_FACILITY_INTERNAL:
+      return AZ_IOT_ERR_PROTOCOL;
+    default:
+      return AZ_IOT_ERR_INTERNAL;
+  }
+}
+
 /* Move the workflow, telling anyone watching. Centralised so every transition
  * is reported: eighteen assignment sites cannot each be trusted to remember,
- * and a state change nobody hears about is the gap this closes. */
+ * and a state change nobody hears about is the gap this closes. Callers record
+ * the failure before entering FAILED, so the event can say why. */
 static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
 {
   az_iot_su_state previous = SU_I(client).state;
@@ -1708,6 +1821,11 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
     .reason = AZ_IOT_OK,
     .service_error = { .code = 0, .message = "", .tracking_id = "" },
   };
+  if (next == AZ_IOT_SU_STATE_FAILED)
+  {
+    event.extended_result_code = failure_extended_result(client);
+    event.reason = failure_reason(event.extended_result_code);
+  }
   dispatch_event(client, &event);
 }
 
@@ -1850,15 +1968,25 @@ static void on_channel_result(
     }
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
+      bool terminal = SU_I(client).report_sent_terminal;
       settle_terminal_report(client, result);
+      if (result == AZ_IOT_OK)
+      {
+        raise_simple(client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal);
+      }
+      return;
     }
     /* The request is over -- but only ITS deadline goes with it. A newer
      * request may already be queued, holding the slot with its own deadline;
      * clearing unconditionally would strip that and leave the newer request
      * retrying for ever. */
-    if (operation != AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).pending_fetch == SU_FETCH_NONE)
+    if (SU_I(client).pending_fetch == SU_FETCH_NONE)
     {
       SU_I(client).pending_fetch_deadline_ms = 0;
+    }
+    if (result == AZ_IOT_OK && !SU_I(client).fetch_delivered)
+    {
+      raise_simple(client, AZ_IOT_SU_EVENT_NO_UPDATE, operation, false);
     }
     return;
   }
@@ -2067,7 +2195,9 @@ static void drive_pending_fetch(az_iot_su_client* client)
   /* Set before the call: a synchronous channel may deliver the verdict from
    * inside it, which clears this again. */
   uint8_t previous_in_flight = SU_I(client).fetch_in_flight;
+  bool previous_delivered = SU_I(client).fetch_delivered;
   SU_I(client).fetch_in_flight = requested;
+  SU_I(client).fetch_delivered = false;
   az_iot_result r = channel_request_update(client, operation);
   if (r != AZ_IOT_OK)
   {
@@ -2075,6 +2205,7 @@ static void drive_pending_fetch(az_iot_su_client* client)
     if (SU_I(client).fetch_in_flight == requested)
     {
       SU_I(client).fetch_in_flight = previous_in_flight;
+      SU_I(client).fetch_delivered = previous_delivered;
     }
     if (SU_I(client).pending_fetch == SU_FETCH_NONE)
     {
@@ -3176,10 +3307,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
     {
       /* The manifest is parsed only after its signature verifies. */
-      if (verify_manifest(client) != AZ_IOT_SU_RESULT_SUCCESS)
+      uint32_t verify_error = 0;
+      if (verify_manifest(client, &verify_error) != AZ_IOT_SU_RESULT_SUCCESS)
       {
         result_init_steps(client, 1);
-        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, 0);
+        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, (int32_t)verify_error);
         fail_workflow(client);
         (void)az_iot_su__report_state(client);
         break;
@@ -3613,6 +3745,7 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
 
   /* Trust gate before the manifest is parsed. */
   uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
+  uint32_t verify_error = 0;
   if (verify_manifest_core(
           crypto,
           root_keys,
@@ -3620,7 +3753,8 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
           manifest_text,
           req.update_manifest_signature,
           scratch,
-          sizeof(scratch))
+          sizeof(scratch),
+          &verify_error)
       != AZ_IOT_SU_RESULT_SUCCESS)
   {
     return AZ_IOT_ERR_AUTH;
