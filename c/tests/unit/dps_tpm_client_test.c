@@ -352,6 +352,46 @@ static void throttling_and_server_errors_keep_the_request(void** state)
   assert_int_equal(t.imports, 1);
 }
 
+static void error_codes_are_numbers_and_the_registration_state_one_wins(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    const char* body;
+    az_iot_result result;
+    int32_t code;
+  } cases[] = {
+    { "{\"status\":\"failed\",\"errorCode\":\"403\"}", AZ_IOT_ERR_PROTOCOL, 0 },
+    { "{\"status\":\"failed\",\"registrationState\":{\"errorCode\":null}}",
+      AZ_IOT_ERR_PROTOCOL,
+      0 },
+    { "{\"status\":\"failed\",\"errorCode\":1,\"registrationState\":{\"errorCode\":2}}",
+      AZ_IOT_ERR_DPS,
+      2 },
+    { "{\"registrationState\":{\"errorCode\":2},\"errorCode\":1,\"status\":\"failed\"}",
+      AZ_IOT_ERR_DPS,
+      2 },
+    { "{\"status\":\"failed\",\"errorCode\":1}", AZ_IOT_ERR_DPS, 1 },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    fake_tpm t = { 0 };
+    az_iot_dps_tpm_client c;
+    challenge(&c, &t);
+    char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+    az_iot_dps_tpm_request req;
+    az_iot_dps_tpm_next next;
+    assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+    assert_int_equal(respond(&c, 200, cases[i].body, 0, &next), cases[i].result);
+    int32_t code = -1;
+    az_iot_dps_tpm_client_get_error(&c, NULL, &code);
+    if (cases[i].result == AZ_IOT_ERR_DPS)
+    {
+      assert_int_equal(code, cases[i].code);
+    }
+  }
+}
+
 static void statuses_past_599_are_not_retried(void** state)
 {
   (void)state;
@@ -997,6 +1037,7 @@ int main(void)
     cmocka_unit_test(assigned_from_register_needs_no_poll),
     cmocka_unit_test(connection_profiles_map_to_the_enum),
     cmocka_unit_test(throttling_and_server_errors_keep_the_request),
+    cmocka_unit_test(error_codes_are_numbers_and_the_registration_state_one_wins),
     cmocka_unit_test(statuses_past_599_are_not_retried),
     cmocka_unit_test(a_refused_token_is_an_auth_failure),
     cmocka_unit_test(a_challenge_without_a_key_is_an_auth_failure),

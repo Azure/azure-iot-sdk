@@ -56,7 +56,9 @@ typedef struct dps_tpm_fields
   az_json_token operation_id; /**< `operationId`. */
   az_span authentication_key; /**< `authenticationKey` (401 challenge). */
   az_span key_name; /**< `keyName` (401 challenge). */
-  int32_t error_code; /**< `errorCode`, top level or registrationState. */
+  int32_t error_code; /**< `errorCode`; registrationState's wins over the top level. */
+  int32_t state_error_code; /**< `registrationState.errorCode`. */
+  bool has_state_error_code; /**< registrationState has an errorCode. */
   az_json_token assigned_hub; /**< `registrationState.assignedHub`. */
   az_json_token device_id; /**< `registrationState.deviceId`. */
   az_span connection_profile; /**< `registrationState.connectionProfile`. */
@@ -417,15 +419,17 @@ static void take_string_token(const az_json_reader* jr, az_json_token* out)
   }
 }
 
-/** @brief Records the integer token at @p jr into @p out when it fits. */
-static void take_int32(const az_json_reader* jr, int32_t* out)
+/** @brief Reads the integer token at @p jr into @p out; false when it is not one. */
+static bool take_int32(const az_json_reader* jr, int32_t* out)
 {
   int32_t v = 0;
-  if (jr->token.kind == AZ_JSON_TOKEN_NUMBER
-      && az_result_succeeded(az_json_token_get_int32(&jr->token, &v)))
+  if (jr->token.kind != AZ_JSON_TOKEN_NUMBER
+      || az_result_failed(az_json_token_get_int32(&jr->token, &v)))
   {
-    *out = v;
+    return false;
   }
+  *out = v;
+  return true;
 }
 
 /** @brief Skips the value at @p jr when it is an object or array. */
@@ -488,7 +492,11 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("errorCode")))
     {
-      take_int32(jr, &f->error_code);
+      if (!take_int32(jr, &f->state_error_code))
+      {
+        return false;
+      }
+      f->has_state_error_code = true;
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("connectionProfile")))
     {
@@ -546,6 +554,10 @@ static bool read_fields(az_span body, dps_tpm_fields* f)
   {
     if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
     {
+      if (f->has_state_error_code)
+      {
+        f->error_code = f->state_error_code;
+      }
       return only_whitespace_after(body, jr.token.slice);
     }
     az_json_token name = jr.token;
@@ -571,7 +583,10 @@ static bool read_fields(az_span body, dps_tpm_fields* f)
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("errorCode")))
     {
-      take_int32(&jr, &f->error_code);
+      if (!take_int32(&jr, &f->error_code))
+      {
+        return false;
+      }
     }
     else if (
         az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("registrationState"))
