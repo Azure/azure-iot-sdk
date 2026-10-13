@@ -49,7 +49,8 @@ extern "C"
 
   /* Shared by the mqttv3 and mqttv5 telemetry clients. Callers always pass plain
    * text: mqttv3 percent-encodes properties into the topic, while mqttv5 carries
-   * them as MQTT v5 User Properties. */
+   * them as MQTT v5 User Properties, except "$.ct" and "$.cid" (native Content
+   * Type and Correlation Data). */
   typedef struct az_iot_telemetry_property
   {
     const char* key;
