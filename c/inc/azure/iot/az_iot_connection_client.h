@@ -1884,6 +1884,12 @@ extern "C"
 
     az_iot_dps_assignment_callback assignment_cb;
     void* assignment_cb_ctx;
+    /* A stored issued chain awaits adoption of its assignment: the other
+     * generation cannot be required until then. */
+    bool dps_cert_awaits_adoption;
+    /* The issued chain was not stored because the assignment was to be
+     * rejected; it must not be adopted. */
+    bool dps_cert_withheld;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

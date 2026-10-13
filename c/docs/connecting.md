@@ -173,6 +173,14 @@ opts.dps.registration_id = "<registration-id>";
   `dps.request_operational_certificate`, the issued chain is already stored in the provider when
   the callback runs (the managed provider writes it to `operational_cert_pem_path`).
 
+The certificate provider stores the issued chain before the callback runs, so the chain and the
+saved assignment are updated separately. To update them together, make the provider's
+`store_issued_certificate()` stage the chain, and commit the staged chain with the assignment in
+the callback. If saving fails, call `close()` and
+`az_iot_connection_client_request_reprovision()`: the next `open()` registers again. Otherwise a
+restart between the two writes connects with a saved assignment and a newer certificate; with
+`AZ_IOT_IDENTITY_RECOVERY_REPROVISION` a hub refusal then registers again.
+
 Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
 
 ## Reconnection

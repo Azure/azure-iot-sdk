@@ -3382,6 +3382,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             AZ_IOT_LOG_WARN(
                 AZ_IOT_LOG_COMPONENT_DPS,
                 "the assignment will be rejected; not storing its issued certificate");
+            c->dps_cert_withheld = true;
           }
           else if (c->dps_enrolling)
           {
@@ -3392,6 +3393,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               return;
             }
             c->dps_have_issued_cert = true;
+            c->dps_cert_awaits_adoption = true;
           }
           /* Surface the assignment's custom payload (registrationState.payload,
            * already parsed by azure-sdk-for-c as a zero-copy span into the
@@ -3746,6 +3748,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
 
   c->dps_mqtt = mc;
   c->dps_phase = DPS_PHASE_CONNECTING;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -3897,6 +3901,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
  * would retry it. */
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
+  c->dps_cert_awaits_adoption = false;
   c->needs_reprovision = true;
   fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_DPS, reason);
 }
@@ -3922,7 +3927,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
   bool have_assignment = c->dps_pending_have_assignment;
+  bool cert_withheld = c->dps_cert_withheld;
+  c->dps_cert_withheld = false;
   az_iot_result status = c->dps_pending_status;
+  if (status != AZ_IOT_OK || !have_assignment)
+  {
+    c->dps_cert_awaits_adoption = false;
+  }
   uint32_t retry_after_secs = c->dps_pending_retry_after_secs;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
@@ -4150,6 +4161,19 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
 
+  /* The issued chain was withheld for an assignment that was to be rejected;
+   * the profile pins changed since. Adopting it would pair the assignment
+   * with the previous certificate. */
+  if (cert_withheld)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "the attached feature clients changed while the assignment was pending; registering "
+        "again");
+    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
+
   /* Adopt the assignment. Both halves are checked before EITHER is written:
    * they are only meaningful together, and the response parser accepts an
    * empty device id (it rejects only a negative or oversized one), so
@@ -4180,6 +4204,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       sizeof(c->provisioned_device_id),
       &c->opts.device_id,
       c->dps_assigned_device_id);
+  c->dps_cert_awaits_adoption = false;
   drop_subscriptions_from_other_generations(c);
   /* A hub token asked for, or held, before this assignment may be for
    * another hub or device: the next attempt asks again. */
@@ -6972,6 +6997,8 @@ static void dps_close_session(az_iot_connection_client* c)
   dps_teardown_mqtt(c);
   c->dps_registration_ref = false;
   c->dps_phase = DPS_PHASE_NONE;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -6993,6 +7020,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   client->close_count++;
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
+  client->dps_cert_awaits_adoption = false;
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
   client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_DPS] = 0;
@@ -7895,6 +7923,11 @@ az_iot_result az_iot_connection_client__require_profile(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "a feature client for the other hub generation is already "
         "attached to this connection");
+    return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
+  }
+  /* A stored issued chain is committed to the pending assignment's profile. */
+  if (client->dps_cert_awaits_adoption && client->connection_profile != profile)
+  {
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
   if (client->connection_profile_resolved && client->connection_profile != profile)

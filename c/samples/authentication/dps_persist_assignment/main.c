@@ -3,6 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L /* fileno, fsync */
+#endif
 /**
  * @file main.c
  * @brief Persists the DPS assignment and restores it on the next run.
@@ -25,6 +28,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <io.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "azure/iot/az_iot.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "az_iot_certificate_provider_managed.h"
@@ -41,6 +54,8 @@
 #define SAMPLE_LINE_MAX 256
 /** @brief Where the assignment is saved, in the working directory. */
 #define SAMPLE_ASSIGNMENT_FILE "dps_assignment.txt"
+/** @brief Written first, then renamed over SAMPLE_ASSIGNMENT_FILE. */
+#define SAMPLE_ASSIGNMENT_TMP_FILE SAMPLE_ASSIGNMENT_FILE ".tmp"
 /** @brief Saved profile names. */
 #define SAMPLE_PROFILE_MQTTV3 "mqttv3"
 #define SAMPLE_PROFILE_MQTTV5 "mqttv5"
@@ -118,19 +133,51 @@ static bool load_assignment(const char* path, saved_assignment* out)
   return true;
 }
 
-/** @brief Saves the adopted assignment, replacing any earlier one. */
+/** @brief Flushes @p f to storage. True on success. */
+static bool sync_file(FILE* f)
+{
+  if (fflush(f) != 0)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  return _commit(_fileno(f)) == 0;
+#else
+  return fsync(fileno(f)) == 0;
+#endif
+}
+
+/** @brief Atomically replaces @p to with @p from. True on success. */
+static bool replace_file(const char* from, const char* to)
+{
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return rename(from, to) == 0;
+#endif
+}
+
+/** @brief Saves the adopted assignment, replacing any earlier one. The record
+ *  is written to a temporary file and renamed, so a failure or power loss
+ *  leaves the previous record intact. */
 static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(ctx->assignment_path);
+  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE);
   bool ok = f != NULL
-      && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0;
+      && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
+      && sync_file(f);
   if (f != NULL && fclose(f) != 0)
   {
     ok = false;
+  }
+  ok = ok && replace_file(SAMPLE_ASSIGNMENT_TMP_FILE, ctx->assignment_path);
+  if (!ok)
+  {
+    (void)remove(SAMPLE_ASSIGNMENT_TMP_FILE);
   }
   ctx->assigned = true;
   ctx->assignment_saved = ok;

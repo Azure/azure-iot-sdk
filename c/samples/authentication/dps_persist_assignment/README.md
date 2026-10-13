@@ -51,8 +51,11 @@ Built when OpenSSL 3.0+ and the Paho adapter are available (`AZ_IOT_WITH_CERT_PR
   instead of the 5 minute default: if the hub refuses the saved identity, the client registers
   with DPS and the new assignment is saved. The refusal does not end the run.
 - Exit code 0 when the hub connects and any new assignment was saved; otherwise 1.
-- The file is rewritten in place. A production device should write a temporary file and rename
-  it, so a power loss cannot leave a partial assignment.
+- The record is written to `dps_assignment.txt.tmp`, flushed, and renamed over
+  `dps_assignment.txt`, so a failed write or power loss keeps the previous record.
+- The managed provider replaces `AZ_IOT_OPERATIONAL_CERT` before the assignment callback runs,
+  so the two files are not updated together; see
+  [Persisting the assignment](../../../docs/connecting.md#persisting-the-assignment).
 
 ## Expected output
 
