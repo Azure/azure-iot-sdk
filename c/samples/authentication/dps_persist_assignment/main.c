@@ -35,6 +35,7 @@
 #include <io.h>
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -147,13 +148,26 @@ static bool sync_file(FILE* f)
 #endif
 }
 
-/** @brief Atomically replaces @p to with @p from. True on success. */
+/** @brief Atomically and durably replaces @p to with @p from, both in the
+ *  working directory. True on success. */
 static bool replace_file(const char* from, const char* to)
 {
 #ifdef _WIN32
   return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
-  return rename(from, to) == 0;
+  if (rename(from, to) != 0)
+  {
+    return false;
+  }
+  /* The rename is durable only once the directory is. */
+  int dir = open(".", O_RDONLY);
+  if (dir < 0)
+  {
+    return false;
+  }
+  bool ok = fsync(dir) == 0;
+  (void)close(dir);
+  return ok;
 #endif
 }
 
