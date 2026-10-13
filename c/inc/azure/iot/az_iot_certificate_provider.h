@@ -125,9 +125,10 @@ extern "C"
      * such load(), and not after a failed one. Material for a connection
      * attempt is released once the adapter's connect() has copied it, or when
      * the attempt ends before connect(); material loaded only to validate or
-     * probe certificates is released at once. The provider may then free
-     * @p material and SHOULD wipe any in-memory private key or password it
-     * handed out (as the PEM provider does) unless it still needs them;
+     * probe certificates is released at once. @p material itself is caller
+     * storage; the provider may then free what it references and SHOULD wipe
+     * any in-memory private key or password it handed out (as the PEM provider
+     * does) unless it still needs them;
      * deinit() wipes any it kept. A non-extractable key (client_key_uri or
      * sign()) keeps the key out of process memory altogether. */
     void (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
