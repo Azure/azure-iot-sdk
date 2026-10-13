@@ -77,3 +77,7 @@
   correlation id only from there. Telemetry `send()` on both generations returns
   `AZ_IOT_ERR_NOT_CONNECTED` (was `AZ_IOT_ERR_NOT_INITIALIZED`) before a provisioning connection
   has a device id. The delivery contract is documented in [docs/telemetry.md](docs/telemetry.md).
+- Build against installed dependencies: `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C` and
+  `AZ_IOT_USE_INSTALLED_PAHO` (both `OFF`) use installed azure-sdk-for-c and Eclipse Paho C instead
+  of fetching them. `c/vcpkg.json` has a `builtin-baseline` and an `installed-paho` feature. See
+  [docs/client-configuration.md](docs/client-configuration.md#installed-dependencies).

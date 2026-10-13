@@ -16,6 +16,9 @@
 # include/azure-sdk-for-c). Paho installs its own eclipse-paho-mqtt-c package
 # into the same prefix; the config file loads that one.
 #
+# A dependency used from an installed copy (AZ_IOT_USE_INSTALLED_*) does not
+# ship: the config file finds it again, so consumers need its prefix too.
+#
 # Include once, after every target is defined.
 
 if(NOT AZ_IOT_INSTALL)
@@ -110,10 +113,12 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/inc/"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
 )
-install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
-    DESTINATION ${_az_iot_sdk_for_c_inc}
-    FILES_MATCHING PATTERN "*.h"
-)
+if(NOT AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
+        DESTINATION ${_az_iot_sdk_for_c_inc}
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
 
 # Adapter headers that live next to their sources. Installed together, and the
 # directory is on each adapter's installed include path, so consumers keep the
@@ -141,8 +146,14 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/../LICENSE")
     install(FILES "${PROJECT_SOURCE_DIR}/../LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}")
 endif()
-install(FILES "${azure_sdk_for_c_SOURCE_DIR}/LICENSE" "${azure_sdk_for_c_SOURCE_DIR}/NOTICE.txt"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}/azure-sdk-for-c")
+if(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    # The config file finds it with this module.
+    install(FILES "${CMAKE_CURRENT_LIST_DIR}/Findazure-sdk-for-c.cmake" DESTINATION ${_az_iot_pkg_cmake_dir})
+    set(AZ_IOT_PACKAGE_AZURE_SDK_FOR_C_VERSION "${azure-sdk-for-c_VERSION}")
+else()
+    install(FILES "${azure_sdk_for_c_SOURCE_DIR}/LICENSE" "${azure_sdk_for_c_SOURCE_DIR}/NOTICE.txt"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}/azure-sdk-for-c")
+endif()
 
 # Dependencies the config file must load before the exported targets.
 set(AZ_IOT_PACKAGE_NEEDS_PAHO OFF)
@@ -150,10 +161,10 @@ set(AZ_IOT_PACKAGE_NEEDS_OPENSSL OFF)
 set(AZ_IOT_PACKAGE_OPENSSL_MIN "")
 if(TARGET az_iot_adapter_paho)
     set(AZ_IOT_PACKAGE_NEEDS_PAHO ON)
-    if(TARGET paho-mqtt3as-static)
+    get_target_property(_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
+    if("AZ_IOT_PAHO_SSL=1" IN_LIST _defs)
         set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
     endif()
-    get_target_property(_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
     if("AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs)
         set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
     endif()

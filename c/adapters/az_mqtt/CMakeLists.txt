@@ -53,6 +53,11 @@ set(_az_iot_pic "${CMAKE_POSITION_INDEPENDENT_CODE}")
 if(_az_iot_shared)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
+# deps/az_mqtt reuses azure-sdk-for-c when target az_core exists, else builds its
+# own. An installed azure-sdk-for-c is az::core: alias it, in this directory only.
+if(NOT TARGET az_core)
+    add_library(az_core ALIAS az::core)
+endif()
 add_subdirectory(${PROJECT_SOURCE_DIR}/deps/az_mqtt ${CMAKE_CURRENT_BINARY_DIR}/az_mqtt)
 set(BUILD_SHARED_LIBS "${_az_iot_shared}")
 set(CMAKE_POSITION_INDEPENDENT_CODE "${_az_iot_pic}")

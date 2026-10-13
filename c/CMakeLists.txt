@@ -77,77 +77,84 @@ include(az_iot_hardening)
 # All three are MQTT-stack-agnostic; we feed their topic strings into our
 # adapter. Upstream is no longer published as a vcpkg port; the project's own
 # README recommends FetchContent. We pin to a release tag for reproducibility.
-include(FetchContent)
+# AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C uses an installed copy instead.
+if(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    # The release AZ_SDK_C_TAG pins, or a later compatible one.
+    find_package(azure-sdk-for-c 1.5.0 REQUIRED)
+    message(STATUS "Using installed azure-sdk-for-c ${azure-sdk-for-c_VERSION} (${AZURE_SDK_FOR_C_INCLUDE_DIR})")
+else()
+    include(FetchContent)
 
-# azure-sdk-for-c's AzureVcpkg.cmake still uses FetchContent_Populate() which
-# CMake >= 3.30 deprecates (CMP0169). Suppress the resulting dev warning until
-# upstream migrates. The policy set here is overridden by azure-sdk-for-c's own
-# cmake_minimum_required(), so we also suppress developer warnings temporarily.
-if(POLICY CMP0169)
-    cmake_policy(SET CMP0169 OLD)
-endif()
-set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "")
-# Keep the commit for this tag in c/cgmanifest.json.
-set(AZ_SDK_C_TAG "1.5.0" CACHE STRING "azure-sdk-for-c git tag/branch")
-set(AZ_SDK_C_REPO "https://github.com/Azure/azure-sdk-for-c.git" CACHE STRING "azure-sdk-for-c git repository")
-
-# Disable the parts we never use to keep the build small.
-set(AZ_NO_PRECONDITION_CHECKING OFF CACHE BOOL "" FORCE)
-set(WARNINGS_AS_ERRORS         OFF CACHE BOOL "" FORCE)
-set(UNIT_TESTING               OFF CACHE BOOL "" FORCE)
-set(TRANSPORT_CURL             OFF CACHE BOOL "" FORCE)
-set(TRANSPORT_PAHO             OFF CACHE BOOL "" FORCE)
-set(BUILD_SAMPLES              OFF CACHE BOOL "" FORCE)
-set(AZ_SDK_C_NO_SAMPLES        ON  CACHE BOOL "" FORCE)
-if(WIN32)
-    set(AZ_PLATFORM_IMPL "WIN32" CACHE STRING "" FORCE)
-elseif(UNIX)
-    set(AZ_PLATFORM_IMPL "POSIX" CACHE STRING "" FORCE)
-endif()
-
-FetchContent_Declare(
-    azure_sdk_for_c
-    GIT_REPOSITORY ${AZ_SDK_C_REPO}
-    GIT_TAG        ${AZ_SDK_C_TAG}
-    GIT_SHALLOW    TRUE
-)
-# Always static: az_core and its platform library depend on each other, which
-# CMake allows only between static libraries. Position-independent in a shared
-# build, so it links into our shared libraries.
-set(_az_iot_shared "${BUILD_SHARED_LIBS}")
-set(BUILD_SHARED_LIBS OFF)
-set(_az_iot_pic "${CMAKE_POSITION_INDEPENDENT_CODE}")
-if(_az_iot_shared)
-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-endif()
-FetchContent_MakeAvailable(azure_sdk_for_c)
-set(BUILD_SHARED_LIBS "${_az_iot_shared}")
-set(CMAKE_POSITION_INDEPENDENT_CODE "${_az_iot_pic}")
-unset(_az_iot_shared)
-unset(_az_iot_pic)
-
-# Restore developer warnings for our own code.
-set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS OFF CACHE INTERNAL "")
-
-# az_posix.c uses usleep()/useconds_t which require POSIX feature-test macros
-# under glibc on modern Ubuntu. Upstream doesn't set them; inject here.
-if(TARGET az_posix)
-    target_compile_definitions(az_posix PRIVATE _DEFAULT_SOURCE _POSIX_C_SOURCE=200809L)
-endif()
-
-# Treat azure-sdk-for-c headers as SYSTEM so our strict warnings don't flag
-# upstream code (e.g. legacy "func()" declarations vs -Wstrict-prototypes).
-foreach(_az_tgt IN ITEMS az_core az_iot_common az_iot_hub az_iot_provisioning az_win32 az_posix az_nohttp)
-    if(TARGET ${_az_tgt})
-        get_target_property(_az_inc ${_az_tgt} INTERFACE_INCLUDE_DIRECTORIES)
-        if(_az_inc)
-            set_target_properties(${_az_tgt} PROPERTIES
-                INTERFACE_INCLUDE_DIRECTORIES ""
-                INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_az_inc}")
-            target_include_directories(${_az_tgt} SYSTEM INTERFACE ${_az_inc})
-        endif()
+    # azure-sdk-for-c's AzureVcpkg.cmake still uses FetchContent_Populate() which
+    # CMake >= 3.30 deprecates (CMP0169). Suppress the resulting dev warning until
+    # upstream migrates. The policy set here is overridden by azure-sdk-for-c's own
+    # cmake_minimum_required(), so we also suppress developer warnings temporarily.
+    if(POLICY CMP0169)
+        cmake_policy(SET CMP0169 OLD)
     endif()
-endforeach()
+    set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "")
+    # Keep the commit for this tag in c/cgmanifest.json.
+    set(AZ_SDK_C_TAG "1.5.0" CACHE STRING "azure-sdk-for-c git tag/branch")
+    set(AZ_SDK_C_REPO "https://github.com/Azure/azure-sdk-for-c.git" CACHE STRING "azure-sdk-for-c git repository")
+
+    # Disable the parts we never use to keep the build small.
+    set(AZ_NO_PRECONDITION_CHECKING OFF CACHE BOOL "" FORCE)
+    set(WARNINGS_AS_ERRORS         OFF CACHE BOOL "" FORCE)
+    set(UNIT_TESTING               OFF CACHE BOOL "" FORCE)
+    set(TRANSPORT_CURL             OFF CACHE BOOL "" FORCE)
+    set(TRANSPORT_PAHO             OFF CACHE BOOL "" FORCE)
+    set(BUILD_SAMPLES              OFF CACHE BOOL "" FORCE)
+    set(AZ_SDK_C_NO_SAMPLES        ON  CACHE BOOL "" FORCE)
+    if(WIN32)
+        set(AZ_PLATFORM_IMPL "WIN32" CACHE STRING "" FORCE)
+    elseif(UNIX)
+        set(AZ_PLATFORM_IMPL "POSIX" CACHE STRING "" FORCE)
+    endif()
+
+    FetchContent_Declare(
+        azure_sdk_for_c
+        GIT_REPOSITORY ${AZ_SDK_C_REPO}
+        GIT_TAG        ${AZ_SDK_C_TAG}
+        GIT_SHALLOW    TRUE
+    )
+    # Always static: az_core and its platform library depend on each other, which
+    # CMake allows only between static libraries. Position-independent in a shared
+    # build, so it links into our shared libraries.
+    set(_az_iot_shared "${BUILD_SHARED_LIBS}")
+    set(BUILD_SHARED_LIBS OFF)
+    set(_az_iot_pic "${CMAKE_POSITION_INDEPENDENT_CODE}")
+    if(_az_iot_shared)
+        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    endif()
+    FetchContent_MakeAvailable(azure_sdk_for_c)
+    set(BUILD_SHARED_LIBS "${_az_iot_shared}")
+    set(CMAKE_POSITION_INDEPENDENT_CODE "${_az_iot_pic}")
+    unset(_az_iot_shared)
+    unset(_az_iot_pic)
+
+    # Restore developer warnings for our own code.
+    set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS OFF CACHE INTERNAL "")
+
+    # az_posix.c uses usleep()/useconds_t which require POSIX feature-test macros
+    # under glibc on modern Ubuntu. Upstream doesn't set them; inject here.
+    if(TARGET az_posix)
+        target_compile_definitions(az_posix PRIVATE _DEFAULT_SOURCE _POSIX_C_SOURCE=200809L)
+    endif()
+
+    # Treat azure-sdk-for-c headers as SYSTEM so our strict warnings don't flag
+    # upstream code (e.g. legacy "func()" declarations vs -Wstrict-prototypes).
+    foreach(_az_tgt IN ITEMS az_core az_iot_common az_iot_hub az_iot_provisioning az_win32 az_posix az_nohttp)
+        if(TARGET ${_az_tgt})
+            get_target_property(_az_inc ${_az_tgt} INTERFACE_INCLUDE_DIRECTORIES)
+            if(_az_inc)
+                set_target_properties(${_az_tgt} PROPERTIES
+                    INTERFACE_INCLUDE_DIRECTORIES ""
+                    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_az_inc}")
+                target_include_directories(${_az_tgt} SYSTEM INTERFACE ${_az_inc})
+            endif()
+        endif()
+    endforeach()
+endif()
 
 # azure-sdk-for-c uses cmake_minimum_required(3.10) which downgrades CMP0091,
 # so MSVC_RUNTIME_LIBRARY is not honored for its targets. Its own

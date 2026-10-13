@@ -32,8 +32,32 @@ it adds `c/`.
 | `AZ_IOT_ENABLE_HARDENING` | `ON` | Hardened compiler and linker flags: stack protector, FORTIFY, PIE and RELRO on GCC and Clang; `/guard:cf`, `/CETCOMPAT` and `/sdl` on MSVC. |
 | `AZ_SDK_C_TAG`, `AZ_SDK_C_REPO` | `1.5.0`, GitHub | Version and source of azure-sdk-for-c, fetched at configure time. |
 | `PAHO_C_TAG`, `PAHO_C_REPO` | `v1.3.13`, GitHub | Version and source of Eclipse Paho C, fetched at configure time. |
+| `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C` | `OFF` | Use an installed azure-sdk-for-c 1.5.0+ instead of fetching it. See [Installed dependencies](#installed-dependencies). |
+| `AZ_IOT_USE_INSTALLED_PAHO` | `OFF` | Use an installed Eclipse Paho C 1.3.13+ (`eclipse-paho-mqtt-c` CMake package) instead of fetching it. See [Installed dependencies](#installed-dependencies). |
 
 Options for the test suites, coverage and static analysis are described in [docs/eng](eng/).
+
+### Installed dependencies
+
+azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. To use installed
+copies instead (e.g. from vcpkg or a package feed), turn on `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C`
+and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`:
+
+- azure-sdk-for-c ships no CMake package. [Findazure-sdk-for-c.cmake](../cmake/Findazure-sdk-for-c.cmake)
+  looks for `azure/core/az_version.h` under `include` or `include/azure-sdk-for-c`, and for the
+  `az_core`, `az_iot_common`, `az_iot_hub`, `az_iot_provisioning` and platform (`az_posix`,
+  `az_win32` or `az_noplatform`) libraries under `lib`.
+  [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
+  commits.
+- Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
+  is preferred. With vcpkg, add the `installed-paho` feature:
+  `-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_FEATURES=installed-paho -DAZ_IOT_USE_INSTALLED_PAHO=ON`.
+  On Windows, use a static triplet (e.g. `x64-windows-static`) to match the SDK's static C runtime.
+
+`c/vcpkg.json` pins its port versions with `builtin-baseline`. An installed dependency is not
+copied into the `azure-iot-sdk` package: its config file finds it again, so consumers need the
+dependency's prefix on `CMAKE_PREFIX_PATH` too. With MSVC, installed libraries must use the
+static C runtime (`/MT`, `/MTd` for Debug), as the SDK does.
 
 ### az_mqtt adapter sizes
 

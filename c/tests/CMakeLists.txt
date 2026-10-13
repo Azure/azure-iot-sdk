@@ -326,6 +326,24 @@ if(AZ_IOT_WITH_PAHO)
         target_compile_definitions(az_iot_tests_paho_key_custody PRIVATE ${_paho_defs})
     endif()
 
+    # Paho 1.3.14+ takes const MQTTProperties* in its getters; the MQTTAsync
+    # mock (support/mock_paho_async.c) must match the headers in use.
+    include(CheckCSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES ${AZ_IOT_PAHO_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_QUIET ON)
+    unset(AZ_IOT_TEST_PAHO_CONST_PROPERTIES CACHE)
+    check_c_source_compiles("
+        #include <MQTTProperties.h>
+        int MQTTProperties_propertyCount(const MQTTProperties* props, enum MQTTPropertyCodes propid);
+        int main(void) { return 0; }"
+        AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
+    unset(CMAKE_REQUIRED_INCLUDES)
+    unset(CMAKE_REQUIRED_QUIET)
+    set(_paho_mock_defs "")
+    if(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
+        set(_paho_mock_defs AZ_IOT_TEST_PAHO_CONST_PROPERTIES=1)
+    endif()
+
     # The same custody code against a REAL PKCS#11 token. Built only when a
     # token is going to be supplied (AZ_IOT_TEST_PKCS11_KEY_URI); it fails
     # loudly rather than skipping when the environment is missing.
@@ -363,6 +381,9 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_defs})
+    endif()
+    if(_paho_mock_defs)
+        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_mock_defs})
     endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE ws2_32 crypt32)
@@ -403,6 +424,9 @@ if(AZ_IOT_WITH_PAHO)
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE ${_paho_defs})
     endif()
+    if(_paho_mock_defs)
+        target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE ${_paho_mock_defs})
+    endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_transport_proxy PRIVATE ws2_32 crypt32)
     endif()
@@ -439,6 +463,9 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE ${_paho_defs})
+    endif()
+    if(_paho_mock_defs)
+        target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE ${_paho_mock_defs})
     endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_event_queue_race PRIVATE ws2_32 crypt32)
