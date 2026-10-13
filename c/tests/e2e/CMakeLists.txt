@@ -221,4 +221,25 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
 endif()
 
 
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_mqttv5_custom_topic
+#
+# mqttv5 custom topics. Needs an mqttv5 hub with the custom topic templates
+# e2e/{deviceId}/# and e2e/shared/#, which only the ci-c-e2e-mqttv5 workflow's
+# environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_MQTTV5)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custom_topic
+        tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_custom_topic PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 twin desired delivery with and without twin_push.push_desired.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_twin
+        tests/e2e_mqttv5_twin_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_twin PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+endif()
+
 endif() # AZ_IOT_WITH_PAHO

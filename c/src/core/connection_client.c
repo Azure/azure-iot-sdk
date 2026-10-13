@@ -7505,6 +7505,26 @@ az_iot_result az_iot_connection_client__presence_nonce(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client__birth_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if ((client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
+       && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+      || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
 bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
 {
   return client && client->opts.twin_push.push_desired;
@@ -7635,6 +7655,14 @@ const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_
    * and pointed-to here) after provisioning. NULL for a not-yet-provisioned
    * DPS-only client. */
   return client ? client->opts.host : NULL;
+}
+
+const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client)
+{
+  /* Gated on opts.host so the pair is never half-set: a DPS client may carry a
+   * caller client_id that is not the device id DPS will assign. Both are
+   * replaced together when an assignment is adopted. */
+  return (client && client->opts.host) ? client->opts.client_id : NULL;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(

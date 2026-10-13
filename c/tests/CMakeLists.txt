@@ -508,6 +508,23 @@ if(OPENSSL_FOUND)
         ${_sample_common}/sample_csr_openssl.c)
     target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
     target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
+
+    # Certificate provider contract suite (support/cert_provider_contract.c), run
+    # against the PEM, sample and, when built, managed providers.
+    az_iot_add_cmocka_test(az_iot_tests_certificate_provider_contract
+        unit/certificate_provider_contract_test.c
+        support/cert_provider_contract.c
+        ${_sample_common}/sample_cert_provider.c
+        ${_sample_common}/sample_csr_openssl.c)
+    target_include_directories(az_iot_tests_certificate_provider_contract PRIVATE
+        ${_sample_common})
+    target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE OpenSSL::Crypto)
+    if(TARGET az_iot_certificate_provider_managed)
+        target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE
+            az_iot_certificate_provider_managed)
+        target_compile_definitions(az_iot_tests_certificate_provider_contract PRIVATE
+            AZ_IOT_CONTRACT_WITH_MANAGED)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
