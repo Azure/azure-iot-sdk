@@ -401,6 +401,67 @@ static bool copy_json_string(const az_json_token* token, char* out, size_t out_s
   return true;
 }
 
+/**
+ * @brief Decodes JSON string content @p slice into @p out (@p out_size bytes,
+ * always terminated), keeping what fits.
+ *
+ * @param[out] truncated Set when the decoded value did not fit.
+ * @return false for a malformed or unsupported escape (`\\u`).
+ */
+static bool json_unescape_bounded(az_span slice, char* out, size_t out_size, bool* truncated)
+{
+  const uint8_t* p = az_span_ptr(slice);
+  int32_t n = az_span_size(slice);
+  size_t len = 0;
+  *truncated = false;
+  for (int32_t i = 0; i < n; ++i)
+  {
+    uint8_t ch = p[i];
+    if (ch == '\\')
+    {
+      if (++i >= n)
+      {
+        return false;
+      }
+      switch (p[i])
+      {
+        case '"':
+        case '\\':
+        case '/':
+          ch = p[i];
+          break;
+        case 'b':
+          ch = '\b';
+          break;
+        case 'f':
+          ch = '\f';
+          break;
+        case 'n':
+          ch = '\n';
+          break;
+        case 'r':
+          ch = '\r';
+          break;
+        case 't':
+          ch = '\t';
+          break;
+        default:
+          return false;
+      }
+    }
+    if (len + 1u < out_size)
+    {
+      out[len++] = (char)ch;
+    }
+    else
+    {
+      *truncated = true;
+    }
+  }
+  out[len] = '\0';
+  return true;
+}
+
 /** @brief Records the string token at @p jr into @p out; anything else leaves it empty. */
 static void take_string(const az_json_reader* jr, az_span* out)
 {
@@ -709,27 +770,30 @@ static az_iot_result on_assigned(az_iot_dps_tpm_client* client, const dps_tpm_fi
   az_iot_dps_tpm_assignment* a = &client->_internal.assignment;
   a->assigned_hub = client->_internal.assigned_hub;
   a->device_id = client->_internal.device_id;
-  az_span raw = f->has_connection_profile ? f->connection_profile : AZ_SPAN_FROM_STR("classic");
-  size_t raw_len = (size_t)az_span_size(raw);
-  a->connection_profile_raw_truncated = raw_len >= sizeof(client->_internal.connection_profile_raw);
-  if (a->connection_profile_raw_truncated)
+  char* raw = client->_internal.connection_profile_raw;
+  bool truncated = false;
+  if (!f->has_connection_profile)
   {
-    raw_len = sizeof(client->_internal.connection_profile_raw) - 1u;
+    memcpy(raw, "classic", sizeof("classic"));
   }
-  if (raw_len > 0)
+  else if (!json_unescape_bounded(
+               f->connection_profile,
+               raw,
+               sizeof(client->_internal.connection_profile_raw),
+               &truncated))
   {
-    memcpy(client->_internal.connection_profile_raw, az_span_ptr(raw), raw_len);
+    return fail(client, AZ_IOT_ERR_PROTOCOL);
   }
-  client->_internal.connection_profile_raw[raw_len] = '\0';
-  a->connection_profile_raw = client->_internal.connection_profile_raw;
-  a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-  if (f->has_connection_profile
-      && !az_span_is_content_equal(f->connection_profile, AZ_SPAN_FROM_STR("classic")))
+  a->connection_profile_raw = raw;
+  a->connection_profile_raw_truncated = truncated;
+  a->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  if (!truncated && strcmp(raw, "classic") == 0)
   {
-    a->connection_profile
-        = az_span_is_content_equal(f->connection_profile, AZ_SPAN_FROM_STR("mqttV5"))
-        ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-        : AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+  }
+  else if (!truncated && strcmp(raw, "mqttV5") == 0)
+  {
+    a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   }
   a->issued_certificate_chain = f->issued_certificate_chain;
   a->hub_key_imported = false;

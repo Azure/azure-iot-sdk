@@ -303,6 +303,9 @@ static void connection_profiles_map_to_the_enum(void** state)
     { "\"connectionProfile\":null,", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
     { "\"connectionProfile\":\"mqttV5\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "mqttV5", false },
     { "\"connectionProfile\":\"other\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "other", false },
+    /* Escapes are decoded before the profile is matched. */
+    { "\"connectionProfile\":\"mqtt\\/V5\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "mqtt/V5", false },
+    { "\"connectionProfile\":\"\\u006dqttV5\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, NULL, false },
     /* 70 characters: kept to AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1. */
     { "\"connectionProfile\":"
       "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",",
@@ -332,6 +335,11 @@ static void connection_profiles_map_to_the_enum(void** state)
       len += n;
     }
     json[len] = '\0';
+    if (cases[i].raw == NULL)
+    {
+      assert_int_equal(respond(&c, 200, json, 0, &next), AZ_IOT_ERR_PROTOCOL);
+      continue;
+    }
     assert_int_equal(respond(&c, 200, json, 0, &next), AZ_IOT_OK);
     const az_iot_dps_tpm_assignment* a = az_iot_dps_tpm_client_get_assignment(&c);
     assert_int_equal(a->connection_profile, cases[i].expected);
@@ -673,6 +681,29 @@ static void a_short_buffer_or_zero_time_is_rejected(void** state)
   az_iot_dps_tpm_request req;
   assert_int_equal(
       az_iot_dps_tpm_client_get_request(&c, 0, buf, sizeof(buf), &req), AZ_IOT_ERR_INVALID_ARG);
+  /* An expiry past UINT64_MAX is rejected; the output is cleared. */
+  static const uint64_t too_late[]
+      = { UINT64_MAX, UINT64_MAX - AZ_IOT_DPS_TPM_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS + 1u };
+  for (size_t k = 0; k < sizeof(too_late) / sizeof(too_late[0]); ++k)
+  {
+    memset(buf, 'x', sizeof(buf));
+    memset(&req, 0xA5, sizeof(req));
+    assert_int_equal(
+        az_iot_dps_tpm_client_get_request(&c, too_late[k], buf, sizeof(buf), &req),
+        AZ_IOT_ERR_INVALID_ARG);
+    assert_null(req.path);
+    assert_null(req.authorization);
+    assert_int_equal(buf[0], 0);
+  }
+  /* The largest valid time still works. */
+  assert_int_equal(
+      az_iot_dps_tpm_client_get_request(
+          &c,
+          UINT64_MAX - AZ_IOT_DPS_TPM_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS,
+          buf,
+          sizeof(buf),
+          &req),
+      AZ_IOT_OK);
   for (size_t size = 1; size < 300; size += 7)
   {
     memset(buf, 'x', sizeof(buf));

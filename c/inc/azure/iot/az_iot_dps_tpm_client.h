@@ -203,8 +203,9 @@ extern "C"
     /** az_iot_connection_client_options::connection_profile. Absent or
      * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other: UNKNOWN. */
     az_iot_connection_profile connection_profile;
-    /** `connectionProfile` as sent, unescaped bytes; `classic` when absent or
-     * null. At most AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1 characters. */
+    /** `connectionProfile` as sent, JSON-decoded; `classic` when absent or
+     * null. At most AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1 characters. A
+     * `\\u` escape makes the response malformed. */
     const char* connection_profile_raw;
     /** The value was longer than connection_profile_raw holds. */
     bool connection_profile_raw_truncated;
