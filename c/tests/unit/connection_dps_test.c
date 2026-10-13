@@ -5466,6 +5466,65 @@ static void reopen_on_registration_end(const az_iot_connection_state_event* even
   }
 }
 
+/* close() alone from the DPS:DISCONNECTING that ends the registration. */
+static void close_on_registration_end(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_reopen_ctx* ctx = (close_reopen_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING
+      && ctx->closed == 0)
+  {
+    ctx->closed = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+  }
+}
+
+/* An assignment cancelled by close() alone is not adopted: no hub connect, and
+ * the saved hub and profile stay. */
+static void a_closed_assignment_is_not_adopted(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = saved_hub_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  close_reopen_ctx ctx = { &c, 0, 0, AZ_IOT_ERR_INTERNAL };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&c, close_on_registration_end, &ctx), AZ_IOT_OK);
+  az_iot_mqtt_factory* f5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f5), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f3), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(&c), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(f3);
+  assert_non_null(dps);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_mqtt_v3));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&c, 0);
+  }
+  assert_int_equal(ctx.closed, 1);
+  assert_null(az_iot_mock_mqtt_factory_last_client(f5));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_string_equal(az_iot_connection_client_get_iothub_address(&c), SAVED_HUB);
+  assert_int_equal(
+      az_iot_connection_client__require_profile(&c, AZ_IOT_CONNECTION_PROFILE_MQTT_V3),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f3);
+  az_iot_mock_mqtt_factory_destroy(f5);
+}
+
 /* An assignment cancelled by close() + open() before it is adopted leaves the
  * saved profile declared, and the reopen goes to the saved hub with it. */
 static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
@@ -5817,6 +5876,7 @@ int main(void)
     cmocka_unit_test(a_saved_hub_uses_the_stored_operational_certificate),
     cmocka_unit_test(a_failed_enrollment_keeps_the_saved_profile),
     cmocka_unit_test(a_cancelled_assignment_keeps_the_saved_profile),
+    cmocka_unit_test(a_closed_assignment_is_not_adopted),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

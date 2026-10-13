@@ -4068,6 +4068,11 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
+  /* close() from a teardown event above cancels the assignment. */
+  if (c->close_count != closes)
+  {
+    return;
+  }
   dps_assigned_profile_commit(c);
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
