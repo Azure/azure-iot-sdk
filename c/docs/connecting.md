@@ -257,8 +257,8 @@ The certificate can stay a file: it is public.
   `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. See
   [Authentication](#authentication) and
   [`user_provided_sas_token`](../samples/authentication/user_provided_sas_token/README.md).
-- **If a key must be a file**, give each device its own key and make the file readable only by
-  the account the device software runs as.
+- **If a key must be a file**, give each device its own key, and let only the account the device
+  software runs as read or change it (e.g. `chmod 600`; the directory not writable by others).
 
 ## Authentication
 
