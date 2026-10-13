@@ -175,11 +175,12 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   X509* x = NULL;
   for (size_t i = 0; i < 2; ++i)
   {
-    BIO* b = open_material(cert_pem[i], cert_path[i]);
-    if (!b)
+    if (!cert_pem[i] && !cert_path[i])
     {
       continue;
     }
+    BIO* b = open_material(cert_pem[i], cert_path[i]);
+    assert_non_null(b); /* a path that is set must open */
     X509* c = PEM_read_bio_X509(b, NULL, NULL, NULL);
     BIO_free(b);
     assert_non_null(c);
@@ -203,11 +204,12 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   const char* key_path[2] = { NULL, m->client_key_path };
   for (size_t i = 0; i < 2; ++i)
   {
-    BIO* b = open_material(key_pem[i], key_path[i]);
-    if (!b)
+    if (!key_pem[i] && !key_path[i])
     {
       continue;
     }
+    BIO* b = open_material(key_pem[i], key_path[i]);
+    assert_non_null(b);
     EVP_PKEY* k = PEM_read_bio_PrivateKey(b, NULL, NULL, (void*)m->client_key_password);
     BIO_free(b);
     assert_non_null(k);
@@ -238,22 +240,54 @@ static void assert_chain(BIO* b, X509* leaf)
 {
   assert_non_null(b);
   X509* expected[] = { leaf, g_ca };
-  size_t count = 0;
-  X509* x = NULL;
-  while ((x = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
+  for (size_t i = 0; i < 2; ++i)
   {
-    X509* want = count < 2 ? expected[count] : NULL;
-    assert_non_null(want);
-    assert_int_equal(0, X509_cmp(want, x));
-    count++;
+    X509* x = PEM_read_bio_X509(b, NULL, NULL, NULL);
+    assert_non_null(x);
+    assert_int_equal(0, X509_cmp(expected[i], x));
     X509_free(x);
   }
-  assert_int_equal(2, count);
+  /* Nothing but whitespace may follow. */
+  char rest[256];
+  int n = 0;
+  while ((n = BIO_read(b, rest, (int)sizeof(rest))) > 0)
+  {
+    for (int i = 0; i < n; ++i)
+    {
+      assert_true(rest[i] != '\0' && strchr(" \t\r\n", rest[i]) != NULL);
+    }
+  }
   BIO_free(b);
 }
 
-/** @brief Assert load(OPERATIONAL, 0) is checked and serves exactly [@p leaf, CA] in every form
- * set. */
+/**
+ * @brief Check @p role's credentials from index @p first up to
+ * AZ_IOT_MAX_CERTS_PER_ROLE; a non-OK load() ends them and is AZ_IOT_ERR_NOT_FOUND.
+ */
+static void check_role_from(az_iot_certificate_provider* p, az_iot_cert_role role, uint8_t first)
+{
+  az_iot_result rc = AZ_IOT_OK;
+  for (uint8_t i = first; i < AZ_IOT_MAX_CERTS_PER_ROLE && rc == AZ_IOT_OK; ++i)
+  {
+    az_iot_certificate_material m;
+    memset(&m, 0, sizeof(m));
+    rc = p->vtable->load(p, role, i, &m);
+    if (rc == AZ_IOT_OK)
+    {
+      X509_free(check_material(p, &m));
+      p->vtable->release(p, &m);
+    }
+    else
+    {
+      assert_int_equal(AZ_IOT_ERR_NOT_FOUND, rc);
+    }
+  }
+}
+
+/**
+ * @brief Assert load(OPERATIONAL, 0) serves exactly [@p leaf, CA] in every form
+ * set, and the operational fallback indexes are usable.
+ */
 static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
 {
   az_iot_certificate_material m;
@@ -269,6 +303,7 @@ static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
     assert_chain(open_material(NULL, m.client_cert_path), leaf);
   }
   p->vtable->release(p, &m);
+  check_role_from(p, AZ_IOT_CRED_OPERATIONAL, 1); /* fallback indexes */
 }
 
 /** @brief get_csr(), checked: a self-signed request naming @p subject. Returns its key. */
@@ -337,22 +372,7 @@ static void each_role_returns_usable_credentials(void** state)
   const az_iot_cert_role roles[] = { AZ_IOT_CRED_BOOTSTRAP, AZ_IOT_CRED_OPERATIONAL };
   for (size_t r = 0; r < sizeof(roles) / sizeof(roles[0]); ++r)
   {
-    az_iot_result rc = AZ_IOT_OK;
-    for (uint8_t i = 0; i < AZ_IOT_MAX_CERTS_PER_ROLE && rc == AZ_IOT_OK; ++i)
-    {
-      az_iot_certificate_material m;
-      memset(&m, 0, sizeof(m));
-      rc = p->vtable->load(p, roles[r], i, &m);
-      if (rc == AZ_IOT_OK)
-      {
-        X509_free(check_material(p, &m));
-        p->vtable->release(p, &m);
-      }
-      else
-      {
-        assert_int_equal(AZ_IOT_ERR_NOT_FOUND, rc);
-      }
-    }
+    check_role_from(p, roles[r], 0);
   }
   finish(p);
 }
