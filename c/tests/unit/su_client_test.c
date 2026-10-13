@@ -111,12 +111,37 @@ static void b64url_str(const void* data, int32_t len, char* dst, int32_t cap)
   dst[out] = '\0';
 }
 
-/* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
- * (itself a JWS over a JWK signing key, signed by the root key `testkid`); the
- * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
- * are arbitrary because the mock backend does not validate them. */
-static void build_jws(char* out, int32_t out_cap)
+/* Write `"name":"aaa...",` with `len` filler bytes into `dst`, or "" when `len` is 0. */
+static void pad_property(char* dst, size_t cap, const char* name, size_t len)
 {
+  dst[0] = '\0';
+  if (len == 0)
+  {
+    return;
+  }
+  int n = snprintf(dst, cap, "\"%s\":\"", name);
+  assert_true(n > 0 && (size_t)n + len + 3 < cap);
+  memset(dst + n, 'a', len);
+  memcpy(dst + (size_t)n + len, "\",", 3);
+}
+
+/* Build a structurally-valid manifest JWS: header carries alg=RS256 + an SJWK
+ * (itself a JWS over a JWK signing key, signed by the root key `root_kid`); the
+ * payload carries SHA-256(manifest) so the binding check passes. Signature bytes
+ * are arbitrary because the mock backend does not validate them.
+ * `jwk_pad` and `hdr_pad` add that many bytes of an unknown property to the
+ * signing JWK and to the manifest JWS header. `escaped_n` encodes the modulus as
+ * standard base64 with JSON-escaped slashes, as some serializers emit it. */
+static void build_jws_ex(
+    char* out,
+    int32_t out_cap,
+    size_t jwk_pad,
+    size_t hdr_pad,
+    bool escaped_n,
+    const char* root_kid)
+{
+  static char pad[16384];
+
   uint8_t fixed_hash[32];
   memset(fixed_hash, SU_TEST_HASH_BYTE, sizeof(fixed_hash));
   char hash_b64[64];
@@ -132,33 +157,50 @@ static void build_jws(char* out, int32_t out_cap)
   char pl_b64[256];
   b64url_str(pl_json, (int32_t)strlen(pl_json), pl_b64, (int32_t)sizeof(pl_b64));
 
-  static const char sjwk_hdr[] = "{\"alg\":\"RS256\",\"kid\":\"testkid\"}";
+  char sjwk_hdr[64];
+  snprintf(sjwk_hdr, sizeof(sjwk_hdr), "{\"alg\":\"RS256\",\"kid\":\"%s\"}", root_kid);
   char shdr_b64[128];
   b64url_str(sjwk_hdr, (int32_t)strlen(sjwk_hdr), shdr_b64, (int32_t)sizeof(shdr_b64));
 
-  char n_b64[16];
+  char n_b64[32];
   char e_b64[16];
   b64url_str(k_root_mod, (int32_t)sizeof(k_root_mod), n_b64, (int32_t)sizeof(n_b64));
   b64url_str(k_root_exp, (int32_t)sizeof(k_root_exp), e_b64, (int32_t)sizeof(e_b64));
-  char sp_json[128];
-  snprintf(sp_json, sizeof(sp_json), "{\"kty\":\"RSA\",\"n\":\"%s\",\"e\":\"%s\"}", n_b64, e_b64);
-  char sp_b64[256];
+  if (escaped_n)
+  {
+    /* Standard base64 of FF FF FF is "////". */
+    snprintf(n_b64, sizeof(n_b64), "\\/\\/\\/\\/");
+  }
+  pad_property(pad, sizeof(pad), "x5t", jwk_pad);
+  static char sp_json[16384];
+  int n = snprintf(
+      sp_json, sizeof(sp_json), "{\"kty\":\"RSA\",%s\"n\":\"%s\",\"e\":\"%s\"}", pad, n_b64, e_b64);
+  assert_true(n > 0 && (size_t)n < sizeof(sp_json));
+  static char sp_b64[24576];
   b64url_str(sp_json, (int32_t)strlen(sp_json), sp_b64, (int32_t)sizeof(sp_b64));
 
   const uint8_t dummy_sig[] = { 0xDE, 0xAD, 0xBE, 0xEF };
   char sig_b64[16];
   b64url_str(dummy_sig, (int32_t)sizeof(dummy_sig), sig_b64, (int32_t)sizeof(sig_b64));
 
-  char sjwk[800];
-  snprintf(sjwk, sizeof(sjwk), "%s.%s.%s", shdr_b64, sp_b64, sig_b64);
+  static char sjwk[24576];
+  n = snprintf(sjwk, sizeof(sjwk), "%s.%s.%s", shdr_b64, sp_b64, sig_b64);
+  assert_true(n > 0 && (size_t)n < sizeof(sjwk));
 
-  char mhdr_json[1024];
-  snprintf(mhdr_json, sizeof(mhdr_json), "{\"alg\":\"RS256\",\"sjwk\":\"%s\"}", sjwk);
-  char mhdr_b64[1536];
+  pad_property(pad, sizeof(pad), "x5c", hdr_pad);
+  static char mhdr_json[49152];
+  n = snprintf(mhdr_json, sizeof(mhdr_json), "{\"alg\":\"RS256\",%s\"sjwk\":\"%s\"}", pad, sjwk);
+  assert_true(n > 0 && (size_t)n < sizeof(mhdr_json));
+  static char mhdr_b64[65536];
   b64url_str(mhdr_json, (int32_t)strlen(mhdr_json), mhdr_b64, (int32_t)sizeof(mhdr_b64));
 
-  int n = snprintf(out, (size_t)out_cap, "%s.%s.%s", mhdr_b64, pl_b64, sig_b64);
+  n = snprintf(out, (size_t)out_cap, "%s.%s.%s", mhdr_b64, pl_b64, sig_b64);
   assert_true(n > 0 && n < out_cap);
+}
+
+static void build_jws(char* out, int32_t out_cap)
+{
+  build_jws_ex(out, out_cap, 0, 0, false, "testkid");
 }
 
 /* Build a single-step payload with a caller-chosen workflow `id` and manifest
@@ -239,6 +281,15 @@ typedef struct
   int download_calls;
   char download_file_ids[MAX_OPS][32];
   char download_urls[MAX_OPS][64];
+
+  /* Key, exponent and signature of the last verify_rs256 call. */
+  const uint8_t* first_verify_modulus; /* modulus of the first RS256 verify (the root key) */
+  uint8_t verify_mod[8];
+  size_t verify_mod_len;
+  uint8_t verify_exp[8];
+  size_t verify_exp_len;
+  uint8_t verify_sig[8];
+  size_t verify_sig_len;
 } hook_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
@@ -360,15 +411,20 @@ static az_iot_result mock_verify_rs256(
     const uint8_t* sig,
     size_t sig_len)
 {
-  (void)mod;
-  (void)mod_len;
-  (void)exp;
-  (void)exp_len;
   (void)signed_data;
   (void)signed_len;
-  (void)sig;
-  (void)sig_len;
   hook_log* l = mock_log(self);
+  /* Truncated copies; the length is kept whole so a wrong decode still shows. */
+  if (l->first_verify_modulus == NULL)
+  {
+    l->first_verify_modulus = mod;
+  }
+  memcpy(l->verify_mod, mod, mod_len < sizeof(l->verify_mod) ? mod_len : sizeof(l->verify_mod));
+  l->verify_mod_len = mod_len;
+  memcpy(l->verify_exp, exp, exp_len < sizeof(l->verify_exp) ? exp_len : sizeof(l->verify_exp));
+  l->verify_exp_len = exp_len;
+  memcpy(l->verify_sig, sig, sig_len < sizeof(l->verify_sig) ? sig_len : sizeof(l->verify_sig));
+  l->verify_sig_len = sig_len;
   log_op(l, OP_VERIFY, 0);
   return l->verify_result == AZ_IOT_SU_RESULT_SUCCESS ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
 }
@@ -798,6 +854,10 @@ typedef struct
 
   int refused_count;
   az_iot_result last_refused_reason;
+
+  int deferred_count;
+  az_iot_result last_deferred_reason;
+  az_iot_su_state last_deferred_state;
 } fixture;
 
 /* Records whatever the client raises. */
@@ -829,6 +889,12 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
   {
     fx->refused_count++;
     fx->last_refused_reason = event->reason;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_DEFERRED)
+  {
+    fx->deferred_count++;
+    fx->last_deferred_reason = event->reason;
+    fx->last_deferred_state = event->state;
   }
   else if (
       event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED
@@ -2635,12 +2701,15 @@ static void microsoft_root_keys_are_embedded(void** state)
   size_t count = 0;
   const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
   assert_non_null(keys);
-  assert_true(count >= 2);
+  static const char* const kids[] = { "ADU.200702.R", "ADU.200703.R", "ADU.241112.R" };
+  assert_int_equal(count, sizeof(kids) / sizeof(kids[0]));
+  assert_true(count <= AZ_IOT_SU_MAX_ROOT_KEYS);
   for (size_t i = 0; i < count; i++)
   {
-    assert_non_null(keys[i].kid);
+    assert_string_equal(keys[i].kid, kids[i]);
     assert_non_null(keys[i].modulus);
-    assert_true(keys[i].modulus_len > 0);
+    /* 3072-bit modulus with a leading zero byte. */
+    assert_int_equal(keys[i].modulus_len, 385);
     assert_non_null(keys[i].exponent);
     assert_true(keys[i].exponent_len > 0);
     assert_false(keys[i].disabled);
@@ -2993,22 +3062,6 @@ static void an_undecodable_replacement_keeps_the_active_checkpoint(void** state)
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
-/* A new workflow retires the checkpoint of the one it supersedes. */
-static void superseding_workflow_retires_the_stored_checkpoint(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
-  inject_patch(fx, signed_patch());
-  pump_to_checkpoint(fx);
-
-  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
-  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
-  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
-  assert_false(fx->log.have_persist);
-}
-
 /* Without persist_state_fn a restored record could never be retired, so every
  * boot would re-apply it; resume refuses it instead. */
 static void resume_without_a_persist_hook_is_not_supported(void** state)
@@ -3191,6 +3244,207 @@ static void finish_with_report_unacknowledged(fixture* fx)
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+}
+
+/* A new workflow does not replace one whose install asked for a reboot: its
+ * checkpoint, step and results are kept, nothing is rolled back, and the
+ * deferral is raised on each delivery. After the reboot the resumed workflow
+ * finishes and the new one is taken when offered again. */
+static void a_new_workflow_is_deferred_at_a_stored_reboot_checkpoint(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+  uint8_t blob[sizeof(fx->log.persist_blob)];
+  size_t blob_len = fx->log.persist_len;
+  memcpy(blob, fx->log.persist_blob, blob_len);
+  int persist_calls = fx->log.persist_calls;
+  size_t ops = fx->log.op_count;
+
+  for (int i = 1; i <= 2; ++i)
+  {
+    inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+    assert_int_equal(fx->deferred_count, i);
+  }
+  assert_int_equal(fx->last_deferred_reason, AZ_IOT_ERR_BUSY);
+  assert_int_equal(fx->last_deferred_state, AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(fx->su._internal.current_step, 0);
+  assert_int_equal(fx->log.persist_calls, persist_calls);
+  assert_int_equal(fx->log.persist_len, blob_len);
+  assert_memory_equal(fx->log.persist_blob, blob, blob_len);
+  assert_int_equal(fx->log.op_count, ops);
+
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  inject_patch(fresh, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fresh->deferred_count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+
+  pump(fresh, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_string_equal(fresh->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(count_ops(&fresh->log, OP_RESTORE), 0);
+
+  inject_patch(fresh, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fresh->deferred_count, 1);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* A deployment is validated as a whole: once a step's install has begun, a new
+ * workflow waits for the current one to end, also between steps. Before the
+ * first install it still replaces (replacement_with_new_id_restarts). */
+static void a_new_workflow_is_deferred_once_an_install_began(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+
+  /* Step 0's install is in progress. */
+  fx->log.install_result = AZ_IOT_SU_RESULT_IN_PROGRESS;
+  inject_patch(fx, distinct_files_patch());
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_INSTALL_STARTED;
+       ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 1);
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fx->deferred_count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
+
+  /* Step 0 applied; step 1 not yet installed. */
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  for (int i = 0; i < 40 && fx->su._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->su._internal.current_step, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fx->deferred_count, 2);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(fx->su._internal.current_step, 1);
+  assert_int_equal(fx->su._internal.step_results[0].outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  pump(fx, 60);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "distinct-files-deployment");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(count_ops(&fx->log, OP_RESTORE), 0);
+
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fx->deferred_count, 2);
+}
+
+/* Entering Install is not the boundary: until install_fn is called, a new
+ * workflow still replaces the current one. */
+static void a_new_workflow_replaces_before_install_fn_is_called(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_INSTALL_STARTED;
+       ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_STARTED);
+  assert_int_equal(count_ops(&fx->log, OP_INSTALL), 0);
+
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fx->deferred_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  /* A failed install ends that workflow; the next one starts with no install called. */
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
+  inject_patch(fx, build_patch("cccccccc-0000-0000-0000-000000000003"));
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  inject_patch(fx, build_patch("dddddddd-0000-0000-0000-000000000004"));
+  assert_int_equal(fx->deferred_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+}
+
+/* A last apply that asked for a reboot ends the workflow, but the device has
+ * not activated it: a new workflow waits for the reboot, and the owed terminal
+ * report and its record are kept. */
+static void a_new_workflow_is_deferred_until_a_last_apply_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  finish_with_report_unacknowledged(fx);
+  assert_true(fx->log.have_persist);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(fx->deferred_count, 1);
+  assert_int_equal(fx->last_deferred_state, AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->su._internal.report_owed);
+  assert_true(fx->log.have_persist);
+
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  inject_patch(fresh, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fresh->deferred_count, 0);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* Only AZ_IOT_SU_REPLACEMENT_DEFER is supported. */
+static void the_replacement_policy_is_validated(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { .manufacturer = "m" };
+  az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+  assert_int_equal(opts.replacement_policy, AZ_IOT_SU_REPLACEMENT_DEFER);
+  opts.hooks = &fx->su._internal.hooks;
+  opts.device_properties = &dp;
+  uint8_t storage[512];
+  opts.device_properties_buffer = storage;
+  opts.device_properties_buffer_size = sizeof(storage);
+  az_iot_su_client client;
+  fake_channel fc = { 0 };
+  az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
+
+  opts.replacement_policy = AZ_IOT_SU_REPLACEMENT_ROLLBACK;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(fx->conn.dps_user_count, 0);
+  opts.replacement_policy = (az_iot_su_replacement_policy)2;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_false(fc.opened);
+  opts.replacement_policy = AZ_IOT_SU_REPLACEMENT_DEFER;
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_OK);
+  az_iot_su_client_deinit(&client);
 }
 
 /* A terminal report the service has not accepted survives a reboot: resume
@@ -4084,12 +4338,14 @@ static void a_new_workflow_waits_for_a_held_workflow(void** state)
     void* st = NULL;
     assert_int_equal(setup(&st), 0);
     fixture* fx = (fixture*)st;
+    assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
     hold_at_reboot_boundary(fx, c == 1);
     az_iot_su_state held = az_iot_su_client_get_state(&fx->su);
     size_t ops = fx->log.op_count;
 
     inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000002"));
     assert_int_equal(az_iot_su_client_get_state(&fx->su), held);
+    assert_int_equal(fx->deferred_count, 1);
     assert_true(fx->su._internal.checkpoint_pending);
     assert_int_equal(fx->log.op_count, ops);
     assert_int_equal(count_ops(&fx->log, OP_RESTORE), 0);
@@ -4571,6 +4827,25 @@ static void manifest_signed_by_an_unknown_root_key_is_rejected(void** state)
       parse_with_roots(&fx->log, signed_patch(), strangers, 1, &req, &manifest), AZ_IOT_ERR_AUTH);
 }
 
+static void manifest_under_root_adu_241112_r_resolves_to_that_key(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  char jws[2048];
+  build_jws_ex(jws, (int32_t)sizeof(jws), 0, 0, false, "ADU.241112.R");
+  static char patch[4096];
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "wf-241112", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+
+  size_t count = 0;
+  const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+  fx->log.first_verify_modulus = NULL;
+  assert_int_equal(parse_with_roots(&fx->log, patch, keys, count, &req, &manifest), AZ_IOT_OK);
+  assert_ptr_equal(fx->log.first_verify_modulus, keys[2].modulus);
+}
+
 /* The public parser accepts the software updates updateMetadata shape too. */
 static void public_parser_accepts_update_metadata(void** state)
 {
@@ -4614,6 +4889,111 @@ static void malformed_jws_is_rejected(void** state)
     az_iot_result r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
     assert_int_not_equal(r, AZ_IOT_OK);
   }
+}
+
+/* A signing key and JWS header larger than 2 KiB, as the service sends after a
+ * key rotation, in an offer larger than 4 KiB. The modulus is standard base64
+ * with JSON-escaped slashes. */
+static const char* large_signature_patch(void)
+{
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  build_jws_ex(jws, (int32_t)sizeof(jws), 2400, 600, true, "testkid");
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "large-signature", "1.1", jws);
+  assert_true(n > 4096 && (size_t)n < sizeof(patch));
+  return patch;
+}
+
+/* The last verify_rs256 (the manifest's) got the escaped standard-base64
+ * modulus "\/\/\/\/" as FF FF FF, the exponent and the signature decoded. */
+static void assert_signing_key_decoded(const hook_log* l)
+{
+  static const uint8_t ff[] = { 0xFF, 0xFF, 0xFF };
+  static const uint8_t sig[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+  assert_int_equal(l->verify_mod_len, sizeof(ff));
+  assert_memory_equal(l->verify_mod, ff, sizeof(ff));
+  assert_int_equal(l->verify_exp_len, sizeof(k_root_exp));
+  assert_memory_equal(l->verify_exp, k_root_exp, sizeof(k_root_exp));
+  assert_int_equal(l->verify_sig_len, sizeof(sig));
+  assert_memory_equal(l->verify_sig, sig, sizeof(sig));
+}
+
+static void large_signature_is_verified(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, large_signature_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_signing_key_decoded(&fx->log);
+
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+  memset(&fx->log.verify_mod, 0, sizeof(fx->log.verify_mod));
+  assert_int_equal(
+      parse_with_roots(&fx->log, large_signature_patch(), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_signing_key_decoded(&fx->log);
+}
+
+/* An offer near AZ_IOT_SU_REQUEST_BUFFER_SIZE whose size is almost all the
+ * signing JWK, nested in the SJWK in the outer header. Decoding the JWK beside
+ * the outer header would need more than the client's scratch. */
+static void near_limit_nested_signing_key_is_verified(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  size_t jwk_pad = (AZ_IOT_SU_REQUEST_BUFFER_SIZE - 1500) * 9 / 16;
+  build_jws_ex(jws, (int32_t)sizeof(jws), jwk_pad, 0, false, "testkid");
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "near-limit", "1.1", jws);
+  assert_true(n > AZ_IOT_SU_REQUEST_BUFFER_SIZE * 7 / 8 && (size_t)n < sizeof(patch));
+
+  inject_patch(fx, patch);
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.verify_mod_len, sizeof(k_root_mod));
+  assert_memory_equal(fx->log.verify_mod, k_root_mod, sizeof(k_root_mod));
+}
+
+/* A signature part that does not fit the scratch is logged as too large; a
+ * malformed one as not valid. */
+static void oversized_signature_is_reported_as_too_large(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char jws[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  static char patch[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest manifest;
+
+  build_jws_ex(jws, (int32_t)sizeof(jws), 0, AZ_IOT_SU_VERIFY_SCRATCH_SIZE, false, "testkid");
+  int n = snprintf(patch, sizeof(patch), k_patch_fmt, "too-large", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  su_error_log_capture too_large = { .needle = "manifest JWS header too large", .count = 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &too_large, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  az_iot_result r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_ERR_AUTH);
+  assert_int_equal(too_large.count, 1);
+
+  build_jws(jws, (int32_t)sizeof(jws));
+  jws[0] = '!';
+  n = snprintf(patch, sizeof(patch), k_patch_fmt, "not-valid", "1.1", jws);
+  assert_true(n > 0 && (size_t)n < sizeof(patch));
+  su_error_log_capture invalid = { .needle = "manifest JWS header not valid", .count = 0 };
+  sink.user_ctx = &invalid;
+  az_iot_log_set_global_sink(&sink);
+  r = parse_with_roots(&fx->log, patch, k_root_keys, 1, &req, &manifest);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(r, AZ_IOT_ERR_AUTH);
+  assert_int_equal(invalid.count, 1);
 }
 
 static void malformed_manifest_json_is_rejected(void** state)
@@ -6653,7 +7033,14 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_clear_is_retried_while_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        superseding_workflow_retires_the_stored_checkpoint, setup, teardown),
+        a_new_workflow_is_deferred_at_a_stored_reboot_checkpoint, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_workflow_is_deferred_once_an_install_began, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_workflow_replaces_before_install_fn_is_called, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_workflow_is_deferred_until_a_last_apply_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_replacement_policy_is_validated, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_undecodable_replacement_keeps_the_active_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -6675,7 +7062,12 @@ int main(void)
     cmocka_unit_test(build_report_with_too_small_a_buffer_is_rejected),
     cmocka_unit_test_setup_teardown(
         manifest_signed_by_an_unknown_root_key_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        manifest_under_root_adu_241112_r_resolves_to_that_key, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_jws_is_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(large_signature_is_verified, setup, teardown),
+    cmocka_unit_test_setup_teardown(near_limit_nested_signing_key_is_verified, setup, teardown),
+    cmocka_unit_test_setup_teardown(oversized_signature_is_reported_as_too_large, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_manifest_json_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         verify_file_hash_rejects_an_unsupported_algorithm, setup, teardown),

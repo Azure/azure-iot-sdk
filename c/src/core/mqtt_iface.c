@@ -185,3 +185,54 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version
    * half of the split. */
   return AZ_IOT_ERR_MQTT;
 }
+
+/* MQTT 5 PUBACK reason codes (spec 3.4.2.1) the broker will repeat for the same
+ * PUBLISH. 0x97 quota exceeded is transient; 0x80, 0x83, 0x91 and the rest are
+ * read as transient too. 0x95 is not a PUBACK code on the wire: az_mqtt reports
+ * it for a publish it dropped as over the server's Maximum Packet Size. */
+#define PUBACK_V5_FAILURE_MIN 0x80
+#define PUBACK_V5_NOT_AUTHORIZED 0x87
+#define PUBACK_V5_TOPIC_NAME_INVALID 0x90
+#define PUBACK_V5_PACKET_TOO_LARGE 0x95
+#define PUBACK_V5_QUOTA_EXCEEDED 0x97
+#define PUBACK_V5_PAYLOAD_FORMAT_INVALID 0x99
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_puback_result(az_iot_mqtt_version version, int puback_code)
+{
+  if (puback_code == 0)
+  {
+    return AZ_IOT_OK;
+  }
+
+  /* Adapter-internal failures: no verdict from the broker. */
+  if (puback_code < 0)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+
+  if (version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* Below 0x80 is success, including 0x10 no matching subscribers. */
+    if (puback_code < PUBACK_V5_FAILURE_MIN)
+    {
+      return AZ_IOT_OK;
+    }
+    switch (puback_code)
+    {
+      case PUBACK_V5_NOT_AUTHORIZED:
+      case PUBACK_V5_TOPIC_NAME_INVALID:
+      case PUBACK_V5_PACKET_TOO_LARGE:
+      case PUBACK_V5_PAYLOAD_FORMAT_INVALID:
+        return AZ_IOT_ERR_PUBLISH_REFUSED;
+      case PUBACK_V5_QUOTA_EXCEEDED:
+        return AZ_IOT_ERR_BUSY;
+      default:
+        return AZ_IOT_ERR_MQTT;
+    }
+  }
+
+  /* MQTT 3.1.1 PUBACK carries no code: anything but 0 is the adapter's own
+   * failure. An unknown version cannot be interpreted; retrying is the safe
+   * answer. */
+  return AZ_IOT_ERR_MQTT;
+}

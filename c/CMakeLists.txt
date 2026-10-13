@@ -87,6 +87,7 @@ if(POLICY CMP0169)
     cmake_policy(SET CMP0169 OLD)
 endif()
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE INTERNAL "")
+# Keep the commit for this tag in c/cgmanifest.json.
 set(AZ_SDK_C_TAG "1.5.0" CACHE STRING "azure-sdk-for-c git tag/branch")
 set(AZ_SDK_C_REPO "https://github.com/Azure/azure-sdk-for-c.git" CACHE STRING "azure-sdk-for-c git repository")
 

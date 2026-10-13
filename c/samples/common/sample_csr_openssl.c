@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* OpenSSL 3.0+ CSR backend for sample_cert_provider (non-Windows). Loads or
+/* OpenSSL 3.0+ CSR backend for sample_cert_provider. Loads or
  * generates an EC P-256 operational key (persisted as PEM) and produces a
  * PKCS#10 CSR over it. Uses only public OpenSSL 3.0 EVP/X509_REQ/BIO APIs. */
 #include "sample_csr_backend.h"
@@ -157,4 +157,103 @@ done:
   }
   EVP_PKEY_free(key);
   return rc;
+}
+
+/* True when only whitespace remains in memory BIO @p b. */
+static int only_whitespace_left(BIO* b)
+{
+  char* rest = NULL;
+  long n = BIO_get_mem_data(b, &rest);
+  for (long i = 0; i < n; ++i)
+  {
+    if (rest[i] != ' ' && rest[i] != '\t' && rest[i] != '\r' && rest[i] != '\n')
+    {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* Exactly one certificate from a wire entry: base64 of DER or of a PEM
+ * certificate. NULL when malformed, or when anything but whitespace follows. */
+static X509* parse_cert_entry(const char* cert_base64, size_t len)
+{
+  if (!cert_base64 || len == 0 || len > (size_t)64u * 1024u)
+  {
+    return NULL;
+  }
+  X509* cert = NULL;
+  unsigned char* der = (unsigned char*)malloc((len / 4u) * 3u + 3u);
+  int der_len = der ? EVP_DecodeBlock(der, (const unsigned char*)cert_base64, (int)len) : -1;
+  if (der_len > 0)
+  {
+    /* EVP_DecodeBlock counts '=' padding as zero bytes. */
+    for (size_t i = len; i > 0 && cert_base64[i - 1] == '=' && der_len > 0; --i)
+    {
+      der_len--;
+    }
+    /* "LS0tLS1CRUdJTi" is base64 of "-----BEGIN": a PEM certificate. */
+    static const char pem_b64[] = "LS0tLS1CRUdJTi";
+    if (len >= sizeof(pem_b64) - 1 && memcmp(cert_base64, pem_b64, sizeof(pem_b64) - 1) == 0)
+    {
+      BIO* b = BIO_new_mem_buf(der, der_len);
+      cert = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
+      if (cert && !only_whitespace_left(b))
+      {
+        X509_free(cert);
+        cert = NULL;
+      }
+      BIO_free(b);
+    }
+    else
+    {
+      const unsigned char* q = der;
+      cert = d2i_X509(NULL, &q, der_len);
+      if (cert && q != der + der_len)
+      {
+        X509_free(cert);
+        cert = NULL;
+      }
+    }
+  }
+  free(der);
+  ERR_clear_error();
+  return cert;
+}
+
+/* True when @p cert certifies the private key at @p key_path. Frees @p cert. */
+static int cert_certifies_key_file(X509* cert, const char* key_path)
+{
+  BIO* kb = cert ? BIO_new_file(key_path, "rb") : NULL;
+  EVP_PKEY* key = kb ? PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL) : NULL;
+  BIO_free(kb);
+  int match = (cert && key && X509_check_private_key(cert, key) == 1) ? 1 : 0;
+  EVP_PKEY_free(key);
+  X509_free(cert);
+  ERR_clear_error();
+  return match;
+}
+
+int sample_csr_backend_cert_matches_key(const char* key_path, const char* cert_base64, size_t len)
+{
+  return key_path ? cert_certifies_key_file(parse_cert_entry(cert_base64, len), key_path) : 0;
+}
+
+int sample_csr_backend_is_cert(const char* cert_base64, size_t len)
+{
+  X509* cert = parse_cert_entry(cert_base64, len);
+  X509_free(cert);
+  return cert != NULL;
+}
+
+int sample_csr_backend_cert_file_matches_key(const char* key_path, const char* cert_path)
+{
+  if (!key_path || !cert_path)
+  {
+    return 0;
+  }
+  BIO* cb = BIO_new_file(cert_path, "rb");
+  X509* leaf = cb ? PEM_read_bio_X509(cb, NULL, NULL, NULL) : NULL;
+  BIO_free(cb);
+  return cert_certifies_key_file(leaf, key_path);
 }

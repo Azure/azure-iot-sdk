@@ -125,6 +125,14 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
 
+**mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
+
+- [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
+  hub's custom topic templates `e2e/{deviceId}/#` and `e2e/shared/#`. Telemetry as a baseline;
+  QoS 1 and QoS 0 publishes to those templates reach the events endpoint; a topic no template
+  allows and another device's id are refused without disconnecting. `ci-c-e2e-mqttv5`.
+  `AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING` turns the routed checks into skips when nothing arrives.
+
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
 > The device uses Paho's own independent TLS stack, so the two never collide.
@@ -234,6 +242,28 @@ cannot reuse the one above. Each run issues a bootstrap device with
 CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
+
+The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
+[`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
+(hourly, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
+can disappear from ARM, removing its role assignments; DPS registrations then fail.
+[`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
+(same name, hub region), ensures the 8 role assignments, re-links hub and DPS, and pushes the
+namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
+and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
+(default `2026-11-02-preview`) must match the version the namespace was linked with. The OIDC identity needs Contributor
+on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
+resource group once: those survive the namespace, so the job creates none and needs no role
+assignment write unless the namespace identity changes.
+
+[`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
+that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
+requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
+`e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
+reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS` and `_EVENTHUB_CS` (`service` policy), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
+`_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
+workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).

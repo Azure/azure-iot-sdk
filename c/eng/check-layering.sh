@@ -105,11 +105,10 @@ fi
 # c/docs is deliberately NOT scanned: it records decisions, external RFC paths
 # and past defects that legitimately name the old vocabulary.
 #
-# Two exemptions, both blanked per-occurrence rather than per-line, so a line
-# carrying an exempt string AND a banned name is still reported:
-#   - the DPS `connectionProfile` wire value, the literal string classic, quoted
-#     or backticked;
-#   - az-iot-hub-next, the name of a separate external repository.
+# One exemption, blanked per-occurrence rather than per-line, so a line
+# carrying the exempt string AND a banned name is still reported: the DPS
+# `connectionProfile` wire value, the literal string classic, quoted or
+# backticked.
 banned_re='gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[-_ ]?next|next[-_ ]?hub|iothub[a-z]*-?next'
 banned_hits="$(git -C "${root_dir}/.." ls-files \
         'c/inc/*' 'c/src/*' 'c/adapters/*' 'c/tests/*' 'c/samples/*' 2>/dev/null \
@@ -117,7 +116,6 @@ banned_hits="$(git -C "${root_dir}/.." ls-files \
     | (cd "${root_dir}/.." && xargs -r grep -niIE "${banned_re}" 2>/dev/null) \
     | sed -e 's/\\\{0,1\}"classic\\\{0,1\}"/"@wire@"/g' \
           -e 's/`classic`/`@wire@`/g' \
-          -e 's/az-iot-hub-next/az-iot-@extrepo@/g' \
     | grep -iE "${banned_re}" \
     || true)"
 if [ -n "${banned_hits}" ]; then

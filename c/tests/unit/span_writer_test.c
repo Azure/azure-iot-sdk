@@ -157,6 +157,31 @@ static void decimal_matches_snprintf_at_the_extremes(void** state)
   }
 }
 
+static void u64_matches_snprintf_and_fails_whole(void** state)
+{
+  (void)state;
+  static const uint64_t k_values[] = { 0u, 9u, 10u, 4294967296u, UINT64_MAX };
+  for (size_t i = 0; i < sizeof(k_values) / sizeof(k_values[0]); ++i)
+  {
+    char expected[24];
+    char actual[24];
+    (void)snprintf(expected, sizeof(expected), "%llu", (unsigned long long)k_values[i]);
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(actual));
+    az_iot_span_writer_append_u64(&writer, k_values[i]);
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+    assert_string_equal(actual, expected);
+  }
+  /* 20 digits do not fit 19 bytes: nothing is written. */
+  char small[19];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(small));
+  az_iot_span_writer_append_u64(&writer, UINT64_MAX);
+  assert_int_equal(az_iot_span_writer_length(&writer), 0);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(small, "");
+}
+
 static void hex_pads_clamps_and_widens(void** state)
 {
   (void)state;
@@ -565,6 +590,7 @@ int main(void)
     cmocka_unit_test(length_tracks_what_has_been_written),
     cmocka_unit_test(build_str_concatenates_parts),
     cmocka_unit_test(build_str_reports_its_failures),
+    cmocka_unit_test(u64_matches_snprintf_and_fails_whole),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

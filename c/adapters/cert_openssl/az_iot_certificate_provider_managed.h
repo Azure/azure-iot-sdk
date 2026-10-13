@@ -13,7 +13,23 @@
  *   - produces PKCS#10 CSRs over that operational key (get_csr);
  *   - persists the DPS/Hub-issued operational certificate chain to disk
  *     (store_issued_certificate) and serves it back on subsequent loads and
- *     process restarts.
+ *     process restarts. A store is refused unless every certificate in the
+ *     chain parses, the leaf certifies the operational key and the PEM chain
+ *     is at most 64 KiB; it replaces the file in one step, so a failed store
+ *     keeps the previous certificate.
+ *
+ * The operational key never changes while the provider is initialized. To
+ * rotate it: close the connection client, deinit the provider, delete (or point
+ * the options at new) key and certificate files, init it again, then open the
+ * client and enroll or renew.
+ *
+ * Files it writes (key and chain) are created readable only by the current user
+ * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
+ * ("<path>.aziot-...") next to the destination, then renamed over it. init()
+ * deletes such files a stopped process left behind (best effort: one it cannot
+ * list or delete is left, and init() continues). The key and chain paths must
+ * be used by one provider instance at a time. The private key is stored
+ * unencrypted: protect the directory accordingly.
  *
  * This is the reference implementation of the CSR provider contract. Deployments
  * with a TPM/HSM/secure element should implement their own provider with a
@@ -50,15 +66,24 @@ extern "C"
     const char* bootstrap_key_pem_path; /* set with cert, or NULL with cert */
     /* Trusted CA presented to both bootstrap and operational connections. */
     const char* trusted_ca_pem_path; /* may be NULL */
-    /* Operational private key. Loaded if the file exists, otherwise a new key
-     * is generated and written here (PEM). Required. */
+    /* Operational private key. Loaded if the file holds a valid key, which is
+     * then left as is (mode included). Otherwise -- missing, unreadable or
+     * malformed -- a new key is generated and written here (unencrypted PEM,
+     * owner-only), replacing the file. Required. */
     const char* operational_key_pem_path; /* required */
     /* Where the issued operational certificate chain is persisted. Written by
-     * store_issued_certificate(); read back on load() and on restart. Required. */
+     * store_issued_certificate(); read back on load() and on restart, and used
+     * only if every certificate parses and the leaf certifies the operational
+     * key. Required. */
     const char* operational_cert_pem_path; /* required */
     /* Key type used only when generating a new operational key. */
     az_iot_certificate_managed_key_type key_type;
   } az_iot_certificate_provider_managed_options;
+
+  /* Returns an options struct with every field defaulted (paths NULL, EC P-256).
+   * Set the required paths before az_iot_certificate_provider_managed_init(). */
+  az_iot_certificate_provider_managed_options az_iot_certificate_provider_managed_options_default(
+      void);
 
   /* Caller-owned managed certificate provider struct. Fields are INTERNAL. */
   typedef struct az_iot_certificate_provider_managed
@@ -77,7 +102,10 @@ extern "C"
 
   /* Initialize the managed provider. Loads or generates the operational key and
    * detects any previously-persisted operational certificate. Returns
-   * ERR_INVALID_ARG if a required path is missing, or ERR_INTERNAL on OpenSSL
+   * ERR_INVALID_ARG if a required path is missing, an operational path does not
+   * end in a file name (ends in a separator, ".", or ".."), or a configured path starts
+   * with "<operational key or cert path>.aziot-" (the temporary-file names), or
+   * ERR_INTERNAL on OpenSSL
    * failure. The provider base pointer can be passed wherever
    * az_iot_certificate_provider* is expected. */
   az_iot_result az_iot_certificate_provider_managed_init(

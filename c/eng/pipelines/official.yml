@@ -1,0 +1,212 @@
+# Official build of the C SDK on Azure Pipelines, with the SDL analysis injected by the
+# 1ES Pipeline Templates: source scans (CodeQL, PoliCheck, secret scanning) and binary scans
+# (BinSkim, antimalware, SBOM) of the libraries and samples published by the build jobs. Results go to
+# TSA (c/.config/tsaoptions.json); third-party sources fetched by CMake are declared in
+# c/cgmanifest.json for Component Governance.
+#
+# PR validation stays on GitHub Actions; this pipeline runs on main and weekly.
+
+trigger:
+  branches:
+    include: [ main ]
+  paths:
+    include: [ c ]
+
+pr: none
+
+schedules:
+  - cron: '0 9 * * 1'
+    displayName: Weekly
+    branches:
+      include: [ main ]
+    always: true
+
+resources:
+  repositories:
+    - repository: 1ESPipelineTemplates
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
+  parameters:
+    # Microsoft-hosted agents, as the other C SDK pipelines in this project use. `vmImage` is passed
+    # through as is; the template maps `image` to vmImage only for macOS.
+    pool:
+      name: Azure Pipelines
+      vmImage: ubuntu-24.04
+      os: linux
+    sdl:
+      sourceAnalysisPool:
+        name: Azure Pipelines
+        vmImage: windows-2022
+        os: windows
+      codeql:
+        language: cpp
+        compiled:
+          enabled: true
+      policheck:
+        enabled: true
+      binskim:
+        enabled: true
+      tsa:
+        enabled: true
+        configFile: $(Build.SourcesDirectory)/c/.config/tsaoptions.json
+    stages:
+      - stage: build
+        displayName: Build
+        jobs:
+          - job: linux
+            displayName: Linux (gcc, shared, RelWithDebInfo)
+            templateContext:
+              # One CodeQL database per language: the Windows job provides it.
+              sdl:
+                codeql:
+                  compiled:
+                    enabled: false
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/linux
+                  artifactName: c-linux
+            steps:
+              - checkout: self
+                submodules: false
+              - bash: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install -y --no-install-recommends \
+                    cmake ninja-build libssl-dev libcurl4-openssl-dev
+                displayName: Install toolchain
+              # Warnings are gated on GitHub Actions; this image's compiler may differ.
+              - bash: |
+                  set -euo pipefail
+                  cmake -S c -B c/build -G Ninja \
+                    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                    -DBUILD_SHARED_LIBS=ON \
+                    -DAZ_IOT_BUILD_TESTS=ON \
+                    -DAZ_IOT_WITH_PAHO=ON \
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF | tee "$AGENT_TEMPDIRECTORY/configure.log"
+                  # Without OpenSSL, Paho and the OpenSSL adapters build TLS-less and go unscanned.
+                  grep -q 'enabling Paho TLS' "$AGENT_TEMPDIRECTORY/configure.log" \
+                    || { echo "##vso[task.logissue type=error]OpenSSL not found: Paho TLS disabled"; exit 1; }
+                displayName: Configure
+              - bash: cmake --build c/build
+                displayName: Build
+              - bash: ctest --test-dir c/build --output-on-failure
+                displayName: Unit tests
+              - bash: |
+                  set -euo pipefail
+                  out="$BUILD_ARTIFACTSTAGINGDIRECTORY/linux"
+                  mkdir -p "$out"
+                  find c/build/src -type f -name 'libaz_iot*.so*' -exec cp {} "$out/" \;
+                  # Samples are the only binaries linking the static adapters (Paho, OpenSSL crypto, managed certificates).
+                  (cd c/build && find samples -type f -perm -u+x -exec cp --parents {} "$out/" \;)
+                  ls -lR "$out"
+                  [ -n "$(ls -A "$out/samples")" ] || { echo "##vso[task.logissue type=error]no samples staged"; exit 1; }
+                displayName: Stage binaries
+
+          - job: windows
+            displayName: Windows (MSVC x64, shared, RelWithDebInfo)
+            pool:
+              name: Azure Pipelines
+              vmImage: windows-2022
+              os: windows
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/windows
+                  artifactName: c-windows
+            steps:
+              - checkout: self
+                submodules: false
+              # CMake from PATH, else the copy bundled with Visual Studio.
+              - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $cmd = Get-Command cmake -ErrorAction SilentlyContinue
+                  if ($cmd) { $cmake = $cmd.Source } else {
+                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+                    $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+                  }
+                  if (-not (Test-Path $cmake)) { throw "cmake not found" }
+                  $ctest = Join-Path (Split-Path $cmake) 'ctest.exe'
+                  Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
+                  Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
+                displayName: Locate CMake
+              # OpenSSL comes from the `paho` feature of c/vcpkg.json; static triplet to match /MT.
+              - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $root = $env:VCPKG_INSTALLATION_ROOT
+                  if (-not $root -or -not (Test-Path "$root/scripts/buildsystems/vcpkg.cmake")) {
+                    $root = Join-Path $env:AGENT_TEMPDIRECTORY 'vcpkg'
+                    git clone --depth 1 https://github.com/microsoft/vcpkg $root
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                    & "$root/bootstrap-vcpkg.bat" -disableMetrics
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  }
+                  Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
+                displayName: Locate vcpkg
+              - powershell: |
+                  $log = Join-Path $env:AGENT_TEMPDIRECTORY 'configure.log'
+                  & "$(CMAKE)" -S c -B c/build -G "Visual Studio 17 2022" -A x64 `
+                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                    -DVCPKG_MANIFEST_FEATURES=paho `
+                    -DBUILD_SHARED_LIBS=ON `
+                    -DAZ_IOT_BUILD_SAMPLES=OFF `
+                    -DAZ_IOT_BUILD_TESTS=ON `
+                    -DAZ_IOT_WITH_PAHO=ON `
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF 2>&1 | Tee-Object -FilePath $log
+                  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  # Without OpenSSL, Paho and the OpenSSL adapters build TLS-less and go unscanned.
+                  if (-not (Select-String -Path $log -SimpleMatch 'enabling Paho TLS' -Quiet)) {
+                    Write-Host '##vso[task.logissue type=error]OpenSSL not found: Paho TLS disabled'
+                    exit 1
+                  }
+                displayName: Configure
+              - powershell: |
+                  & "$(CMAKE)" --build c/build --config RelWithDebInfo
+                  exit $LASTEXITCODE
+                displayName: Build
+              - powershell: |
+                  & "$(CTEST)" --test-dir c/build -C RelWithDebInfo --output-on-failure
+                  exit $LASTEXITCODE
+                displayName: Unit tests
+              # Static build with samples: the only binaries linking the static adapters
+              # (Paho, OpenSSL crypto, managed certificates). Separate tree: shared builds skip samples.
+              - powershell: |
+                  & "$(CMAKE)" -S c -B c/build-static -G "Visual Studio 17 2022" -A x64 `
+                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                    -DVCPKG_MANIFEST_FEATURES=paho `
+                    -DBUILD_SHARED_LIBS=OFF `
+                    -DAZ_IOT_BUILD_SAMPLES=ON `
+                    -DAZ_IOT_BUILD_TESTS=OFF `
+                    -DAZ_IOT_WITH_PAHO=ON `
+                    -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
+                  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  & "$(CMAKE)" --build c/build-static --config RelWithDebInfo
+                  exit $LASTEXITCODE
+                displayName: Build samples (static)
+              - powershell: |
+                  $ErrorActionPreference = 'Stop'
+                  $out = Join-Path $env:BUILD_ARTIFACTSTAGINGDIRECTORY 'windows'
+                  New-Item -ItemType Directory -Force $out | Out-Null
+                  Get-ChildItem c/build -Recurse -File -Include 'az_iot*.dll', 'az_iot*.pdb' |
+                    Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
+                    Copy-Item -Destination $out
+                  $samples = Join-Path $out 'samples'
+                  New-Item -ItemType Directory -Force $samples | Out-Null
+                  # Keep the directory layout: sample names repeat across groups.
+                  $src = (Resolve-Path c/build-static/samples).Path
+                  Get-ChildItem $src -Recurse -File -Include '*.exe', '*.pdb' |
+                    Where-Object { $_.FullName -notmatch '[\\/]CMakeFiles[\\/]' } |
+                    ForEach-Object {
+                      $dest = Join-Path $samples $_.DirectoryName.Substring($src.Length)
+                      New-Item -ItemType Directory -Force $dest | Out-Null
+                      Copy-Item $_.FullName -Destination $dest
+                    }
+                  Get-ChildItem $out -Recurse -File | Format-Table FullName, Length
+                  if (-not (Get-ChildItem $out -Filter '*.dll')) { throw 'no DLLs staged' }
+                  if (-not (Get-ChildItem $samples -Recurse -Filter '*.exe')) { throw 'no samples staged' }
+                displayName: Stage binaries

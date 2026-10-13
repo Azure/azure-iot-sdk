@@ -108,8 +108,13 @@ static char* env_dup(const char* name)
 static az_iot_result custody_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   custody_provider* p = (custody_provider*)self;
   (void)role;
   p->load_calls++;

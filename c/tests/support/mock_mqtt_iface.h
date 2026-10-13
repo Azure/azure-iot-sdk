@@ -142,6 +142,9 @@ extern "C"
   /* The most-recently-created client from this factory, or NULL if none. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_factory_last_client(const az_iot_mqtt_factory* factory);
 
+  /* Clients of this factory destroyed after a disconnect() call. */
+  size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory* factory);
+
   /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
 

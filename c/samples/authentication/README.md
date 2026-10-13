@@ -18,13 +18,12 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 | Skeleton of a certificate provider | [`custom_provider_template`](custom_provider_template/README.md) | your own |
 | SAS keys to DPS and to the hub | [`dps_sas_key`](dps_sas_key/README.md) | none |
 | SAS key to DPS, DPS-issued certificate to the hub | [`dps_sas_key_issued_cert`](dps_sas_key_issued_cert/README.md) | managed (OpenSSL), no bootstrap certificate |
-| SAS tokens from the application, e.g. a TPM, HSM or token service (proposed) | [`user_provided_sas_token`](user_provided_sas_token/README.md) | none |
+| SAS tokens from the application, e.g. a TPM, HSM or token service | [`user_provided_sas_token`](user_provided_sas_token/README.md) | none |
 
 ## Choosing how each role authenticates
 
-Further provider certificates and `user_provided_token` are proposed and not implemented yet;
-see [connecting.md](../../docs/connecting.md#authentication).
-`user_provided_sas_token` shows the proposed callback API and is not built.
+A provider may offer several certificates per role (`load()` index 0, 1, ...); see
+[connecting.md](../../docs/connecting.md#authentication).
 
 Each role (DPS, hub) uses whichever of these sources are configured, tried in this order:
 
@@ -32,7 +31,7 @@ Each role (DPS, hub) uses whichever of these sources are configured, tried in th
 | --- | --- | --- |
 | X.509 | Certificates and keys, through `certificate_provider` (one or more per role) | — |
 | Primary, secondary key | Symmetric keys in `dps_auth` / `hub_auth` | `crypto`, `sas_buffer`, and a Unix time (`time()` unless `unix_time` is set) |
-| User-provided token | A `user_provided_token` callback | — |
+| User-provided token | An `on_sas_token_required` callback and `az_iot_connection_client_update_sas_token()` | `sas_buffer` |
 
 The SDK moves on only when the service rejects a credential, without a retry delay. A source it
 moved to is kept until rejected; otherwise each attempt starts at the first available source, so a
@@ -67,9 +66,9 @@ The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON` (the 
 | Sample | Built when |
 | --- | --- |
 | `dps_csr_managed`, `hub_renew` | OpenSSL 3.0+ and the Paho adapter (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`) |
-| `custom_certificate_provider` | The Paho adapter, and OpenSSL 3.0+ outside Windows |
+| `custom_certificate_provider` | OpenSSL 3.0+ and the Paho adapter |
 | `hsm_pkcs11` | The Paho adapter |
 | `custom_provider_template`, `hsm_sign_callback` | Always |
 | `dps_sas_key` | The Paho adapter and the OpenSSL crypto backend (`AZ_IOT_WITH_CRYPTO_OPENSSL`) |
 | `dps_sas_key_issued_cert` | As `dps_sas_key`, plus the managed provider (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) |
-| `user_provided_sas_token` | Not yet (proposed API) |
+| `user_provided_sas_token` | The Paho adapter and OpenSSL |

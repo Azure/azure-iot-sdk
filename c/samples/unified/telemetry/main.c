@@ -15,8 +15,8 @@
  *   1. Register BOTH MQTT adapters: DPS and MQTTv3 speak v3.1.1, MQTTv5 speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This
  *      one assumes MQTTv3, which is what DPS assigns when it names no
- *      connectionProfile (MQTT v5 under AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT, see
- *      sample_initial_profile()); a real device would persist the last one.
+ *      connectionProfile (see sample_initial_profile()); a real device would
+ *      persist the last one.
  *   3. If DPS assigns the other generation -- on the first connect, or later
  *      when the device is moved and re-provisions -- the connection stops with
  *      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH before the hub is reached, and

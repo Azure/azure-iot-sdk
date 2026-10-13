@@ -223,6 +223,13 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   {
     ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_DEFERRED)
+  {
+    ESP_LOGI(
+        TAG,
+        "new update deferred until %s",
+        event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -295,7 +302,7 @@ void app_main(void)
   dp.installed_update_id.version = SU_UPDATE_VERSION;
 
   static AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
-  /* ~14 KB: too large for the 12 KB main task stack. */
+  /* ~22 KB: too large for the 12 KB main task stack. */
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
