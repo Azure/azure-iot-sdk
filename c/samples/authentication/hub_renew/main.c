@@ -91,10 +91,14 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
     default:
       fprintf(
           stderr,
-          "[hub_renew] CSR failed: status=%d service_code=%d retry_after=%us\n",
+          "[hub_renew] CSR failed: status=%d service_code=%d retry_after=%us "
+          "credential_error=%s credential_message=%s tracking_id=%s\n",
           (int)evt->status,
           (int)evt->service_code,
-          evt->retry_after_s);
+          evt->retry_after_s,
+          evt->credential_error,
+          evt->credential_message,
+          evt->tracking_id);
       ctx->csr_status = evt->status;
       ctx->csr_done = 1;
       break;

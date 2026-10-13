@@ -1864,6 +1864,9 @@ typedef struct csr_test_ctx
   char issued_leaf[128];
   int32_t service_code;
   uint32_t retry_after_s;
+  char credential_error[64];
+  char credential_message[256];
+  char tracking_id[128];
   az_iot_result last_status;
   az_iot_result store_status;
   int store_calls_at_cb;
@@ -1900,9 +1903,20 @@ static void ignore_puback(az_iot_result status, void* user_ctx)
   (void)user_ctx;
 }
 
+static void copy_csr_string(char* dst, size_t dst_size, const char* src)
+{
+  assert_non_null(src);
+  assert_true(strlen(src) < dst_size);
+  memcpy(dst, src, strlen(src) + 1);
+}
+
 static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
 {
   csr_test_ctx* t = (csr_test_ctx*)uc;
+  /* Never NULL, on every event. */
+  assert_non_null(evt->credential_error);
+  assert_non_null(evt->credential_message);
+  assert_non_null(evt->tracking_id);
   switch (evt->kind)
   {
     case AZ_IOT_CSR_ACCEPTED:
@@ -1933,6 +1947,10 @@ static void on_csr_evt(const az_iot_csr_event* evt, void* uc)
       t->last_status = evt->status;
       t->service_code = evt->service_code;
       t->retry_after_s = evt->retry_after_s;
+      copy_csr_string(t->credential_error, sizeof(t->credential_error), evt->credential_error);
+      copy_csr_string(
+          t->credential_message, sizeof(t->credential_message), evt->credential_message);
+      copy_csr_string(t->tracking_id, sizeof(t->tracking_id), evt->tracking_id);
       break;
   }
 }
@@ -2179,6 +2197,9 @@ static void send_csr_error_reports_service_code(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(tc.failed, 2);
   assert_int_equal(tc.service_code, 0);
+  assert_string_equal(tc.credential_error, "");
+  assert_string_equal(tc.credential_message, "");
+  assert_string_equal(tc.tracking_id, "");
 }
 
 static void send_csr_cancel_frees_slot(void** state)
@@ -2770,6 +2791,134 @@ static void a_429_surfaces_the_retry_after_hint(void** state)
   assert_int_equal(tc.failed, 1);
   assert_int_equal(tc.service_code, 429001);
   assert_int_equal((int)tc.retry_after_s, 30);
+}
+
+/* Inject @p body as a 400 response to a fresh renewal and pump it. */
+static void csr_fail_with_body(
+    fixture* fx,
+    az_iot_mock_mqtt_client* m,
+    csr_test_ctx* tc,
+    const char* body)
+{
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-info", NULL, on_csr_evt, tc), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/400/?$rid=req-info",
+      (const uint8_t*)body,
+      strlen(body),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* The hub's credential error details and trackingId reach the application:
+ * errorCode alone does not say which CSR check failed, nor which request to
+ * quote to support. */
+static void a_renewal_error_reports_the_credential_error_and_tracking_id(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+  csr_test_ctx tc = { 0 };
+
+  csr_fail_with_body(
+      fx,
+      m,
+      &tc,
+      "{\"errorCode\":400040,\"message\":\"CSR invalid\","
+      "\"trackingId\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0-G:3-TimeStamp:10/13/2026 07:01:16\","
+      "\"timestampUtc\":\"2026-10-13T07:01:16Z\","
+      "\"info\":{\"correlationId\":\"c-1\",\"credentialError\":\"InvalidCsrSignature\","
+      "\"nested\":{\"credentialError\":\"wrong\"},"
+      "\"credentialMessage\":\"The \\\"csr\\\" signature does not verify.\","
+      "\"requestId\":\"req-info\",\"operationExpires\":null},"
+      "\"retryAfter\":7}");
+
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.last_status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(tc.service_code, 400040);
+  assert_int_equal((int)tc.retry_after_s, 7);
+  assert_string_equal(tc.credential_error, "InvalidCsrSignature");
+  assert_string_equal(tc.credential_message, "The \"csr\" signature does not verify.");
+  assert_string_equal(
+      tc.tracking_id, "0f1e2d3c4b5a69788796a5b4c3d2e1f0-G:3-TimeStamp:10/13/2026 07:01:16");
+
+  /* A UTF-16 escape az_core cannot decode is kept as received, not dropped;
+   * the other escapes in the same value are still decoded. */
+  csr_fail_with_body(
+      fx,
+      m,
+      &tc,
+      "{\"errorCode\":400040,\"info\":{\"credentialMessage\":"
+      "\"line\\n\\u0027\\\"quoted\\\"\\t\\\\ \\/\"}}");
+  assert_int_equal(tc.failed, 2);
+  assert_string_equal(tc.credential_message, "line\n\\u0027\"quoted\"\t\\ /");
+  assert_string_equal(tc.credential_error, "");
+  assert_string_equal(tc.tracking_id, "");
+}
+
+/* Malformed or oversized fields are reported empty, never truncated, and do
+ * not cost the fields around them. */
+static void a_renewal_error_reports_empty_details_when_absent_or_too_long(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+  csr_test_ctx tc = { 0 };
+
+  char body[512];
+  const char* head = "{\"trackingId\":\"";
+  const char* tail = "\",\"info\":{\"credentialError\":5,"
+                     "\"credentialMessage\":{\"text\":\"x\"}},\"errorCode\":400040}";
+  size_t at = 0;
+  memcpy(body + at, head, strlen(head));
+  at += strlen(head);
+  memset(body + at, 'a', 200); /* longer than the 127 characters tracking_id holds */
+  at += 200;
+  memcpy(body + at, tail, strlen(tail) + 1);
+  assert_true(at + strlen(tail) < sizeof(body));
+  csr_fail_with_body(fx, m, &tc, body);
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.service_code, 400040);
+  assert_string_equal(tc.tracking_id, "");
+  assert_string_equal(tc.credential_error, "");
+  assert_string_equal(tc.credential_message, "");
+
+  /* 127 characters fit tracking_id; 128 do not. */
+  const char* id_tail = "\"}";
+  at = strlen(head);
+  memset(body + at, 'b', 127);
+  at += 127;
+  memcpy(body + at, id_tail, strlen(id_tail) + 1);
+  csr_fail_with_body(fx, m, &tc, body);
+  assert_int_equal((int)strlen(tc.tracking_id), 127);
+  body[at] = 'b';
+  memcpy(body + at + 1, id_tail, strlen(id_tail) + 1);
+  csr_fail_with_body(fx, m, &tc, body);
+  assert_string_equal(tc.tracking_id, "");
+  assert_int_equal(tc.failed, 3);
+
+  /* Non-string trackingId and non-object info are skipped whole. */
+  csr_fail_with_body(
+      fx,
+      m,
+      &tc,
+      "{\"trackingId\":{\"errorCode\":1},\"info\":[\"credentialError\"],"
+      "\"errorCode\":409005,\"credentialError\":\"top-level is not info\"}");
+  assert_int_equal(tc.failed, 4);
+  assert_int_equal(tc.service_code, 409005);
+  assert_string_equal(tc.tracking_id, "");
+  assert_string_equal(tc.credential_error, "");
+
+  /* A body cut inside info keeps what was read before the cut. */
+  csr_fail_with_body(
+      fx,
+      m,
+      &tc,
+      "{\"errorCode\":400040,\"trackingId\":\"t-1\",\"info\":{\"credentialError\":\"E\"");
+  assert_int_equal(tc.failed, 5);
+  assert_int_equal(tc.service_code, 400040);
+  assert_string_equal(tc.tracking_id, "t-1");
+  assert_string_equal(tc.credential_error, "E");
+  assert_string_equal(tc.credential_message, "");
 }
 
 /* A 200 whose body has no certificates array is a broken success. Reporting it
@@ -3487,6 +3636,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_400_reports_the_service_code, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_412_reports_the_service_code, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_429_surfaces_the_retry_after_hint, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_error_reports_the_credential_error_and_tracking_id, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_error_reports_empty_details_when_absent_or_too_long, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         a_200_without_a_certificates_array_reports_a_failure, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(send_csr_while_disconnected_is_refused, setup_csr, teardown),
