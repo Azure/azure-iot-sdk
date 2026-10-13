@@ -113,7 +113,8 @@ extern "C"
       const uint8_t* payload,
       size_t payload_len);
 
-  /* AMQP system properties of a C2D message; NULL / 0 leaves one unset. */
+  /* AMQP system properties of a C2D message; NULL / 0 leaves one unset, except
+   * content_type, which defaults to "application/octet-stream". */
   typedef struct az_iot_e2e_c2d_properties
   {
     const char* message_id;

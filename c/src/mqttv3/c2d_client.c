@@ -288,10 +288,15 @@ static void c2d_parse_property_bag(c2d_property_parse_result* r, const char* bag
   c2d_generic_pass pass;
   pass.result = r;
   pass.truncated = false;
+  size_t remaining = sizeof(r->text) - r->system_property_values_size;
+  /* A zero-capacity writer starts failed, which would drop a list made only of
+   * reused typed values. Any decoded entry needs at least 2 bytes, so a 1-byte
+   * sentinel still fails on the first real write. */
+  char sentinel[1];
   az_iot_span_writer_init(
       &pass.writer,
-      az_span_create(
-          (uint8_t*)r->text, (int32_t)(sizeof(r->text) - r->system_property_values_size)));
+      remaining > 0 ? az_span_create((uint8_t*)r->text, (int32_t)remaining)
+                    : AZ_SPAN_FROM_BUFFER(sentinel));
   c2d_for_each_pair(bag, bag_len, c2d_add_pair, &pass);
 
   if (az_iot_span_writer_end(&pass.writer, NULL) != AZ_IOT_OK)

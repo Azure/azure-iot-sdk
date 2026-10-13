@@ -820,6 +820,45 @@ static void a_system_value_is_shared_with_the_property_list(void** state)
   assert_true(probe.shared);
 }
 
+typedef struct exact_fill_probe
+{
+  int count;
+  size_t properties_count;
+  bool shared;
+} exact_fill_probe;
+
+static void on_c2d_exact_fill(const az_iot_c2d_message* msg, void* user_ctx)
+{
+  exact_fill_probe* p = (exact_fill_probe*)user_ctx;
+  p->count++;
+  p->properties_count = msg->properties_count;
+  p->shared = msg->properties_count == 2 && msg->properties[0].value == msg->correlation_id
+      && msg->properties[1].value == msg->message_id;
+}
+
+static void typed_values_filling_the_buffer_keep_their_list_entries(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  exact_fill_probe probe = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_exact_fill, &probe), AZ_IOT_OK);
+
+  /* No space is left for the generic list, but both entries reuse typed values
+   * and need none. */
+  const size_t mid_len = AZ_IOT_C2D_PROPERTY_BUFFER - 4 - 1;
+  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
+  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-4&%%24.mid=", C2D_TOPIC);
+  memset(topic + n, 'm', mid_len);
+  topic[n + (int)mid_len] = '\0';
+  inject(fx, topic, "body");
+
+  assert_int_equal(probe.count, 1);
+  assert_int_equal(probe.properties_count, 2);
+  assert_true(probe.shared);
+}
+
 /* ------------------------------------------------------------------------- */
 /* multiple clients and reconnects                                           */
 /* ------------------------------------------------------------------------- */
@@ -1015,6 +1054,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(system_properties_fill_the_buffer_exactly, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_system_value_is_shared_with_the_property_list, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        typed_values_filling_the_buffer_keep_their_list_entries, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_for_the_same_identity_fails_the_connect_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(
