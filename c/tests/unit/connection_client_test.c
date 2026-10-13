@@ -275,9 +275,6 @@ static void a_rejected_registration_changes_nothing(void** state)
     assert_int_equal(
         az_iot_connection_client_register_mqtt_factory(&client, &factories[i]), AZ_IOT_OK);
   }
-  az_iot_mqtt_factory before[AZ_IOT_MAX_MQTT_FACTORIES];
-  memcpy(before, client.factories, sizeof(before));
-
   az_iot_mqtt_factory* rejected = &factories[AZ_IOT_MAX_MQTT_FACTORIES];
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&client, rejected), AZ_IOT_ERR_NOT_SUPPORTED);
@@ -285,7 +282,13 @@ static void a_rejected_registration_changes_nothing(void** state)
       az_iot_connection_client_register_mqtt_factory(NULL, rejected), AZ_IOT_ERR_INVALID_ARG);
 
   assert_int_equal(client.factory_count, AZ_IOT_MAX_MQTT_FACTORIES);
-  assert_memory_equal(before, client.factories, sizeof(before));
+  /* Field by field: struct padding is uninitialized. */
+  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES; ++i)
+  {
+    assert_int_equal(client.factories[i].version, factories[i].version);
+    assert_true(client.factories[i].create == factories[i].create);
+    assert_ptr_equal(client.factories[i].factory_ctx, factories[i].factory_ctx);
+  }
   az_iot_connection_client_deinit(&client);
 }
 

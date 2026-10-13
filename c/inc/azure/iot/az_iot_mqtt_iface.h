@@ -350,9 +350,11 @@ extern "C"
    * factory by version at connection time based on the service being targeted (DPS and mqttv3
    * require v3.1.1, mqttv5 requires v5).
    *
-   * az_iot_connection_client_register_mqtt_factory() copies this struct and borrows factory_ctx.
-   * The application keeps the factory valid until az_iot_connection_client_deinit() returns, then
-   * destroys it with the adapter's destroy function.
+   * az_iot_connection_client_register_mqtt_factory() copies this struct, so the struct itself need
+   * not outlive the call. factory_ctx is borrowed: the application keeps it valid until
+   * az_iot_connection_client_deinit() returns, then releases it. Adapter factories (Paho, az_mqtt,
+   * Rust) are their own factory_ctx: destroy them with the adapter's destroy function after
+   * deinit().
    */
   typedef struct az_iot_mqtt_factory
   {
