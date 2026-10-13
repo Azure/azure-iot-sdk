@@ -886,9 +886,14 @@ jobs:
           fi
           test ! -e "$AZ_IOT_CONFIGURED_PREFIX"
           # Installed dependencies are used, not fetched.
-          if [ -n "$AZ_IOT_DEPS" ] && ls -d build/install/_deps/azure_sdk_for_c-* build/install/_deps/paho_mqtt_c-* 2>/dev/null; then
-            echo "::error::a dependency was fetched instead of using $AZ_IOT_DEPS"
-            exit 1
+          if [ -n "$AZ_IOT_DEPS" ]; then
+            shopt -s nullglob
+            fetched=(build/install/_deps/azure_sdk_for_c-* build/install/_deps/paho_mqtt_c-*)
+            shopt -u nullglob
+            if [ "${#fetched[@]}" -ne 0 ]; then
+              echo "::error::fetched instead of using $AZ_IOT_DEPS: ${fetched[*]}"
+              exit 1
+            fi
           fi
           rm -rf build/install
 
