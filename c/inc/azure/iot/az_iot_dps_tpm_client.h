@@ -43,6 +43,7 @@
 #include "az_iot_connection_client.h"
 #include "az_iot_crypto.h"
 #include "az_iot_result.h"
+#include "az_iot_sas_token.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -76,11 +77,35 @@ extern "C"
  */
 #define AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE 53
 
+/** @brief Largest marshalled TPM2B_PUBLIC of an RSA 2048 key (SHA-512 policy). */
+#define AZ_IOT_DPS_TPM_RSA2048_PUBLIC_MAX 352u
+
+/** @brief Characters of standard padded base64 for @p n bytes. */
+#define AZ_IOT_DPS_TPM_BASE64_SIZE(n) ((((size_t)(n) + 2u) / 3u) * 4u)
+
 /**
- * @brief Request buffer for an RSA 2048 EK and SRK without CSR or payload, with
- * margin. Add the CSR and payload lengths when they are set.
+ * @brief Request buffer for any request, with the longest IDs, API version, key
+ * name and operation ID: an EK and SRK of @p ek_len and @p srk_len bytes, a CSR
+ * of @p csr_len characters and a payload of @p payload_len characters (0 when
+ * unset). Path, token and body share the buffer.
  */
-#define AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE 2048
+#define AZ_IOT_DPS_TPM_REQUEST_SIZE(ek_len, srk_len, csr_len, payload_len)                      \
+  (/* path: '/' scope "/registrations/" id "/operations/" op "?api-version=" ver NUL */         \
+   (1u + 15u + 12u + 13u + 1u + 2u * (size_t)AZ_IOT_DPS_TPM_ID_MAX                              \
+    + 3u * (size_t)AZ_IOT_DPS_TPM_ID_MAX                                                        \
+    + 3u                                                                                        \
+        * (size_t)                                                                              \
+            AZ_IOT_DPS_TPM_TOKEN_MAX) /* token over `<scope>%2fregistrations%2f<encoded id>` */ \
+   + AZ_IOT_SAS_TOKEN_SIZE_FOR(                                                                 \
+       19u + 4u * (size_t)AZ_IOT_DPS_TPM_ID_MAX,                                                \
+       (size_t)AZ_IOT_DPS_TPM_TOKEN_MAX) /* body: JSON members, terminator */                   \
+   + (90u + (size_t)AZ_IOT_DPS_TPM_ID_MAX) + AZ_IOT_DPS_TPM_BASE64_SIZE(ek_len)                 \
+   + AZ_IOT_DPS_TPM_BASE64_SIZE(srk_len) + (size_t)(csr_len) + (size_t)(payload_len))
+
+/** @brief AZ_IOT_DPS_TPM_REQUEST_SIZE() for an RSA 2048 EK and SRK, without CSR or payload. */
+#define AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE \
+  AZ_IOT_DPS_TPM_REQUEST_SIZE(             \
+      AZ_IOT_DPS_TPM_RSA2048_PUBLIC_MAX, AZ_IOT_DPS_TPM_RSA2048_PUBLIC_MAX, 0u, 0u)
 
   /**
    * @brief TPM operations, implemented with the application's TSS. Each
@@ -178,6 +203,11 @@ extern "C"
     /** az_iot_connection_client_options::connection_profile. Absent or
      * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other: UNKNOWN. */
     az_iot_connection_profile connection_profile;
+    /** `connectionProfile` as sent, unescaped bytes; `classic` when absent or
+     * null. At most AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1 characters. */
+    const char* connection_profile_raw;
+    /** The value was longer than connection_profile_raw holds. */
+    bool connection_profile_raw_truncated;
     /** True when DPS sent a hub key and import_key took it. */
     bool hub_key_imported;
     /** `registrationState.issuedCertificateChain` JSON array, a slice of the
@@ -213,6 +243,7 @@ extern "C"
       char key_name[AZ_IOT_DPS_TPM_TOKEN_MAX + 1];
       char assigned_hub[AZ_IOT_DPS_TPM_HOST_MAX + 1];
       char device_id[AZ_IOT_DPS_TPM_ID_MAX + 1];
+      char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
       az_iot_dps_tpm_assignment assignment;
     } _internal;
   } az_iot_dps_tpm_client;

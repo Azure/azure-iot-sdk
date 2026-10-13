@@ -709,6 +709,19 @@ static az_iot_result on_assigned(az_iot_dps_tpm_client* client, const dps_tpm_fi
   az_iot_dps_tpm_assignment* a = &client->_internal.assignment;
   a->assigned_hub = client->_internal.assigned_hub;
   a->device_id = client->_internal.device_id;
+  az_span raw = f->has_connection_profile ? f->connection_profile : AZ_SPAN_FROM_STR("classic");
+  size_t raw_len = (size_t)az_span_size(raw);
+  a->connection_profile_raw_truncated = raw_len >= sizeof(client->_internal.connection_profile_raw);
+  if (a->connection_profile_raw_truncated)
+  {
+    raw_len = sizeof(client->_internal.connection_profile_raw) - 1u;
+  }
+  if (raw_len > 0)
+  {
+    memcpy(client->_internal.connection_profile_raw, az_span_ptr(raw), raw_len);
+  }
+  client->_internal.connection_profile_raw[raw_len] = '\0';
+  a->connection_profile_raw = client->_internal.connection_profile_raw;
   a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   if (f->has_connection_profile
       && !az_span_is_content_equal(f->connection_profile, AZ_SPAN_FROM_STR("classic")))

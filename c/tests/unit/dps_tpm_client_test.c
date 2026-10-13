@@ -295,11 +295,20 @@ static void connection_profiles_map_to_the_enum(void** state)
   {
     const char* member;
     az_iot_connection_profile expected;
+    const char* raw;
+    bool truncated;
   } cases[] = {
-    { "\"connectionProfile\":\"classic\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
-    { "\"connectionProfile\":null,", AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
-    { "\"connectionProfile\":\"mqttV5\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V5 },
-    { "\"connectionProfile\":\"other\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN },
+    { "", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
+    { "\"connectionProfile\":\"classic\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
+    { "\"connectionProfile\":null,", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
+    { "\"connectionProfile\":\"mqttV5\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "mqttV5", false },
+    { "\"connectionProfile\":\"other\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "other", false },
+    /* 70 characters: kept to AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1. */
+    { "\"connectionProfile\":"
+      "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",",
+      AZ_IOT_CONNECTION_PROFILE_UNKNOWN,
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      true },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
@@ -324,8 +333,19 @@ static void connection_profiles_map_to_the_enum(void** state)
     }
     json[len] = '\0';
     assert_int_equal(respond(&c, 200, json, 0, &next), AZ_IOT_OK);
-    assert_int_equal(
-        az_iot_dps_tpm_client_get_assignment(&c)->connection_profile, cases[i].expected);
+    const az_iot_dps_tpm_assignment* a = az_iot_dps_tpm_client_get_assignment(&c);
+    assert_int_equal(a->connection_profile, cases[i].expected);
+    assert_int_equal(a->connection_profile_raw_truncated, cases[i].truncated);
+    if (cases[i].truncated)
+    {
+      assert_int_equal(strlen(a->connection_profile_raw), AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1);
+      assert_memory_equal(
+          a->connection_profile_raw, cases[i].raw, AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1);
+    }
+    else
+    {
+      assert_string_equal(a->connection_profile_raw, cases[i].raw);
+    }
   }
 }
 
@@ -945,6 +965,76 @@ static void maximum_length_ids_fit(void** state)
   assert_non_null(strstr(req.authorization, "%2fregistrations%2f%3A%3A"));
 }
 
+static void the_default_buffer_fits_the_longest_rsa2048_requests(void** state)
+{
+  (void)state;
+  char scope[AZ_IOT_DPS_TPM_ID_MAX + 1];
+  char id[AZ_IOT_DPS_TPM_ID_MAX + 1];
+  char version[AZ_IOT_DPS_TPM_ID_MAX + 1];
+  memset(scope, 'a', AZ_IOT_DPS_TPM_ID_MAX);
+  scope[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
+  memset(id, ':', AZ_IOT_DPS_TPM_ID_MAX - 1);
+  id[AZ_IOT_DPS_TPM_ID_MAX - 1] = 'a';
+  id[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
+  memset(version, '9', AZ_IOT_DPS_TPM_ID_MAX);
+  version[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
+  static uint8_t key[AZ_IOT_DPS_TPM_RSA2048_PUBLIC_MAX];
+  memset(key, 0xA5, sizeof(key));
+
+  fake_tpm t = { 0 };
+  az_iot_dps_tpm_client_options o = options_for(&t);
+  o.id_scope = scope;
+  o.registration_id = id;
+  o.api_version = version;
+  o.endorsement_key = key;
+  o.endorsement_key_len = sizeof(key);
+  o.storage_root_key = key;
+  o.storage_root_key_len = sizeof(key);
+  az_iot_dps_tpm_client c;
+  assert_int_equal(az_iot_dps_tpm_client_init(&c, &o), AZ_IOT_OK);
+  static char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+  az_iot_dps_tpm_request req;
+  az_iot_dps_tpm_next next;
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+
+  /* Longest key name. */
+  static char json[512];
+  char name[AZ_IOT_DPS_TPM_TOKEN_MAX + 1];
+  memset(name, 'k', AZ_IOT_DPS_TPM_TOKEN_MAX);
+  name[AZ_IOT_DPS_TPM_TOKEN_MAX] = '\0';
+  const char* challenge_parts[]
+      = { "{\"authenticationKey\":\"" HUB_KEY_B64 "\",\"keyName\":\"", name, "\"}" };
+  size_t len = 0;
+  for (size_t k = 0; k < 3; ++k)
+  {
+    size_t n = strlen(challenge_parts[k]);
+    memcpy(json + len, challenge_parts[k], n);
+    len += n;
+  }
+  json[len] = '\0';
+  assert_int_equal(respond(&c, 401, json, 0, &next), AZ_IOT_OK);
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_non_null(req.authorization);
+  assert_non_null(req.body);
+
+  /* Longest operation ID, every character encoded. */
+  char op[AZ_IOT_DPS_TPM_TOKEN_MAX + 1];
+  memset(op, ':', AZ_IOT_DPS_TPM_TOKEN_MAX);
+  op[AZ_IOT_DPS_TPM_TOKEN_MAX] = '\0';
+  const char* op_parts[] = { "{\"operationId\":\"", op, "\",\"status\":\"assigning\"}" };
+  len = 0;
+  for (size_t k = 0; k < 3; ++k)
+  {
+    size_t n = strlen(op_parts[k]);
+    memcpy(json + len, op_parts[k], n);
+    len += n;
+  }
+  json[len] = '\0';
+  assert_int_equal(respond(&c, 202, json, 0, &next), AZ_IOT_OK);
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_string_equal(req.method, "GET");
+}
+
 static void an_escaped_value_that_fits_unescaped_is_accepted(void** state)
 {
   (void)state;
@@ -1054,6 +1144,7 @@ int main(void)
     cmocka_unit_test(parse_key_splits_the_parts),
     cmocka_unit_test(registration_id_is_base32_of_the_ek_hash),
     cmocka_unit_test(maximum_length_ids_fit),
+    cmocka_unit_test(the_default_buffer_fits_the_longest_rsa2048_requests),
     cmocka_unit_test(an_escaped_value_that_fits_unescaped_is_accepted),
     cmocka_unit_test(content_after_the_response_object_is_rejected),
   };
