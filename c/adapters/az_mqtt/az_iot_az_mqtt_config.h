@@ -83,6 +83,30 @@
 #define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 16
 #endif
 
+/** @brief Clients of each MQTT version kept in static storage, so the adapter allocates nothing;
+ * create() returns NULL when all are in use. 0: each client is allocated when created. */
+#ifndef AZ_IOT_AZ_MQTT_STATIC_CLIENTS
+#define AZ_IOT_AZ_MQTT_STATIC_CLIENTS 0
+#endif
+
+/** @brief Static clients: bytes reserved for the transport. create() returns NULL when
+ * az_mqtt_transport_sizeof() is larger (OpenSSL: under 1 KiB; mbedTLS: about 5 KiB; Schannel:
+ * about 197 KiB). */
+#ifndef AZ_IOT_AZ_MQTT_TRANSPORT_SIZE
+#ifdef _WIN32
+#define AZ_IOT_AZ_MQTT_TRANSPORT_SIZE (200 * 1024)
+#else
+#define AZ_IOT_AZ_MQTT_TRANSPORT_SIZE (8 * 1024)
+#endif
+#endif
+
+/** @brief Static clients: bytes for the copies of a connect's strings (host, credentials, TLS
+ * paths or PEM, proxy, will, user properties), each with a NUL. A connect whose copies do not
+ * fit returns AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+#ifndef AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE
+#define AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE (8 * 1024)
+#endif
+
 #if AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE < 1 || AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE > 268435455
 #error "AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE must be 1 to 268435455"
 #endif
@@ -92,6 +116,12 @@
 // MQTT 5 uses twice as many entries, and az_mqtt uses at most 65,535.
 #if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 32767
 #error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 32767"
+#endif
+#if AZ_IOT_AZ_MQTT_STATIC_CLIENTS < 0
+#error "AZ_IOT_AZ_MQTT_STATIC_CLIENTS must be 0 or more"
+#endif
+#if AZ_IOT_AZ_MQTT_TRANSPORT_SIZE < 1 || AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE < 1
+#error "AZ_IOT_AZ_MQTT_TRANSPORT_SIZE and AZ_IOT_AZ_MQTT_CONNECT_STRINGS_SIZE must be 1 or more"
 #endif
 #if AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX < 1
 #error "AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX must be at least 1"
