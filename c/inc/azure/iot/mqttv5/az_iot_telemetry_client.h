@@ -51,15 +51,29 @@ extern "C"
   /**
    * @brief Send @p message as QoS 1 telemetry.
    *
+   * QoS is always 1; for QoS 0, publish on a custom topic (az_iot_custom_topic_client.h). Nothing
+   * is queued: a send while not connected fails, and an accepted send cannot be cancelled. The
+   * callback is the only completion signal; the SDK exposes no pending-send count, packet id or
+   * raw reason code.
+   *
+   * The #AZ_IOT_MSG_PROP_CONTENT_TYPE and #AZ_IOT_MSG_PROP_CORRELATION_ID properties travel as
+   * the native MQTT v5 Content Type and Correlation Data (UTF-8 text, at most 65535 bytes); the
+   * hub reads the correlation id only from there. No Message Expiry Interval is sent: the hub
+   * routes telemetry on arrival and does not carry it.
+   *
    * @param callback Required. Called once, only if this returns AZ_IOT_OK: with the broker's
    *                 acknowledgement result, or with AZ_IOT_ERR_NOT_CONNECTED if the session ends
    *                 first (also on az_iot_connection_client_close()); the message may then not
    *                 have arrived, so resend if needed. AZ_IOT_ERR_PUBLISH_REFUSED: refused, and
    *                 will be again if resent unchanged. AZ_IOT_ERR_BUSY: over the hub's quota.
-   *                 Not called after az_iot_connection_client_deinit().
+   *                 AZ_IOT_ERR_MQTT: any other refusal.
+   *                 Still called after az_iot_mqttv5_telemetry_client_deinit(); not called after
+   *                 az_iot_connection_client_deinit().
    *
    * @return AZ_IOT_OK if handed to the transport.
-   * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments.
+   * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments, or the
+   *         correlation id is longer than 65535 bytes.
+   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected; nothing was sent.
    * @return AZ_IOT_ERR_BUSY if the AZ_IOT_MAX_PENDING_PUBACKS slots not reserved by other
    *         feature clients are all awaiting acknowledgement; nothing was sent, retry later.
    */

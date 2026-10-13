@@ -332,14 +332,21 @@ int MQTTProperties_add(MQTTProperties* props, const MQTTProperty* prop)
 
 void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 
-int MQTTProperties_propertyCount(MQTTProperties* props, enum MQTTPropertyCodes propid)
+/** @brief Getter argument type of the Paho headers in use (const since Paho 1.3.14). */
+#if defined(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
+#define MOCK_PAHO_GETTER_PROPERTIES const MQTTProperties
+#else
+#define MOCK_PAHO_GETTER_PROPERTIES MQTTProperties
+#endif
+
+int MQTTProperties_propertyCount(MOCK_PAHO_GETTER_PROPERTIES* props, enum MQTTPropertyCodes propid)
 {
   (void)props;
   return (propid == MQTTPROPERTY_CODE_USER_PROPERTY) ? s_user_property_count : 0;
 }
 
 MQTTProperty* MQTTProperties_getPropertyAt(
-    MQTTProperties* props,
+    MOCK_PAHO_GETTER_PROPERTIES* props,
     enum MQTTPropertyCodes propid,
     int index)
 {

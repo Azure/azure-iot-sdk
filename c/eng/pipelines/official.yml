@@ -134,15 +134,33 @@ extends:
                   Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
                 displayName: Locate CMake
               # OpenSSL comes from the `paho` feature of c/vcpkg.json; static triplet to match /MT.
+              # vcpkg resolves port versions from the manifest's builtin-baseline commit,
+              # which the vcpkg clone must contain: fetch it when the image's clone is older.
               - powershell: |
                   $ErrorActionPreference = 'Stop'
                   $root = $env:VCPKG_INSTALLATION_ROOT
                   if (-not $root -or -not (Test-Path "$root/scripts/buildsystems/vcpkg.cmake")) {
                     $root = Join-Path $env:AGENT_TEMPDIRECTORY 'vcpkg'
-                    git clone --depth 1 https://github.com/microsoft/vcpkg $root
+                    git clone https://github.com/microsoft/vcpkg $root
                     if ($LASTEXITCODE) { exit $LASTEXITCODE }
                     & "$root/bootstrap-vcpkg.bat" -disableMetrics
                     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  }
+                  $baseline = (Get-Content c/vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+                  git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
+                  if ($LASTEXITCODE) {
+                    # A plain fetch keeps a shallow clone's history boundary.
+                    $fetch = @('fetch', '--quiet', 'origin')
+                    if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
+                      $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
+                    }
+                    git -C $root @fetch
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                    git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
+                    if ($LASTEXITCODE) {
+                      Write-Host "##vso[task.logissue type=error]vcpkg baseline $baseline not found in $root"
+                      exit 1
+                    }
                   }
                   Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
                 displayName: Locate vcpkg

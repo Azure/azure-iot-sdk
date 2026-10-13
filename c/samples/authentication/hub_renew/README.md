@@ -93,7 +93,8 @@ Exit code 0 when the renewed certificate was issued and the client reconnected w
 [hub_renew] reconnected with the renewed operational certificate
 ```
 
-A refused renewal prints `[hub_renew] CSR failed: status=<code> service_code=<code> retry_after=<n>s`.
+A refused renewal prints `[hub_renew] CSR failed: status=<code> service_code=<code> retry_after=<n>s credential_error=<name> credential_message=<text> tracking_id=<id>`.
+Quote `tracking_id` in a support request.
 The chain length depends on the credential policy.
 
 ## Troubleshooting
