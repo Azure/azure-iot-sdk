@@ -399,6 +399,32 @@ static void test_load_fails_when_the_key_file_is_gone(void** state)
   az_iot_certificate_provider_pem_deinit(&mgr);
 }
 
+/* At the loan counter's limit load() refuses rather than wrapping it, and
+ * neither the counter nor the key buffer changes. */
+static void test_load_refuses_at_the_loan_limit(void** state)
+{
+  fixture* f = *state;
+  az_iot_certificate_provider_pem_options opts = {
+    .client_cert_pem_path = f->cert_path,
+    .client_key_pem_path = f->key_path,
+  };
+  az_iot_certificate_provider_pem mgr;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_pem_init(&mgr, &opts));
+  mgr.client_key_refs = UINT32_MAX;
+
+  az_iot_certificate_material mat;
+  memset(&mat, 0, sizeof(mat));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE,
+      mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat));
+  assert_int_equal(UINT32_MAX, mgr.client_key_refs);
+  assert_null(mgr.client_key);
+  assert_null(mat.client_key_pem);
+
+  mgr.client_key_refs = 0;
+  az_iot_certificate_provider_pem_deinit(&mgr);
+}
+
 /* deinit() frees a key still on loan, so a missing release() leaks nothing. */
 static void test_deinit_drops_a_key_still_on_loan(void** state)
 {
@@ -521,6 +547,8 @@ int main(void)
         test_load_fails_when_the_key_file_is_gone, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(
         test_deinit_drops_a_key_still_on_loan, setup_files, teardown_files),
+    cmocka_unit_test_setup_teardown(
+        test_load_refuses_at_the_loan_limit, setup_files, teardown_files),
     cmocka_unit_test(test_deinit_tolerates_null),
     cmocka_unit_test_setup_teardown(test_deinit_is_idempotent, setup_files, teardown_files),
     cmocka_unit_test_setup_teardown(
