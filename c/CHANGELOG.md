@@ -66,3 +66,8 @@
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and
   `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
   scripts (`tests/manual`) are removed.
+- Breaking: mqttv5 telemetry sends `$.cid` as the native MQTT v5 Correlation Data (UTF-8, at
+  most 65535 bytes, else `AZ_IOT_ERR_INVALID_ARG`) instead of a user property; the hub reads the
+  correlation id only from there. Telemetry `send()` on both generations returns
+  `AZ_IOT_ERR_NOT_CONNECTED` (was `AZ_IOT_ERR_NOT_INITIALIZED`) before a provisioning connection
+  has a device id. The delivery contract is documented in [docs/telemetry.md](docs/telemetry.md).

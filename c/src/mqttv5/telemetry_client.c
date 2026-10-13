@@ -74,10 +74,11 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
+  /* No device id yet: a provisioning connection has not been assigned one. */
   const char* device_id = az_iot_connection_client__device_id(client->_internal.conn);
   if (device_id == NULL)
   {
-    return AZ_IOT_ERR_NOT_INITIALIZED;
+    return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   char topic[AZ_IOT_MQTTV5_TELEMETRY_TOPIC_MAX];
@@ -106,6 +107,25 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
   user_properties[property_count++]
       = (az_iot_mqtt_user_property){ .key = "content-type", .value = content_type };
 
+  /* The mqttv5 hub reads the correlation id only from native Correlation Data;
+   * a $.cid user property would reach routing as an application property. */
+  const char* correlation_id = NULL;
+  for (size_t i = 0; i < message->properties_count; ++i)
+  {
+    if (message->properties[i].key
+        && strcmp(message->properties[i].key, AZ_IOT_MSG_PROP_CORRELATION_ID) == 0
+        && is_nonempty_cstr(message->properties[i].value))
+    {
+      correlation_id = message->properties[i].value;
+      break;
+    }
+  }
+  size_t correlation_id_len = correlation_id ? strlen(correlation_id) : 0;
+  if (correlation_id_len > UINT16_MAX)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
   for (size_t i = 0; i < message->properties_count; ++i)
   {
     const az_iot_telemetry_property* property = &message->properties[i];
@@ -113,12 +133,12 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     {
       continue;
     }
-    /* Already on the wire twice over as the native Content Type and the
-     * content-type user property; a third copy under its own name would say
-     * the same thing in a spelling the service does not read. Every other
-     * system property has no v5 equivalent, so it travels verbatim -- which is
-     * what az_iot_message.h promises. */
-    if (strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0)
+    /* $.ct and $.cid travel in their native v5 fields; a copy under their own
+     * name would say the same thing in a spelling the service does not read.
+     * Every other system property has no v5 equivalent, so it travels verbatim
+     * -- which is what az_iot_message.h promises. */
+    if (strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0
+        || strcmp(property->key, AZ_IOT_MSG_PROP_CORRELATION_ID) == 0)
     {
       continue;
     }
@@ -148,6 +168,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
   mqtt_message.user_properties = user_properties;
   mqtt_message.user_properties_count = property_count;
   mqtt_message.content_type = content_type;
+  mqtt_message.correlation_data = (const uint8_t*)correlation_id;
+  mqtt_message.correlation_data_len = correlation_id_len;
   return az_iot_connection_client__publish(
       client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }

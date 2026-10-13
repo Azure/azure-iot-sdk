@@ -33,7 +33,8 @@ extern "C"
  * in. azure-sdk-for-c spells the same names pre-encoded
  * (AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE is "%24.ct"); the bytes on the wire
  * are identical. On the MQTTv5 path they travel as User Properties
- * and need no encoding at all.
+ * and need no encoding at all, except "$.ct" and "$.cid", which travel as the
+ * native Content Type and Correlation Data.
  *
  * See
  * https://learn.microsoft.com/azure/iot-hub/iot-hub-devguide-messages-construct
