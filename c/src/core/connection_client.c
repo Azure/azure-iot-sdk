@@ -6609,6 +6609,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
+  /* A host names a hub only together with its device id, whichever route this
+   * open() takes. */
+  if (client->opts.host && !client->opts.client_id)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "open: host is set without client_id");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
   /* Rejected rather than quietly ignored: opts.host names the hub this option
    * says does not exist, and an operational certificate is issued BY a
    * registration, which this device never performs. */

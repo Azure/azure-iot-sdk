@@ -5252,19 +5252,27 @@ static void a_saved_hub_profile_is_declared(void** state)
   }
 }
 
-/* host without client_id is not a usable saved result. */
+/* host without client_id is not a usable saved result, also when a
+ * re-provision is due. */
 static void a_saved_hub_without_a_device_id_is_refused(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = saved_hub_options();
-  opts.client_id = NULL;
-  az_iot_connection_client c;
-  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
-  az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f3), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
-  assert_null(az_iot_mock_mqtt_factory_last_client(f3));
-  az_iot_connection_client_deinit(&c);
+  for (int reprovision = 0; reprovision < 2; ++reprovision)
+  {
+    az_iot_connection_client_options opts = saved_hub_options();
+    opts.client_id = NULL;
+    az_iot_connection_client c;
+    assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+    az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f3), AZ_IOT_OK);
+    if (reprovision)
+    {
+      assert_int_equal(az_iot_connection_client_request_reprovision(&c), AZ_IOT_OK);
+    }
+    assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+    assert_null(az_iot_mock_mqtt_factory_last_client(f3));
+    az_iot_connection_client_deinit(&c);
+  }
 }
 
 /* Provider holding an operational certificate stored before a reboot. */
