@@ -4312,6 +4312,7 @@ static void a_registration_retry_on_a_held_session_is_reported_each_time(void** 
     (void)az_iot_connection_client_do_work(fx->client, 0);
     hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
     assert_non_null(hub);
+    assert_ptr_not_equal(hub, dps);
     assert_non_null(fx->client->active_client);
     /* The spent DPS retry settles to the held session's real state. */
     assert_int_equal(
