@@ -230,8 +230,8 @@ extern "C"
     /* Transient upstream failure: retry. A fetch may proceed meanwhile; a report
      * must not be dropped. */
     AZ_IOT_SU_ERROR_ACTION_RETRY,
-    /* A terminal report already exists for this workflow. Treat as delivered:
-     * reporting is idempotent on workflowId. */
+    /* Legacy untyped 409000 report verdict: assume a terminal report exists.
+     * An explicit REPORT_CONFLICT is FATAL, not acceptance of this payload. */
     AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
     /* The request or our credentials are wrong. Do not retry unchanged. */
     AZ_IOT_SU_ERROR_ACTION_FATAL,

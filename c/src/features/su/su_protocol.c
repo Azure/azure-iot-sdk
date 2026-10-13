@@ -1137,7 +1137,9 @@ az_iot_su_error_action az_iot_su__classify_error(
     }
     if (strcmp(error_code, "REPORT_CONFLICT") == 0)
     {
-      return AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+      /* A conflicting payload was rejected, not accepted as a duplicate.
+       * Stop replay and surface the diagnosis through the existing fatal path. */
+      return AZ_IOT_SU_ERROR_ACTION_FATAL;
     }
     if (strcmp(error_code, "THROTTLED") == 0 || strcmp(error_code, "TOO_MANY_REQUESTS") == 0)
     {
@@ -1148,6 +1150,9 @@ az_iot_su_error_action az_iot_su__classify_error(
      * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
      * that never happened. */
     if (strcmp(error_code, "INVALID_REQUEST") == 0
+        || strcmp(error_code, "UNSUPPORTED_API_VERSION") == 0
+        || strcmp(error_code, "UNSUPPORTED_AGENT_PROFILE") == 0
+        || strcmp(error_code, "INVALID_COMPATIBILITY_PROPERTIES") == 0
         || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
