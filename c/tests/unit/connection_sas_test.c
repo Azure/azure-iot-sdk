@@ -248,15 +248,11 @@ static int setup(void** state)
 static int teardown(void** state)
 {
   fixture* fx = (fixture*)*state;
-  bool adopted = fx->initialized && fx->client.factory_count > 0;
   if (fx->initialized)
   {
     az_iot_connection_client_deinit(&fx->client);
   }
-  if (!adopted && fx->factory != NULL)
-  {
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
-  }
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
   return 0;
 }
@@ -606,6 +602,7 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
         }
       }
       az_iot_connection_client_deinit(&client);
+      az_iot_mock_mqtt_factory_destroy(factory);
     }
   }
 }
@@ -1581,7 +1578,6 @@ static void deinit_wipes_keys_and_tokens(void** state)
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].secondary_key_len, 32);
   az_iot_connection_client_deinit(&fx->client);
   fx->initialized = false;
-  fx->factory = NULL; /* adopted and freed by deinit() */
   assert_true(all_zero(g_sas_buffer, sizeof(g_sas_buffer)));
   assert_true(all_zero(fx->client.auth, sizeof(fx->client.auth)));
 }

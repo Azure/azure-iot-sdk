@@ -57,14 +57,8 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_deinit(&fx->client_storage);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -171,6 +165,7 @@ static void open_rejects_factory_of_the_wrong_version(void** state)
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(v5);
 }
 
 static void open_connects_to_the_configured_endpoint(void** state)
@@ -210,6 +205,7 @@ static void connect_call_for(
   *out_connect = *rec;
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void keep_alive_defaults_when_unset(void** state)
@@ -405,6 +401,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   assert_true(az_iot_connection_client__is_connected(&c));
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
@@ -439,6 +436,7 @@ static void reconnection_can_still_be_disabled(void** state)
 
   assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* ...but a clean peer DISCONNECT with retrying disabled is NOT a fault. It is
@@ -482,6 +480,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
   /* IDLE means reopenable, which is the point of the distinction. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* The default options must not pin a port, or selecting WebSockets on top of
@@ -707,23 +706,6 @@ static void close_from_faulted_twice_is_idempotent(void** state)
 /* deinit()                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/* Register a factory the client will NOT free.
- *
- * deinit() calls every registered factory's destroy hook, and the mock's hook
- * frees the factory itself -- so a test that inspects the factory AFTER
- * deinit() would be reading freed memory. glibc happens to leave the bytes
- * looking like the values the assertions want, which is why this passes on a
- * plain Linux build; valgrind reports an invalid read, and the MSVC debug CRT
- * fills freed blocks with 0xDD so the assertion fails outright. The client
- * copies the struct, so detaching the hook on a local copy leaves the real
- * factory alive and owned by the test. */
-static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_factory* factory)
-{
-  az_iot_mqtt_factory borrowed = *factory;
-  borrowed.destroy = NULL;
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(c, &borrowed), AZ_IOT_OK);
-}
-
 static void deinit_while_connected_destroys_the_adapter(void** state)
 {
   (void)state;
@@ -733,7 +715,7 @@ static void deinit_while_connected_destroys_the_adapter(void** state)
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
-  register_without_adopting(&c, factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
@@ -756,7 +738,7 @@ static void deinit_while_connecting_destroys_the_adapter(void** state)
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
-  register_without_adopting(&c, factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
 
@@ -775,10 +757,9 @@ static void deinit_is_silent_on_the_state_callback(void** state)
   az_iot_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
-  /* Neutralize the fixture teardown: the client is already destroyed and the
-   * factory was adopted (and freed) by it. */
+  /* Neutralize the fixture teardown's deinit(): the client is already
+   * destroyed. The teardown still destroys the factory. */
   memset(&fx->client_storage, 0, sizeof(fx->client_storage));
-  fx->factory = NULL;
 }
 
 static void deinit_tolerates_null(void** state)

@@ -205,9 +205,8 @@ void e2e_sas_connect_renew_and_send(
   run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()),
-      AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(&telemetry, &conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
@@ -254,6 +253,7 @@ void e2e_sas_connect_renew_and_send(
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
+  az_iot_paho_factory_destroy(factory);
   run->client = NULL;
 }
 
@@ -275,9 +275,8 @@ void e2e_sas_hold_dps_and_renew(
   run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()),
-      AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
   time_t start = time(NULL);
   while (ctx.dps_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.dps_state != AZ_IOT_CONN_STATE_FAULTED
@@ -306,5 +305,6 @@ void e2e_sas_hold_dps_and_renew(
   }
   assert_int_equal(ctx.dps_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_connection_client_deinit(&conn);
+  az_iot_paho_factory_destroy(factory);
   run->client = NULL;
 }

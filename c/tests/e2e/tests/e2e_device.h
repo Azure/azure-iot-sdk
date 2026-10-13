@@ -72,6 +72,8 @@ extern "C"
     /* Live device client. */
     az_iot_certificate_provider_pem certs;
     az_iot_connection_client conn;
+    az_iot_mqtt_factory* factory_v3;
+    az_iot_mqtt_factory* factory_v5;
     az_iot_connection_state conn_state;
     bool certs_ok;
     bool conn_ok;

@@ -306,9 +306,8 @@ static void run_csr_enrollment(
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_init(&conn, &copts));
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
   az_iot_connection_client_set_operational_cert_callback(&conn, on_operational_cert, &ctx);
-  assert_int_equal(
-      AZ_IOT_OK,
-      az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()));
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+  assert_int_equal(AZ_IOT_OK, az_iot_connection_client_register_mqtt_factory(&conn, factory));
   assert_int_equal(AZ_IOT_OK, az_iot_mqttv3_telemetry_client_init(&telemetry, &conn));
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_open(&conn));
@@ -363,6 +362,7 @@ static void run_csr_enrollment(
 
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
+  az_iot_paho_factory_destroy(factory);
   az_iot_certificate_provider_managed_deinit(&provider);
 
   remove(op_key);

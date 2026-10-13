@@ -24,6 +24,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv5_custom_topic_client custom;
   int custom_initialized;
 } sample_state;
@@ -36,6 +38,8 @@ static void sample_state_destroy(sample_state* state)
     state->custom_initialized = 0;
   }
   az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_paho_factory_destroy(state->factory_v3);
+  az_iot_paho_factory_destroy(state->factory_v5);
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -127,15 +131,15 @@ int main(void)
 
   /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
    * only the hub is v5. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

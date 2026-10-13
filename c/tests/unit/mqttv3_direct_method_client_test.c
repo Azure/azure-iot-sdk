@@ -125,14 +125,8 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->conn.factory_count > 0);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -349,6 +343,7 @@ static void a_request_from_another_client_is_refused(void** state)
 
   az_iot_mqttv3_direct_method_client_deinit(&dm2);
   az_iot_connection_client_deinit(&conn2);
+  az_iot_mock_mqtt_factory_destroy(factory2);
 }
 
 /* A request outliving its client's teardown finds the pool zeroed, so the slot

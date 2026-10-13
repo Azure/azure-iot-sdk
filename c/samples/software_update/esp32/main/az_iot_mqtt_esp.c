@@ -710,7 +710,6 @@ static az_iot_mqtt_factory* make_factory(az_iot_mqtt_version version)
   f->version = version;
   f->create = esp_factory_create;
   f->factory_ctx = (void*)(intptr_t)version;
-  f->destroy = NULL;
   return f;
 }
 

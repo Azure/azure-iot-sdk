@@ -117,14 +117,8 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->conn.factory_count > 0);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -254,6 +248,7 @@ static void the_topic_is_built_from_the_client_id(void** state)
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void without_any_device_id_the_connect_attempt_fails(void** state)
@@ -277,6 +272,7 @@ static void without_any_device_id_the_connect_attempt_fails(void** state)
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void** state)
@@ -304,6 +300,7 @@ static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void*
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* ------------------------------------------------------------------------- */

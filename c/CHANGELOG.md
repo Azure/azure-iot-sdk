@@ -86,3 +86,7 @@
   `AZ_IOT_USE_INSTALLED_PAHO` (both `OFF`) use installed azure-sdk-for-c and Eclipse Paho C instead
   of fetching them. `c/vcpkg.json` has a `builtin-baseline` and an `installed-paho` feature. See
   [docs/client-configuration.md](docs/client-configuration.md#installed-dependencies).
+- Breaking: the application owns MQTT factories. `az_iot_mqtt_factory` loses `destroy`, and
+  `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
+  lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
+  `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).

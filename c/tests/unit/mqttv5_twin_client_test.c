@@ -182,10 +182,6 @@ typedef struct fixture
    * messages must carry to be accepted. */
   uint8_t nonce[16];
   uint8_t encode_buffer[256];
-  /* Set once the factory has been handed to the connection, which adopts it.
-   * Read in teardown rather than the connection's own counter, because a test
-   * may already have destroyed the connection. */
-  bool factory_registered;
 } fixture;
 
 static void init_connection_ex(az_iot_connection_client* conn, bool push_desired)
@@ -234,10 +230,7 @@ static int teardown(void** state)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!fx->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -380,7 +373,6 @@ static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint6
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   open_to_birth_ack_after_open(fx, desired, reported);
@@ -1457,7 +1449,6 @@ static void open_to_birth(fixture* fx)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   open_to_birth_after_open(fx);
@@ -1543,7 +1534,6 @@ static void a_push_before_the_birth_is_dropped(void** state)
   set_desired(fx, &rec);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   az_iot_mqtt_event connack;
@@ -2374,7 +2364,6 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   /* A second connection admits the birth with a different reported version. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);

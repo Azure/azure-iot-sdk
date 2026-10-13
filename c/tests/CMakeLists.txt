@@ -311,7 +311,7 @@ target_link_libraries(az_iot_tests_connection_key_custody PRIVATE az_iot_test_su
 
 if(AZ_IOT_WITH_PAHO)
     az_iot_add_cmocka_test(az_iot_tests_paho_adapter unit/paho_adapter_smoke_test.c)
-    target_link_libraries(az_iot_tests_paho_adapter PRIVATE az_iot_adapter_paho)
+    target_link_libraries(az_iot_tests_paho_adapter PRIVATE az_iot_adapter_paho az_iot_test_support)
 
     # The Paho adapter's non-extractable key custody (D8). It reaches into the
     # adapter's private header, so it needs the adapter's source directory on

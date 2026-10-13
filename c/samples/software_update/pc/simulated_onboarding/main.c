@@ -98,6 +98,8 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_su_client su_client;
 
   /* Device identity, kept past init() only so it can be printed. */
@@ -130,6 +132,8 @@ static void sample_state_destroy(sample_state* s)
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -293,11 +297,12 @@ static int initialize_connection_client(sample_state* state)
     return 1;
   }
 
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state->connection_client, az_iot_paho_factory_create_v3_1_1())
+  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, az_iot_paho_factory_create_v5())
+             &state->connection_client, state->factory_v5)
           != AZ_IOT_OK)
   {
     return 1;

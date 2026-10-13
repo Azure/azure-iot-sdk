@@ -95,6 +95,8 @@ int main(void)
   user_context user_ctx = { 0 };
   sample_cert_provider provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
 
   sample_cert_provider_options popts = {
     .bootstrap_cert_path = config.cert,
@@ -126,15 +128,13 @@ int main(void)
       &connection_client, on_operational_cert, &user_ctx);
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &connection_client, az_iot_paho_factory_create_v3_1_1())
-      != AZ_IOT_OK)
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
   {
     goto cleanup;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &connection_client, az_iot_paho_factory_create_v5())
-      != AZ_IOT_OK)
+  factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -172,6 +172,8 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&connection_client);
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
   sample_cert_provider_deinit(&provider);
   free(op_key);
   free(op_cert);

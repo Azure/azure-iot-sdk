@@ -223,12 +223,8 @@ static int teardown(void** state)
   if (fx)
   {
     fx->channel.vtable->close(fx->channel.ctx);
-    bool adopted = (fx->client.factory_count > 0);
     az_iot_connection_client_deinit(&fx->client);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -1653,6 +1649,7 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
 
   fx->channel.vtable->close(fx->channel.ctx);
   az_iot_connection_client_deinit(&fx->client);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 

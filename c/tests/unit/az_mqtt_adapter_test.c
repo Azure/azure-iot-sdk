@@ -3,9 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter: factories and clients, ownership of a registered factory, the arguments
- * connect(), publish() and subscribe() refuse, and a CONNECT that cannot be encoded, without a
- * network; PUBACK classification against an in-process server.
+/* az_mqtt adapter: factories and clients, a registered factory destroyed after deinit(), the
+ * arguments connect(), publish() and subscribe() refuse, and a CONNECT that cannot be encoded,
+ * without a network; PUBACK classification against an in-process server.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -47,7 +47,6 @@ static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
 {
   assert_non_null(f);
   assert_int_equal(f->version, version);
-  assert_non_null(f->destroy);
   az_iot_mqtt_client* c = f->create(f->factory_ctx);
   assert_non_null(c);
   assert_int_equal(c->iface->version, version);
@@ -71,7 +70,7 @@ static void factories_create_clients_of_their_version(void** state)
   az_iot_az_mqtt_factory_destroy(NULL);
 }
 
-static void a_registered_factory_is_freed_by_deinit(void** state)
+static void a_registered_factory_is_destroyed_by_the_application_after_deinit(void** state)
 {
   (void)state;
   az_iot_connection_client conn;
@@ -79,10 +78,11 @@ static void a_registered_factory_is_freed_by_deinit(void** state)
   options.host = "hub.example";
   options.client_id = "az-mqtt-adapter-test";
   assert_int_equal(az_iot_connection_client_init(&conn, &options), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&conn, az_iot_az_mqtt_factory_create_v5()),
-      AZ_IOT_OK);
-  az_iot_connection_client_deinit(&conn); // Under a leak checker: nothing left.
+  az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, v5), AZ_IOT_OK);
+  az_iot_connection_client_deinit(&conn);
+  // Under a leak checker: nothing left, and no double free.
+  az_iot_az_mqtt_factory_destroy(v5);
 }
 
 static az_iot_mqtt_connect_options valid_connect(void)
@@ -462,7 +462,7 @@ int main(void)
 #endif
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(factories_create_clients_of_their_version),
-    cmocka_unit_test(a_registered_factory_is_freed_by_deinit),
+    cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),
     cmocka_unit_test(a_connect_larger_than_the_send_buffer_fails_the_attempt),
