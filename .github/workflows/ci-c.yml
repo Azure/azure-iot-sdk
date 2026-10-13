@@ -706,15 +706,21 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
-  # Paho from vcpkg (c/vcpkg.json `installed-paho`, static triplet for /MT[d])
-  # instead of fetched: AZ_IOT_USE_INSTALLED_PAHO on MSVC, Debug and Release.
-  installed-paho-windows:
-    name: windows-msvc / installed Paho (vcpkg)
+  # Installed dependencies on MSVC: azure-sdk-for-c from eng/install-deps.sh
+  # (Release in lib, Debug in debug/lib) and Paho from vcpkg (c/vcpkg.json
+  # `installed-paho`, static triplet for /MT[d]). Debug and Release are each
+  # built, unit-tested, installed and consumed (c/tests/install).
+  installed-deps-windows:
+    name: windows-msvc / installed deps
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -736,26 +742,49 @@ jobs:
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
           "AZ_IOT_VCPKG=$root" >> $env:GITHUB_ENV
+      - name: Set paths
+        run: |
+          tmp="$(cygpath -m "$RUNNER_TEMP")"
+          {
+            echo "AZ_IOT_DEPS=$tmp/deps"
+            echo "AZ_IOT_BUILD=$tmp/build"
+            echo "AZ_IOT_TOOLCHAIN=$(cygpath -m "$AZ_IOT_VCPKG")/scripts/buildsystems/vcpkg.cmake"
+          } >> "$GITHUB_ENV"
+      - name: Install azure-sdk-for-c
+        run: bash eng/install-deps.sh "$AZ_IOT_DEPS" azure-sdk-for-c
       - name: Configure
-        shell: bash
         run: >
-          cmake -S . -B build/installed-paho -G "Ninja Multi-Config"
-          -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_VCPKG/scripts/buildsystems/vcpkg.cmake"
+          cmake -S . -B "$AZ_IOT_BUILD" -G "Ninja Multi-Config"
+          -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
           -DVCPKG_TARGET_TRIPLET=x64-windows-static
           -DVCPKG_MANIFEST_FEATURES=installed-paho
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_DEPS"
+          -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=ON
           -DAZ_IOT_USE_INSTALLED_PAHO=ON
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
-      - name: Build and test (Debug)
-        shell: bash
+      - name: Build, test, install and consume
         run: |
-          cmake --build build/installed-paho --config Debug
-          ctest --test-dir build/installed-paho -C Debug --output-on-failure
-      - name: Build and test (Release)
-        shell: bash
-        run: |
-          cmake --build build/installed-paho --config Release
-          ctest --test-dir build/installed-paho -C Release --output-on-failure
+          set -euo pipefail
+          # The consumer resolves the vcpkg packages (Paho, OpenSSL) per configuration.
+          vcpkg_args=(
+            -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static
+            -DVCPKG_INSTALLED_DIR="$AZ_IOT_BUILD/vcpkg_installed"
+            -DVCPKG_MANIFEST_MODE=OFF
+          )
+          for cfg in Debug Release; do
+            cmake --build "$AZ_IOT_BUILD" --config "$cfg"
+            ctest --test-dir "$AZ_IOT_BUILD" -C "$cfg" --output-on-failure --no-tests=error
+            prefix="$AZ_IOT_BUILD-$cfg-prefix"
+            cmake --install "$AZ_IOT_BUILD" --config "$cfg" --prefix "$prefix"
+            cmake -S tests/install -B "$AZ_IOT_BUILD-$cfg-consumer" -G Ninja \
+              -DCMAKE_BUILD_TYPE="$cfg" "${vcpkg_args[@]}" \
+              -DCMAKE_PREFIX_PATH="$prefix;$AZ_IOT_DEPS" \
+              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;mqttv5;adapter_paho;crypto_openssl;certificate_provider_managed"
+            cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
+            ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
+          done
 
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
