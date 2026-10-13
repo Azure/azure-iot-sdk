@@ -54,7 +54,8 @@ and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`
 - Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
   is preferred. With vcpkg, add the `installed-paho` feature:
   `-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_FEATURES=installed-paho -DAZ_IOT_USE_INSTALLED_PAHO=ON`.
-  On Windows, use a static triplet (e.g. `x64-windows-static`) to match the SDK's static C runtime.
+  On Windows, use a static triplet (e.g. `x64-windows-static`) to match the SDK's static C runtime;
+  with Ninja, also set `-DVCPKG_APPLOCAL_DEPS=OFF` (no DLLs to copy; parallel copy steps can collide).
 
 `c/vcpkg.json` pins its port versions with `builtin-baseline`. An installed dependency is not
 copied into the `azure-iot-sdk` package: its config file finds it again, so consumers need the
