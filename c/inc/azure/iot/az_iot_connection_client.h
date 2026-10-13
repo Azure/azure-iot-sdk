@@ -1601,10 +1601,6 @@ extern "C"
     uint64_t dps_poll_due_ms;
     char dps_assigned_hub[AZ_IOT_DPS_HOST_BUF];
     char dps_assigned_device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
-    /* The assignment's connection profile, adopted with the hub and device id. */
-    az_iot_connection_profile dps_assigned_profile;
-    char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
-    bool dps_assigned_profile_raw_truncated;
     bool dps_pending_finalize;
     bool dps_pending_have_assignment;
     az_iot_result dps_pending_status;
@@ -1839,6 +1835,11 @@ extern "C"
      * close() and deinit() release it. */
     az_iot_certificate_material held_material[AZ_IOT_CONN_SCOPE_COUNT];
     bool material_held[AZ_IOT_CONN_SCOPE_COUNT];
+
+    /* The assignment's connection profile, adopted with the hub and device id. */
+    az_iot_connection_profile dps_assigned_profile;
+    char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+    bool dps_assigned_profile_raw_truncated;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

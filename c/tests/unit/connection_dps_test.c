@@ -5438,15 +5438,21 @@ static void a_failed_enrollment_keeps_the_saved_profile(void** state)
   az_iot_connection_client_deinit(&c);
 }
 
-/* Closes the client from the registration payload callback. */
-static void close_on_registration_payload(az_span payload, void* user_ctx)
+/* close() + open() from the DPS:DISCONNECTING that ends the registration. */
+static void reopen_on_registration_end(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  (void)payload;
-  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
+  close_reopen_ctx* ctx = (close_reopen_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING
+      && ctx->reopened == 0)
+  {
+    ctx->reopened = 1;
+    (void)az_iot_connection_client_close(ctx->client);
+    ctx->reopen = az_iot_connection_client_open(ctx->client);
+  }
 }
 
-/* An assignment cancelled by close() before it is adopted leaves the saved
- * profile declared. */
+/* An assignment cancelled by close() + open() before it is adopted leaves the
+ * saved profile declared, and the reopen goes to the saved hub with it. */
 static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
 {
   (void)state;
@@ -5454,17 +5460,16 @@ static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
       = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
         "\"registrationState\":{\"registrationId\":\"ut-device\","
         "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"assigned-device\","
-        "\"connectionProfile\":\"classic\",\"payload\":{\"a\":1}}}";
+        "\"connectionProfile\":\"classic\"}}";
   az_iot_connection_client_options opts = saved_hub_options();
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  close_reopen_ctx ctx = { &c, 0, 0, AZ_IOT_ERR_INTERNAL };
   assert_int_equal(
-      az_iot_connection_client_set_registration_payload_callback(
-          &c, close_on_registration_payload, &c),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&c, reopen_on_registration_end, &ctx), AZ_IOT_OK);
   az_iot_mqtt_factory* f5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f5), AZ_IOT_OK);
@@ -5485,13 +5490,12 @@ static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
   {
     (void)az_iot_connection_client_do_work(&c, 0);
   }
+  assert_int_equal(ctx.reopened, 1);
+  assert_int_equal(ctx.reopen, AZ_IOT_OK);
   assert_string_equal(az_iot_connection_client_get_iothub_address(&c), SAVED_HUB);
   assert_int_equal(
       az_iot_connection_client__require_profile(&c, AZ_IOT_CONNECTION_PROFILE_MQTT_V3),
       AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
-
-  (void)az_iot_connection_client_close(&c);
-  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(f5);
   assert_non_null(hub);
   assert_string_equal(last_connect_host(hub), SAVED_HUB);
