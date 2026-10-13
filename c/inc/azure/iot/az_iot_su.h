@@ -998,31 +998,40 @@ extern "C"
   AZ_NODISCARD az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
 
   /**
+   * @brief Build-time view of az_iot_su_client, filled by az_iot_su_client_init() in the
+   * application's build.
+   */
+  typedef struct az_iot_su_client_layout
+  {
+    size_t layout_size; /**< sizeof(az_iot_su_client_layout). */
+    size_t client_size; /**< sizeof(az_iot_su_client). */
+    size_t request_buffer_size; /**< AZ_IOT_SU_REQUEST_BUFFER_SIZE. */
+    size_t max_root_keys; /**< AZ_IOT_SU_MAX_ROOT_KEYS. */
+    size_t state_blob_max_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE. */
+    size_t workflow_id_size; /**< AZ_IOT_SU_WORKFLOW_ID_SIZE. */
+    size_t retry_timestamp_size; /**< AZ_IOT_SU_RETRY_TIMESTAMP_SIZE. */
+    size_t max_observers; /**< AZ_IOT_MAX_SU_OBSERVERS. */
+  } az_iot_su_client_layout;
+
+  /**
    * @brief Exported initializer behind az_iot_su_client_init(); call that instead.
    *
-   * The build-time arguments describe az_iot_su_client as compiled where it is
-   * allocated. If any differs from the SDK build, the client is not touched.
-   *
-   * @param[in] client_size sizeof(az_iot_su_client).
-   * @param[in] request_buffer_size AZ_IOT_SU_REQUEST_BUFFER_SIZE.
-   * @param[in] max_root_keys AZ_IOT_SU_MAX_ROOT_KEYS.
+   * @param[in] layout az_iot_su_client as compiled where it is allocated. If any
+   *   field differs from the SDK build (or layout is NULL), the client is not touched.
    * @return See az_iot_su_client_init().
    */
-  AZ_NODISCARD az_iot_result az_iot_su_client__init_checked(
+  AZ_NODISCARD az_iot_result az_iot_su_client_init_checked(
       az_iot_su_client* client,
       az_iot_connection_client* connection,
       const az_iot_su_client_config_options* options,
-      size_t client_size,
-      size_t request_buffer_size,
-      size_t max_root_keys);
+      const az_iot_su_client_layout* layout);
 
   /**
    * @brief Initializes the software updates client.
    *
    * Inline, so the SDK can check that az_iot_su_client was compiled with the
-   * same capacity macros (e.g. AZ_IOT_SU_REQUEST_BUFFER_SIZE,
-   * AZ_IOT_SU_MAX_ROOT_KEYS) in the application as in the SDK: define them
-   * identically for both builds.
+   * same capacity macros in the application as in the SDK (see
+   * az_iot_su_client_layout): define them identically for both builds.
    *
    * @param[out] client Client to initialize.
    * @param[in] connection Connection client the device-update channel is built
@@ -1036,9 +1045,8 @@ extern "C"
    *   client has no crypto backend, or the device properties are malformed
    *   (including zero compatibility properties), or replacement_policy is not
    *   an az_iot_su_replacement_policy value. Also returned, with an error log
-   *   and the client untouched, when az_iot_su_client's size,
-   *   AZ_IOT_SU_REQUEST_BUFFER_SIZE or AZ_IOT_SU_MAX_ROOT_KEYS differs between
-   *   the application and SDK builds.
+   *   and the client untouched, when any az_iot_su_client_layout field differs
+   *   between the application and SDK builds.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
    *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
@@ -1050,13 +1058,13 @@ extern "C"
       az_iot_connection_client* connection,
       const az_iot_su_client_config_options* options)
   {
-    return az_iot_su_client__init_checked(
-        client,
-        connection,
-        options,
-        sizeof(az_iot_su_client),
-        (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE,
-        (size_t)AZ_IOT_SU_MAX_ROOT_KEYS);
+    const az_iot_su_client_layout layout = {
+      sizeof(az_iot_su_client_layout),        sizeof(az_iot_su_client),
+      (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE,  (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,
+      (size_t)AZ_IOT_SU_STATE_BLOB_MAX_SIZE,  (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
+      (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE, (size_t)AZ_IOT_MAX_SU_OBSERVERS,
+    };
+    return az_iot_su_client_init_checked(client, connection, options, &layout);
   }
 
   /**

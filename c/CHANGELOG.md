@@ -103,9 +103,11 @@
   properties set one, as the regular check does, so the service does not offer an update that is
   already installed. It is still omitted when nothing is installed.
 - Software updates: `az_iot_su_client_init()` is now inline and returns `AZ_IOT_ERR_INVALID_ARG`,
-  with an `ERROR` log and the client untouched, when `sizeof(az_iot_su_client)`,
-  `AZ_IOT_SU_REQUEST_BUFFER_SIZE` or `AZ_IOT_SU_MAX_ROOT_KEYS` differs between the application
-  and SDK builds. The exported symbol is `az_iot_su_client__init_checked()`.
+  with an `ERROR` log and the client untouched, when `sizeof(az_iot_su_client)` or any of
+  `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE`,
+  `AZ_IOT_SU_WORKFLOW_ID_SIZE`, `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` or `AZ_IOT_MAX_SU_OBSERVERS`
+  differs between the application and SDK builds. The exported symbol is
+  `az_iot_su_client_init_checked()`, taking an `az_iot_su_client_layout`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,

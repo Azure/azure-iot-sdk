@@ -909,10 +909,10 @@ az_iot_result az_iot_su_client_remove_observer(
  * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
  * the buffer is too small for device_properties. Inline: it passes the
- * application's sizeof(az_iot_su_client), AZ_IOT_SU_REQUEST_BUFFER_SIZE and
- * AZ_IOT_SU_MAX_ROOT_KEYS to az_iot_su_client__init_checked(), which returns
- * AZ_IOT_ERR_INVALID_ARG without touching the client if any differs from the
- * SDK build.
+ * application's az_iot_su_client_layout (sizeof(az_iot_su_client) and the
+ * capacity macros that size it or the persisted blob) to
+ * az_iot_su_client_init_checked(), which returns AZ_IOT_ERR_INVALID_ARG
+ * without touching the client if any field differs from the SDK build.
  */
 static inline az_iot_result az_iot_su_client_init(
     az_iot_su_client* client,

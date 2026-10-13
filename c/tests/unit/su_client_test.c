@@ -2324,52 +2324,59 @@ static void public_initialize_rejects_a_client_layout_mismatch(void** state)
   static uint8_t untouched[sizeof(az_iot_su_client)];
   memset(untouched, 0xA5, sizeof(untouched));
 
-  const size_t size = sizeof(az_iot_su_client);
-  const size_t req = (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE;
-  const size_t keys = (size_t)AZ_IOT_SU_MAX_ROOT_KEYS;
+  const az_iot_su_client_layout good = {
+    sizeof(az_iot_su_client_layout),        sizeof(az_iot_su_client),
+    (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE,  (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,
+    (size_t)AZ_IOT_SU_STATE_BLOB_MAX_SIZE,  (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
+    (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE, (size_t)AZ_IOT_MAX_SU_OBSERVERS,
+  };
   const struct
   {
-    size_t client_size;
-    size_t request_buffer_size;
-    size_t max_root_keys;
+    size_t offset;
     const char* named;
-  } cases[] = {
-    { size - 64, req, keys, "sizeof(az_iot_su_client)" },
-    { size + 64, req, keys, "sizeof(az_iot_su_client)" },
-    { size, req - 1, keys, "AZ_IOT_SU_REQUEST_BUFFER_SIZE" },
-    { size, req + 4096, keys, "AZ_IOT_SU_REQUEST_BUFFER_SIZE" },
-    { size, req, keys - 1, "AZ_IOT_SU_MAX_ROOT_KEYS" },
-    { size, req, keys + 1, "AZ_IOT_SU_MAX_ROOT_KEYS" },
+  } fields[] = {
+    { offsetof(az_iot_su_client_layout, layout_size), "az_iot_su_client_layout" },
+    { offsetof(az_iot_su_client_layout, client_size), "sizeof(az_iot_su_client)" },
+    { offsetof(az_iot_su_client_layout, request_buffer_size), "AZ_IOT_SU_REQUEST_BUFFER_SIZE" },
+    { offsetof(az_iot_su_client_layout, max_root_keys), "AZ_IOT_SU_MAX_ROOT_KEYS" },
+    { offsetof(az_iot_su_client_layout, state_blob_max_size), "AZ_IOT_SU_STATE_BLOB_MAX_SIZE" },
+    { offsetof(az_iot_su_client_layout, workflow_id_size), "AZ_IOT_SU_WORKFLOW_ID_SIZE" },
+    { offsetof(az_iot_su_client_layout, retry_timestamp_size), "AZ_IOT_SU_RETRY_TIMESTAMP_SIZE" },
+    { offsetof(az_iot_su_client_layout, max_observers), "AZ_IOT_MAX_SU_OBSERVERS" },
   };
+  const long deltas[] = { -1, 1 };
 
-  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i)
   {
-    memset(&su, 0xA5, sizeof(su));
-    captured.errors = 0;
-    captured.last_error[0] = '\0';
-    assert_int_equal(
-        az_iot_su_client__init_checked(
-            &su,
-            &conn,
-            &o,
-            cases[i].client_size,
-            cases[i].request_buffer_size,
-            cases[i].max_root_keys),
-        AZ_IOT_ERR_INVALID_ARG);
-    assert_memory_equal(&su, untouched, sizeof(su));
-    assert_int_equal(captured.errors, 1);
-    assert_non_null(strstr(captured.last_error, cases[i].named));
+    for (size_t d = 0; d < sizeof(deltas) / sizeof(deltas[0]); ++d)
+    {
+      az_iot_su_client_layout bad = good;
+      size_t* field = (size_t*)((uint8_t*)&bad + fields[i].offset);
+      *field = (size_t)((long)*field + deltas[d]);
+
+      memset(&su, 0xA5, sizeof(su));
+      captured.errors = 0;
+      captured.last_error[0] = '\0';
+      assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, &bad), AZ_IOT_ERR_INVALID_ARG);
+      assert_memory_equal(&su, untouched, sizeof(su));
+      assert_int_equal(captured.errors, 1);
+      assert_non_null(strstr(captured.last_error, fields[i].named));
+    }
   }
 
-  /* Checked even when the other arguments are NULL. */
+  /* NULL layout, and a layout checked even when the other arguments are NULL. */
+  captured.last_error[0] = '\0';
+  assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_non_null(strstr(captured.last_error, "az_iot_su_client_layout"));
+  az_iot_su_client_layout bad_req = good;
+  bad_req.request_buffer_size++;
   captured.last_error[0] = '\0';
   assert_int_equal(
-      az_iot_su_client__init_checked(NULL, NULL, NULL, size, req + 1, keys),
-      AZ_IOT_ERR_INVALID_ARG);
+      az_iot_su_client_init_checked(NULL, NULL, NULL, &bad_req), AZ_IOT_ERR_INVALID_ARG);
   assert_non_null(strstr(captured.last_error, "AZ_IOT_SU_REQUEST_BUFFER_SIZE"));
 
   captured.errors = 0;
-  assert_int_equal(az_iot_su_client__init_checked(&su, &conn, &o, size, req, keys), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, &good), AZ_IOT_OK);
   assert_int_equal(captured.errors, 0);
   assert_int_equal(az_iot_su_client_get_state(&su), AZ_IOT_SU_STATE_IDLE);
   az_iot_su_client_deinit(&su);

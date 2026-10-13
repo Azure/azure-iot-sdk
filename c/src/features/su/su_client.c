@@ -2349,53 +2349,63 @@ az_iot_result az_iot_su_client__initialize_with_channel(
  *
  * Runs before anything writes to the client: a smaller caller allocation must not be zeroed.
  *
- * @return true if all values match; false, with an error log naming the first mismatch.
+ * @return true if all fields match; false, with an error log naming the first mismatch.
  */
-static bool su_client_layout_matches(
-    size_t client_size,
-    size_t request_buffer_size,
-    size_t max_root_keys)
+static bool su_client_layout_matches(const az_iot_su_client_layout* layout)
 {
-  if (request_buffer_size != (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE)
+  if (layout == NULL || layout->layout_size != sizeof(az_iot_su_client_layout))
   {
-    AZ_IOT_LOG_ERRORF(
+    AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_SU,
-        "AZ_IOT_SU_REQUEST_BUFFER_SIZE is %lu in the application but %lu in the SDK",
-        (unsigned long)request_buffer_size,
-        (unsigned long)AZ_IOT_SU_REQUEST_BUFFER_SIZE);
+        "az_iot_su_client_layout is missing or differs between the application and the SDK");
     return false;
   }
-  if (max_root_keys != (size_t)AZ_IOT_SU_MAX_ROOT_KEYS)
+
+  const struct
   {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "AZ_IOT_SU_MAX_ROOT_KEYS is %lu in the application but %lu in the SDK",
-        (unsigned long)max_root_keys,
-        (unsigned long)AZ_IOT_SU_MAX_ROOT_KEYS);
-    return false;
-  }
-  if (client_size != sizeof(az_iot_su_client))
+    const char* name;
+    size_t app;
+    size_t sdk;
+  } fields[] = {
+    { "AZ_IOT_SU_REQUEST_BUFFER_SIZE",
+      layout->request_buffer_size,
+      (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE },
+    { "AZ_IOT_SU_MAX_ROOT_KEYS", layout->max_root_keys, (size_t)AZ_IOT_SU_MAX_ROOT_KEYS },
+    { "AZ_IOT_SU_STATE_BLOB_MAX_SIZE",
+      layout->state_blob_max_size,
+      (size_t)AZ_IOT_SU_STATE_BLOB_MAX_SIZE },
+    { "AZ_IOT_SU_WORKFLOW_ID_SIZE", layout->workflow_id_size, (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE },
+    { "AZ_IOT_SU_RETRY_TIMESTAMP_SIZE",
+      layout->retry_timestamp_size,
+      (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE },
+    { "AZ_IOT_MAX_SU_OBSERVERS", layout->max_observers, (size_t)AZ_IOT_MAX_SU_OBSERVERS },
+    { "sizeof(az_iot_su_client)", layout->client_size, sizeof(az_iot_su_client) },
+  };
+
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i)
   {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "sizeof(az_iot_su_client) is %lu in the application but %lu in the SDK; "
-        "build both with the same AZ_IOT_SU_* capacity macros",
-        (unsigned long)client_size,
-        (unsigned long)sizeof(az_iot_su_client));
-    return false;
+    if (fields[i].app != fields[i].sdk)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "%s is %lu in the application but %lu in the SDK; "
+          "build both with the same AZ_IOT_SU_* capacity macros",
+          fields[i].name,
+          (unsigned long)fields[i].app,
+          (unsigned long)fields[i].sdk);
+      return false;
+    }
   }
   return true;
 }
 
-AZ_NODISCARD az_iot_result az_iot_su_client__init_checked(
+AZ_NODISCARD az_iot_result az_iot_su_client_init_checked(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
     const az_iot_su_client_config_options* options,
-    size_t client_size,
-    size_t request_buffer_size,
-    size_t max_root_keys)
+    const az_iot_su_client_layout* layout)
 {
-  if (!su_client_layout_matches(client_size, request_buffer_size, max_root_keys))
+  if (!su_client_layout_matches(layout))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
