@@ -3754,6 +3754,20 @@ static void a_failed_https_hub_token_leaves_no_earlier_token(void** state)
   assert_true(all_zero(out, sizeof(out)));
 }
 
+/* DPS before assignment: no hub address yet. */
+static void no_https_hub_token_before_a_hub_is_assigned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  memset(out, 'x', sizeof(out));
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(all_zero(out, sizeof(out)));
+}
+
 static char g_signed_token[AZ_IOT_SAS_TOKEN_SIZE(256)];
 static az_iot_result g_signed_result;
 static az_iot_connection_state g_sign_on_state;
@@ -3986,6 +4000,7 @@ int main(void)
         an_https_hub_token_that_does_not_fit_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_https_hub_token_leaves_no_earlier_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(no_https_hub_token_before_a_hub_is_assigned, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_https_hub_token_keeps_the_secondary_key_while_reconnecting, setup, teardown),
     cmocka_unit_test_setup_teardown(
