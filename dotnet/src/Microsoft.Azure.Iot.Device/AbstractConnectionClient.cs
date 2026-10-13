@@ -584,10 +584,13 @@ namespace Microsoft.Azure.Iot.Device
                 return Task.FromResult(connectPacketToEdit);
             }
 
-            Debug.Assert(_lastProvisioningAuthentication != null);
-            AuthenticationCredentials hubCredentials = _lastProvisioningAuthentication.GetIotHubAuthentication(
+            // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
+            // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
+            // connect with the operational certificate DPS issued rather than its boot credentials.
+            AuthenticationProvider hubAuthentication = CurrentConnectionContext!.AuthenticationProvider;
+            AuthenticationCredentials hubCredentials = hubAuthentication.GetIotHubAuthentication(
                 connectPacketToEdit.HostName,
-                connectPacketToEdit.ClientId ?? _lastProvisioningAuthentication.GetRegistrationId());
+                connectPacketToEdit.ClientId ?? hubAuthentication.GetRegistrationId());
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
