@@ -309,9 +309,19 @@ static void connection_profiles_map_to_the_enum(void** state)
     az_iot_dps_tpm_request req;
     az_iot_dps_tpm_next next;
     assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
-    char json[256] = "{\"status\":\"assigned\",\"registrationState\":{";
-    strcat(json, cases[i].member);
-    strcat(json, "\"assignedHub\":\"h\",\"deviceId\":\"d\"}}");
+    char json[256];
+    const char* parts[] = { "{\"status\":\"assigned\",\"registrationState\":{",
+                            cases[i].member,
+                            "\"assignedHub\":\"h\",\"deviceId\":\"d\"}}" };
+    size_t len = 0;
+    for (size_t k = 0; k < sizeof(parts) / sizeof(parts[0]); ++k)
+    {
+      size_t n = strlen(parts[k]);
+      assert_true(len + n < sizeof(json));
+      memcpy(json + len, parts[k], n);
+      len += n;
+    }
+    json[len] = '\0';
     assert_int_equal(respond(&c, 200, json, 0, &next), AZ_IOT_OK);
     assert_int_equal(
         az_iot_dps_tpm_client_get_assignment(&c)->connection_profile, cases[i].expected);

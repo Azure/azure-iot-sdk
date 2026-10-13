@@ -890,6 +890,10 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_registration_id_from_ek(
     pending += 8;
     while (pending >= 5)
     {
+      if (n >= AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE - 2)
+      {
+        return AZ_IOT_ERR_INTERNAL;
+      }
       pending -= 5;
       out[n++] = alphabet[(bits >> pending) & 0x1Fu];
     }
