@@ -3386,14 +3386,16 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           }
           else if (c->dps_enrolling)
           {
+            /* Before the store: it runs the operational-certificate callback. */
+            c->dps_cert_awaits_adoption = true;
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)
             {
+              c->dps_cert_awaits_adoption = false;
               dps_finalize(c, sc, false);
               return;
             }
             c->dps_have_issued_cert = true;
-            c->dps_cert_awaits_adoption = true;
           }
           /* Surface the assignment's custom payload (registrationState.payload,
            * already parsed by azure-sdk-for-c as a zero-copy span into the

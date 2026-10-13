@@ -1748,6 +1748,57 @@ static void a_withheld_chain_is_not_adopted_after_the_pin_is_released(void** sta
   az_iot_connection_client_deinit(&client);
 }
 
+/* Requires mqttv5 from the operational-certificate callback. */
+static void require_v5_from_op_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
+{
+  (void)issued;
+  (void)store_result;
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  ctx->done_teardown = true;
+  ctx->pin_result
+      = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+}
+
+/* Installs require_v5_from_op_cert() once DPS starts connecting. */
+static void install_op_cert_pin(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTING
+      && !ctx->done_connecting)
+  {
+    ctx->done_connecting = true;
+    (void)az_iot_connection_client_set_operational_cert_callback(
+        ctx->client, require_v5_from_op_cert, ctx);
+  }
+}
+
+/* The operational-certificate callback runs after the chain is stored, so it
+ * cannot require the other generation either. */
+static void the_op_cert_callback_cannot_require_the_other_generation(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  g_dps_drive_observer = install_op_cert_pin;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_teardown);
+  assert_int_equal(ctx.pin_result, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_int_equal(prov.store_calls, 1);
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&client), "myhub.azure-devices.net");
+  az_iot_connection_client_deinit(&client);
+}
+
 /* A failed store must not hide the chain from the app: the callback still fires,
  * carrying the provider's error, and the registration fails. */
 static void dps_store_failure_still_delivers_the_chain_with_the_error(void** state)
@@ -3820,6 +3871,7 @@ int main(void)
     cmocka_unit_test(a_rejected_assignment_does_not_store_its_issued_chain),
     cmocka_unit_test(a_stored_chain_blocks_the_other_generation_until_adoption),
     cmocka_unit_test(a_withheld_chain_is_not_adopted_after_the_pin_is_released),
+    cmocka_unit_test(the_op_cert_callback_cannot_require_the_other_generation),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
