@@ -352,6 +352,24 @@ static void throttling_and_server_errors_keep_the_request(void** state)
   assert_int_equal(t.imports, 1);
 }
 
+static void statuses_past_599_are_not_retried(void** state)
+{
+  (void)state;
+  fake_tpm t = { 0 };
+  az_iot_dps_tpm_client c;
+  challenge(&c, &t);
+  char buf[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE];
+  az_iot_dps_tpm_request req;
+  az_iot_dps_tpm_next next;
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(respond(&c, 599, "", 0, &next), AZ_IOT_OK);
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(respond(&c, 600, "", 0, &next), AZ_IOT_ERR_DPS);
+  assert_int_equal(
+      az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req),
+      AZ_IOT_ERR_NOT_INITIALIZED);
+}
+
 static void a_refused_token_is_an_auth_failure(void** state)
 {
   (void)state;
@@ -521,6 +539,9 @@ static void assignment_problems_are_protocol_errors(void** state)
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\"}}",
     "{\"status\":\"assigning\"}",
     "{}",
+    "{\"operationId\":\"a\\nb\",\"status\":\"assigning\"}",
+    "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":"
+    "\"d\\tx\"}}",
     "{\"status\":\"\"}",
     "{\"status\":null}",
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\\u002ex\",\"deviceId\":"
@@ -976,6 +997,7 @@ int main(void)
     cmocka_unit_test(assigned_from_register_needs_no_poll),
     cmocka_unit_test(connection_profiles_map_to_the_enum),
     cmocka_unit_test(throttling_and_server_errors_keep_the_request),
+    cmocka_unit_test(statuses_past_599_are_not_retried),
     cmocka_unit_test(a_refused_token_is_an_auth_failure),
     cmocka_unit_test(a_challenge_without_a_key_is_an_auth_failure),
     cmocka_unit_test(malformed_challenges_are_protocol_errors),

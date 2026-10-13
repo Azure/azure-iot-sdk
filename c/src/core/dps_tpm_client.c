@@ -369,21 +369,33 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_get_request(
   return AZ_IOT_OK;
 }
 
-/** @brief Copies JSON string @p token into @p out (@p out_size bytes, terminated). */
+/** @brief Copies JSON string @p token into @p out (@p out_size bytes, terminated).
+ * Fails for an empty value or one that decodes to a control character (NUL included). */
 static bool copy_json_string(const az_json_token* token, char* out, size_t out_size)
 {
   /* The slice may hold escapes, so only the unescaped length is checked (by az_core). */
-  if (token->kind != AZ_JSON_TOKEN_STRING || az_span_size(token->slice) <= 0
+  if (token->kind != AZ_JSON_TOKEN_STRING || az_span_size(token->slice) <= 0 || out_size < 2
       || out_size > (size_t)INT32_MAX)
   {
     return false;
   }
   int32_t written = 0;
   if (az_result_failed(az_json_token_get_string(token, out, (int32_t)out_size, &written))
-      || written <= 0)
+      || written <= 0 || (size_t)written >= out_size)
   {
+    out[0] = '\0';
     return false;
   }
+  for (int32_t i = 0; i < written; ++i)
+  {
+    uint8_t ch = (uint8_t)out[i];
+    if (ch < 0x20u || ch == 0x7Fu)
+    {
+      out[0] = '\0';
+      return false;
+    }
+  }
+  out[written] = '\0';
   return true;
 }
 
@@ -730,7 +742,7 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_handle_response(
   uint32_t wait
       = retry_after_seconds != 0 ? retry_after_seconds : AZ_IOT_DPS_TPM_DEFAULT_RETRY_AFTER_SECONDS;
 
-  if (http_status == DPS_TPM_HTTP_TOO_MANY_REQUESTS || http_status >= 500u)
+  if (http_status == DPS_TPM_HTTP_TOO_MANY_REQUESTS || (http_status >= 500u && http_status <= 599u))
   {
     out->retry_after_seconds = wait;
     return AZ_IOT_OK;
