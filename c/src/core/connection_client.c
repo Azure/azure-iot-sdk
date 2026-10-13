@@ -7505,6 +7505,26 @@ az_iot_result az_iot_connection_client__presence_nonce(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client__birth_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if ((client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
+       && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+      || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
 bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
 {
   return client && client->opts.twin_push.push_desired;

@@ -94,6 +94,13 @@ extern "C"
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
 
+  /* As az_iot_connection_client__presence_nonce(), but available once the birth is
+   * sent: the service may send dev-bound messages before the birth-ack. Not available
+   * once close() is requested. */
+  az_iot_result az_iot_connection_client__birth_nonce(
+      const az_iot_connection_client* client,
+      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
+
   /** @brief Whether options.twin_push.push_desired asks the service to push desired state. */
   bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client);
 
