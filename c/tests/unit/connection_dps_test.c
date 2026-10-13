@@ -2920,6 +2920,8 @@ static void a_half_usable_assignment_is_not_partially_adopted(void** state)
   }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
   /* The hub half was NOT committed on the way to the fault. */
   assert_null(fx->client->opts.iothub_hostname);
 

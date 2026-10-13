@@ -1853,6 +1853,33 @@ static void a_reopen_before_adoption_registers_again(void** state)
   az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
+/* With CSR enrollment, an assignment without a device id withholds its chain
+ * and faults with the validation error, not a profile mismatch. */
+static void a_withheld_chain_without_a_device_id_faults_as_invalid(void** state)
+{
+  (void)state;
+  static const char k_no_device_id_with_chain[]
+      = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"\","
+        "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  az_iot_test_state_log log = { 0 };
+  g_dps_drive_observer = az_iot_test_on_state;
+  g_dps_drive_observer_ctx = &log;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_no_device_id_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(az_iot_test_reason_for(&log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
 /* A failed store must not hide the chain from the app: the callback still fires,
  * carrying the provider's error, and the registration fails. */
 static void dps_store_failure_still_delivers_the_chain_with_the_error(void** state)
@@ -3927,6 +3954,7 @@ int main(void)
     cmocka_unit_test(a_withheld_chain_is_not_adopted_after_the_pin_is_released),
     cmocka_unit_test(the_op_cert_callback_cannot_require_the_other_generation),
     cmocka_unit_test(a_reopen_before_adoption_registers_again),
+    cmocka_unit_test(a_withheld_chain_without_a_device_id_faults_as_invalid),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),

@@ -4163,19 +4163,6 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
 
-  /* The issued chain was withheld for an assignment that was to be rejected;
-   * the profile pins changed since. Adopting it would pair the assignment
-   * with the previous certificate. */
-  if (cert_withheld)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "the attached feature clients changed while the assignment was pending; registering "
-        "again");
-    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
-    return;
-  }
-
   /* Adopt the assignment. Both halves are checked before EITHER is written:
    * they are only meaningful together, and the response parser accepts an
    * empty device id (it rejects only a negative or oversized one), so
@@ -4196,6 +4183,20 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     reject_assignment(c, r);
     return;
   }
+
+  /* The issued chain was withheld for an assignment that was to be rejected;
+   * the profile pins changed since. Adopting it would pair the assignment
+   * with the previous certificate. */
+  if (cert_withheld)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "the attached feature clients changed while the assignment was pending; registering "
+        "again");
+    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
+
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
