@@ -232,7 +232,8 @@ Operational certificates:
 ### Production keys
 
 Most X.509 samples read the device's private key from a PEM file, so they run anywhere; the
-`hsm_*` samples keep it in hardware, and the SAS-only samples use none. A key in a file
+`hsm_pkcs11` sample keeps it in a token, `hsm_sign_callback` shows the `sign()` route with a
+stand-in signer, and the SAS-only samples use none. A key in a file
 can be copied, and the device's identity with it. In production, keep each device's X.509 private
 key in hardware -- an HSM, a TPM or a secure element -- which signs with it but never releases it.
 The certificate can stay a file: it is public.

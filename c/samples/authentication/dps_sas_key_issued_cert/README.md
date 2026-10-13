@@ -34,8 +34,8 @@ The sample reads these environment variables:
 | `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated (EC P-256). Default `operational_key.pem`. A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued operational chain file. Default `operational_cert.pem`. |
 
-The operational key is written **unencrypted**, readable only by the current user (0600 on
-POSIX, owner-only DACL on Windows). An existing key file is loaded as is and keeps its mode;
+The operational key is written **unencrypted**, accessible only to its owner (0600 on
+POSIX; on Windows, the owner and SYSTEM). An existing key file is loaded as is and keeps its mode;
 restrict it explicitly, e.g. `chmod 600 operational_key.pem`.
 
 ```sh
