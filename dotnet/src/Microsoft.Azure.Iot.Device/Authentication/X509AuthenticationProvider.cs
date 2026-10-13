@@ -4,7 +4,9 @@
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System;
+using System.Diagnostics;
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Microsoft.Azure.Iot.Device.Authentication
@@ -67,21 +69,105 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId)
+        /// <summary>
+        /// The private key that the most recent certificate signing request was generated with.
+        /// </summary>
+        /// <remarks>
+        /// When set, and a client certificate has been issued to this device (either by the device provisioning service
+        /// during provisioning or by IoT Hub), the issued device certificate is paired with this key and presented to
+        /// IoT Hub instead of <see cref="ClientCertificate"/>. Update this property before sending a certificate signing
+        /// request that was generated with a different key. When null, <see cref="ClientCertificate"/> is always presented.
+        /// <para>
+        /// On platforms whose TLS stack cannot use an in-memory key (such as Windows SChannel), the paired certificate is
+        /// round-tripped through an in-memory PKCS#12 blob. If the key cannot be exported (for example an HSM-backed key),
+        /// the paired certificate is presented as-is.
+        /// </para>
+        /// </remarks>
+        public AsymmetricAlgorithm? IssuedCertificatePrivateKey
         {
-            return CreateCredentials();
+            get => _issuedCertificatePrivateKey;
+            set => _issuedCertificatePrivateKey = value;
+        }
+
+        private volatile AsymmetricAlgorithm? _issuedCertificatePrivateKey;
+
+        private readonly object _issuedCertificateLock = new();
+        private IReadOnlyList<string>? _cachedIssuedCertificateChain;
+        private AsymmetricAlgorithm? _cachedIssuedCertificatePrivateKey;
+        private X509Certificate2? _cachedIssuedCertificate;
+
+        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        {
+            AsymmetricAlgorithm? privateKey = IssuedCertificatePrivateKey;
+            if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
+            {
+                return CreateCredentials(ClientCertificate);
+            }
+
+            if (privateKey == null)
+            {
+                Trace.TraceWarning("A client certificate was issued to this device, but no IssuedCertificatePrivateKey was set, so the original client certificate will be presented to IoT Hub instead.");
+                return CreateCredentials(ClientCertificate);
+            }
+
+            return CreateCredentials(GetOrCreateIssuedCertificate(issuedClientCertificates, privateKey));
         }
 
         public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
         {
-            return CreateCredentials();
+            return CreateCredentials(ClientCertificate);
         }
 
-        private AuthenticationCredentials CreateCredentials()
+        private X509Certificate2 GetOrCreateIssuedCertificate(IReadOnlyList<string> issuedClientCertificates, AsymmetricAlgorithm privateKey)
+        {
+            lock (_issuedCertificateLock)
+            {
+                if (_cachedIssuedCertificate != null
+                    && ReferenceEquals(_cachedIssuedCertificateChain, issuedClientCertificates)
+                    && ReferenceEquals(_cachedIssuedCertificatePrivateKey, privateKey))
+                {
+                    return _cachedIssuedCertificate;
+                }
+
+                _cachedIssuedCertificate = CreateCertificateWithPrivateKey(issuedClientCertificates, privateKey);
+                _cachedIssuedCertificateChain = issuedClientCertificates;
+                _cachedIssuedCertificatePrivateKey = privateKey;
+                return _cachedIssuedCertificate;
+            }
+        }
+
+        // The first certificate in the issued chain is the device certificate; the rest are intermediates.
+        private static X509Certificate2 CreateCertificateWithPrivateKey(IReadOnlyList<string> issuedClientCertificates, AsymmetricAlgorithm privateKey)
+        {
+            using X509Certificate2 deviceCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(issuedClientCertificates[0]));
+
+            X509Certificate2 deviceCertificateWithKey = privateKey switch
+            {
+                ECDsa ecdsa => deviceCertificate.CopyWithPrivateKey(ecdsa),
+                RSA rsa => deviceCertificate.CopyWithPrivateKey(rsa),
+                _ => throw new NotSupportedException($"Unsupported private key type: {privateKey.GetType()}"),
+            };
+
+            try
+            {
+                // Some TLS stacks (Windows SChannel) cannot use an ephemeral key, so export and reimport it.
+                byte[] pfxBytes = deviceCertificateWithKey.Export(X509ContentType.Pfx);
+                X509Certificate2 reimported = X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable);
+                deviceCertificateWithKey.Dispose();
+                return reimported;
+            }
+            catch (CryptographicException)
+            {
+                // Non-exportable (for example HSM-backed) keys are presented as-is.
+                return deviceCertificateWithKey;
+            }
+        }
+
+        private AuthenticationCredentials CreateCredentials(X509Certificate2 clientCertificate)
         {
             return new AuthenticationCredentials()
             {
-                ClientCertificate = ClientCertificate,
+                ClientCertificate = clientCertificate,
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
                 LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
             };

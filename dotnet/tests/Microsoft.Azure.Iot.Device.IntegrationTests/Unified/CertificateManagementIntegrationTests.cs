@@ -40,21 +40,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
+            x509AuthenticationProvider.IssuedCertificatePrivateKey = privateKey;
 
-            ConnectionClient connectionClient = new()
-            {
-                HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
-                {
-                    // Convert to PEM and save
-                    string pemChain = CertificateUtilities.ConvertToPem(IssuedCertificates);
-
-                    using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
-
-                    // Export and reimport with Exportable flag
-                    byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-                    return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
-                }
-            };
+            ConnectionClient connectionClient = new();
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {

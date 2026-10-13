@@ -9,16 +9,19 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 {
     public abstract class AuthenticationProvider
     {
-        //TODO track signed certificates in here somehow? SecureString stuff probably
-        // Kill the onCsrCompleted callback thing since now users who want to customly handle signed certificates just implement this interface instead
-
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
         /// for connecting to an IoT Hub. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// </summary>
         /// <param name="hostName">The IoT Hub host name being connected to.</param>
         /// <param name="deviceId">The device Id being authenticated.</param>
-        public abstract AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId);
+        /// <param name="issuedClientCertificates">
+        /// The most recently issued client certificate chain for this device, whether it was signed by the device
+        /// provisioning service during provisioning or signed by IoT Hub through a certificate signing request. Each
+        /// entry is a Base64-encoded certificate; the first is the issued device certificate, followed by any
+        /// intermediates. Null if no client certificate has been issued to this device.
+        /// </param>
+        public abstract AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)

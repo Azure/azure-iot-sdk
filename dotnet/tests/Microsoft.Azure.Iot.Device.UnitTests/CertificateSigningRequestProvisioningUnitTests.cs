@@ -35,25 +35,32 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             using RSA operationalKey = RSA.Create(2048);
             string csrBase64 = CreateCertificateSigningRequest(operationalKey);
-            string[] issuedChain = new[] { "first-issued-certificate", "second-issued-certificate" };
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData), "second-issued-certificate" };
 
             using MockConnectionMqttClient mockMqttClient = new();
             MockCertificateIssuingProvisioningService mockDps = new(mockMqttClient, issuedChain);
 
             MqttConnect? dpsConnect = null;
+            MqttConnect? hubConnect = null;
             mockMqttClient.OnConnect = connect =>
             {
-                dpsConnect ??= connect;
+                if (dpsConnect == null)
+                {
+                    dpsConnect = connect;
+                }
+                else
+                {
+                    hubConnect ??= connect;
+                }
 
                 return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
             };
 
             using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
 
-            // The client swaps to the issued certificate before connecting to the hub, so this callback is required
-            // whenever a chain comes back.
-            connectionClient.HandleCertificateSigningCompleteAsync =
-                issued => Task.FromResult(CreateAuthenticationProvider());
+            X509AuthenticationProvider authentication = CreateAuthenticationProvider();
+            authentication.IssuedCertificatePrivateKey = operationalKey;
 
             ProvisioningSettings provisioningSettings = new(IdScope)
             {
@@ -63,7 +70,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             ConnectionContext connectionContext = await connectionClient
-                .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             RegistrationRequestPayload? sentPayload = mockDps.RegistrationRequestPayload;
@@ -72,6 +79,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.NotNull(dpsConnect);
             Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
+            Assert.Equal(authentication.ClientCertificate.Thumbprint, dpsConnect.ClientCertificate?.Thumbprint);
+
+            // The hub connection presents the DPS-issued certificate rather than the boot certificate.
+            Assert.NotNull(hubConnect);
+            Assert.NotNull(hubConnect.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubConnect.ClientCertificate.Thumbprint);
+            Assert.True(hubConnect.ClientCertificate.HasPrivateKey);
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.Equal(issuedChain, connectionContext.IssuedClientCertificates);
@@ -99,13 +113,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 RegistrationId = RegistrationId,
                 GlobalEndpointAddress = GlobalDeviceEndpoint,
                 CertificateSigningRequest = new(operationalKey, csrBase64),
-            };
-
-            connectionClient.HandleCertificateSigningCompleteAsync += (issuedCertificates) =>
-            {
-#pragma warning disable SYSLIB0026 // Type or member is obsolete    using this as a stub method since this code path is not actually exercised in this test
-                return Task.FromResult(new X509AuthenticationProvider(new X509Certificate2()));
-#pragma warning restore SYSLIB0026 // Type or member is obsolete
             };
 
             Exception exception = await Assert.ThrowsAnyAsync<Exception>(
@@ -155,28 +162,49 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task ProvisioningWithACertificateSigningRequestButNoCompletionCallbackThrows()
+        public void IotHubAuthenticationPresentsTheIssuedCertificateWhenItsPrivateKeyIsSet()
         {
             using RSA operationalKey = RSA.Create(2048);
-            string csrBase64 = CreateCertificateSigningRequest(operationalKey);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
 
-            using MockConnectionMqttClient mockMqttClient = new();
+            X509AuthenticationProvider authentication = CreateAuthenticationProvider();
+            authentication.IssuedCertificatePrivateKey = operationalKey;
 
-            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            AuthenticationCredentials hubCredentials = authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain);
+            Assert.NotNull(hubCredentials.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
+            Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
 
-            // Intentionally leave HandleCertificateSigningCompleteAsync unset.
+            // The same chain and key reuse the same certificate rather than rebuilding it on every connect.
+            Assert.Same(hubCredentials.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
 
-            ProvisioningSettings provisioningSettings = new(IdScope)
-            {
-                RegistrationId = RegistrationId,
-                GlobalEndpointAddress = GlobalDeviceEndpoint,
-                CertificateSigningRequest = new(operationalKey, csrBase64),
-            };
+            // DPS is always authenticated with the original client certificate.
+            Assert.Same(authentication.ClientCertificate, authentication.GetDeviceProvisioningServiceAuthentication().ClientCertificate);
+        }
 
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                async () => await connectionClient
-                    .ProvisionAndConnectAsync(provisioningSettings, CreateAuthenticationProvider(), cancellationToken: TestContext.Current.CancellationToken)
-                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+        [Fact]
+        public void IotHubAuthenticationPresentsTheOriginalCertificateWithoutAnIssuedCertificateOrPrivateKey()
+        {
+            using RSA operationalKey = RSA.Create(2048);
+            using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
+            string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
+
+            X509AuthenticationProvider authentication = CreateAuthenticationProvider();
+
+            Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, issuedChain).ClientCertificate);
+
+            authentication.IssuedCertificatePrivateKey = operationalKey;
+            Assert.Same(authentication.ClientCertificate, authentication.GetIotHubAuthentication(AssignedHub, DeviceId, null).ClientCertificate);
+        }
+
+        private static X509Certificate2 CreateIssuedCertificate(RSA key)
+        {
+            var certificateRequest = new CertificateRequest($"CN={RegistrationId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using X509Certificate2 withKey = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+
+            // Issued certificates arrive without a private key.
+            return X509CertificateLoader.LoadCertificate(withKey.RawData);
         }
 
         private static string CreateCertificateSigningRequest(RSA key)

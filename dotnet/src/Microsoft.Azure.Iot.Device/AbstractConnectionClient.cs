@@ -37,8 +37,6 @@ namespace Microsoft.Azure.Iot.Device
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
 
-        public Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? HandleCertificateSigningCompleteAsync;
-
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         /// <summary>
@@ -256,11 +254,6 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
-            {
-                throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
-            }
-
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
             // be recovered by re-provisioning if it later faults on this device's identity.
@@ -464,20 +457,8 @@ namespace Microsoft.Azure.Iot.Device
                 ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
-            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
-            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
-            {
-                // Service should only return signed certificates if the provisioning request included a certificate signing request, and this HandleCertificateSigningCompleteAsync callback
-                // is null checked earlier if one was provided
-                Debug.Assert(HandleCertificateSigningCompleteAsync != null);
-                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
-            }
-            else
-            {
-                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
-                CurrentConnectionContext.AuthenticationProvider = authentication;
-            }
-
+            // Any certificates DPS issued are passed to the authentication provider on every connection to IoT hub, so the
+            // provider decides whether to present them (operational certificates) or its own (boot certificates).
             await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
@@ -587,10 +568,12 @@ namespace Microsoft.Azure.Iot.Device
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
             // connect with the operational certificate DPS issued rather than its boot credentials.
-            AuthenticationProvider hubAuthentication = CurrentConnectionContext!.AuthenticationProvider;
+            ConnectionContext connectionContext = CurrentConnectionContext!;
+            AuthenticationProvider hubAuthentication = connectionContext.AuthenticationProvider;
             AuthenticationCredentials hubCredentials = hubAuthentication.GetIotHubAuthentication(
                 connectPacketToEdit.HostName,
-                connectPacketToEdit.ClientId ?? hubAuthentication.GetRegistrationId());
+                connectPacketToEdit.ClientId ?? hubAuthentication.GetRegistrationId(),
+                connectionContext.IssuedClientCertificates);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt

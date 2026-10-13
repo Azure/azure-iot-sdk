@@ -169,16 +169,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     else if (status.Equals("200"))
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                        if (HandleCertificateSigningCompleteAsync != null)
+                        // The authentication provider receives these on the next connection attempt to IoT hub.
+                        //TODO need a fault-injection like unit test that ensures that the client presents these new certificates upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
+                        if (CurrentConnectionContext != null)
                         {
-                            //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
-                            Debug.Assert(CurrentConnectionContext != null);
-                            CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
                         }
-                        else
-                        {
-                            Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
-                        }
+
                         pendingCertificateSigningOperation.SetCompleted(response);
                         return;
                     }

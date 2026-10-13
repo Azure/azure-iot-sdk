@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId)
+        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
             // Note that hostname + device id may change over time, so cannot just take them in constructor.
             // Device-scoped token: no key name (skn) since the key is the device's own key

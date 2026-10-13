@@ -26,9 +26,20 @@ namespace Microsoft.Azure.Iot.Device.Models
         public required IotHubConnectionType ConnectionProfile { get; init; }
 
         /// <summary>
-        /// Any client certificates that were issued during provisioning that should be used when connecting to IoT Hub.
+        /// The most recently issued client certificate chain (Base64-encoded, device certificate first), whether signed
+        /// during provisioning or signed by IoT Hub. Passed to
+        /// <see cref="AuthenticationProvider.GetIotHubAuthentication(string, string, IReadOnlyList{string}?)"/> on every
+        /// connection attempt to IoT Hub. Null if no client certificate has been issued.
         /// </summary>
-        public IReadOnlyList<string>? IssuedClientCertificates { get; init; }
+        public IReadOnlyList<string>? IssuedClientCertificates
+        {
+            get => _issuedClientCertificates;
+            set => _issuedClientCertificates = value;
+        }
+
+        // Volatile because IoT Hub certificate signing responses update it on a connection callback thread while
+        // reconnect attempts read it on another.
+        private volatile IReadOnlyList<string>? _issuedClientCertificates;
 
         public required AuthenticationProvider AuthenticationProvider { get; set; }
     }
