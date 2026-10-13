@@ -215,6 +215,14 @@ static void a_distinct_factory_for_the_same_version_still_registers(void** state
    * deinit(); the fixture teardown must not free either. */
 }
 
+/* A direct-hub client reports the caller's client_id alongside its host. */
+static void get_device_id_returns_the_direct_client_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_string_equal(az_iot_connection_client_get_device_id(fx->client), "ut-device");
+  assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), "broker.example");
+}
+
 static void open_without_factory_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3352,6 +3360,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(register_rejects_null_create, setup, teardown),
+    cmocka_unit_test_setup_teardown(get_device_id_returns_the_direct_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         registering_the_same_factory_twice_does_not_grow_the_registry, setup, teardown),
     cmocka_unit_test_setup_teardown(

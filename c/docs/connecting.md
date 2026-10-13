@@ -85,6 +85,10 @@ See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
 
 - `az_iot_connection_client_get_hub_profile()` reports the assigned profile once the hub is
   `CONNECTED`.
+- `az_iot_connection_client_get_iothub_address()` and `az_iot_connection_client_get_device_id()`
+  return the assigned hub and device id once the assignment is adopted (`NULL` before). The device
+  id can differ from the registration id (e.g. custom allocation); save these two values, not the
+  registration id, to connect directly later.
 - Feature clients may be created before or after `open()`. Creating one for the wrong generation
   fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - A custom registration payload (one JSON object) can be sent with `dps.registration_payload`,

@@ -2491,6 +2491,85 @@ static void get_hub_profile_rejects_null_arguments(void** state)
   az_iot_connection_client_deinit(&c);
 }
 
+/* ---- get_device_id() contract ------------------------------------------- */
+
+/* The assigned device id differs from both the registration id and the
+ * caller's client_id here, so only the adopted value can satisfy the checks. */
+static void get_device_id_returns_the_assigned_device_id(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  /* A caller client_id on a DPS client is not the device id DPS will assign. */
+  assert_null(az_iot_connection_client_get_device_id(&pf.c));
+
+  profile_assign(&pf, k_assigned_mqtt_v3);
+  assert_string_equal(az_iot_connection_client_get_device_id(&pf.c), "assigned-device");
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&pf.c), "myhub.azure-devices.net");
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(
+      az_iot_mock_mqtt_factory_last_client(pf.v3), AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(call);
+  assert_string_equal(call->connect.client_id, "assigned-device");
+
+  profile_finish_hub_leg(&pf, false);
+  assert_string_equal(az_iot_connection_client_get_device_id(&pf.c), "assigned-device");
+
+  profile_fixture_close(&pf);
+}
+
+/* A re-provision keeps the previous pair until the new assignment is adopted,
+ * then replaces both together. */
+static void get_device_id_follows_a_reprovision(void** state)
+{
+  (void)state;
+  static const char reassigned[]
+      = "{\"operationId\":\"op-2\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"otherhub.azure-devices.net\","
+        "\"connectionProfile\":\"classic\",\"deviceId\":\"reassigned-device\"}}";
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  profile_assign(&pf, k_assigned_mqtt_v3);
+  profile_finish_hub_leg(&pf, false);
+
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v3);
+  assert_int_equal(az_iot_connection_client_close(&pf.c), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  (void)az_iot_connection_client_do_work(&pf.c, 0);
+  assert_int_equal(az_iot_connection_client_request_reprovision(&pf.c), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&pf.c), AZ_IOT_OK);
+  assert_string_equal(az_iot_connection_client_get_device_id(&pf.c), "assigned-device");
+
+  profile_assign(&pf, reassigned);
+  assert_string_equal(az_iot_connection_client_get_device_id(&pf.c), "reassigned-device");
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&pf.c), "otherhub.azure-devices.net");
+
+  profile_fixture_close(&pf);
+}
+
+/* A rejected assignment is never adopted, so its device id is not reported. */
+static void get_device_id_ignores_a_rejected_assignment(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  profile_assign(&pf, k_assigned_profile_unknown);
+
+  assert_true(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_null(az_iot_connection_client_get_device_id(&pf.c));
+  assert_null(az_iot_connection_client_get_iothub_address(&pf.c));
+
+  profile_fixture_close(&pf);
+}
+
+static void get_device_id_rejects_a_null_client(void** state)
+{
+  (void)state;
+  assert_null(az_iot_connection_client_get_device_id(NULL));
+}
+
 /* UNKNOWN only ever comes back FROM the service. A caller declaring it is asking
  * the SDK to speak a protocol it has no implementation for, so it is refused at
  * the boundary rather than silently falling through to MQTTv3. */
@@ -5118,6 +5197,10 @@ int main(void)
     cmocka_unit_test(dps_overlong_profile_is_flagged_as_truncated),
     cmocka_unit_test(get_hub_profile_before_connected_is_rejected),
     cmocka_unit_test(get_hub_profile_rejects_null_arguments),
+    cmocka_unit_test(get_device_id_returns_the_assigned_device_id),
+    cmocka_unit_test(get_device_id_follows_a_reprovision),
+    cmocka_unit_test(get_device_id_ignores_a_rejected_assignment),
+    cmocka_unit_test(get_device_id_rejects_a_null_client),
     cmocka_unit_test(init_rejects_a_connection_profile_the_sdk_cannot_speak),
     cmocka_unit_test(init_rejects_an_incomplete_crypto_backend),
     cmocka_unit_test(reassignment_to_another_generation_drops_the_old_filters),

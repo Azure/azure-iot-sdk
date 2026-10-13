@@ -2065,6 +2065,24 @@ extern "C"
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
 
+  /**
+   * @brief Get the device id this client connects to the IoT Hub with.
+   *
+   * The device id paired with az_iot_connection_client_get_iothub_address(): the
+   * caller-supplied client_id for a direct-hub connection, or the DPS-assigned
+   * device id once the assignment is adopted. The DPS device id need not equal
+   * the registration id (e.g. custom allocation), so save this value, not the
+   * registration id, to connect directly to the assigned hub later.
+   *
+   * @param[in] client The connection client.
+   * @return The device id, or NULL when @p client is NULL or no hub has been
+   * established yet (az_iot_connection_client_get_iothub_address() returns NULL).
+   * Owned by the client (or by the caller for a caller-supplied client_id); valid
+   * until deinit(). A later adopted DPS assignment overwrites it in place, so copy
+   * it to keep it.
+   */
+  const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client);
+
   /* Report what this client is connected to, so an application can branch on the
    * hub generation without inferring it from its own configuration.
    *
