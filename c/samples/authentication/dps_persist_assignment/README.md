@@ -28,7 +28,8 @@ identity, enrollment group and environment variables.
 The assignment is saved to `dps_assignment.txt` in the working directory: three lines, hub
 hostname, device id, and `mqttv3` or `mqttv5`. Delete it to
 register again. Keep it with `AZ_IOT_OPERATIONAL_KEY` and `AZ_IOT_OPERATIONAL_CERT`: the
-saved identity is only usable with the certificate issued alongside it.
+saved identity is only usable with the certificate issued alongside it. Key files are for
+development; see [Production keys](../../../docs/connecting.md#production-keys).
 
 ## Build and run
 
