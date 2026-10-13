@@ -59,6 +59,9 @@ typedef struct custody_provider
   /* When set, load() hands out these buffers as the key PEM and password and
    * release() wipes them, as az_iot_certificate_provider.h allows. */
   bool wipes_on_release;
+  /* Set once the test deinits the provider; release() after it is counted. */
+  bool deinitialized;
+  int releases_after_deinit;
   char key_pem[32];
   char key_password[16];
 } custody_provider;
@@ -102,6 +105,10 @@ static void custody_release(az_iot_certificate_provider* s, az_iot_certificate_m
   custody_provider* p = (custody_provider*)s;
   (void)m;
   p->release_calls++;
+  if (p->deinitialized)
+  {
+    p->releases_after_deinit++;
+  }
   if (p->wipes_on_release)
   {
     memset(p->key_pem, 0, sizeof(p->key_pem));
@@ -679,24 +686,26 @@ static void hub_material_is_released_when_the_adapter_connect_fails(void** state
   material_is_released_when_the_adapter_connect_fails(false, state);
 }
 
-/** @brief State observer that close()s the client on CONNECTING. */
+/** @brief State observer that close()s the client on CONNECTING, then deinits
+ * the provider, as az_iot_certificate_provider.h allows once closed. */
 static void close_on_connecting(const az_iot_connection_state_event* e, void* ctx)
 {
+  fixture* fx = (fixture*)ctx;
   if (e->state == AZ_IOT_CONN_STATE_CONNECTING)
   {
-    (void)az_iot_connection_client_close((az_iot_connection_client*)ctx);
+    (void)az_iot_connection_client_close(&fx->client);
+    fx->provider.deinitialized = true;
   }
 }
 
 /* close() from the CONNECTING announcement abandons the attempt before
- * connect(); its material is released all the same. */
+ * connect(); close() releases its material, before the provider can go. */
 static void material_is_released_when_closed_before_connect(bool with_dps, void** state)
 {
   fixture* fx = (fixture*)*state;
   init_wiping_provider(fx, with_dps);
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_connecting, &fx->client),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&fx->client, close_on_connecting, fx), AZ_IOT_OK);
   /* DPS reports the cancelled start; the hub attempt is simply abandoned. */
   assert_int_equal(
       az_iot_connection_client_open(&fx->client), with_dps ? AZ_IOT_ERR_NOT_CONNECTED : AZ_IOT_OK);
@@ -710,6 +719,7 @@ static void material_is_released_when_closed_before_connect(bool with_dps, void*
     }
   }
   assert_all_material_released(fx);
+  assert_int_equal(fx->provider.releases_after_deinit, 0);
 }
 
 static void dps_material_is_released_when_closed_before_connect(void** state)

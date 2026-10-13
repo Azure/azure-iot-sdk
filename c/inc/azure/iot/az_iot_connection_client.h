@@ -1800,6 +1800,10 @@ extern "C"
     uint8_t sas_token_in_use;
     /* The failure being scheduled is a user-provided token's, not the hub's. */
     bool sas_token_attempt_failed;
+    /* Provider material an attempt holds until connect() has copied it;
+     * close() and deinit() release it. */
+    az_iot_certificate_material held_material[AZ_IOT_CONN_SCOPE_COUNT];
+    bool material_held[AZ_IOT_CONN_SCOPE_COUNT];
 
     /* pending_pubacks[] slots set aside per feature client; the rest are shared. */
     struct
