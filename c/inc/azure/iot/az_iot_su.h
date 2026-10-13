@@ -67,6 +67,8 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_APPLY 0x6u /* apply_fn failure */
 #define AZ_IOT_SU_FACILITY_RESTORE 0x7u /* restore_fn failure (rollback failed) */
 #define AZ_IOT_SU_FACILITY_PERSIST 0x8u /* persist_state_fn kept failing at a reboot boundary */
+/* Superseded by a new workflow under AZ_IOT_SU_REPLACEMENT_ROLLBACK (reserved; not yet produced) */
+#define AZ_IOT_SU_FACILITY_SUPERSEDED 0x9u
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -158,9 +160,9 @@ extern "C"
  * - a new workflow waiting on the previous record's retirement proceeds.
  * A later write is still attempted once when needed; a tracked success resets
  * the count (the best-effort erase of a stale record does not).
- * While a workflow is held at a reboot boundary, a new workflow is ignored (the
- * service offers it again) and a cancel waits; a cancel of an installed step
- * not yet applied rolls it back.
+ * While a workflow is held at a reboot boundary, a new workflow is deferred
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and a cancel waits; a cancel of an
+ * installed step not yet applied rolls it back.
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
@@ -618,7 +620,16 @@ extern "C"
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
      * AZ_IOT_SU_REQUEST_BUFFER_SIZE. Raised again on each redelivery. */
-    AZ_IOT_SU_EVENT_UPDATE_REFUSED
+    AZ_IOT_SU_EVENT_UPDATE_REFUSED,
+
+    /* A delivered update with a new workflow id was not started because the
+     * current workflow may not be replaced (see az_iot_su_replacement_policy).
+     * Nothing was processed or reported for it. Carries `state` (unchanged)
+     * and `reason` AZ_IOT_ERR_BUSY. Raised again on each redelivery. To take
+     * it, request an update again once the current workflow has ended (Idle
+     * or Failed) and, when its last apply asked for a reboot, after that
+     * reboot. */
+    AZ_IOT_SU_EVENT_UPDATE_DEFERRED
   } az_iot_su_event_kind;
 
   /**
@@ -670,12 +681,14 @@ extern "C"
   {
     az_iot_su_event_kind kind;
 
-    /* WORKFLOW_STATE_CHANGED only. */
+    /** Every event: the workflow state when it was raised (the new state for
+     * WORKFLOW_STATE_CHANGED). */
     az_iot_su_state state;
+    /** WORKFLOW_STATE_CHANGED only; other events repeat `state`. */
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED and
-     * UPDATE_REFUSED. */
+    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED,
+     * UPDATE_REFUSED and UPDATE_DEFERRED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
@@ -866,10 +879,33 @@ extern "C"
       bool pending_fetch_paced;
       /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
+      /** install_fn was called in the current workflow. */
+      bool install_called;
+      /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
+      bool reboot_owed;
     } _internal;
   } az_iot_su_client;
 
   /* --- Lifecycle ----------------------------------------------------------- */
+
+  /**
+   * @brief What a new workflow id does to a workflow that may not be replaced.
+   *
+   * A workflow may be replaced until its first install_fn call. From then
+   * until it ends (Idle or Failed), and after a last apply that asked for a
+   * reboot until that reboot, the device holds a partly applied or not yet
+   * activated deployment, which is validated only as a whole.
+   */
+  typedef enum az_iot_su_replacement_policy
+  {
+    /** Default. The new workflow is not started and AZ_IOT_SU_EVENT_UPDATE_DEFERRED
+     * is raised; the current one runs to its end. */
+    AZ_IOT_SU_REPLACEMENT_DEFER = 0,
+    /** Roll back the current workflow with restore_fn, report it FAILED with
+     * AZ_IOT_SU_FACILITY_SUPERSEDED, then start the new one. Requires restore_fn.
+     * Not yet supported: az_iot_su_client_init() returns AZ_IOT_ERR_NOT_SUPPORTED. */
+    AZ_IOT_SU_REPLACEMENT_ROLLBACK = 1
+  } az_iot_su_replacement_policy;
 
   /**
    * Configuration for az_iot_su_client_init(). Obtain a zero-initialized
@@ -890,7 +926,9 @@ extern "C"
     /** Required. Holds the copied strings; must outlive the client. */
     uint8_t* device_properties_buffer;
     size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
-
+    /** What a new workflow id does to a workflow that may not be replaced.
+     * Default AZ_IOT_SU_REPLACEMENT_DEFER. */
+    az_iot_su_replacement_policy replacement_policy;
   } az_iot_su_client_config_options;
 
   /**
@@ -917,8 +955,10 @@ extern "C"
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
-   *   (including zero compatibility properties).
-   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256.
+   *   (including zero compatibility properties), or replacement_policy is not
+   *   an az_iot_su_replacement_policy value.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
+   *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
