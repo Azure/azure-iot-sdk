@@ -5843,6 +5843,26 @@ static void a_restored_assignment_connects_without_registering(void** state)
   profile_fixture_close(&pf);
 }
 
+/* A NULL callback unregisters: an adopted assignment no longer reaches the old one. */
+static void a_null_assignment_callback_unregisters(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, NULL, NULL), AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_int_equal(rec.count, 0);
+  assert_hub_leg_used(&pf, pf.v5);
+  profile_fixture_close(&pf);
+}
+
 static void set_dps_assignment_callback_rejects_a_null_client(void** state)
 {
   (void)state;
@@ -5863,6 +5883,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         assignment_callback_fires_again_on_reprovision, setup_with_reconnect, teardown),
     cmocka_unit_test(a_restored_assignment_connects_without_registering),
+    cmocka_unit_test(a_null_assignment_callback_unregisters),
     cmocka_unit_test(set_dps_assignment_callback_rejects_a_null_client),
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(
