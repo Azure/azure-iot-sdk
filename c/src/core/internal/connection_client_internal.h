@@ -177,14 +177,15 @@ extern "C"
 
   /**
    * @brief Signs a hub SAS token for an HTTPS request to the hub, with the key
-   * the hub session authenticates with: the key of its last attempt, or the
-   * primary key before any attempt when there is no certificate provider.
-   * The connection's own token area is not used.
+   * the hub session authenticates with: the key of its current or last
+   * attempt, else the one fallback selected for the next, else, without a
+   * certificate provider, the primary key. The connection's own token area is
+   * not used.
    *
    * @param[in]  client   Connection client.
    * @param[out] out      Receives the NUL-terminated token
    *                      (`SharedAccessSignature sr=...&sig=...&se=...`); wiped
-   *                      on failure.
+   *                      on every failure.
    * @param[in]  out_size Bytes in @p out.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when the hub session does not use a
    *         key (X.509 or user-provided tokens); AZ_IOT_ERR_NOT_CONNECTED with

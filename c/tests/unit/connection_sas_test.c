@@ -3625,8 +3625,8 @@ static void an_https_hub_token_needs_unix_time(void** state)
       az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_ERR_BUSY);
 }
 
-/* Refused before signing when AZ_IOT_SAS_TOKEN_SIZE() of the IDs does not fit;
- * nothing is left in the output. */
+/* Refused before signing when AZ_IOT_SAS_TOKEN_SIZE() of the IDs does not fit.
+ * Every failure, an earlier token in the buffer included, leaves it all zero. */
 static void an_https_hub_token_that_does_not_fit_is_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3637,18 +3637,83 @@ static void an_https_hub_token_that_does_not_fit_is_refused(void** state)
   assert_int_equal(
       az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out) - 1),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_string_equal(out, "");
+  assert_true(all_zero(out, sizeof(out) - 1));
   assert_int_equal(
       az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
   assert_string_equal(out, HUB_TOKEN);
 
   assert_int_equal(
       az_iot_connection_client__sign_hub_sas_token(NULL, out, sizeof(out)), AZ_IOT_ERR_INVALID_ARG);
+  assert_true(all_zero(out, sizeof(out)));
   assert_int_equal(
       az_iot_connection_client__sign_hub_sas_token(&fx->client, NULL, sizeof(out)),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       az_iot_connection_client__sign_hub_sas_token(&fx->client, out, 0), AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* A token from an earlier call is wiped when no key is in use, and when there
+ * is no Unix time. */
+static void a_failed_https_hub_token_leaves_no_earlier_token(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  init_only(fx, &opts);
+  char out[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  fx->client.opts.unix_time.get_time = no_time;
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_ERR_BUSY);
+  assert_true(all_zero(out, sizeof(out)));
+
+  fx->client.opts.unix_time.get_time = fixed_time;
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)), AZ_IOT_OK);
+  fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_X509;
+  assert_int_equal(
+      az_iot_connection_client__sign_hub_sas_token(&fx->client, out, sizeof(out)),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_true(all_zero(out, sizeof(out)));
+}
+
+static char g_setting_up_token[AZ_IOT_SAS_TOKEN_SIZE(256)];
+static az_iot_result g_setting_up_result;
+
+static void sign_on_hub_setting_up(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_SETTING_UP)
+  {
+    g_setting_up_result = az_iot_connection_client__sign_hub_sas_token(
+        (const az_iot_connection_client*)user_ctx, g_setting_up_token, sizeof(g_setting_up_token));
+  }
+}
+
+/* A reconnect announces SETTING_UP before it picks its source: the secondary
+ * key fallback selected, and kept across the drop, still signs. */
+static void an_https_hub_token_keeps_the_secondary_key_while_reconnecting(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
+
+  memset(g_setting_up_token, 0, sizeof(g_setting_up_token));
+  g_setting_up_result = AZ_IOT_ERR_INTERNAL;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, sign_on_hub_setting_up, &fx->client),
+      AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  pump(fx, 2);
+  wait_and_fire_retry(fx);
+  assert_int_equal(g_setting_up_result, AZ_IOT_OK);
+  assert_string_equal(g_setting_up_token, SECONDARY_HUB_TOKEN);
+  assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
 }
 
 int main(void)
@@ -3814,6 +3879,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_https_hub_token_needs_unix_time, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_https_hub_token_that_does_not_fit_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_https_hub_token_leaves_no_earlier_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_https_hub_token_keeps_the_secondary_key_while_reconnecting, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_rejected_certificate_falls_back_to_the_next_one, setup, teardown),
     cmocka_unit_test_setup_teardown(the_certificate_that_connected_is_kept, setup, teardown),

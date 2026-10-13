@@ -1438,13 +1438,23 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
     char* out,
     size_t out_size)
 {
-  if (client == NULL || out == NULL || out_size == 0)
+  if (out == NULL || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  out[0] = '\0';
+  /* Every failure leaves nothing of an earlier token in the caller's buffer. */
+  az_iot_crypto__wipe(out, out_size);
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   const az_iot_connection_client* c = client;
+  /* Between attempts source is NONE; first keeps a source fallback selected. */
   az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+  if (source == AZ_IOT_AUTH_SOURCE_NONE)
+  {
+    source = c->auth[AZ_IOT_CONN_SCOPE_HUB].first;
+  }
   if (source == AZ_IOT_AUTH_SOURCE_NONE && c->opts.certificate_provider == NULL)
   {
     source = AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
@@ -1529,7 +1539,7 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
   az_iot_crypto__wipe(signature, sizeof(signature));
   if (r != AZ_IOT_OK)
   {
-    az_iot_crypto__wipe(out, size);
+    az_iot_crypto__wipe(out, out_size);
     AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_CONNECTION, "hub SAS token signing failed (%d)", (int)r);
   }
   return r;
