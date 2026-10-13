@@ -77,6 +77,11 @@ static bool adapter_claims_proxy(void)
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY) != 0u;
 }
 
+static bool adapter_claims_tls_pem(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM) != 0u;
+}
+
 static bool adapter_claims_key_custody_uri(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI) != 0u;
@@ -2273,6 +2278,117 @@ static void mutual_tls_succeeds_with_a_valid_client_cert(void** state)
   remove(key_path);
 }
 
+/** @brief Fills @p buf, @p cap bytes, with 'X', keeping the terminator. */
+static void overwrite_text(char* buf, size_t cap)
+{
+  memset(buf, 'X', cap - 1u);
+  buf[cap - 1u] = '\0';
+}
+
+/* connect() owns its TLS material only while it runs: the client releases it
+ * to the certificate provider right after, and the provider may wipe it. Every
+ * adapter takes paths, so the path strings are overwritten as soon as connect()
+ * returns; the mutual-TLS handshake must still succeed. */
+static void mutual_tls_does_not_read_paths_after_returning(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  char ca_path[128];
+  az_iot_test_proxy* proxy = start_mutual_tls_proxy(&proxy_port, ca_path, sizeof(ca_path));
+  char cert_path[128];
+  char key_path[128];
+  issue_client_pem(
+      proxy, -3600, 24L * 3600L, cert_path, sizeof(cert_path), key_path, sizeof(key_path));
+  char ca_arg[sizeof(ca_path)];
+  char cert_arg[sizeof(cert_path)];
+  char key_arg[sizeof(key_path)];
+  memcpy(ca_arg, ca_path, sizeof(ca_arg));
+  memcpy(cert_arg, cert_path, sizeof(cert_arg));
+  memcpy(key_arg, key_path, sizeof(key_arg));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlspath");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_arg;
+  copts.tls.client_cert_path = cert_arg;
+  copts.tls.client_key_path = key_arg;
+  copts.tls.use_tls = true;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  overwrite_text(ca_arg, sizeof(ca_arg));
+  overwrite_text(cert_arg, sizeof(cert_arg));
+  overwrite_text(key_arg, sizeof(key_arg));
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+  remove(cert_path);
+  remove(key_path);
+}
+
+/* AZ_IOT_CONFORMANCE_CAP_TLS_PEM: the same, with the CA, certificate and key
+ * given only as in-memory PEM, wiped as soon as connect() returns -- as a
+ * certificate provider's release() may do to a private key. */
+static void mutual_tls_does_not_read_pem_after_returning(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.require_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  static char ca_pem[4096];
+  static char cert_pem[4096];
+  static char key_pem[4096];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  az_iot_test_proxy_client_cert_options opt = az_iot_test_proxy_client_cert_options_default();
+  opt.not_before_offset_sec = -3600;
+  opt.not_after_offset_sec = 24L * 3600L;
+  assert_int_equal(
+      az_iot_test_proxy_issue_client_cert(
+          proxy, &opt, cert_pem, sizeof(cert_pem), key_pem, sizeof(key_pem)),
+      0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-tlspem");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_pem = ca_pem;
+  copts.tls.client_cert_pem = cert_pem;
+  copts.tls.client_key_pem = key_pem;
+  copts.tls.use_tls = true;
+
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  memset(ca_pem, 0, sizeof(ca_pem));
+  memset(cert_pem, 0, sizeof(cert_pem));
+  memset(key_pem, 0, sizeof(key_pem));
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* An expired client certificate must be refused by the peer. The assertion
  * belongs to the peer's verification, which is why this needed a proxy that
  * asks for a client certificate at all -- one that never asks cannot refuse.
@@ -3813,6 +3929,7 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(server_cert_validation_rejects_expired),           \
       cmocka_unit_test(server_cert_validation_rejects_hostname_mismatch), \
       cmocka_unit_test(mutual_tls_succeeds_with_a_valid_client_cert),     \
+      cmocka_unit_test(mutual_tls_does_not_read_paths_after_returning),   \
       cmocka_unit_test(expired_client_cert_is_rejected),                  \
       cmocka_unit_test(a_missing_client_cert_is_rejected),
 #else
@@ -4085,6 +4202,22 @@ int az_iot_conformance_run_with_options(
           " (and websocket_path when the broker does not serve the Azure default).",
           read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }
+  }
+
+  if (adapter_claims_tls_pem())
+  {
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+    const struct CMUnitTest pem_tests[]
+        = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
+    failed += cmocka_run_group_tests(pem_tests, NULL, NULL);
+#else
+    char allow[16];
+    failed += az_iot_conformance_report_unproven_capability(
+        "AZ_IOT_CONFORMANCE_CAP_TLS_PEM",
+        "this build has no TLS support. Configure with"
+        " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.",
+        read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+#endif
   }
 
   if (adapter_claims_proxy())
