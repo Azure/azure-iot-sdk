@@ -262,8 +262,9 @@ extern "C"
   /**
    * @brief Consumes the response to the last request.
    *
-   * 429 and 5xx keep the request for a retry. Any failure other than
-   * AZ_IOT_ERR_INVALID_ARG ends the registration.
+   * 429 and 5xx keep the request for a retry. A NULL @p client or @p out, or
+   * a call with no request outstanding, changes nothing; any other failure
+   * ends the registration (call az_iot_dps_tpm_client_init() to restart).
    *
    * @param[in]     client              Client.
    * @param[in]     http_status         HTTP status code.
