@@ -42,7 +42,7 @@ extern "C"
    */
   typedef struct az_iot_mqttv5_custom_topic_message
   {
-    /** Concrete topic: UTF-8, no `+` or `#`, not starting with `$`, first level not `ih`. */
+    /** Concrete topic: UTF-8, no `+` or `#`, first level not `ih`. */
     const char* topic;
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;

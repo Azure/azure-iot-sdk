@@ -375,8 +375,6 @@ static void topics_the_hub_would_refuse_are_rejected_locally(void** state)
     "a/#",
     "+",
     "#",
-    "$SYS/x",
-    "$share/g/a",
     "ih",
     "ih/" DEVICE_ID "/srv/telemetry",
     "ih/x",
@@ -407,6 +405,8 @@ static void topics_outside_the_reserved_space_are_accepted(void** state)
     "/leading/separator",
     "a//b",
     "a$b",
+    "$custom/telemetry", /* the hub accepts `$` templates */
+    "$SYS/x",
     "caf\xC3\xA9/\xE2\x82\xAC/\xF0\x9F\x98\x80",
   };
   for (size_t i = 0; i < ARRAY_SIZE(valid); ++i)
