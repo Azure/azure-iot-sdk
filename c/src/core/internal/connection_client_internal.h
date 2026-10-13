@@ -175,6 +175,29 @@ extern "C"
    * adopted, or a direct client whose open() will reject it). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 
+  /**
+   * @brief Signs a hub SAS token for an HTTPS request to the hub, with the key
+   * the hub session authenticates with: the key of its last attempt, or the
+   * primary key before any attempt when there is no certificate provider.
+   * The connection's own token area is not used.
+   *
+   * @param[in]  client   Connection client.
+   * @param[out] out      Receives the NUL-terminated token
+   *                      (`SharedAccessSignature sr=...&sig=...&se=...`); wiped
+   *                      on failure.
+   * @param[in]  out_size Bytes in @p out.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when the hub session does not use a
+   *         key (X.509 or user-provided tokens); AZ_IOT_ERR_NOT_CONNECTED with
+   *         no hub address or device id; AZ_IOT_ERR_BUSY while no Unix time is
+   *         known; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out_size is below
+   *         AZ_IOT_SAS_TOKEN_SIZE() of the two IDs; AZ_IOT_ERR_INVALID_ARG for a
+   *         NULL argument; the crypto backend's error otherwise.
+   */
+  az_iot_result az_iot_connection_client__sign_hub_sas_token(
+      const az_iot_connection_client* client,
+      char* out,
+      size_t out_size);
+
   /* --- Provisioning-session seam ------------------------------------------- */
   /*
    * The device-update operations ride the device's PROVISIONING session, not the

@@ -188,6 +188,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
 | `AZ_IOT_FILE_UPLOAD_CORR_ID_MAX` | 192 | File-upload correlation ID. |
+| `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX` | 1024 | Hub SAS token passed to the file-upload HTTP hook; at least `AZ_IOT_SAS_TOKEN_SIZE()` of the hub host and device ID lengths (267 bytes together by default). |
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 

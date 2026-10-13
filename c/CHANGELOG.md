@@ -58,6 +58,9 @@
   `deinit()`. Adapters must copy every `az_iot_mqtt_tls_options` string during `connect()`
   (`sign` and `sign_ctx` stay valid until the adapter client is destroyed). See
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
+- mqttv3 file upload for SAS-key devices: when the connection authenticates the hub with a SAS
+  key, the HTTP transport hook receives a hub SAS token as `authorization`. Sized by
+  `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX`.
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
   tries them in order when the service rejects one, before the SAS sources, and reports the index
