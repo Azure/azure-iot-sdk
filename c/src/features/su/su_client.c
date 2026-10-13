@@ -2389,7 +2389,7 @@ static bool su_client_layout_matches(const az_iot_su_client_layout* layout)
       AZ_IOT_LOG_ERRORF(
           AZ_IOT_LOG_COMPONENT_SU,
           "%s is %lu in the application but %lu in the SDK; "
-          "build both with the same AZ_IOT_SU_* capacity macros",
+          "build both from the same SDK headers with the same capacity macros",
           fields[i].name,
           (unsigned long)fields[i].app,
           (unsigned long)fields[i].sdk);
