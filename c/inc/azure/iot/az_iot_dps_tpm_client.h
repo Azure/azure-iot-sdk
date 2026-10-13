@@ -216,8 +216,9 @@ extern "C"
     /** True when DPS sent a hub key and import_key took it. An mqttv3
      * assignment without one is rejected unless issued_certificate_chain is set. */
     bool hub_key_imported;
-    /** `registrationState.issuedCertificateChain` JSON array, a slice of the
-     * last response body; empty when absent. */
+    /** `registrationState.issuedCertificateChain` JSON array of one or more
+     * non-empty strings, a slice of the last response body; empty when absent.
+     * Any other array makes the response malformed. */
     az_span issued_certificate_chain;
   } az_iot_dps_tpm_assignment;
 

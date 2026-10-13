@@ -301,6 +301,19 @@ static void an_mqttv3_assignment_needs_a_hub_key_or_a_certificate(void** state)
     { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
       "\"issuedCertificateChain\":[\"QQ==\"]}}",
       AZ_IOT_OK },
+    /* A chain must hold one or more non-empty strings. */
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[1]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ==\",\"\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[[\"QQ==\"]]}}",
+      AZ_IOT_ERR_PROTOCOL },
     { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
       "\"connectionProfile\":\"mqttV5\"}}",
       AZ_IOT_OK },

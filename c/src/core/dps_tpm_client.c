@@ -571,8 +571,26 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
         az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("issuedCertificateChain"))
         && jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
+      /* One or more non-empty strings; anything else makes the response malformed. */
       uint8_t* begin = az_span_ptr(jr->token.slice);
-      if (az_result_failed(az_json_reader_skip_children(jr)))
+      int count = 0;
+      for (;;)
+      {
+        if (az_result_failed(az_json_reader_next_token(jr)))
+        {
+          return false;
+        }
+        if (jr->token.kind == AZ_JSON_TOKEN_END_ARRAY)
+        {
+          break;
+        }
+        if (jr->token.kind != AZ_JSON_TOKEN_STRING || az_span_size(jr->token.slice) <= 0)
+        {
+          return false;
+        }
+        ++count;
+      }
+      if (count == 0)
       {
         return false;
       }
