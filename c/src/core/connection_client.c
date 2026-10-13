@@ -7657,6 +7657,14 @@ const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_
   return client ? client->opts.host : NULL;
 }
 
+const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client)
+{
+  /* Gated on opts.host so the pair is never half-set: a DPS client may carry a
+   * caller client_id that is not the device id DPS will assign. Both are
+   * replaced together when an assignment is adopted. */
+  return (client && client->opts.host) ? client->opts.client_id : NULL;
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
     const az_iot_connection_client* client,
     az_iot_hub_profile* out_profile)

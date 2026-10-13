@@ -48,6 +48,9 @@
 - DPS: a registration that ends `failed` with `deviceId` but no `assignedHub` (e.g. a failed
   reprovisioning) is now reported as `AZ_IOT_ERR_DPS`, with the service's `errorCode` and
   `errorMessage` in the state event's error detail, instead of `AZ_IOT_ERR_PROTOCOL`.
+- DPS: `az_iot_connection_client_get_device_id()` returns the device id the client connects to
+  the hub with: the DPS-assigned one once the assignment is adopted, which can differ from the
+  registration id. `NULL` while no hub is established.
 - PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An mqttv5
   refusal the broker will repeat (`0x87`, `0x90`, `0x99`), or `0x95` for a publish over the
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
