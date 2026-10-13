@@ -149,8 +149,18 @@ extends:
                   $baseline = (Get-Content c/vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
                   git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
                   if ($LASTEXITCODE) {
-                    git -C $root fetch --quiet origin
+                    # A plain fetch keeps a shallow clone's history boundary.
+                    $fetch = @('fetch', '--quiet', 'origin')
+                    if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
+                      $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
+                    }
+                    git -C $root @fetch
                     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                    git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
+                    if ($LASTEXITCODE) {
+                      Write-Host "##vso[task.logissue type=error]vcpkg baseline $baseline not found in $root"
+                      exit 1
+                    }
                   }
                   Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
                 displayName: Locate vcpkg

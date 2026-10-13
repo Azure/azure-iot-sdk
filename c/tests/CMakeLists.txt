@@ -331,14 +331,20 @@ if(AZ_IOT_WITH_PAHO)
     include(CheckCSourceCompiles)
     set(CMAKE_REQUIRED_INCLUDES ${AZ_IOT_PAHO_INCLUDE_DIRS})
     set(CMAKE_REQUIRED_QUIET ON)
+    # MSVC only warns (C4028) on a parameter that differs from the declaration.
+    if(MSVC)
+        set(CMAKE_REQUIRED_FLAGS "/we4028")
+    endif()
     unset(AZ_IOT_TEST_PAHO_CONST_PROPERTIES CACHE)
     check_c_source_compiles("
         #include <MQTTProperties.h>
-        int MQTTProperties_propertyCount(const MQTTProperties* props, enum MQTTPropertyCodes propid);
+        int MQTTProperties_propertyCount(const MQTTProperties* props, enum MQTTPropertyCodes propid)
+        { (void)props; (void)propid; return 0; }
         int main(void) { return 0; }"
         AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
     unset(CMAKE_REQUIRED_INCLUDES)
     unset(CMAKE_REQUIRED_QUIET)
+    unset(CMAKE_REQUIRED_FLAGS)
     set(_paho_mock_defs "")
     if(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
         set(_paho_mock_defs AZ_IOT_TEST_PAHO_CONST_PROPERTIES=1)
