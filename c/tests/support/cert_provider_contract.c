@@ -205,15 +205,29 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   return x;
 }
 
-/** @brief load(OPERATIONAL, 0), checked; returns its certificate (caller frees). */
-static X509* operational_cert(az_iot_certificate_provider* p)
+/** @brief Assert load(OPERATIONAL, 0) is checked and serves exactly [@p leaf, CA]. */
+static void assert_serves_chain(az_iot_certificate_provider* p, X509* leaf)
 {
   az_iot_certificate_material m;
   memset(&m, 0, sizeof(m));
   assert_int_equal(AZ_IOT_OK, p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, 0, &m));
-  X509* x = check_material(p, &m);
+  X509_free(check_material(p, &m));
+  BIO* b = open_material(m.client_cert_pem, m.client_cert_path);
+  assert_non_null(b);
+  X509* expected[] = { leaf, g_ca };
+  size_t count = 0;
+  X509* x = NULL;
+  while ((x = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
+  {
+    X509* want = count < 2 ? expected[count] : NULL;
+    assert_non_null(want);
+    assert_int_equal(0, X509_cmp(want, x));
+    count++;
+    X509_free(x);
+  }
+  assert_int_equal(2, count);
+  BIO_free(b);
   p->vtable->release(p, &m);
-  return x;
 }
 
 /** @brief get_csr(), checked: a self-signed request naming @p subject. Returns its key. */
@@ -231,9 +245,13 @@ static EVP_PKEY* csr_key(az_iot_certificate_provider* p, const char* subject)
   assert_non_null(der);
   int der_len = EVP_DecodeBlock(der, (const unsigned char*)csr.csr_base64, (int)b64_len);
   assert_true(der_len > 0);
+  /* EVP_DecodeBlock counts padding bytes; the request must use all the rest. */
+  der_len
+      -= (csr.csr_base64[b64_len - 1] == '=') + (b64_len > 1 && csr.csr_base64[b64_len - 2] == '=');
   const unsigned char* q = der;
   X509_REQ* req = d2i_X509_REQ(NULL, &q, der_len);
   assert_non_null(req);
+  assert_true(q == der + der_len);
   free(der);
   p->vtable->release_csr(p, &csr);
 
@@ -268,9 +286,10 @@ static void vtable_is_well_formed(void** state)
   finish(p);
 }
 
-/* Each role's certificates are indexes 0..n-1, each a usable credential,
- * followed by AZ_IOT_ERR_NOT_FOUND within AZ_IOT_MAX_CERTS_PER_ROLE. */
-static void each_role_ends_with_not_found(void** state)
+/* Every certificate a role returns, from index 0 up to AZ_IOT_MAX_CERTS_PER_ROLE,
+ * is a usable credential; a non-OK result ends the role and is
+ * AZ_IOT_ERR_NOT_FOUND. */
+static void each_role_returns_usable_credentials(void** state)
 {
   (void)state;
   az_iot_certificate_provider* p = fresh();
@@ -339,9 +358,7 @@ static void stored_chain_is_served(entry_fn entry)
   X509* leaf = issue(k, 10);
   assert_int_equal(AZ_IOT_OK, store(p, leaf, entry));
 
-  X509* served = operational_cert(p);
-  assert_int_equal(0, X509_cmp(leaf, served));
-  X509_free(served);
+  assert_serves_chain(p, leaf);
 
   /* Renewal: the next request still uses the key the stored chain certifies. */
   EVP_PKEY* again = csr_key(p, CSR_SUBJECT);
@@ -382,9 +399,7 @@ static void a_chain_for_another_key_is_refused_and_the_previous_kept(void** stat
   az_iot_issued_certificate empty = { .certificates = NULL, .count = 0 };
   assert_int_not_equal(AZ_IOT_OK, p->vtable->store_issued_certificate(p, &empty));
 
-  X509* served = operational_cert(p);
-  assert_int_equal(0, X509_cmp(leaf, served));
-  X509_free(served);
+  assert_serves_chain(p, leaf);
 
   X509_free(foreign);
   EVP_PKEY_free(other);
@@ -404,9 +419,7 @@ static void a_new_chain_replaces_the_previous(void** state)
   assert_int_equal(AZ_IOT_OK, store(p, first, der_entry));
   assert_int_equal(AZ_IOT_OK, store(p, second, pem_entry));
 
-  X509* served = operational_cert(p);
-  assert_int_equal(0, X509_cmp(second, served));
-  X509_free(served);
+  assert_serves_chain(p, second);
 
   X509_free(second);
   X509_free(first);
@@ -431,9 +444,7 @@ static void a_restart_keeps_the_chain_and_key(void** state)
 
   p = g_fixture->create(g_fixture->ctx);
   assert_non_null(p);
-  X509* served = operational_cert(p);
-  assert_int_equal(0, X509_cmp(leaf, served));
-  X509_free(served);
+  assert_serves_chain(p, leaf);
   EVP_PKEY* again = csr_key(p, CSR_SUBJECT);
   assert_int_equal(1, EVP_PKEY_eq(k, again));
   EVP_PKEY_free(again);
@@ -450,7 +461,7 @@ int cert_provider_contract_run(const cert_provider_contract_fixture* fixture)
 
   const struct CMUnitTest core[] = {
     cmocka_unit_test(vtable_is_well_formed),
-    cmocka_unit_test(each_role_ends_with_not_found),
+    cmocka_unit_test(each_role_returns_usable_credentials),
   };
   int failed = cmocka_run_group_tests_name(fixture->name, core, NULL, NULL);
 

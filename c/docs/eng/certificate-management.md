@@ -115,8 +115,8 @@ deinitialized and initialized again in place), then open it and enroll or renew.
 calls `load()` on every connect and keeps no key between connects.
 
 **Contract tests.** [`tests/support/cert_provider_contract.h`](../../tests/support/cert_provider_contract.h)
-holds a provider to this contract: vtable shape, `load()` indexes ending in `AZ_IOT_ERR_NOT_FOUND`
-and, with `get_csr()`, CSR validity, key stability, storing both wire forms, and refusing a chain
+holds a provider to this contract: vtable shape, usable `load()` credentials (a non-OK result is
+`AZ_IOT_ERR_NOT_FOUND`) and, with `get_csr()`, CSR validity, key stability, storing both wire forms, and refusing a chain
 for another key while keeping the previous one. A custom provider can run it by supplying a
 `cert_provider_contract_fixture`. `az_iot_tests_certificate_provider_contract` runs it against
 the PEM, managed and sample providers.
