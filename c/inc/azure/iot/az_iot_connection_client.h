@@ -371,12 +371,13 @@ extern "C"
   typedef struct az_iot_connection_client_options
   {
     /**
-     * @brief Hub host; NULL to provision through DPS first.
+     * @brief Azure IoT Hub host name; NULL to provision through the Azure
+     * Device Provisioning Service (DPS) first.
      *
      * Set with client_id and connection_profile, without dps.id_scope, for a
      * direct connect. Set them WITH the dps fields to restore a previous
-     * registration (e.g. after a reboot): open() connects to this saved hub,
-     * and DPS is used only when a re-provision is due (see
+     * registration (e.g. after a reboot): open() connects to this saved IoT
+     * Hub, and DPS is used only when a re-provision is due (see
      * dps.max_hub_connect_attempts_before_reprovision,
      * AZ_IOT_IDENTITY_RECOVERY_REPROVISION,
      * az_iot_connection_client_request_reprovision()). A registration then
@@ -502,10 +503,10 @@ extern "C"
      * is never truncated. */
     az_span csr_payload_buffer;
 
-    /* DPS provisioning options. When id_scope is set and host is NULL, the
-     * connection client provisions via DPS before connecting to the assigned
-     * hub. With host set too, DPS is the fallback for that saved hub (see
-     * host). */
+    /* Azure Device Provisioning Service (DPS) options. When id_scope is set and
+     * host is NULL, the connection client provisions via DPS before connecting
+     * to the assigned Azure IoT Hub. With host set too, DPS is the fallback for
+     * that saved IoT Hub (see host). */
     struct
     {
       const char* global_endpoint; /* NULL => "global.azure-devices-provisioning.net" */

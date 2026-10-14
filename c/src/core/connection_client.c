@@ -2922,7 +2922,12 @@ static bool dps_parse_operation_refusal(
  * buffer is stored truncated and treated as unknown, which is correct: every
  * profile this SDK recognises is short, so an overlong one cannot be one of
  * them. */
-static void connection_profile_set(az_iot_connection_client* c, az_span raw)
+static void profile_record(
+    az_span raw,
+    az_iot_connection_profile* profile,
+    char* raw_buf,
+    size_t raw_cap,
+    bool* raw_truncated)
 {
   int32_t n = az_span_size(raw);
   if (n < 0)
@@ -2930,76 +2935,61 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
     n = 0;
   }
   bool truncated = false;
-  if ((size_t)n >= sizeof(c->connection_profile_raw))
+  if ((size_t)n >= raw_cap)
   {
-    n = (int32_t)(sizeof(c->connection_profile_raw) - 1);
+    n = (int32_t)(raw_cap - 1);
     truncated = true;
   }
   if (n > 0)
   {
-    memcpy(c->connection_profile_raw, az_span_ptr(raw), (size_t)n);
+    memcpy(raw_buf, az_span_ptr(raw), (size_t)n);
   }
-  c->connection_profile_raw[n] = '\0';
-  c->connection_profile_raw_truncated = truncated;
+  raw_buf[n] = '\0';
+  *raw_truncated = truncated;
 
   if (truncated)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_DPS,
         "connectionProfile is longer than %u bytes and was truncated to \"%s\"",
-        (unsigned)sizeof(c->connection_profile_raw),
-        c->connection_profile_raw);
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+        (unsigned)raw_cap,
+        raw_buf);
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   }
   else
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
 }
 
-/** @brief The recorded connection profile, as connection_profile_set() leaves it. */
-typedef struct connection_profile_snapshot
+/** @brief Records @p raw as the profile of the hub @p c is bound to. */
+static void connection_profile_set(az_iot_connection_client* c, az_span raw)
 {
-  az_iot_connection_profile profile;
-  char raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
-  bool raw_truncated;
-} connection_profile_snapshot;
-
-/** @brief Copies the recorded profile of @p c into @p out. */
-static void connection_profile_save(
-    const az_iot_connection_client* c,
-    connection_profile_snapshot* out)
-{
-  out->profile = c->connection_profile;
-  memcpy(out->raw, c->connection_profile_raw, sizeof(out->raw));
-  out->raw_truncated = c->connection_profile_raw_truncated;
+  profile_record(
+      raw,
+      &c->connection_profile,
+      c->connection_profile_raw,
+      sizeof(c->connection_profile_raw),
+      &c->connection_profile_raw_truncated);
 }
 
-/** @brief Makes the profile saved in @p in the recorded profile of @p c. */
-static void connection_profile_restore(
-    az_iot_connection_client* c,
-    const connection_profile_snapshot* in)
+/** @brief Records @p raw as the pending assignment's profile, adopted with its hub. */
+static void dps_assigned_profile_set(az_iot_connection_client* c, az_span raw)
 {
-  c->connection_profile = in->profile;
-  memcpy(c->connection_profile_raw, in->raw, sizeof(c->connection_profile_raw));
-  c->connection_profile_raw_truncated = in->raw_truncated;
-}
-
-/** @brief Holds the recorded profile of @p c as the pending assignment's. */
-static void dps_assigned_profile_stash(az_iot_connection_client* c)
-{
-  c->dps_assigned_profile = c->connection_profile;
-  memcpy(
-      c->dps_assigned_profile_raw, c->connection_profile_raw, sizeof(c->dps_assigned_profile_raw));
-  c->dps_assigned_profile_raw_truncated = c->connection_profile_raw_truncated;
+  profile_record(
+      raw,
+      &c->dps_assigned_profile,
+      c->dps_assigned_profile_raw,
+      sizeof(c->dps_assigned_profile_raw),
+      &c->dps_assigned_profile_raw_truncated);
 }
 
 /** @brief Records the pending assignment's profile, as it is adopted. */
@@ -3014,13 +3004,13 @@ static void dps_assigned_profile_commit(az_iot_connection_client* c)
  *
  * Absent or null is NOT an error -- the service contract documents it as
  * meaning "classic" -- so it leaves the MQTTv3 default set on entry. Only a malformed payload fails
- * here; an unrecognised *value* fails later, at the point the session role is chosen, so the
- * profile is already recorded and readable when it does. */
+ * here; an unrecognised *value* fails later, at the point the session role is chosen, once the
+ * profile is adopted and readable. Written to the pending dps_assigned_profile* fields. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
   /* Each assignment starts from the default: an absent profile must not keep
    * the one an earlier, failed assignment recorded. */
-  connection_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+  dps_assigned_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
 
   az_json_reader jr;
   az_iot_result r = dps_enter_registration_state(&jr, payload);
@@ -3046,7 +3036,7 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
     {
       if (jr.token.kind == AZ_JSON_TOKEN_STRING)
       {
-        connection_profile_set(c, jr.token.slice);
+        dps_assigned_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
       /* null (or any non-string) resolves to the MQTTv3 default. */
@@ -3355,11 +3345,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           /* Which hub generation we were assigned to. Held pending and recorded
            * only when the assignment is adopted (dps_apply_deferred()): until
            * then the cached or saved hub, and its profile, still apply. */
-          connection_profile_snapshot prev;
-          connection_profile_save(c, &prev);
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
-          dps_assigned_profile_stash(c);
-          connection_profile_restore(c, &prev);
           if (pr != AZ_IOT_OK)
           {
             dps_finalize(c, pr, false);
