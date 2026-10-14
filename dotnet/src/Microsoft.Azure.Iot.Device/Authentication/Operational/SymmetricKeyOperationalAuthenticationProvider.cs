@@ -29,6 +29,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
 
         public override AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
+            //TODO should actually use the issued client certificates to do x509 auth if configured. Maybe a constructor-time flag for this
             string token = SasTokenBuilder.BuildSasToken(
                 string.Empty, _symmetricKey, $"{hostName}/devices/{deviceId}", TimeSpan.FromHours(1));
             return new AuthenticationCredentials()
