@@ -170,7 +170,7 @@ extern "C"
     size_t storage_root_key_len; /**< Bytes in storage_root_key. */
     /** JSON object sent as the registration `payload`. NULL: none. */
     const char* payload;
-    /** Base64 DER certificate signing request sent as `csr`, for a hub that
+    /** Canonical padded base64 DER certificate signing request sent as `csr`, for a hub that
      * takes X.509 only (mqttv5). NULL: none. Needs DPS support for certificate
      * issuance under TPM attestation. */
     const char* csr;

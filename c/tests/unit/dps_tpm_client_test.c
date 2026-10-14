@@ -851,7 +851,7 @@ static void init_rejects_bad_options(void** state)
   memset(long_id, 'a', sizeof(long_id) - 1);
   long_id[sizeof(long_id) - 1] = '\0';
 
-  for (int i = 0; i < 16; ++i)
+  for (int i = 0; i < 20; ++i)
   {
     o = options_for(&t);
     switch (i)
@@ -899,6 +899,18 @@ static void init_rejects_bad_options(void** state)
         o.api_version = "1&x=2";
         break;
       case 14:
+        o.csr = "A";
+        break;
+      case 15:
+        o.csr = "====";
+        break;
+      case 16:
+        o.csr = "QR==";
+        break;
+      case 17:
+        o.csr = "QUJ\\/";
+        break;
+      case 18:
         o.tpm.import_key = NULL;
         break;
       default:

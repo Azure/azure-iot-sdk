@@ -20,7 +20,6 @@
 #include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_sas_token.h"
 #include "internal/base64.h"
-#include "internal/cert_util.h"
 #include "internal/crypto.h"
 #include "internal/span_writer.h"
 
@@ -148,6 +147,69 @@ AZ_NODISCARD az_iot_dps_tpm_client_options az_iot_dps_tpm_client_options_default
   return options;
 }
 
+/**
+ * @brief True when @p text is non-empty canonical padded standard base64.
+ *
+ * @param text         The text.
+ * @param json_escapes Also accept `\/`, the only JSON escape base64 can carry.
+ */
+static bool is_base64_text(az_span text, bool json_escapes)
+{
+  const uint8_t* p = az_span_ptr(text);
+  int32_t n = az_span_size(text);
+  int32_t total = 0;
+  int32_t pad = 0;
+  int32_t last = 0;
+  for (int32_t i = 0; i < n; ++i, ++total)
+  {
+    uint8_t c = p[i];
+    if (c == '\\' && json_escapes)
+    {
+      if (i + 1 >= n || p[i + 1] != '/')
+      {
+        return false;
+      }
+      c = '/';
+      ++i;
+    }
+    if (c == '=')
+    {
+      ++pad;
+      continue;
+    }
+    if (pad > 0)
+    {
+      return false;
+    }
+    if (c >= 'A' && c <= 'Z')
+    {
+      last = c - 'A';
+    }
+    else if (c >= 'a' && c <= 'z')
+    {
+      last = c - 'a' + 26;
+    }
+    else if (c >= '0' && c <= '9')
+    {
+      last = c - '0' + 52;
+    }
+    else if (c == '+' || c == '/')
+    {
+      last = c == '+' ? 62 : 63;
+    }
+    else
+    {
+      return false;
+    }
+  }
+  /* Padding completes the last quantum; its unused bits must be zero. */
+  if (total == 0 || total % 4 != 0 || pad > 2 || total == pad)
+  {
+    return false;
+  }
+  return pad == 0 || (pad == 1 && (last & 0x03) == 0) || (pad == 2 && (last & 0x0F) == 0);
+}
+
 AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_init(
     az_iot_dps_tpm_client* client,
     const az_iot_dps_tpm_client_options* options)
@@ -157,14 +219,14 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   memset(client, 0, sizeof(*client));
-  size_t csr_len = 0;
   if (!is_valid_id(options->id_scope, AZ_IOT_DPS_TPM_ID_MAX, false)
       || !is_valid_registration_id(options->registration_id) || options->endorsement_key == NULL
       || options->endorsement_key_len == 0 || options->endorsement_key_len > UINT16_MAX + 2u
       || options->storage_root_key == NULL || options->storage_root_key_len == 0
       || options->storage_root_key_len > UINT16_MAX + 2u
       || (options->payload != NULL && !is_json_object(options->payload))
-      || (options->csr != NULL && !az_iot_cert_util_is_base64(options->csr, &csr_len))
+      || (options->csr != NULL
+          && !is_base64_text(az_span_create_from_str((char*)(uintptr_t)options->csr), false))
       || (options->api_version != NULL
           && !is_valid_id(options->api_version, AZ_IOT_DPS_TPM_ID_MAX, false))
       || options->tpm.import_key == NULL || options->tpm.hmac_sha256 == NULL)
@@ -441,68 +503,6 @@ static bool json_unescape_bounded(az_span slice, char* out, size_t out_size, boo
   return true;
 }
 
-/**
- * @brief True when JSON string @p text is canonical padded standard base64.
- *
- * Accepts the `\/` escape; any other escape, or none of the text, fails.
- */
-static bool is_json_base64(az_span text)
-{
-  const uint8_t* p = az_span_ptr(text);
-  int32_t n = az_span_size(text);
-  int32_t total = 0;
-  int32_t pad = 0;
-  int32_t last = 0;
-  for (int32_t i = 0; i < n; ++i, ++total)
-  {
-    uint8_t c = p[i];
-    if (c == '\\')
-    {
-      if (i + 1 >= n || p[i + 1] != '/')
-      {
-        return false;
-      }
-      c = '/';
-      ++i;
-    }
-    if (c == '=')
-    {
-      ++pad;
-      continue;
-    }
-    if (pad > 0)
-    {
-      return false;
-    }
-    if (c >= 'A' && c <= 'Z')
-    {
-      last = c - 'A';
-    }
-    else if (c >= 'a' && c <= 'z')
-    {
-      last = c - 'a' + 26;
-    }
-    else if (c >= '0' && c <= '9')
-    {
-      last = c - '0' + 52;
-    }
-    else if (c == '+' || c == '/')
-    {
-      last = c == '+' ? 62 : 63;
-    }
-    else
-    {
-      return false;
-    }
-  }
-  /* Padding completes the last quantum; its unused bits must be zero. */
-  if (total == 0 || total % 4 != 0 || pad > 2 || total == pad)
-  {
-    return false;
-  }
-  return pad == 0 || (pad == 1 && (last & 0x03) == 0) || (pad == 2 && (last & 0x0F) == 0);
-}
-
 /** @brief Records the string token at @p jr into @p out; anything else leaves it empty. */
 static void take_string(const az_json_reader* jr, az_span* out)
 {
@@ -625,7 +625,7 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
         {
           break;
         }
-        if (jr->token.kind != AZ_JSON_TOKEN_STRING || !is_json_base64(jr->token.slice))
+        if (jr->token.kind != AZ_JSON_TOKEN_STRING || !is_base64_text(jr->token.slice, true))
         {
           return false;
         }
