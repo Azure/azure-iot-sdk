@@ -187,6 +187,11 @@ extern "C"
     void* sign_ctx; /* opaque, passed back to sign() */
   } az_iot_mqtt_tls_options;
 
+  /* Options for az_iot_mqtt_iface::connect(). This struct and every pointer in
+   * it (strings, TLS material, Will, user properties) are valid only while
+   * connect() runs; the adapter copies what it uses afterwards, e.g. from
+   * process_loop(). The SDK wipes the SAS password and releases TLS material to
+   * the certificate provider, which may wipe the private key, once it returns. */
   typedef struct az_iot_mqtt_connect_options
   {
     const char* host;
