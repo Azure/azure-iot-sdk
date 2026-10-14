@@ -72,9 +72,9 @@ static void registered_factories_are_destroyed_by_the_application_after_deinit(v
   (void)state;
   az_iot_connection_client client;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();

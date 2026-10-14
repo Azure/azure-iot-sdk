@@ -32,6 +32,15 @@
   provisioning session kept open without a registration, reconnect with a new token; those state
   events carry `is_credential_renewal`. See
   [docs/connecting.md](docs/connecting.md#authentication).
+- Breaking: certificate provider `release()` contract. The client releases material for a
+  connection attempt only after the adapter's `connect()` has copied it (material loaded only to
+  validate or probe certificates is released at once), and a provider should then wipe any
+  in-memory private key or password it handed out. The PEM provider now reads the private key at
+  `load()`, wipes it at the last `release()`, and wipes the key and its password at `deinit()`;
+  each `client_key_pem` it returns is valid only until the matching `release()`, no longer until
+  `deinit()`. Adapters must copy every `az_iot_mqtt_tls_options` string during `connect()`
+  (`sign` and `sign_ctx` stay valid until the adapter client is destroyed). See
+  [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
   tries them in order when the service rejects one, before the SAS sources, and reports the index
@@ -41,6 +50,11 @@
   `az_iot_sas_token_from_signature()` (token from an HMAC computed elsewhere, e.g. in an HSM),
   `az_iot_sas_token_sign()` and `az_iot_sas_derive_device_key()`, for tokens supplied with
   `az_iot_connection_client_update_sas_token()`.
+- Managed certificate provider: `AZ_IOT_MANAGED_KEY_EC_P384` generates an ECDSA P-384 operational
+  key. The CSR digest now follows the key in use: for EC keys, SHA-256 up to 256 bits, SHA-384 up
+  to 384 bits (P-384), SHA-512 above; SHA-256 for RSA (was always SHA-256). An unknown `key_type` fails init with
+  `AZ_IOT_ERR_INVALID_ARG` (was treated as EC P-256). See
+  [docs/connecting.md](docs/connecting.md#certificates).
 - SAS tokens from the application: `on_sas_token_required` notifies, tried after the keys;
   `az_iot_connection_client_update_sas_token()` supplies a token for the request, or at any time
   (a connected session then renews with it). At renewal the token is requested while the
@@ -75,8 +89,8 @@
   update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
-  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and
-  `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
+  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
+  `opts.device_id`, `opts.port` and `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
   scripts (`tests/manual`) are removed.
 - Breaking: mqttv5 telemetry sends `$.cid` as the native MQTT v5 Correlation Data (UTF-8, at
   most 65535 bytes, else `AZ_IOT_ERR_INVALID_ARG`) instead of a user property; the hub reads the
@@ -91,3 +105,22 @@
   `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
   lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
   `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
+- Breaking: mqttv3 C2D properties are read on demand instead of being decoded into SDK buffers.
+  `az_iot_c2d_message` keeps `payload`/`payload_len` and gains `properties`, a read-only view of
+  the topic property bag; `content_type`, the `properties` array, `properties_count`,
+  `az_iot_c2d_property`, `az_iot_c2d_message_property()`, `AZ_IOT_C2D_MAX_PROPERTIES` and
+  `AZ_IOT_C2D_PROPERTY_BUFFER` are removed. `az_iot_c2d_properties_next()` iterates,
+  `az_iot_c2d_properties_find()` looks one up by name, and typed accessors read the system
+  properties: `az_iot_c2d_message_get_message_id()` (`$.mid`), `_correlation_id()` (`$.cid`),
+  `_expiry_time()` (`$.exp`), `_content_type()` (`$.ct`), `_content_encoding()` (`$.ce`) and
+  `_user_id()` (`$.uid`). Each percent-decodes into a buffer the application provides and returns
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (with the size needed), `AZ_IOT_ERR_PROTOCOL` or
+  `AZ_IOT_ERR_NOT_FOUND`, so nothing is dropped silently and there is no limit on the number or
+  size of properties. Adds `AZ_IOT_MSG_PROP_EXPIRY_TIME`.
+- Breaking: `az_iot_connection_client_options` fields `host` and `client_id` are renamed
+  `iothub_hostname` and `device_id`.
+- Saved hub with DPS fallback: `iothub_hostname`, `device_id` and `connection_profile` set together with the
+  `dps` fields connect to that hub first and use DPS only when a re-provision is due. The saved
+  `connection_profile` is now declared, so a feature client for the other hub generation fails
+  with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
+  generation. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).

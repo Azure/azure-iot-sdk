@@ -163,10 +163,10 @@ static void reconnect_after_real_drop(void** state)
   /* MQTTv3 v3.1.1 over TLS to the proxy, with reconnect armed on a short
    * delay. */
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "127.0.0.1";
+  opts.iothub_hostname = "127.0.0.1";
   opts.port = proxy_port;
   opts.certificate_provider = &g_provider.base;
-  opts.client_id = "az-iot-recon-it";
+  opts.device_id = "az-iot-recon-it";
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
@@ -249,10 +249,10 @@ static az_iot_connection_client* start_client_with_c2d(
   assert_non_null(client);
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "127.0.0.1";
+  opts.iothub_hostname = "127.0.0.1";
   opts.port = proxy_port;
   opts.certificate_provider = &g_provider.base;
-  opts.client_id = client_id;
+  opts.device_id = client_id;
   opts.subscription_ack_timeout_seconds = subscription_ack_timeout_seconds;
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;

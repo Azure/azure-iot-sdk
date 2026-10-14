@@ -15,8 +15,8 @@ static az_iot_connection_client g_conn;
 int main(void)
 {
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
-  options.host = "hub.example";
-  options.client_id = "install-test";
+  options.iothub_hostname = "hub.example";
+  options.device_id = "install-test";
   options.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
 

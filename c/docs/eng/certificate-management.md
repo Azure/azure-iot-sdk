@@ -88,7 +88,7 @@ are the reference.
 | Slot | Since | Purpose |
 | --- | --- | --- |
 | `load(self, role, index, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3), certificate `index` of the role (0 first; `AZ_IOT_ERR_NOT_FOUND` past the last). |
-| `release`, `deinit` | v1 | Release material; tear down the provider. |
+| `release`, `deinit` | v1 | Release material: for a connection attempt, once the adapter's `connect()` has copied it (or the attempt ends first); for a validation or certificate-index probe, at once. The provider should then wipe any in-memory private key or password it handed out. Tear down the provider, wiping what it kept. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
 | `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: each entry base64 of DER or of a whole PEM certificate, leaf first, valid for the call only; decode before persisting, PEM-wrapping DER). |
@@ -99,7 +99,9 @@ reference (`client_key_uri` + `crypto_engine_id`).
 
 Providers in the tree:
 
-- `az_iot_certificate_provider_pem` (core): a static loader. No CSR support.
+- `az_iot_certificate_provider_pem` (core): a static loader. Reads the private key at `load()`
+  and wipes it at the last `release()`; the key file stays on disk. No CSR support. Prefer a
+  non-extractable key (`client_key_uri` or `sign()`, D8) where the platform has one.
 - `az_iot_certificate_provider_managed` (optional OpenSSL 3.0+ adapter,
   [`adapters/cert_openssl/`](../../adapters/cert_openssl/az_iot_certificate_provider_managed.h)):
   bootstrap cert and key, optional trusted CA, operational key and operational cert paths, and
@@ -151,6 +153,8 @@ operational credential is held.
 Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
 support it.
 
+- **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
+  carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
 - **Topics:** publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`, subscribe
   `$iothub/credentials/res/#`.
 - **Body:** `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|<request id>|null }`.

@@ -28,11 +28,13 @@ extern "C"
   /* ---- The connection profile ---------------------------------------------- */
   /* Which generation of hub this connection speaks to, and therefore which MQTT
    * version and topic shapes it uses. One type serves both directions:
-   *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
+   *   - DPS connect (iothub_hostname == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
-   *   - Direct connect (host set, no DPS): DECLARED by the caller through
+   *   - Direct connect (iothub_hostname set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
+   *   - Saved hub (iothub_hostname and DPS set): DECLARED, as the saved registration's
+   *     profile, until a DPS registration replaces it.
    * Either way az_iot_connection_client_get_hub_profile() reports the result.
    *
    * On the wire `connectionProfile` is a STRING and an extensible union -- the
@@ -326,7 +328,7 @@ extern "C"
       const char* secondary_key_base64;
       /** @brief The keys are enrollment-group keys. The device key is then
        * HMAC-SHA256(group key, id), with id the DPS registration ID, or
-       * client_id for a direct hub connection. */
+       * device_id for a direct hub connection. */
       bool is_enrollment_group_key;
       /** @brief Application-supplied tokens, or NULL. Tried after the keys.
        * Needs sas_buffer; not crypto or a Unix time. */
@@ -368,7 +370,20 @@ extern "C"
 
   typedef struct az_iot_connection_client_options
   {
-    const char* host; /* hub host (or NULL when using DPS) */
+    /**
+     * @brief Azure IoT Hub host name; NULL to provision through the Azure
+     * Device Provisioning Service (DPS) first.
+     *
+     * Set with device_id and connection_profile, without dps.id_scope, for a
+     * direct connect. Set them WITH the dps fields to restore a previous
+     * registration (e.g. after a reboot): open() connects to this saved IoT
+     * Hub, and DPS is used only when a re-provision is due (see
+     * dps.max_hub_connect_attempts_before_reprovision,
+     * AZ_IOT_IDENTITY_RECOVERY_REPROVISION,
+     * az_iot_connection_client_request_reprovision()). A registration then
+     * replaces iothub_hostname, device_id and the profile.
+     */
+    const char* iothub_hostname;
     /* Port for the HUB connect. 0 selects the default for `transport`: 8883 for
      * MQTT over TCP, 443 for MQTT over WebSockets.
      *
@@ -416,11 +431,11 @@ extern "C"
      * forever, which is the failure this bounds. Expiry is treated as transient
      * -- silence is not a refusal -- so it reconnects under the policy. */
     uint32_t subscription_ack_timeout_seconds;
-    const char* client_id; /* device id */
-    az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
-                                                   * no DPS): MQTT_V3 (v3.1.1, default) or
-                                                   * MQTT_V5 (MQTTv5). Ignored when using DPS,
-                                                   * where it is learned instead. */
+    const char* device_id; /* required with iothub_hostname */
+    az_iot_connection_profile connection_profile; /* generation of the hub named by iothub_hostname:
+                                                   * MQTT_V3 (v3.1.1, default) or MQTT_V5
+                                                   * (MQTTv5). Ignored when iothub_hostname is NULL,
+                                                   * where DPS assigns it. */
     const char* model_id; /* IoT Plug and Play model id announced at
                            * connection (NULL = none). Not used by device
                            * update, which matches a device on the
@@ -488,9 +503,10 @@ extern "C"
      * is never truncated. */
     az_span csr_payload_buffer;
 
-    /* DPS provisioning options.  When host is NULL and id_scope is set, the
-     * connection client internally provisions via DPS before connecting to the
-     * assigned hub. */
+    /* Azure Device Provisioning Service (DPS) options. When id_scope is set and
+     * iothub_hostname is NULL, the connection client provisions via DPS before
+     * connecting to the assigned Azure IoT Hub. With iothub_hostname set too,
+     * DPS is the fallback for that saved IoT Hub (see iothub_hostname). */
     struct
     {
       const char* global_endpoint; /* NULL => "global.azure-devices-provisioning.net" */
@@ -540,7 +556,7 @@ extern "C"
        * from it would hide real misconfiguration; retrying it would loop.
        *
        * Requires dps.id_scope and dps.registration_id. open() returns
-       * AZ_IOT_ERR_INVALID_ARG if opts.host or
+       * AZ_IOT_ERR_INVALID_ARG if opts.iothub_hostname or
        * dps.request_operational_certificate is also set.
        */
       bool provision_only;
@@ -1630,16 +1646,18 @@ extern "C"
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 
     /* What this connection is to. Seeded from opts.connection_profile at init so
-     * a direct connect is always answerable, then overwritten on the DPS path by
-     * whatever `connectionProfile` the ASSIGNED payload carried. The raw string
-     * is kept verbatim so an unrecognised profile is still reportable. */
+     * a direct connect or saved hub is always answerable, then overwritten by
+     * the `connectionProfile` of a DPS assignment when that assignment is
+     * adopted (dps_assigned_profile* holds it until then). The raw string is
+     * kept verbatim so an unrecognised profile is still reportable. */
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
     /* True once connection_profile is authoritative rather than the value
-     * seeded at init: immediately for a direct connect, where opts declares it,
-     * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
-     * carries no connectionProfile, since absent resolves to "classic". */
+     * seeded at init: immediately when opts.iothub_hostname is set (direct connect or
+     * saved hub), where opts declares it, and otherwise when a DPS assignment is
+     * adopted -- including one that carries no connectionProfile, since absent
+     * resolves to "classic". */
     bool connection_profile_resolved;
 
     /* The generation the attached feature clients require, refcounted by them.
@@ -1816,6 +1834,15 @@ extern "C"
       const void* owner;
       uint16_t count;
     } puback_reservations[AZ_IOT_MAX_PUBACK_RESERVATIONS];
+    /* Provider material an attempt holds until connect() has copied it;
+     * close() and deinit() release it. */
+    az_iot_certificate_material held_material[AZ_IOT_CONN_SCOPE_COUNT];
+    bool material_held[AZ_IOT_CONN_SCOPE_COUNT];
+
+    /* The assignment's connection profile, adopted with the hub and device id. */
+    az_iot_connection_profile dps_assigned_profile;
+    char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+    bool dps_assigned_profile_raw_truncated;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
@@ -1842,10 +1869,12 @@ extern "C"
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
-   *   - DPS (host==NULL): dps.id_scope, dps.registration_id.
-   *   - Direct hub connect: host, client_id; also set
+   *   - DPS (iothub_hostname==NULL): dps.id_scope, dps.registration_id.
+   *   - Direct hub connect: iothub_hostname, device_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
    *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1).
+   *   - Saved hub with DPS fallback: both of the above, iothub_hostname, device_id and
+   *     connection_profile taken from the previous registration.
    *   - Per role: certificate_provider for X.509, and/or SAS keys and a
    *     user-provided token callback in dps_auth / hub_auth. */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
@@ -2083,10 +2112,12 @@ extern "C"
   AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 
   /* Returns the effective IoT Hub address (FQDN) this client is bound to: the
-   * host supplied in options for a direct-hub connection, or the DPS-assigned hub
+   * iothub_hostname supplied in options (direct or saved hub), or the DPS-assigned hub
    * once provisioning completes. Returns NULL when no host has been established
-   * yet (e.g. a DPS-only client that has not finished provisioning). The returned
-   * pointer is owned by the client and stays valid until deinit(). Useful for
+   * yet (e.g. a DPS-only client that has not finished provisioning). Points at the
+   * caller-supplied iothub_hostname, or at a buffer owned by the client; an adopted
+   * DPS assignment changes the value returned (the caller's string is never
+   * modified), so copy it to keep it. Useful for
    * protocol-independent, HTTPS-only features such as file upload that must reach
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
@@ -2095,7 +2126,7 @@ extern "C"
    * @brief Get the device id this client connects to the IoT Hub with.
    *
    * The device id paired with az_iot_connection_client_get_iothub_address(): the
-   * caller-supplied client_id for a direct-hub connection, or the DPS-assigned
+   * caller-supplied device_id for a direct-hub connection, or the DPS-assigned
    * device id once the assignment is adopted. The DPS device id need not equal
    * the registration id (e.g. custom allocation), so save this value, not the
    * registration id, to connect directly to the assigned hub later.
@@ -2103,9 +2134,9 @@ extern "C"
    * @param[in] client The connection client.
    * @return The device id, or NULL when @p client is NULL or no hub has been
    * established yet (az_iot_connection_client_get_iothub_address() returns NULL).
-   * Owned by the client (or by the caller for a caller-supplied client_id); valid
-   * until deinit(). A later adopted DPS assignment overwrites it in place, so copy
-   * it to keep it.
+   * Points at the caller-supplied device_id, or at a buffer owned by the client.
+   * An adopted DPS assignment changes the value returned (the caller's string
+   * is never modified); copy it to keep it.
    */
   const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client);
 

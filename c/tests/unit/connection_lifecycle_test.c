@@ -99,7 +99,7 @@ static void open_without_host_or_dps_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   /* No host, no dps.id_scope: there is nothing to connect to. */
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -111,7 +111,7 @@ static void open_without_client_id_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   /* A direct hub connect needs an identity as well as an endpoint. */
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -359,8 +359,8 @@ static void the_default_options_retry_a_refused_connack(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   /* initial_delay_ms is deliberately NOT overridden: it is the field that
    * decides whether reconnection happens at all, so the test has to depend on
    * the default supplying it. Only the cap is shortened, which bounds the
@@ -413,8 +413,8 @@ static void reconnection_can_still_be_disabled(void** state)
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.reconnection_policy.initial_delay_ms = 0;
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -448,8 +448,8 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -520,26 +520,72 @@ static void the_username_carries_the_host_and_device_id(void** state)
 static void the_username_carries_an_api_version(void** state)
 {
   (void)state;
-  /* The service documents omitting api-version as a source of "unexpected
-   * behaviour", and the SDK gets it from azure-sdk-for-c rather than building
-   * it here -- so a dependency bump could drop it without anything failing. */
+  /* Hub certificate renewal ($iothub/credentials) is refused on an older
+   * api-version (errorCode 400001), so the exact value is pinned. */
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "api-version="));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING);
+}
+
+/** @brief Fills @p id (capacity AZ_IOT_MQTT_USERNAME_BUF) with a client id
+ * that makes the MQTTv3 username plus NUL exceed AZ_IOT_MQTT_USERNAME_BUF by
+ * @p excess bytes. */
+static void client_id_for_username_excess(char* id, size_t excess)
+{
+  static const char k_fixed[] = "broker.example/"
+                                "/?api-version=2025-08-01-preview"
+                                "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING;
+  size_t id_len = AZ_IOT_MQTT_USERNAME_BUF - sizeof(k_fixed) + excess;
+  memset(id, 'd', id_len);
+  id[id_len] = '\0';
+}
+
+static void a_username_that_exactly_fills_the_buffer_connects(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 0);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.device_id = id;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(strlen(c.username), AZ_IOT_MQTT_USERNAME_BUF - 1u);
+}
+
+static void a_username_one_byte_too_long_fails_the_open(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 1);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.device_id = id;
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void the_model_id_is_announced_in_the_username(void** state)
 {
   (void)state;
-  /* Plug and Play model announcement. Device Update discovers a device by this
-   * value, so losing it silently disables software updates on every device. */
+  /* Plug and Play model announcement, percent-encoded. */
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "model-id="));
-  assert_non_null(strstr(c.username, "deviceUpdateContractModel"));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING
+      "&model-id=dtmi%3Aazure%3Aiot%3AdeviceUpdateContractModel%3B2");
 }
 
 static void no_model_id_means_none_in_the_username(void** state)
@@ -1336,6 +1382,8 @@ int main(void)
     cmocka_unit_test(connect_timeout_is_configurable),
     cmocka_unit_test(the_username_carries_the_host_and_device_id),
     cmocka_unit_test(the_username_carries_an_api_version),
+    cmocka_unit_test(a_username_that_exactly_fills_the_buffer_connects),
+    cmocka_unit_test(a_username_one_byte_too_long_fails_the_open),
     cmocka_unit_test(the_model_id_is_announced_in_the_username),
     cmocka_unit_test(no_model_id_means_none_in_the_username),
     cmocka_unit_test(an_empty_model_id_is_treated_as_none),

@@ -38,6 +38,7 @@
 #ifndef AZ_IOT_SPAN_WRITER_H
 #define AZ_IOT_SPAN_WRITER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -94,6 +95,32 @@ extern "C"
       az_iot_span_writer* writer,
       const char* value,
       size_t length);
+
+  /**
+   * @brief Decode the byte at @p value[*pos], advancing @p pos past it.
+   *
+   * The one percent-decoding step shared by every decoder in the SDK.
+   *
+   * @return The byte, or -1 for a truncated or non-hexadecimal escape.
+   */
+  int az_iot_url_decode_byte(const char* value, size_t length, size_t* pos);
+
+  /**
+   * @brief Validate @p value and measure it percent-decoded.
+   *
+   * @param[in] reject_nul Treat a decoded NUL as malformed, for output that
+   *                       becomes a C string.
+   * @param[out] out_length Decoded length; set only on success.
+   * @retval AZ_IOT_ERR_PROTOCOL Malformed escape, or a NUL with @p reject_nul.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_url_decoded_length(const char* value, size_t length, bool reject_nul, size_t* out_length);
+
+  /**
+   * @brief Decode @p value, already validated by az_iot_url_decoded_length(),
+   *        into @p out, which must hold the measured length. No terminator.
+   */
+  void az_iot_url_decode_into(const char* value, size_t length, uint8_t* out);
 
   void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value);
 

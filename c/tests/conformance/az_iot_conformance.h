@@ -128,7 +128,14 @@ extern "C"
      * As above, the baseline holds every adapter -- declared or not -- to the
      * rule that matters for an egress control: a proxy that cannot be reached
      * must end as a failed connect, NEVER as a direct session to the broker. */
-    AZ_IOT_CONFORMANCE_CAP_PROXY = 1u << 3
+    AZ_IOT_CONFORMANCE_CAP_PROXY = 1u << 3,
+
+    /* TLS credentials from in-memory PEM (tls.trusted_ca_pem, client_cert_pem,
+     * client_key_pem) with no file paths. Needs nothing here: the suite issues
+     * the material. Proved by a mutual-TLS session whose PEM buffers are wiped
+     * as soon as connect() returns, so the adapter must copy them during the
+     * call. Requires a TLS build. */
+    AZ_IOT_CONFORMANCE_CAP_TLS_PEM = 1u << 4
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options

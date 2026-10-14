@@ -277,8 +277,8 @@ static bool all_zero(const void* p, size_t n)
 static az_iot_connection_client_options hub_sas_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.crypto = TEST_CRYPTO();
   opts.hub_auth.sas.primary_key_base64 = KEY_B64;
   opts.unix_time.get_time = fixed_time;
@@ -291,7 +291,7 @@ static az_iot_connection_client_options hub_sas_options(void)
 static az_iot_connection_client_options dps_sas_options(const char* key)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.crypto = TEST_CRYPTO();
@@ -358,7 +358,7 @@ static void init_rejects_invalid_sas_options(void** state)
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
   opts = hub_sas_options();
-  opts.client_id = NULL;
+  opts.device_id = NULL;
   opts.hub_auth.sas.is_enrollment_group_key = true;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
 }
@@ -368,8 +368,8 @@ static void init_accepts_a_token_callback_without_keys(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.hub_auth.sas.on_sas_token_required = unused_token_callback;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   opts.sas_buffer.buffer = g_sas_buffer;
@@ -427,8 +427,9 @@ static void a_changed_hub_identity_is_used_on_the_next_connect(void** state)
   }
   assert_int_equal(fx->last_state, AZ_IOT_CONN_STATE_IDLE);
   assert_int_equal(
-      az_iot_connection_client__set_host(&fx->client, "other-hub.example.net"), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__set_client_id(&fx->client, "dev-2"), AZ_IOT_OK);
+      az_iot_connection_client__set_iothub_hostname(&fx->client, "other-hub.example.net"),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__set_device_id(&fx->client, "dev-2"), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
   const az_iot_mock_call* call = last_connect(fx);
@@ -517,7 +518,7 @@ static void the_device_id_is_url_encoded_in_the_token(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = hub_sas_options();
-  opts.client_id = "d@v 1/x";
+  opts.device_id = "d@v 1/x";
   init_and_open(fx, &opts);
   assert_string_equal(last_connect(fx)->password, ENCODED_ID_HUB_TOKEN);
 }
@@ -557,7 +558,7 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       opts.sas_buffer.size = sizeof(buf) - (size_t)shrink;
       if (dps)
       {
-        opts.client_id = k_second;
+        opts.device_id = k_second;
         opts.dps.id_scope = k_first;
         opts.dps.registration_id = k_second;
         opts.dps_auth.sas.primary_key_base64 = KEY_B64;
@@ -565,8 +566,8 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       }
       else
       {
-        opts.host = k_first;
-        opts.client_id = k_second;
+        opts.iothub_hostname = k_first;
+        opts.device_id = k_second;
         opts.hub_auth.sas.primary_key_base64 = KEY_B64;
       }
       assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
@@ -631,7 +632,7 @@ static void a_username_that_does_not_fit_fails_the_attempt(void** state)
   az_iot_connection_client_options opts = hub_sas_options();
   opts.hub_auth.sas.primary_key_base64 = NULL;
   opts.certificate_provider = &provider.base;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1979,8 +1980,8 @@ static az_iot_connection_client_options user_token_hub_options(fixture* fx, fake
   g_fake.lifetime_seconds = 100;
   g_fake.client = &fx->client;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.hub_auth.sas.on_sas_token_required = fake_token_callback;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
@@ -2048,7 +2049,7 @@ static void a_pending_user_token_connects_dps_once_delivered(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
-  opts.host = NULL;
+  opts.iothub_hostname = NULL;
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
@@ -2088,7 +2089,7 @@ static void a_dps_token_supplied_before_open_is_used(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
-  opts.host = NULL;
+  opts.iothub_hostname = NULL;
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
@@ -2262,6 +2263,82 @@ static void a_rejected_key_falls_back_to_the_user_token(void** state)
   const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
   assert_int_equal(e->delay_ms, 0);
+}
+
+/** @brief Provider counting successful load()s and release()s. */
+typedef struct counting_provider
+{
+  az_iot_certificate_provider base;
+  int loads;
+  int releases;
+} counting_provider;
+
+static az_iot_result counting_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    uint8_t index,
+    az_iot_certificate_material* out)
+{
+  (void)role;
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  memset(out, 0, sizeof(*out));
+  out->trusted_ca_path = "provider-ca.pem";
+  ((counting_provider*)self)->loads++;
+  return AZ_IOT_OK;
+}
+
+static void counting_release(az_iot_certificate_provider* self, az_iot_certificate_material* m)
+{
+  (void)m;
+  ((counting_provider*)self)->releases++;
+}
+
+static const az_iot_certificate_provider_vtable k_counting_vtable = {
+  .version = 1u,
+  .load = counting_load,
+  .release = counting_release,
+  .deinit = ca_only_deinit,
+};
+
+/* X.509 rejected: the SAS-key attempt that follows still loads the provider
+ * (for its trust anchors) and releases that material. */
+static void x509_rejected_then_a_key_releases_every_load(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Static: the client reaches the provider until teardown deinits it. */
+  static counting_provider provider;
+  provider = (counting_provider){ .base = { .vtable = &k_counting_vtable } };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider.base;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+  assert_true(provider.loads >= 3);
+  assert_int_equal(provider.loads, provider.releases);
+}
+
+/* X.509 rejected with only a token callback: attempts waiting for the token
+ * end before connect(), and release what they loaded. */
+static void x509_rejected_then_a_pending_token_releases_every_load(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Static: the client reaches the provider until teardown deinits it. */
+  static counting_provider provider;
+  provider = (counting_provider){ .base = { .vtable = &k_counting_vtable } };
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  opts.certificate_provider = &provider.base;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  pump(fx, 3);
+  assert_true(g_fake.calls >= 1);
+  assert_true(no_connect_pending(fx));
+  assert_true(provider.loads >= 3);
+  assert_int_equal(provider.loads, provider.releases);
 }
 
 /* Primary, secondary and user-provided token rejected in turn: the pass ends,
@@ -2508,7 +2585,7 @@ static void a_failed_dps_connect_after_a_user_token_is_retried(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
-  opts.host = NULL;
+  opts.iothub_hostname = NULL;
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
@@ -2540,7 +2617,7 @@ static void a_reopen_from_a_resumed_dps_attempt_keeps_the_new_one(void** state)
   fixture* fx = (fixture*)*state;
   g_reopens = 0;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
-  opts.host = NULL;
+  opts.iothub_hostname = NULL;
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
@@ -3135,7 +3212,7 @@ static void the_dps_wait_is_capped_by_its_renewal(void** state)
 static az_iot_mock_mqtt_client* open_user_token_dps(fixture* fx)
 {
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
-  opts.host = NULL;
+  opts.iothub_hostname = NULL;
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps.provision_only = true;
@@ -3528,6 +3605,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         close_from_the_token_callback_ends_the_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(x509_rejected_then_a_key_releases_every_load, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        x509_rejected_then_a_pending_token_releases_every_load, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_user_token_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),

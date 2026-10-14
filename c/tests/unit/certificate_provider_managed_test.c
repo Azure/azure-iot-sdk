@@ -288,6 +288,119 @@ static void managed_options_default_has_no_paths(void** state)
   assert_int_equal(opts.key_type, AZ_IOT_MANAGED_KEY_EC_P256);
 }
 
+/* Init over a fresh key of @p key_type; checks the CSR's key size, curve
+ * (NULL for RSA) and signature algorithm, and that it verifies. */
+static void assert_generated_csr_profile(
+    az_iot_certificate_managed_key_type key_type,
+    const char* key_alg,
+    int key_bits,
+    const char* curve,
+    int sig_nid)
+{
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.key_type = key_type;
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+
+  az_iot_certificate_signing_request csr;
+  memset(&csr, 0, sizeof(csr));
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->get_csr(&prov.base, "my-device-id", &csr));
+  X509_REQ* req = decode_csr(csr.csr_base64);
+  assert_non_null(req);
+  EVP_PKEY* pk = X509_REQ_get_pubkey(req);
+  assert_non_null(pk);
+  assert_true(EVP_PKEY_is_a(pk, key_alg));
+  assert_int_equal(key_bits, EVP_PKEY_get_bits(pk));
+  if (curve != NULL)
+  {
+    char group[64] = { 0 };
+    assert_int_equal(1, EVP_PKEY_get_group_name(pk, group, sizeof(group), NULL));
+    assert_string_equal(curve, group);
+  }
+  assert_int_equal(sig_nid, X509_REQ_get_signature_nid(req));
+  assert_int_equal(1, X509_REQ_verify(req, pk));
+
+  EVP_PKEY_free(pk);
+  X509_REQ_free(req);
+  prov.base.vtable->release_csr(&prov.base, &csr);
+  az_iot_certificate_provider_managed_deinit(&prov);
+  remove_test_files();
+}
+
+/* Each key type generates its key and signs the CSR with the matching digest. */
+static void managed_each_key_type_has_its_csr_profile(void** state)
+{
+  (void)state;
+  assert_generated_csr_profile(
+      AZ_IOT_MANAGED_KEY_EC_P256, "EC", 256, "prime256v1", NID_ecdsa_with_SHA256);
+  assert_generated_csr_profile(
+      AZ_IOT_MANAGED_KEY_EC_P384, "EC", 384, "secp384r1", NID_ecdsa_with_SHA384);
+  assert_generated_csr_profile(
+      AZ_IOT_MANAGED_KEY_RSA_2048, "RSA", 2048, NULL, NID_sha256WithRSAEncryption);
+}
+
+/* The digest follows the key in use: a loaded key keeps its own profile
+ * whatever key_type says. */
+static void managed_csr_digest_follows_a_loaded_key(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    const char* curve;
+    int sig_nid;
+  } cases[] = {
+    { "P-384", NID_ecdsa_with_SHA384 },
+    { "P-521", NID_ecdsa_with_SHA512 },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    remove_test_files();
+    EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", cases[i].curve);
+    assert_non_null(key);
+    BIO* b = BIO_new_file(OP_KEY, "wb");
+    assert_non_null(b);
+    assert_int_equal(1, PEM_write_bio_PrivateKey(b, key, NULL, NULL, 0, NULL, NULL));
+    BIO_free(b);
+
+    az_iot_certificate_provider_managed_options opts = test_options();
+    opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
+    az_iot_certificate_provider_managed prov;
+    assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+    assert_int_equal(1, EVP_PKEY_eq((EVP_PKEY*)prov.operational_key, key));
+
+    az_iot_certificate_signing_request csr;
+    memset(&csr, 0, sizeof(csr));
+    assert_int_equal(AZ_IOT_OK, prov.base.vtable->get_csr(&prov.base, "my-device-id", &csr));
+    X509_REQ* req = decode_csr(csr.csr_base64);
+    assert_non_null(req);
+    assert_int_equal(cases[i].sig_nid, X509_REQ_get_signature_nid(req));
+    assert_int_equal(1, X509_REQ_verify(req, key));
+
+    X509_REQ_free(req);
+    prov.base.vtable->release_csr(&prov.base, &csr);
+    az_iot_certificate_provider_managed_deinit(&prov);
+    EVP_PKEY_free(key);
+  }
+  remove_test_files();
+}
+
+/* An unknown key type is refused before any key is generated or written. */
+static void managed_init_rejects_an_unknown_key_type(void** state)
+{
+  (void)state;
+  remove_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.key_type = (az_iot_certificate_managed_key_type)(AZ_IOT_MANAGED_KEY_EC_P384 + 1);
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  opts.key_type = (az_iot_certificate_managed_key_type)-1;
+  assert_int_equal(AZ_IOT_ERR_INVALID_ARG, az_iot_certificate_provider_managed_init(&prov, &opts));
+  FILE* f = fopen(OP_KEY, "rb");
+  assert_null(f);
+  remove_test_files();
+}
+
 /* Public key of a fresh CSR from @p prov (caller frees). */
 static EVP_PKEY* csr_key(az_iot_certificate_provider_managed* prov)
 {
@@ -1619,6 +1732,9 @@ int main(void)
     cmocka_unit_test(managed_release_leaves_the_material_usable),
     cmocka_unit_test(managed_get_csr_rejects_null_arguments),
     cmocka_unit_test(managed_options_default_has_no_paths),
+    cmocka_unit_test(managed_each_key_type_has_its_csr_profile),
+    cmocka_unit_test(managed_csr_digest_follows_a_loaded_key),
+    cmocka_unit_test(managed_init_rejects_an_unknown_key_type),
     cmocka_unit_test(managed_csrs_always_use_the_operational_key),
     cmocka_unit_test(managed_store_rejects_null_arguments),
     cmocka_unit_test(managed_deinit_tolerates_null),
