@@ -277,6 +277,59 @@ bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char
   return svc->telemetry != NULL && e2e_amqp_telemetry_seen(svc->telemetry, needle);
 }
 
+static const e2e_amqp_capture* find_telemetry(const az_iot_e2e_service* svc, const char* needle)
+{
+  return svc->telemetry != NULL ? e2e_amqp_telemetry_find(svc->telemetry, needle) : NULL;
+}
+
+int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char* needle)
+{
+  const e2e_amqp_capture* c = find_telemetry(svc, needle);
+  return c != NULL ? (int)c->seq : -1;
+}
+
+bool az_iot_e2e_service_telemetry_property(
+    const az_iot_e2e_service* svc,
+    const char* needle,
+    const char* name,
+    char* out,
+    size_t out_size)
+{
+  const e2e_amqp_capture* c = find_telemetry(svc, needle);
+  if (c != NULL && e2e_amqp_capture_property(c, name, out, out_size))
+  {
+    return true;
+  }
+  printf("[e2e] telemetry property '%s' not found\n", name);
+  az_iot_e2e_service_telemetry_dump(svc, needle);
+  return false;
+}
+
+bool az_iot_e2e_service_telemetry_find_value(
+    const az_iot_e2e_service* svc,
+    const char* needle,
+    const char* value,
+    char* name_out,
+    size_t name_out_size)
+{
+  const e2e_amqp_capture* c = find_telemetry(svc, needle);
+  return c != NULL && e2e_amqp_capture_find_value(c, value, name_out, name_out_size);
+}
+
+void az_iot_e2e_service_telemetry_dump(const az_iot_e2e_service* svc, const char* needle)
+{
+  const e2e_amqp_capture* c = find_telemetry(svc, needle);
+  if (c == NULL)
+  {
+    printf(
+        "[e2e] no telemetry containing '%s' (%u messages received)\n",
+        needle,
+        svc->telemetry != NULL ? (unsigned)svc->telemetry->received_count : 0u);
+    return;
+  }
+  e2e_amqp_capture_dump(c);
+}
+
 void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc)
 {
   if (svc->telemetry != NULL)

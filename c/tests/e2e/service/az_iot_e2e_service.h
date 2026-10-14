@@ -58,6 +58,37 @@ extern "C"
   /* Returns true once a telemetry body containing @p needle has been received. */
   bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char* needle);
 
+  /* The lookups below read the earliest received message whose body contains @p needle, among
+   * the most recent 64; call them before az_iot_e2e_service_telemetry_watch_end(). */
+
+  /* Arrival order (from 0, across partitions, since watch_begin) of the message, or -1 when
+   * none has arrived. */
+  int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char* needle);
+
+  /* Copies property @p name of the message into @p out (NUL-terminated, truncated to fit).
+   * @p name is an AMQP properties field ("message-id", "user-id", "subject", "correlation-id",
+   * "content-type", "content-encoding", "creation-time", ...), an application property key, or
+   * "annotation:<key>" for a message annotation. Non-string values are given in a printable
+   * form. On a miss, prints every property captured for the message. Returns false on a miss. */
+  bool az_iot_e2e_service_telemetry_property(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      const char* name,
+      char* out,
+      size_t out_size);
+
+  /* Copies into @p name_out the name of the first property of the message whose value is
+   * exactly @p value. Returns false if there is none. */
+  bool az_iot_e2e_service_telemetry_find_value(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      const char* value,
+      char* name_out,
+      size_t name_out_size);
+
+  /* Prints every property captured for the message (or that none arrived) to stdout. */
+  void az_iot_e2e_service_telemetry_dump(const az_iot_e2e_service* svc, const char* needle);
+
   /* Stop watching telemetry and release the underlying connection. Safe to call
    * when not watching. */
   void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc);

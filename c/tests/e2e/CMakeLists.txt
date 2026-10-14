@@ -245,6 +245,10 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_connection
         tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
+    # mqttv5 telemetry: delivery, properties as the service sees them, order and size limits.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_telemetry
+        tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_telemetry PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
 
     # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.

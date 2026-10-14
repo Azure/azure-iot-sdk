@@ -71,6 +71,7 @@
 #define E2E_ERR_TELEMETRY_RECEIVER_ATTACH E2E_AMQP_PFX_TELEMETRY E2E_AMQP_R_RECEIVER_ATTACH
 #define E2E_ERR_TELEMETRY_FILTER E2E_AMQP_PFX_TELEMETRY "enqueued-time filter encode failed"
 #define E2E_ERR_TELEMETRY_SOURCE E2E_AMQP_PFX_TELEMETRY "partition source address too long"
+#define E2E_ERR_TELEMETRY_OUT_OF_MEMORY E2E_AMQP_PFX_TELEMETRY "out of memory"
 
 /* c2d */
 #define E2E_ERR_C2D_OUT_OF_MEMORY E2E_AMQP_PFX_C2D "out of memory"
@@ -190,6 +191,275 @@ static bool pump_connection(
 
 /* --- telemetry receiver --------------------------------------------------- */
 
+/* Longest printable form of one property value. */
+#define E2E_AMQP_VALUE_TEXT_MAX 512
+
+/** @brief Writes @p bytes as text: printable ASCII and UTF-8 kept, control bytes as '?'. */
+static void bytes_to_text(const uint8_t* bytes, int32_t len, char* out, size_t cap)
+{
+  size_t n = 0;
+  for (int32_t i = 0; i < len && n + 1 < cap; ++i)
+  {
+    const uint8_t b = bytes[i];
+    out[n++] = (b < 0x20 || b == 0x7f) ? '?' : (char)b;
+  }
+  out[n] = '\0';
+}
+
+/** @brief Writes binary @p bytes as text when every byte is printable ASCII, else as hex. */
+static void binary_to_text(az_span bytes, char* out, size_t cap)
+{
+  const uint8_t* p = az_span_ptr(bytes);
+  const int32_t len = az_span_size(bytes);
+  bool printable = true;
+  for (int32_t i = 0; i < len; ++i)
+  {
+    printable = printable && p[i] >= 0x20 && p[i] < 0x7f;
+  }
+  if (printable)
+  {
+    bytes_to_text(p, len, out, cap);
+    return;
+  }
+  size_t n = (size_t)snprintf(out, cap, "0x");
+  for (int32_t i = 0; i < len && n + 3 <= cap; ++i)
+  {
+    n += (size_t)snprintf(out + n, cap - n, "%02x", p[i]);
+  }
+}
+
+static void uuid_to_text(const uint8_t* u, char* out, size_t cap)
+{
+  snprintf(
+      out,
+      cap,
+      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+      u[0],
+      u[1],
+      u[2],
+      u[3],
+      u[4],
+      u[5],
+      u[6],
+      u[7],
+      u[8],
+      u[9],
+      u[10],
+      u[11],
+      u[12],
+      u[13],
+      u[14],
+      u[15]);
+}
+
+/** @brief Writes a printable form of any AMQP value; compound values are summarized. */
+static void value_to_text(const az_amqp_value* v, char* out, size_t cap)
+{
+  switch (v->kind)
+  {
+    case AZ_AMQP_VALUE_KIND_NULL:
+      snprintf(out, cap, "null");
+      break;
+    case AZ_AMQP_VALUE_KIND_BOOL:
+      snprintf(out, cap, "%s", v->scalar.boolean ? "true" : "false");
+      break;
+    case AZ_AMQP_VALUE_KIND_UBYTE:
+    case AZ_AMQP_VALUE_KIND_USHORT:
+    case AZ_AMQP_VALUE_KIND_UINT:
+    case AZ_AMQP_VALUE_KIND_ULONG:
+      snprintf(out, cap, "%llu", (unsigned long long)v->scalar.u64);
+      break;
+    case AZ_AMQP_VALUE_KIND_BYTE:
+    case AZ_AMQP_VALUE_KIND_SHORT:
+    case AZ_AMQP_VALUE_KIND_INT:
+    case AZ_AMQP_VALUE_KIND_LONG:
+      snprintf(out, cap, "%lld", (long long)v->scalar.i64);
+      break;
+    case AZ_AMQP_VALUE_KIND_TIMESTAMP:
+      snprintf(out, cap, "timestamp:%lld", (long long)v->scalar.i64);
+      break;
+    case AZ_AMQP_VALUE_KIND_FLOAT:
+    case AZ_AMQP_VALUE_KIND_DOUBLE:
+      snprintf(out, cap, "%g", v->scalar.f64);
+      break;
+    case AZ_AMQP_VALUE_KIND_CHAR:
+      snprintf(out, cap, "U+%04llX", (unsigned long long)v->scalar.u64);
+      break;
+    case AZ_AMQP_VALUE_KIND_UUID:
+      if (az_span_size(v->payload) == 16)
+      {
+        uuid_to_text(az_span_ptr(v->payload), out, cap);
+      }
+      else
+      {
+        snprintf(out, cap, "<uuid>");
+      }
+      break;
+    case AZ_AMQP_VALUE_KIND_BINARY:
+      binary_to_text(v->payload, out, cap);
+      break;
+    case AZ_AMQP_VALUE_KIND_STRING:
+    case AZ_AMQP_VALUE_KIND_SYMBOL:
+      bytes_to_text(az_span_ptr(v->payload), az_span_size(v->payload), out, cap);
+      break;
+    case AZ_AMQP_VALUE_KIND_LIST:
+      snprintf(out, cap, "<list of %u>", (unsigned)v->count);
+      break;
+    case AZ_AMQP_VALUE_KIND_MAP:
+      snprintf(out, cap, "<map of %u>", (unsigned)(v->count / 2));
+      break;
+    case AZ_AMQP_VALUE_KIND_ARRAY:
+      snprintf(out, cap, "<array of %u>", (unsigned)v->count);
+      break;
+    case AZ_AMQP_VALUE_KIND_DESCRIBED:
+    default:
+      snprintf(out, cap, "<described>");
+      break;
+  }
+}
+
+static void message_id_to_text(const az_amqp_message_id* id, char* out, size_t cap)
+{
+  switch (id->kind)
+  {
+    case AZ_AMQP_MESSAGE_ID_KIND_ULONG:
+      snprintf(out, cap, "%llu", (unsigned long long)id->u64);
+      break;
+    case AZ_AMQP_MESSAGE_ID_KIND_UUID:
+      if (az_span_size(id->bytes) == 16)
+      {
+        uuid_to_text(az_span_ptr(id->bytes), out, cap);
+      }
+      else
+      {
+        snprintf(out, cap, "<uuid>");
+      }
+      break;
+    case AZ_AMQP_MESSAGE_ID_KIND_BINARY:
+      binary_to_text(id->bytes, out, cap);
+      break;
+    case AZ_AMQP_MESSAGE_ID_KIND_NULL:
+    case AZ_AMQP_MESSAGE_ID_KIND_STRING:
+    default:
+      bytes_to_text(az_span_ptr(id->bytes), az_span_size(id->bytes), out, cap);
+      break;
+  }
+}
+
+/** @brief Appends one "name\0value\0" pair; marks the capture truncated if it does not fit. */
+static void capture_add(e2e_amqp_capture* c, const char* name, const char* value)
+{
+  const size_t name_size = strlen(name) + 1;
+  const size_t value_size = strlen(value) + 1;
+  if (c->props_len + name_size + value_size > sizeof(c->props))
+  {
+    c->props_truncated = true;
+    return;
+  }
+  memcpy(c->props + c->props_len, name, name_size);
+  memcpy(c->props + c->props_len + name_size, value, value_size);
+  c->props_len += name_size + value_size;
+}
+
+static void capture_add_span(e2e_amqp_capture* c, const char* name, az_span text)
+{
+  if (az_span_size(text) > 0)
+  {
+    char value[E2E_AMQP_VALUE_TEXT_MAX];
+    bytes_to_text(az_span_ptr(text), az_span_size(text), value, sizeof(value));
+    capture_add(c, name, value);
+  }
+}
+
+static void capture_add_id(e2e_amqp_capture* c, const char* name, const az_amqp_message_id* id)
+{
+  if (id->kind != AZ_AMQP_MESSAGE_ID_KIND_NULL)
+  {
+    char value[E2E_AMQP_VALUE_TEXT_MAX];
+    message_id_to_text(id, value, sizeof(value));
+    capture_add(c, name, value);
+  }
+}
+
+static void capture_add_i64(e2e_amqp_capture* c, const char* name, int64_t value)
+{
+  char text[32];
+  snprintf(text, sizeof(text), "%lld", (long long)value);
+  capture_add(c, name, text);
+}
+
+/** @brief Captures the properties section under its AMQP field names. */
+static void capture_properties(e2e_amqp_capture* c, const az_amqp_message* message)
+{
+  az_amqp_message_properties p;
+  if (az_result_failed(az_amqp_message_get_properties(message, &p)))
+  {
+    return;
+  }
+  capture_add_id(c, "message-id", &p.message_id);
+  if (az_span_size(p.user_id) > 0)
+  {
+    char value[E2E_AMQP_VALUE_TEXT_MAX];
+    binary_to_text(p.user_id, value, sizeof(value));
+    capture_add(c, "user-id", value);
+  }
+  capture_add_span(c, "to", p.to);
+  capture_add_span(c, "subject", p.subject);
+  capture_add_span(c, "reply-to", p.reply_to);
+  capture_add_id(c, "correlation-id", &p.correlation_id);
+  capture_add_span(c, "content-type", p.content_type);
+  capture_add_span(c, "content-encoding", p.content_encoding);
+  if (p.has_absolute_expiry_time)
+  {
+    capture_add_i64(c, "absolute-expiry-time", p.absolute_expiry_time_ms);
+  }
+  if (p.has_creation_time)
+  {
+    capture_add_i64(c, "creation-time", p.creation_time_ms);
+  }
+  capture_add_span(c, "group-id", p.group_id);
+  if (p.has_group_sequence)
+  {
+    capture_add_i64(c, "group-sequence", (int64_t)p.group_sequence);
+  }
+  capture_add_span(c, "reply-to-group-id", p.reply_to_group_id);
+}
+
+/** @brief Captures every pair of the encoded map @p encoded, keys prefixed with @p prefix. */
+static void capture_map(e2e_amqp_capture* c, az_span encoded, const char* prefix)
+{
+  az_amqp_decoder decoder;
+  az_amqp_value map;
+  az_amqp_decoder pairs;
+  if (az_span_size(encoded) == 0 || az_result_failed(az_amqp_decoder_init(&decoder, encoded))
+      || az_result_failed(az_amqp_decoder_decode(&decoder, &map))
+      || az_result_failed(az_amqp_value_get_map_decoder(&map, &pairs, NULL)))
+  {
+    return;
+  }
+  while (az_amqp_decoder_has_next(&pairs))
+  {
+    az_amqp_value key;
+    az_amqp_value value;
+    if (az_result_failed(az_amqp_decoder_decode(&pairs, &key))
+        || az_result_failed(az_amqp_decoder_decode(&pairs, &value)))
+    {
+      capture_add(c, prefix[0] != '\0' ? "annotations" : "application-properties", "<undecodable>");
+      return;
+    }
+    char key_text[256];
+    const size_t prefix_len = strlen(prefix);
+    snprintf(key_text, sizeof(key_text), "%s", prefix);
+    if (prefix_len < sizeof(key_text))
+    {
+      value_to_text(&key, key_text + prefix_len, sizeof(key_text) - prefix_len);
+    }
+    char value_text[E2E_AMQP_VALUE_TEXT_MAX];
+    value_to_text(&value, value_text, sizeof(value_text));
+    capture_add(c, key_text, value_text);
+  }
+}
+
 static void on_message_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -208,9 +478,25 @@ static void on_message_received(
     {
       n = E2E_AMQP_CAPTURE_BODY_MAX - 1;
     }
-    char* slot = t->captured[t->captured_next];
-    memcpy(slot, az_span_ptr(body), (size_t)n);
-    slot[n] = '\0';
+    e2e_amqp_capture* slot = &t->captured[t->captured_next];
+    memcpy(slot->body, az_span_ptr(body), (size_t)n);
+    slot->body[n] = '\0';
+    slot->body_size = (size_t)az_span_size(body);
+    slot->props_len = 0;
+    slot->props_truncated = false;
+    slot->seq = t->received_count++;
+    capture_properties(slot, message);
+
+    az_span map;
+    if (az_result_succeeded(az_amqp_message_get_application_properties(message, &map)))
+    {
+      capture_map(slot, map, "");
+    }
+    if (az_result_succeeded(az_amqp_message_get_message_annotations(message, &map)))
+    {
+      capture_map(slot, map, "annotation:");
+    }
+
     t->captured_next = (t->captured_next + 1) % E2E_AMQP_CAPTURE_MAX;
     if (t->captured_count < E2E_AMQP_CAPTURE_MAX)
     {
@@ -400,6 +686,12 @@ bool e2e_amqp_telemetry_begin(
   }
 
   /* 5. One receiver per partition, from enqueued_after_ms when set. */
+  t->recv_buffers = (uint8_t*)malloc((size_t)partition_count * E2E_AMQP_RECV_MESSAGE_MAX);
+  if (t->recv_buffers == NULL)
+  {
+    err = E2E_ERR_TELEMETRY_OUT_OF_MEMORY;
+    goto error;
+  }
   az_span filter = AZ_SPAN_EMPTY;
   if (enqueued_after_ms > 0
       && !encode_enqueued_after_filter(
@@ -432,7 +724,8 @@ bool e2e_amqp_telemetry_begin(
         az_span_create((uint8_t*)t->link_name[p], name_length),
         source,
         AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
-        AZ_SPAN_FROM_BUFFER(t->recv_buffers[p]),
+        az_span_create(
+            t->recv_buffers + (size_t)p * E2E_AMQP_RECV_MESSAGE_MAX, E2E_AMQP_RECV_MESSAGE_MAX),
         50 /* prefetch credit */);
 
     if (az_result_failed(az_amqp_link_init(&t->receivers[p], &t->session, &receiver_options)))
@@ -471,14 +764,84 @@ bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
 
 bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle)
 {
+  return e2e_amqp_telemetry_find(t, needle) != NULL;
+}
+
+const e2e_amqp_capture* e2e_amqp_telemetry_find(const e2e_amqp_telemetry* t, const char* needle)
+{
+  const e2e_amqp_capture* found = NULL;
   for (int i = 0; i < t->captured_count; i++)
   {
-    if (strstr(t->captured[i], needle) != NULL)
+    const e2e_amqp_capture* c = &t->captured[i];
+    if (strstr(c->body, needle) != NULL && (found == NULL || c->seq < found->seq))
     {
-      return true;
+      found = c;
     }
   }
+  return found;
+}
+
+bool e2e_amqp_capture_property(
+    const e2e_amqp_capture* c,
+    const char* name,
+    char* out,
+    size_t out_size)
+{
+  for (size_t i = 0; i < c->props_len;)
+  {
+    const char* key = c->props + i;
+    const char* value = key + strlen(key) + 1;
+    if (strcmp(key, name) == 0)
+    {
+      if (out_size > 0)
+      {
+        snprintf(out, out_size, "%s", value);
+      }
+      return true;
+    }
+    i = (size_t)(value - c->props) + strlen(value) + 1;
+  }
   return false;
+}
+
+bool e2e_amqp_capture_find_value(
+    const e2e_amqp_capture* c,
+    const char* value,
+    char* name_out,
+    size_t name_out_size)
+{
+  for (size_t i = 0; i < c->props_len;)
+  {
+    const char* key = c->props + i;
+    const char* v = key + strlen(key) + 1;
+    if (strcmp(v, value) == 0)
+    {
+      if (name_out_size > 0)
+      {
+        snprintf(name_out, name_out_size, "%s", key);
+      }
+      return true;
+    }
+    i = (size_t)(v - c->props) + strlen(v) + 1;
+  }
+  return false;
+}
+
+void e2e_amqp_capture_dump(const e2e_amqp_capture* c)
+{
+  printf(
+      "[e2e amqp] message #%u, body %zu bytes '%.64s'%s\n",
+      (unsigned)c->seq,
+      c->body_size,
+      c->body,
+      c->props_truncated ? " (properties truncated)" : "");
+  for (size_t i = 0; i < c->props_len;)
+  {
+    const char* key = c->props + i;
+    const char* value = key + strlen(key) + 1;
+    printf("[e2e amqp]   %s = '%s'\n", key, value);
+    i = (size_t)(value - c->props) + strlen(value) + 1;
+  }
 }
 
 void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
@@ -520,6 +883,8 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
   {
     (void)t->transport.vtable->close(&t->transport);
   }
+  free(t->recv_buffers);
+  t->recv_buffers = NULL;
 }
 
 /* --- cloud-to-device sender ----------------------------------------------- */
