@@ -255,7 +255,11 @@ static az_iot_result paho_user_property_next(
 {
   (void)source_len;
   const MQTTProperties* props = (const MQTTProperties*)source;
-  while (props->array != NULL && *cursor < (size_t)props->count)
+  if (props->count < 0 || (props->count > 0 && props->array == NULL))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
+  while (*cursor < (size_t)props->count)
   {
     const MQTTProperty* p = &props->array[(*cursor)++];
     if (p->identifier != MQTTPROPERTY_CODE_USER_PROPERTY)

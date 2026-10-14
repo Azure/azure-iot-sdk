@@ -490,6 +490,30 @@ static void inbound_user_properties_are_not_capped(void** state)
   mock_paho_set_inbound_user_properties(k_props, K_PROPS_COUNT);
 }
 
+/* A property set claiming entries it does not have is reported, not read as empty. */
+static void malformed_inbound_properties_are_reported(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+  props_seen seen = { 0 };
+  f.client->iface->set_inbound_cb(f.client, on_event_count_props, &seen);
+
+  static const MQTTAsync_message initializer = MQTTAsync_message_initializer;
+  MQTTAsync_message* msg = (MQTTAsync_message*)malloc(sizeof(*msg));
+  assert_non_null(msg);
+  *msg = initializer;
+  msg->properties = mock_paho_inbound_properties(); /* the mock reports user properties */
+  msg->properties.array = NULL;
+  MQTTAsync_messageArrived* arrived = mock_paho_message_arrived();
+  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t) "race/topic", 10, msg);
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+
+  assert_int_equal(seen.count, 0);
+  assert_int_equal(seen.end, AZ_IOT_ERR_PROTOCOL);
+  fixture_teardown(&f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -497,6 +521,7 @@ int main(void)
     cmocka_unit_test(mixed_producers_do_not_race_with_process_loop),
     cmocka_unit_test(events_left_queued_at_destroy_are_freed),
     cmocka_unit_test(inbound_user_properties_are_not_capped),
+    cmocka_unit_test(malformed_inbound_properties_are_reported),
   };
   return cmocka_run_group_tests_name("paho_event_queue_race_tests", tests, NULL, NULL);
 }

@@ -363,12 +363,13 @@ static az_result _publish_props_size(az_mqtt5_publish_options const* opts, int32
   az_result rc;
   while ((rc = _publish_next_user_property(opts, &cursor, &p)) == AZ_OK)
   {
-    // Checked before adding, so the sum cannot overflow.
-    if (size > _AZ_MQTT_VBI_MAX - (5 + az_span_size(p.key) + az_span_size(p.value)))
+    // In 64 bits: the span sizes come from the reader and may be anything.
+    int64_t const total = (int64_t)size + 5 + az_span_size(p.key) + az_span_size(p.value);
+    if (total > _AZ_MQTT_VBI_MAX)
     {
       return AZ_ERROR_NOT_ENOUGH_SPACE;
     }
-    size += 1 + 2 + az_span_size(p.key) + 2 + az_span_size(p.value);
+    size = (int32_t)total;
   }
   if (rc != AZ_ERROR_ITEM_NOT_FOUND)
   {
@@ -445,8 +446,8 @@ _write_publish_props(az_span* dest, az_mqtt5_publish_options const* opts, int32_
   while ((rc = _publish_next_user_property(opts, &cursor, &p)) == AZ_OK)
   {
     // A reader yielding more than when sized must not write past Property Length.
-    if (props_start - az_span_size(*dest)
-        > prop_len - (5 + az_span_size(p.key) + az_span_size(p.value)))
+    if ((int64_t)props_start - az_span_size(*dest) + 5 + az_span_size(p.key) + az_span_size(p.value)
+        > prop_len)
       return AZ_ERROR_ARG;
     rc = _az_mqtt_write_byte(dest, AZ_MQTT5_PROPERTY_USER_PROPERTY);
     if (az_result_failed(rc))
