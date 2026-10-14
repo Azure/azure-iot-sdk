@@ -583,14 +583,19 @@ static az_iot_result esp_publish(
     {
       esp_mqtt5_user_property_item_t* items
           = (esp_mqtt5_user_property_item_t*)calloc(up_count, sizeof(*items));
-      bool ok = items != NULL;
+      az_iot_result err = items != NULL ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
       cursor = 0;
-      for (size_t i = 0; ok && i < up_count; ++i)
+      for (size_t i = 0; err == AZ_IOT_OK && i < up_count; ++i)
       {
-        ok = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v) == AZ_IOT_OK
-            && v.key_len <= UINT16_MAX && v.value_len <= UINT16_MAX;
-        char* k = ok ? (char*)malloc(v.key_len + 1) : NULL;
-        char* val = ok ? (char*)malloc(v.value_len + 1) : NULL;
+        /* The view must yield what it yielded when counted. */
+        if (az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v) != AZ_IOT_OK
+            || v.key_len > UINT16_MAX || v.value_len > UINT16_MAX)
+        {
+          err = AZ_IOT_ERR_INVALID_ARG;
+          break;
+        }
+        char* k = (char*)malloc(v.key_len + 1);
+        char* val = (char*)malloc(v.value_len + 1);
         if (k && val)
         {
           memcpy(k, v.key, v.key_len);
@@ -604,23 +609,27 @@ static az_iot_result esp_publish(
         {
           free(k);
           free(val);
-          ok = false;
+          err = AZ_IOT_ERR_OUT_OF_MEMORY;
         }
       }
-      ok = ok && esp_mqtt5_client_set_user_property(&up, items, (uint8_t)up_count) == ESP_OK;
+      if (err == AZ_IOT_OK
+          && esp_mqtt5_client_set_user_property(&up, items, (uint8_t)up_count) != ESP_OK)
+      {
+        err = AZ_IOT_ERR_MQTT;
+      }
       for (size_t i = 0; items && i < up_count; ++i)
       {
         free((void*)items[i].key);
         free((void*)items[i].value);
       }
       free(items);
-      if (!ok)
+      if (err != AZ_IOT_OK)
       {
         if (up)
         {
           esp_mqtt5_client_delete_user_property(up);
         }
-        return AZ_IOT_ERR_OUT_OF_MEMORY;
+        return err;
       }
       pub.user_property = up;
     }

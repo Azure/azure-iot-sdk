@@ -351,6 +351,10 @@ static az_iot_result _azm_user_property_next(
     size_t* cursor,
     az_iot_mqtt_user_property_view* out)
 {
+  if (*cursor > source_len || source_len > INT32_MAX)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   az_span const properties = az_span_create((uint8_t*)(uintptr_t)source, (int32_t)source_len);
   int32_t offset = (int32_t)*cursor;
   az_mqtt5_user_property p;
@@ -377,6 +381,10 @@ static az_result _azm_publish_user_property_next(
     int32_t* cursor,
     az_mqtt5_user_property* out)
 {
+  if (*cursor < 0)
+  {
+    return AZ_ERROR_ARG;
+  }
   size_t c = (size_t)*cursor;
   az_iot_mqtt_user_property_view p;
   az_iot_result const r
