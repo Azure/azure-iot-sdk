@@ -134,7 +134,10 @@ extern "C"
 
   /* TLS credentials handed to an adapter on connect.
    *
-   * Populated by the SDK and read by the adapter. A new field must mean "not
+   * Populated by the SDK and read by the adapter. Every string, PEM buffer and
+   * path is valid only while connect() runs: the SDK then releases it to the
+   * certificate provider, which may wipe the private key and its password. An
+   * adapter copies what it needs during the call. A new field must mean "not
    * requested" when zero, so an adapter written before it keeps working once
    * rebuilt (see docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
@@ -315,6 +318,8 @@ extern "C"
   {
     az_iot_mqtt_version version;
 
+    /* @p opts and every pointer it holds are valid only during this call; copy
+     * what is needed later. */
     az_iot_result (*connect)(az_iot_mqtt_client* self, const az_iot_mqtt_connect_options* opts);
     /* Orderly close of the session. On MQTT 5 the DISCONNECT carries the reason
      * code the session was connected with
