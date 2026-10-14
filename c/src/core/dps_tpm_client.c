@@ -92,17 +92,17 @@ static bool is_valid_id(const char* s, size_t max, bool allow_colon)
   return true;
 }
 
-/** @brief Whether @p s is a DPS registration ID: is_valid_id(), last character
- * alphanumeric or '-'. */
+static bool is_alnum(char ch)
+{
+  return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+}
+
+/** @brief Whether @p s is a DPS registration ID: is_valid_id(), first and last
+ * characters alphanumeric (DPS device API). */
 static bool is_valid_registration_id(const char* s)
 {
-  if (!is_valid_id(s, AZ_IOT_DPS_TPM_ID_MAX, true))
-  {
-    return false;
-  }
-  char last = s[strlen(s) - 1];
-  return last == '-' || (last >= 'A' && last <= 'Z') || (last >= 'a' && last <= 'z')
-      || (last >= '0' && last <= '9');
+  return is_valid_id(s, AZ_IOT_DPS_TPM_ID_MAX, true) && is_alnum(s[0])
+      && is_alnum(s[strlen(s) - 1]);
 }
 
 /** @brief Whether only JSON whitespace follows @p last, a slice of @p doc. */

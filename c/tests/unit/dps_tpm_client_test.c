@@ -886,15 +886,15 @@ static void init_rejects_bad_options(void** state)
         AZ_IOT_ERR_NOT_INITIALIZED);
   }
 
-  /* The last character must be alphanumeric or '-'; the first is not restricted. */
-  static const char* const bad_ends[] = { "a.", "a_", "a:" };
+  /* The first and last characters must be alphanumeric. */
+  static const char* const bad_ends[] = { "a.", "a_", "a:", "a-", "-a", ":a", "_a.b" };
   for (size_t k = 0; k < sizeof(bad_ends) / sizeof(bad_ends[0]); ++k)
   {
     o = options_for(&t);
     o.registration_id = bad_ends[k];
     assert_int_equal(az_iot_dps_tpm_client_init(&c, &o), AZ_IOT_ERR_INVALID_ARG);
   }
-  static const char* const good_ends[] = { "a-", "-a", ":a", "_a.b", "A9" };
+  static const char* const good_ends[] = { "a", "A9", "a-b", "a:b", "a.b_c-d" };
   for (size_t k = 0; k < sizeof(good_ends) / sizeof(good_ends[0]); ++k)
   {
     o = options_for(&t);
@@ -1026,6 +1026,7 @@ static void maximum_length_ids_fit(void** state)
   memset(scope, 'a', AZ_IOT_DPS_TPM_ID_MAX);
   scope[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
   memset(id, ':', AZ_IOT_DPS_TPM_ID_MAX - 1);
+  id[0] = 'a';
   id[AZ_IOT_DPS_TPM_ID_MAX - 1] = 'a';
   id[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
   fake_tpm t = { 0 };
@@ -1042,7 +1043,7 @@ static void maximum_length_ids_fit(void** state)
       respond(&c, 401, "{\"authenticationKey\":\"" HUB_KEY_B64 "\"}", 0, &next), AZ_IOT_OK);
   assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
   assert_non_null(req.authorization);
-  assert_non_null(strstr(req.authorization, "%2fregistrations%2f%3A%3A"));
+  assert_non_null(strstr(req.authorization, "%2fregistrations%2fa%3A%3A"));
 }
 
 static void the_default_buffer_fits_the_longest_rsa2048_requests(void** state)
@@ -1054,6 +1055,7 @@ static void the_default_buffer_fits_the_longest_rsa2048_requests(void** state)
   memset(scope, 'a', AZ_IOT_DPS_TPM_ID_MAX);
   scope[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
   memset(id, ':', AZ_IOT_DPS_TPM_ID_MAX - 1);
+  id[0] = 'a';
   id[AZ_IOT_DPS_TPM_ID_MAX - 1] = 'a';
   id[AZ_IOT_DPS_TPM_ID_MAX] = '\0';
   memset(version, '9', AZ_IOT_DPS_TPM_ID_MAX);
