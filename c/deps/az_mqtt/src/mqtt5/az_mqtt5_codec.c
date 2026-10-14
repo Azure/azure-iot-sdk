@@ -622,8 +622,9 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
   _az_PRECONDITION_NOT_NULL(dest);
   _az_PRECONDITION_NOT_NULL(opts);
 
-  // A Topic Name has no wildcards; it may be empty only with a Topic Alias (3.3.2.1).
-  if (_az_mqtt_topic_has_wildcard(opts->topic)
+  // A Topic Name has no wildcards; it may be empty only with a Topic Alias (3.3.2.1). Its length
+  // is checked first: a UTF-8 string is at most 65,535 bytes (1.5.4).
+  if (az_span_size(opts->topic) > UINT16_MAX || _az_mqtt_topic_has_wildcard(opts->topic)
       || (az_span_size(opts->topic) == 0 && opts->topic_alias == 0))
   {
     return AZ_ERROR_ARG;
