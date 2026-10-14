@@ -1815,7 +1815,7 @@ static void reopen_at_dps_idle(const az_iot_connection_state_event* event, void*
   if (event->state == AZ_IOT_CONN_STATE_CONNECTING && !ctx->done_connecting)
   {
     ctx->done_connecting = true;
-    ctx->client->opts.host = "oldhub.azure-devices.net";
+    ctx->client->opts.iothub_hostname = "oldhub.azure-devices.net";
   }
   if (event->state == AZ_IOT_CONN_STATE_IDLE && !ctx->done_teardown)
   {

@@ -3066,14 +3066,14 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
  * @brief Whether dps_apply_deferred() would adopt the parsed assignment: a
  * supported profile the attached feature clients accept, and a hub and device id.
  *
- * @param[in] c Client, with dps_assigned_* and the profile already parsed.
+ * @param[in] c Client, with dps_assigned_* already parsed.
  * @return true if the assignment would be adopted.
  */
 static bool dps_assignment_acceptable(const az_iot_connection_client* c)
 {
-  return (c->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
-          || c->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-      && (c->required_profile_refs == 0 || c->required_profile == c->connection_profile)
+  return (c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+          || c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      && (c->required_profile_refs == 0 || c->required_profile == c->dps_assigned_profile)
       && is_nonempty_cstr(c->dps_assigned_hub) && is_nonempty_cstr(c->dps_assigned_device_id);
 }
 
@@ -7943,7 +7943,7 @@ az_iot_result az_iot_connection_client__require_profile(
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
   /* A stored issued chain is committed to the pending assignment's profile. */
-  if (client->dps_cert_awaits_adoption && client->connection_profile != profile)
+  if (client->dps_cert_awaits_adoption && client->dps_assigned_profile != profile)
   {
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
