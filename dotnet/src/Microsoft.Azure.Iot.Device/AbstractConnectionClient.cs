@@ -327,6 +327,11 @@ namespace Microsoft.Azure.Iot.Device
         /// <summary>
         /// Disconnect this device from IoT hub.
         /// </summary>
+        /// <remarks>
+        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect, as the C connection client's
+        /// close() keeps its IoT hub assignment. A later <see cref="ProvisionAndConnectAsync"/> therefore reconnects
+        /// directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set.
+        /// </remarks>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
@@ -337,7 +342,6 @@ namespace Microsoft.Azure.Iot.Device
             CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
             CurrentEndpoint = ConnectionEndpoint.None;

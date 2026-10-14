@@ -194,6 +194,41 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisionAndConnectAsyncAfterDisconnectReconnectsToTheCachedHubWithoutProvisioning()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateBootAuthenticationProvider(),
+                CreateOperationalAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, mockDps.RegistrationCount);
+
+            // Like the C client's close(), a deliberate disconnect keeps the IoT hub assignment.
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
+
+            ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateBootAuthenticationProvider(),
+                CreateOperationalAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Equal(FirstAssignedHub, reconnectedContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+        }
+
+        [Fact]
         public async Task ReprovisioningRetriesAfterAFailedAttemptUntilItSucceeds()
         {
             using MockConnectionMqttClient mockMqttClient = new();
