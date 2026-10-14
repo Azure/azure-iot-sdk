@@ -68,6 +68,11 @@ typedef struct
   char* dps_host;
   /* Device or registration id, so a marker cannot match another run's telemetry. */
   char* device_id;
+  /* Direct-hub variables at start, restored after a test that overrides them. */
+  char* env_hub_hostname;
+  char* env_hub_device_id;
+  char* env_hub_profile;
+  bool hub_env_overridden;
   /* Per-test state, here rather than on the stack so test_teardown can release it after a
    * failed assertion. */
   e2e_device dev;
@@ -153,14 +158,13 @@ static int group_setup(void** state)
   g_fx.proxy_port = az_iot_test_env_dup("AZ_IOT_PROXY_PORT");
   g_fx.proxy_log = az_iot_test_env_dup("AZ_IOT_E2E_PROXY_LOG");
   g_fx.dps_host = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
-  char* hub_hostname = az_iot_test_env_dup("AZ_IOT_HUB_HOSTNAME");
-  g_fx.device_id = az_iot_test_env_dup("AZ_IOT_DEVICE_ID");
-  if (hub_hostname == NULL || g_fx.device_id == NULL)
-  {
-    free(g_fx.device_id);
-    g_fx.device_id = az_iot_test_env_dup("AZ_IOT_DPS_REGISTRATION_ID");
-  }
-  free(hub_hostname);
+  g_fx.env_hub_hostname = az_iot_test_env_dup("AZ_IOT_HUB_HOSTNAME");
+  g_fx.env_hub_device_id = az_iot_test_env_dup("AZ_IOT_DEVICE_ID");
+  g_fx.env_hub_profile = az_iot_test_env_dup("AZ_IOT_HUB_CONNECTION_PROFILE");
+  g_fx.device_id = az_iot_test_env_dup(
+      g_fx.env_hub_hostname != NULL && g_fx.env_hub_device_id != NULL
+          ? "AZ_IOT_DEVICE_ID"
+          : "AZ_IOT_DPS_REGISTRATION_ID");
   printf(
       "[e2e] proxy host='%s' port='%s' log='%s', device '%s'\n",
       or_empty(g_fx.proxy_host),
@@ -196,6 +200,12 @@ static int group_teardown(void** state)
   free(fx->proxy_log);
   free(fx->dps_host);
   free(fx->device_id);
+  free(fx->env_hub_hostname);
+  free(fx->env_hub_device_id);
+  free(fx->env_hub_profile);
+  fx->env_hub_hostname = NULL;
+  fx->env_hub_device_id = NULL;
+  fx->env_hub_profile = NULL;
   fx->proxy_host = NULL;
   fx->proxy_port = NULL;
   fx->proxy_log = NULL;
@@ -223,7 +233,15 @@ static void release(fixture* fx)
 /** @brief Per-test teardown: a failed test cannot leave a watch or a connection to the next. */
 static int test_teardown(void** state)
 {
-  release((fixture*)*state);
+  fixture* fx = (fixture*)*state;
+  release(fx);
+  if (fx->hub_env_overridden)
+  {
+    set_env("AZ_IOT_HUB_HOSTNAME", fx->env_hub_hostname);
+    set_env("AZ_IOT_DEVICE_ID", fx->env_hub_device_id);
+    set_env("AZ_IOT_HUB_CONNECTION_PROFILE", fx->env_hub_profile);
+    fx->hub_env_overridden = false;
+  }
   return 0;
 }
 
@@ -494,13 +512,11 @@ static int attach_no_fallback(e2e_device* dev, void* ctx)
   return 0;
 }
 
-/* A proxy on a closed loopback port: the device must stay off the hub rather than connect directly,
- * and no telemetry may leave it. Port 1 refuses, so attempts fail fast. */
-static void unreachable_proxy_does_not_fall_back(void** state)
+/** @brief Connects with the egress in the environment and asserts the device never reaches the
+ * hub: no CONNECTED, no send accepted, no marked telemetry at the events endpoint. With
+ * @p direct_hub, also asserts a direct mqttv5 hub connect (no DPS). */
+static void assert_no_fallback(fixture* fx, const char* tag, bool direct_hub)
 {
-  fixture* fx = (fixture*)*state;
-  set_egress("tcp", "127.0.0.1", "1");
-
   e2e_device* dev = &fx->dev;
   memset(dev, 0, sizeof(*dev));
   no_fallback_record* rec = &fx->no_fallback;
@@ -509,10 +525,18 @@ static void unreachable_proxy_does_not_fall_back(void** state)
   opts.before_open = attach_no_fallback;
   opts.before_open_ctx = fx;
   const int rc = e2e_device_connect_with(dev, &opts);
-  printf("[e2e] unreachable proxy: connect rc=%d state=%d\n", rc, (int)dev->conn_state);
+  const bool was_direct = dev->hub_hostname != NULL && dev->hub_device_id != NULL;
+  const bool direct_v5 = was_direct && dev->hub_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  printf(
+      "[e2e] %s: connect rc=%d state=%d via %s, profile %d\n",
+      tag,
+      rc,
+      (int)dev->conn_state,
+      was_direct ? "direct hub" : "DPS",
+      (int)dev->hub_profile);
 
   char marker[128];
-  make_marker(fx, marker, sizeof(marker), "v5-no-fallback");
+  make_marker(fx, marker, sizeof(marker), tag);
   char payload[256];
   snprintf(payload, sizeof(payload), "{\"e2e\":\"no-fallback\",\"marker\":\"%s\"}", marker);
   az_iot_telemetry_message message = { 0 };
@@ -545,18 +569,74 @@ static void unreachable_proxy_does_not_fall_back(void** state)
     }
   }
   printf(
-      "[e2e] unreachable proxy: hub CONNECTED %d time(s), send accepted %d, marker %s, state=%d\n",
+      "[e2e] %s: hub CONNECTED %d time(s), send accepted %d, marker %s, state=%d\n",
+      tag,
       rec->connected,
       accepted,
       seen ? "seen" : "not seen",
       (int)dev->conn_state);
   release(fx);
 
+  if (direct_hub)
+  {
+    assert_true(direct_v5);
+  }
   assert_true(telemetry_ok);
   assert_int_not_equal(rc, 0);
   assert_int_equal(rec->connected, 0);
   assert_int_equal(accepted, 0);
   assert_false(seen);
+}
+
+/* A proxy on a closed loopback port: the device must stay off the hub rather than connect directly,
+ * and no telemetry may leave it. Port 1 refuses, so attempts fail fast. */
+static void unreachable_proxy_does_not_fall_back(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_egress("tcp", "127.0.0.1", "1");
+  assert_no_fallback(fx, "v5-no-fallback", false);
+}
+
+/* As above, past provisioning: the hub and device id DPS assigned (over a direct connection) are
+ * used for a direct mqttv5 hub connect through the closed proxy, so the mqttv5 adapter's own
+ * connect is what must not bypass it. */
+static void unreachable_proxy_does_not_fall_back_on_the_mqttv5_hub(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_egress("tcp", NULL, NULL);
+  e2e_device* dev = &fx->dev;
+  memset(dev, 0, sizeof(*dev));
+  if (e2e_device_connect(dev) != 0)
+  {
+    fail_msg("v5-hub-no-fallback: device did not connect (state=%d)", (int)dev->conn_state);
+  }
+  az_iot_hub_profile profile;
+  const az_iot_result profile_rc = az_iot_connection_client_get_hub_profile(&dev->conn, &profile);
+  const char* address = az_iot_connection_client_get_iothub_address(&dev->conn);
+  const char* assigned_id = az_iot_connection_client_get_device_id(&dev->conn);
+  char hub[256];
+  char device_id[256];
+  snprintf(hub, sizeof(hub), "%s", or_empty(address));
+  snprintf(device_id, sizeof(device_id), "%s", or_empty(assigned_id));
+  printf(
+      "[e2e] v5-hub-no-fallback: assigned hub '%s', device '%s', profile %s ('%s')\n",
+      hub,
+      device_id,
+      az_iot_result_to_string(profile_rc),
+      profile_rc == AZ_IOT_OK ? profile.connection_profile_raw : "");
+  const bool is_v5
+      = profile_rc == AZ_IOT_OK && profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  release(fx);
+  assert_true(is_v5);
+  assert_true(hub[0] != '\0');
+  assert_true(device_id[0] != '\0');
+
+  fx->hub_env_overridden = true;
+  set_env("AZ_IOT_HUB_HOSTNAME", hub);
+  set_env("AZ_IOT_DEVICE_ID", device_id);
+  set_env("AZ_IOT_HUB_CONNECTION_PROFILE", "mqttv5");
+  set_egress("tcp", "127.0.0.1", "1");
+  assert_no_fallback(fx, "v5-hub-no-fallback", true);
 }
 
 int main(void)
@@ -566,6 +646,8 @@ int main(void)
     cmocka_unit_test_teardown(telemetry_over_tcp_through_a_proxy, test_teardown),
     cmocka_unit_test_teardown(websockets_through_a_proxy, test_teardown),
     cmocka_unit_test_teardown(unreachable_proxy_does_not_fall_back, test_teardown),
+    cmocka_unit_test_teardown(
+        unreachable_proxy_does_not_fall_back_on_the_mqttv5_hub, test_teardown),
   };
   return cmocka_run_group_tests_name("e2e_mqttv5_transport", tests, group_setup, group_teardown);
 }

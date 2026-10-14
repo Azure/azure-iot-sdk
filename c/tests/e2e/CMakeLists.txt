@@ -246,6 +246,7 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
     # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
     # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, AZ_IOT_E2E_PROXY_LOG); fails
     # without them.

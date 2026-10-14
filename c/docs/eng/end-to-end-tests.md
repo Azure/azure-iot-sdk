@@ -150,8 +150,9 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   mqttv5 hub over WebSockets (443, default path), over TCP through an HTTP CONNECT proxy, and over
   WebSockets through the proxy, each with a telemetry round trip; the proxy's access log
   (`AZ_IOT_E2E_PROXY_LOG`) must show the CONNECT to DPS, then to the hub. A proxy on a closed port
-  keeps the device off the hub and sends nothing. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without
-  them. `ci-c-e2e-mqttv5` (tinyproxy on the runner).
+  keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
+  to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
+  (tinyproxy on the runner).
 
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
