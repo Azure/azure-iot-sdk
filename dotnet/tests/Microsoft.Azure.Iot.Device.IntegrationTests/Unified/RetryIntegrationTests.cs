@@ -240,31 +240,5 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 return false;
             }
         }
-
-        /// <summary>
-        /// Wraps another retry policy and, using the endpoint the client passes to each retry check, counts how many of
-        /// those checks were for Device Provisioning Service. This lets a test tell re-provisioning retries apart from
-        /// hub reconnection retries and assert on how many times the device fell back to DPS.
-        /// </summary>
-        private sealed class CountingRetryPolicy : IRetryPolicy
-        {
-            private readonly IRetryPolicy _inner;
-            private int _deviceProvisioningServiceConsultations;
-
-            public CountingRetryPolicy(IRetryPolicy inner) => _inner = inner;
-
-            /// <summary>How many times this policy has been consulted for a Device Provisioning Service retry.</summary>
-            public int DeviceProvisioningServiceConsultations => Volatile.Read(ref _deviceProvisioningServiceConsultations);
-
-            public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
-            {
-                if (connectionEndpoint == ConnectionEndpoint.DeviceProvisioningService)
-                {
-                    Interlocked.Increment(ref _deviceProvisioningServiceConsultations);
-                }
-
-                return _inner.GetRetryGuidance(currentRetryCount, lastException, connectionEndpoint, out retryDelay);
-            }
-        }
     }
 }

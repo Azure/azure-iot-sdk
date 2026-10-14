@@ -7,6 +7,7 @@ using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Provisioning;
+using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -45,7 +46,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             X509BootAuthenticationProvider bootAuthenticationProvider = new(deviceCertificate);
             X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(privateKey);
 
-            ConnectionClient connectionClient = new();
+            CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60)));
+            using ConnectionClient connectionClient = new(new ConnectionClientOptions { ConnectionRetryPolicy = retryPolicy });
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
@@ -83,11 +85,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Fail(e.Error.Message);
             }
 
-            // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
-            await connectionClient.DisconnectAsync(cts.Token);
-
             Assert.NotNull(hubCsrResponse.Certificates);
             Assert.NotEmpty(hubCsrResponse.Certificates);
+
+            // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
+            await DisconnectAndReconnectWithIssuedCertificateAsync(
+                connectionClient,
+                connectionContext,
+                hubCsrResponse.Certificates,
+                provisioningSettings,
+                bootAuthenticationProvider,
+                operationalAuthenticationProvider,
+                retryPolicy,
+                cts.Token);
 
             await connectionClient.DisconnectAsync(cts.Token);
         }
@@ -116,7 +126,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 CertificateSigningRequest = new(privateKey, csrBase64),
             };
 
-            ConnectionClient connectionClient = new();
+            CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60)));
+            ConnectionClient connectionClient = new(new ConnectionClientOptions { ConnectionRetryPolicy = retryPolicy });
             ConnectionContext? connectionContext = null;
             try
             {
@@ -145,6 +156,17 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 AuthenticationCredentials dpsCredentials = await bootAuthentication.GetCredentialsAsync(TestContext.Current.CancellationToken);
                 Assert.Null(dpsCredentials.ClientCertificate);
                 Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
+
+                // Disconnect, then reconnect to prove the hub accepts the DPS-issued certificate on a fresh connection.
+                await DisconnectAndReconnectWithIssuedCertificateAsync(
+                    connectionClient,
+                    connectionContext,
+                    connectionContext.IssuedClientCertificates,
+                    provisioningSettings,
+                    bootAuthentication,
+                    operationalAuthentication,
+                    retryPolicy,
+                    TestContext.Current.CancellationToken);
             }
             finally
             {
@@ -165,6 +187,53 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Disconnect from IoT hub, then reconnect through the cached assignment and assert that the hub authenticated
+        /// the device with the expected issued certificate without the client going back to Device Provisioning Service.
+        /// </summary>
+        private static async Task DisconnectAndReconnectWithIssuedCertificateAsync(
+            ConnectionClient connectionClient,
+            ConnectionContext connectionContext,
+            IReadOnlyList<string> expectedIssuedCertificates,
+            ProvisioningSettings provisioningSettings,
+            BootAuthenticationProvider bootAuthenticationProvider,
+            OperationalAuthenticationProvider operationalAuthenticationProvider,
+            CountingRetryPolicy retryPolicy,
+            CancellationToken cancellationToken)
+        {
+            // Snapshot the counters only now so that any DPS retries during the initial ProvisionAndConnectAsync call are excluded.
+            int dpsConsultationsBeforeReconnect = retryPolicy.DeviceProvisioningServiceConsultations;
+            int reprovisionGuidancesBeforeReconnect = retryPolicy.ReprovisionGuidances;
+
+            await connectionClient.DisconnectAsync(cancellationToken);
+
+            // With a cached assignment this connects straight to the hub; it falls back to provisioning only if the hub
+            // rejects the issued certificate. Deliberately not wrapped in RetryAroundAuthorizationAsync so that such a
+            // rejection is not hidden.
+            ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
+                provisioningSettings,
+                bootAuthenticationProvider,
+                operationalAuthenticationProvider,
+                cancellationToken: cancellationToken);
+
+            // Provisioning always builds a new context, so getting the cached instance back proves the device reached the
+            // hub directly with its issued certificate rather than by re-provisioning.
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Equal(expectedIssuedCertificates, reconnectedContext.IssuedClientCertificates);
+
+            AuthenticationCredentials hubCredentials = await operationalAuthenticationProvider.GetCredentialsAsync(
+                reconnectedContext.IotHubHostName,
+                reconnectedContext.DeviceId,
+                reconnectedContext.IssuedClientCertificates,
+                cancellationToken);
+            using X509Certificate2 expectedCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(expectedIssuedCertificates[0]));
+            Assert.NotNull(hubCredentials.ClientCertificate);
+            Assert.Equal(expectedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
+
+            Assert.Equal(dpsConsultationsBeforeReconnect, retryPolicy.DeviceProvisioningServiceConsultations);
+            Assert.Equal(reprovisionGuidancesBeforeReconnect, retryPolicy.ReprovisionGuidances);
         }
 
         private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certificate, string key)
