@@ -3,7 +3,6 @@
 
 using System.Diagnostics;
 using System.Net.Security;
-using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -18,6 +17,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// Creates an operational provider that presents issued certificates paired with the CSR private key.
         /// A certificate must be issued by DPS or restored in the connection context before connecting to IoT Hub.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
+        /// Equivalent to <see cref="IssuedCertificateOperationalAuthenticationProvider"/>.
         /// </summary>
         public X509OperationalAuthenticationProvider(
             AsymmetricAlgorithm issuedCertificatePrivateKey,
@@ -36,6 +36,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// The callback receives a Base64-encoded chain, device certificate first, and returns a certificate with
         /// its private key. It runs from <see cref="GetCredentialsAsync"/> once per issued chain; failures are surfaced to the caller.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
+        /// Equivalent to <see cref="IssuedCertificateOperationalAuthenticationProvider"/>.
         /// </summary>
         public X509OperationalAuthenticationProvider(
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
@@ -216,17 +217,18 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// When <paramref name="issuedClientCertificates"/> is non-empty, the certificate to present is produced from it by
         /// <see cref="HandleCertificateSigningCompleteAsync"/>, which is invoked only the first time each chain is seen.
         /// </remarks>
-        public override async Task<AuthenticationCredentials> GetCredentialsAsync(
+        public override Task<AuthenticationCredentials> GetCredentialsAsync(
             string hostName,
             string deviceId,
             IReadOnlyList<string>? issuedClientCertificates,
             CancellationToken cancellationToken = default)
         {
-            X509Certificate2? certificate = issuedClientCertificates is { Count: > 0 }
-                ? await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates, cancellationToken).ConfigureAwait(false)
-                : _clientCertificate;
-            return CreateCredentials(certificate
-                ?? throw new AuthenticationException("No issued client certificate is available for operational authentication."));
+            return _issuedCertificateHandler.GetCredentialsAsync(
+                issuedClientCertificates,
+                _clientCertificate,
+                RemoteCertificateValidationCallback,
+                LocalCertificateSelectionCallback,
+                cancellationToken);
         }
 
         private Task<X509Certificate2> PresentOriginalCertificateAsync(IReadOnlyList<string> issuedClientCertificates)
@@ -234,16 +236,5 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
             Trace.TraceWarning("A client certificate was issued to this device, but this provider was created without an issuedCertificatePrivateKey or handleCertificateSigningCompleteAsync callback, so the original client certificate will be presented to IoT Hub instead.");
             return Task.FromResult(ClientCertificate);
         }
-
-        private AuthenticationCredentials CreateCredentials(X509Certificate2 clientCertificate)
-        {
-            return new AuthenticationCredentials()
-            {
-                ClientCertificate = clientCertificate,
-                RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
-                LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
-            };
-        }
-
     }
 }

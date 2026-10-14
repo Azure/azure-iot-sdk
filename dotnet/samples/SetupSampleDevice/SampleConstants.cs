@@ -2,9 +2,11 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
-using Microsoft.Azure.Iot.Device.Models;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Models;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
 {
@@ -156,7 +158,7 @@ namespace SetupSampleDevice
             return File.ReadAllBytes(outputPath + "certificate.pfx");
         }
 
-        public static X509BootAuthenticationProvider LoadX509BootAuthenticationProvider()
+        public static X509Certificate2 LoadX509BootCertificate()
         {
             X509Certificate2 certificate;
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
@@ -176,7 +178,29 @@ namespace SetupSampleDevice
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
 
-            return new(certificate);
+            return certificate;
+        }
+
+        /// <summary>
+        /// Loads the sample device's private key from its X.509 certificate.
+        /// </summary>
+        public static AsymmetricAlgorithm LoadPrivateKey()
+        {
+            // The certificate isn't disposed because some platforms tie the key's lifetime to the certificate it came from.
+            X509Certificate2 certificate = LoadX509BootCertificate();
+            return (AsymmetricAlgorithm?)certificate.GetRSAPrivateKey()
+                ?? certificate.GetECDsaPrivateKey()
+                ?? throw new InvalidOperationException("The sample device certificate has no RSA or ECDsa private key.");
+        }
+
+        public static X509BootAuthenticationProvider LoadX509BootAuthenticationProvider()
+        {
+            return new(LoadX509BootCertificate());
+        }
+
+        public static X509OperationalAuthenticationProvider LoadX509OperationalAuthenticationProvider()
+        {
+            return new(LoadX509BootCertificate());
         }
     }
 }

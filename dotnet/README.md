@@ -36,6 +36,7 @@ cannot accidentally be supplied for the wrong endpoint.
 | --- | --- | --- |
 | X.509 | `X509BootAuthenticationProvider` | `X509OperationalAuthenticationProvider` |
 | Symmetric key | `SymmetricKeyBootAuthenticationProvider` | `SymmetricKeyOperationalAuthenticationProvider` |
+| Issued X.509 only | — | `IssuedCertificateOperationalAuthenticationProvider` |
 
 ```csharp
 // X.509 boot + X.509 operational using existing certificates.
@@ -58,17 +59,20 @@ For X.509 operational authentication with a certificate issued during provisioni
 
 ```csharp
 var boot = new SymmetricKeyBootAuthenticationProvider(registrationId, idScope, bootKey);
-var operational = new X509OperationalAuthenticationProvider(csrPrivateKey);
+var operational = new IssuedCertificateOperationalAuthenticationProvider(csrPrivateKey);
 provisioningSettings.CertificateSigningRequest = new(csrPrivateKey, base64Csr);
 ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
     provisioningSettings, boot, operational, cancellationToken: cancellationToken);
 ```
 
 The boot provider can instead be an `X509BootAuthenticationProvider` holding the boot
-certificate. The operational X.509 provider accepts either the CSR private key or
-an asynchronous callback that returns the issued certificate with its private key.
-Issued-certificate-only providers fail if no certificate is available; they never
-fall back to a boot certificate or SAS token.
+certificate. `IssuedCertificateOperationalAuthenticationProvider` only ever presents issued
+certificates; it accepts either the CSR private key or an asynchronous callback that returns
+the issued certificate with its private key, and turns each issued chain into a certificate
+inside `GetCredentialsAsync`. Issued-certificate-only providers fail if no certificate is
+available; they never fall back to a boot certificate or SAS token. To present an existing
+operational certificate until one is issued, pass that certificate along with the CSR private
+key or callback to `X509OperationalAuthenticationProvider` instead.
 
 Only the operational provider receives certificates issued by DPS or Hub.
 `ConnectionContext.OperationalAuthenticationProvider` is used on every Hub
