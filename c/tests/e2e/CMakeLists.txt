@@ -246,7 +246,12 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
     # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_direct_method
+    # Not run on Windows: concurrent REST calls would share the transport's one global TLS session.
+    set(_e2e_direct_method_ctest "")
+    if(WIN32)
+        set(_e2e_direct_method_ctest NO_CTEST)
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
         tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_direct_method PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
