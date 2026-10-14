@@ -983,6 +983,44 @@ static bool service_reported_may_exist(fixture* fx, const char* name)
   return false;
 }
 
+/**
+ * @brief Delete reported member @p name and confirm the service no longer holds it.
+ * Retries once on VERSION_MISMATCH, which refreshes the client's cached version (stale when the
+ * patch that created @p name was applied but its response was lost).
+ * @return A failure description, or NULL when deleted.
+ */
+static const char* delete_reported_member(fixture* fx, const char* name)
+{
+  char json[64];
+  snprintf(json, sizeof(json), "{\"%s\":null}", name);
+  if (!wait_connected(fx))
+  {
+    return "device not reconnected";
+  }
+  const patch_record* p = device_patch(fx, NULL, json, strlen(json));
+  if (p->submit == AZ_IOT_OK && p->done && p->status == AZ_IOT_OK
+      && p->verdict == AZ_IOT_MQTTV5_TWIN_PATCH_VERSION_MISMATCH)
+  {
+    p = device_patch(fx, NULL, json, strlen(json));
+  }
+  if (p->submit != AZ_IOT_OK || !p->done || p->status != AZ_IOT_OK
+      || p->verdict != AZ_IOT_MQTTV5_TWIN_PATCH_OK)
+  {
+    return "delete patch not applied";
+  }
+  for (time_t start = time(NULL); (time(NULL) - start) < E2E_PROPAGATION_TIMEOUT_S;)
+  {
+    service_get_twin(fx);
+    if (twin_json_valid() && !twin_reported_exists(name))
+    {
+      return NULL;
+    }
+    pump_for(fx, 1);
+  }
+  print_twin_json();
+  return "still present after the delete patch";
+}
+
 /* A reported patch above the mqttv3 limit is refused as PAYLOAD_TOO_LARGE. Without a decoded
  * ack the service twin must not hold the property; the device can still patch after it. */
 static void oversized_reported_patch_is_refused(void** state)
@@ -1018,18 +1056,12 @@ static void oversized_reported_patch_is_refused(void** state)
     if (service_reported_may_exist(fx, name))
     {
       /* Keep the twin under the REST read limit for the tests that follow. */
-      char json[64];
-      snprintf(json, sizeof(json), "{\"%s\":null}", name);
-      const bool reconnected = wait_connected(fx);
-      if (reconnected)
-      {
-        (void)device_patch(fx, NULL, json, strlen(json));
-      }
+      const char* cleanup = delete_reported_member(fx, name);
       fail_msg(
-          "oversized patch (%s) left '%s' in the service twin; delete %s",
+          "oversized patch (%s) left '%s' in the service twin; cleanup: %s",
           outcome,
           name,
-          reconnected ? "sent" : "not sent: device not reconnected");
+          cleanup != NULL ? cleanup : "deleted");
     }
     if (acked)
     {
