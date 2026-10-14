@@ -214,7 +214,7 @@ jobs:
         # credential of a provisioned run; the shared environment has none.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }} ${{ runner.os == 'Linux' && env.E2E_SHARED != 'true' && '-DAZ_IOT_BUILD_E2E_TPM=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_sas
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_sas
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
           ${{ runner.os == 'Linux' && env.E2E_SHARED != 'true' && format('cmake --build --preset {0} --target az_iot_tests_e2e_tpm', matrix.preset) || '' }}
 
@@ -335,8 +335,8 @@ jobs:
           # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
           # suite and the transport suite (WebSockets, and MQTT through an HTTP
           # proxy; its proxy scenarios skip themselves when no proxy is
-          # configured for the leg), and the AMQP link and notification-time
-          # tests (no Azure resources).
+          # configured for the leg), and the AMQP link, notification-time and
+          # HTTP header parsing tests (no Azure resources).
           # The mocked ADU suite retired with ADU's twin delivery channel
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
