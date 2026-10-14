@@ -16,9 +16,9 @@ namespace SetupSampleDevice
         // files that SetupSampleDevice saves are the same ones the other samples load, however each is launched.
         private static readonly string outputPath = FindSamplesRoot();
 
-        public static readonly string CertificatePath = outputPath + "certificate.cer";
-        public static readonly string PfxPath = outputPath + "certificate.pfx";
-        public const string TestCertificatesPassword = "Some dummy certificate password";
+        public static readonly string X509CertificatePath = outputPath + "certificate.cer";
+        public static readonly string X509PfxPath = outputPath + "certificate.pfx";
+        public const string X509CertificatePassword = "Some dummy certificate password";
 
         private static string FindSamplesRoot()
         {
@@ -44,12 +44,15 @@ namespace SetupSampleDevice
         {
             try
             {
-                File.Delete(outputPath + "deviceId.txt");
+                File.Delete(outputPath + "x509DeviceId.txt");
                 File.Delete(outputPath + "idscope.txt");
                 File.Delete(outputPath + "iothubhostname.txt");
                 File.Delete(outputPath + "connectionprofile.txt");
                 File.Delete(outputPath + "certificate.cer");
                 File.Delete(outputPath + "certificate.pfx");
+                File.Delete(outputPath + "symmetricKeyDeviceId.txt");
+                File.Delete(outputPath + "symmetricKey.txt");
+                File.Delete(outputPath + "symmetricKeyDevicePrivateKey.pem");
             }
             catch (DirectoryNotFoundException)
             {
@@ -57,9 +60,9 @@ namespace SetupSampleDevice
             }
         }
 
-        public static void SaveDeviceId(string deviceId)
+        public static void SaveX509DeviceId(string deviceId)
         {
-            File.WriteAllText(outputPath + "deviceId.txt", deviceId);
+            File.WriteAllText(outputPath + "x509DeviceId.txt", deviceId);
         }
 
         public static void SaveIdScope(string idScope)
@@ -77,26 +80,99 @@ namespace SetupSampleDevice
             File.WriteAllText(outputPath + "connectionprofile.txt", connectionProfile.ToString());
         }
 
-        public static void SaveX509(byte[] pfx, byte[] certificate)
+        public static void SaveX509Certificate(byte[] pfx, byte[] certificate)
         {
             File.WriteAllBytes(outputPath + "certificate.pfx", pfx);
             File.WriteAllBytes(outputPath + "certificate.cer", certificate);
         }
 
-        public static string LoadDeviceId()
+        public static void SaveSymmetricKeyDeviceId(string deviceId)
         {
-            string? deviceId = System.Environment.GetEnvironmentVariable("SAMPLE_DEVICE_ID");
-            if (deviceId != null)
+            File.WriteAllText(outputPath + "symmetricKeyDeviceId.txt", deviceId);
+        }
+
+        public static void SaveSymmetricKey(string symmetricKey)
+        {
+            File.WriteAllText(outputPath + "symmetricKey.txt", symmetricKey);
+        }
+
+        /// <summary>
+        /// Saves the private key that the symmetric key sample device signs its certificate signing requests with, as a
+        /// PKCS#8 PEM.
+        /// </summary>
+        public static void SaveSymmetricKeyDevicePrivateKey(AsymmetricAlgorithm privateKey)
+        {
+            File.WriteAllText(outputPath + "symmetricKeyDevicePrivateKey.pem", privateKey.ExportPkcs8PrivateKeyPem());
+        }
+
+        /// <summary>
+        /// Loads the private key that the symmetric key sample device signs its certificate signing requests with. The
+        /// symmetric key authenticates the device to DPS; this key pairs with the certificates DPS and IoT Hub issue to it.
+        /// </summary>
+        public static AsymmetricAlgorithm LoadSymmetricKeyDevicePrivateKey()
+        {
+            string privateKeyPem = LoadValue("SAMPLE_SYMMETRIC_KEY_DEVICE_PRIVATE_KEY", "symmetricKeyDevicePrivateKey.pem");
+
+            // A PKCS#8 PEM doesn't name its algorithm in the label, so try each supported one in turn.
+            RSA rsa = RSA.Create();
+            try
             {
-                return deviceId;
+                rsa.ImportFromPem(privateKeyPem);
+                return rsa;
+            }
+            catch (CryptographicException)
+            {
+                rsa.Dispose();
             }
 
-            if (!File.Exists(outputPath + "deviceId.txt"))
+            ECDsa ecdsa = ECDsa.Create();
+            try
+            {
+                ecdsa.ImportFromPem(privateKeyPem);
+                return ecdsa;
+            }
+            catch (CryptographicException)
+            {
+                ecdsa.Dispose();
+                throw new InvalidOperationException("The symmetric key sample device's private key is not an RSA or ECDsa private key.");
+            }
+        }
+
+        /// <summary>
+        /// Loads the Id of the sample device that authenticates with a symmetric key. This is also its DPS registration Id.
+        /// </summary>
+        public static string LoadSymmetricKeyDeviceId()
+        {
+            return LoadValue("SAMPLE_SYMMETRIC_KEY_DEVICE_ID", "symmetricKeyDeviceId.txt");
+        }
+
+        /// <summary>
+        /// Loads the Base64-encoded symmetric key of the sample device that authenticates with a symmetric key.
+        /// </summary>
+        public static string LoadSymmetricKey()
+        {
+            return LoadValue("SAMPLE_SYMMETRIC_KEY", "symmetricKey.txt");
+        }
+
+        private static string LoadValue(string environmentVariableName, string fileName)
+        {
+            string? value = System.Environment.GetEnvironmentVariable(environmentVariableName);
+            if (value != null)
+            {
+                return value;
+            }
+
+            if (!File.Exists(outputPath + fileName))
             {
                 throw new Exception("Run the SetupSampleDevice sample first to generate a test device + credentials");
             }
 
-            return File.ReadAllText(outputPath + "deviceId.txt");
+            return File.ReadAllText(outputPath + fileName);
+        }
+
+        public static string LoadX509DeviceId()
+        {
+            return LoadValue("SAMPLE_X509_DEVICE_ID", "x509DeviceId.txt");
         }
 
         public static string LoadIdScope()
@@ -148,7 +224,7 @@ namespace SetupSampleDevice
             return Enum.Parse<IotHubConnectionType>(connectionProfile, ignoreCase: true);
         }
 
-        public static byte[] LoadPfx()
+        public static byte[] LoadX509Pfx()
         {
             if (!File.Exists(outputPath + "certificate.pfx"))
             {
@@ -164,7 +240,7 @@ namespace SetupSampleDevice
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
             if (string.IsNullOrEmpty(certPassword))
             {
-                certPassword = SampleConstants.TestCertificatesPassword;
+                certPassword = SampleConstants.X509CertificatePassword;
             }
 
             string? pfxContentsPath = System.Environment.GetEnvironmentVariable("X509_CERTIFICATE_PATH");
@@ -175,7 +251,7 @@ namespace SetupSampleDevice
             }
             else
             {
-                certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
+                certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadX509Pfx(), certPassword);
             }
 
             return certificate;
@@ -184,7 +260,7 @@ namespace SetupSampleDevice
         /// <summary>
         /// Loads the sample device's private key from its X.509 certificate.
         /// </summary>
-        public static AsymmetricAlgorithm LoadPrivateKey()
+        public static AsymmetricAlgorithm LoadX509PrivateKey()
         {
             // The certificate isn't disposed because some platforms tie the key's lifetime to the certificate it came from.
             X509Certificate2 certificate = LoadX509BootCertificate();
@@ -201,6 +277,16 @@ namespace SetupSampleDevice
         public static X509OperationalAuthenticationProvider LoadX509OperationalAuthenticationProvider()
         {
             return new(LoadX509BootCertificate());
+        }
+
+        public static SymmetricKeyBootAuthenticationProvider LoadSymmetricKeyBootAuthenticationProvider()
+        {
+            return new(LoadSymmetricKeyDeviceId(), LoadIdScope(), LoadSymmetricKey());
+        }
+
+        public static SymmetricKeyOperationalAuthenticationProvider LoadSymmetricKeyOperationalAuthenticationProvider()
+        {
+            return new(LoadSymmetricKey());
         }
     }
 }

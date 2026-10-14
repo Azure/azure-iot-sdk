@@ -23,7 +23,7 @@ internal class Program
         };
 
         // The device should always have access to its provisioning credentials
-        string deviceId = SampleConstants.LoadDeviceId();
+        string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
         X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
         X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
@@ -39,7 +39,7 @@ internal class Program
             persistedProvisioningResult = new()
             {
                 OperationalAuthenticationProvider = operationalAuthentication,
-                DeviceId = SampleConstants.LoadDeviceId(),
+                DeviceId = SampleConstants.LoadX509DeviceId(),
                 IotHubHostName = provisionedHostName,
                 ConnectionProfile = SampleConstants.LoadConnectionProfile(),
             };
@@ -62,7 +62,7 @@ internal class Program
         // Persist the newest provisioning result so that the next time you run the sample, it connects directly to IoT Hub without provisioning
         Console.WriteLine("Saving device credentials to disk so that this sample can be run again using them rather than provisioning");
         SampleConstants.SaveIotHubHostName(connectionContext.IotHubHostName);
-        SampleConstants.SaveDeviceId(connectionContext.DeviceId);
+        SampleConstants.SaveX509DeviceId(connectionContext.DeviceId);
         SampleConstants.SaveConnectionProfile(connectionContext.ConnectionProfile);
 
         Console.WriteLine("Closing the connection client");

@@ -16,7 +16,7 @@ internal class Program
 {
     public static async Task Main(string[] args)
     {
-        string deviceId = SampleConstants.LoadDeviceId();
+        string deviceId = SampleConstants.LoadX509DeviceId();
         string registrationId = deviceId;
         string idScope = SampleConstants.LoadIdScope();
         // Create initial certificate signing request for DPS to fulfill while provisioning

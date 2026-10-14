@@ -14,7 +14,7 @@ internal class Program
 {
     private static async Task Main(string[] args)
     {
-        string deviceId = SampleConstants.LoadDeviceId();
+        string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
         X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
         X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);

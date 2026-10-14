@@ -26,7 +26,7 @@ internal class Program
             eventArgs.Cancel = true;
         };
 
-        string deviceId = SampleConstants.LoadDeviceId();
+        string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
         X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
         X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);

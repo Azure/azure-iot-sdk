@@ -9,7 +9,7 @@ This directory contains all the samples for using the .NET IoT SDK in this repo.
 
 ### How to create a sample device
 
-Most of these samples assume that a sample device is already enrolled with your Device Provisioning Service, but the [SetupSampleDevice](./SetupSampleDevice/) sample allows you to create that sample device, enroll it with DPS, and locally save all the credentials needed to run the other samples in this directory.
+Most of these samples assume that a sample device is already enrolled with your Device Provisioning Service, but the [SetupSampleDevice](./SetupSampleDevice/) sample allows you to create that sample device, enroll it with DPS, and locally save all the credentials needed to run the other samples in this directory. It creates two individual enrollments: one for a device that authenticates with an X.509 certificate, and one for a device that authenticates with a symmetric key.
 
 Before running this sample, you simply need to enter your service-side DPS + Hub credentials [here](./SetupSampleDevice/Program.cs) like:
 
@@ -30,7 +30,7 @@ This sample can be run again to delete the previous credentials and create a new
 
 ### How to run the device samples
 
-By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
+By running the above sample, you should see a set of credential files saved at the root of this samples directory like "x509DeviceId.txt", "certificate.pfx", "symmetricKeyDeviceId.txt", "symmetricKey.txt", "symmetricKeyDevicePrivateKey.pem", and more. Once you have those, all you need to do is run a command from this directory like:
 
 ```bash
 dotnet run --project DirectMethodsSample  --property WarningLevel=0
