@@ -97,14 +97,49 @@ static bool header_is(const char* data, size_t len, const char* name)
   return true;
 }
 
+/**
+ * @brief Parses a delay-seconds Retry-After value of @p len characters (not NUL-terminated).
+ * @return False for an empty, non-numeric (e.g. HTTP-date) or out-of-range value.
+ */
+static bool parse_retry_after(const char* p, size_t len, uint32_t* out)
+{
+  size_t i = 0;
+  while (i < len && (p[i] == ' ' || p[i] == '\t'))
+  {
+    ++i;
+  }
+  uint64_t v = 0;
+  size_t digits = 0;
+  for (; i < len && p[i] >= '0' && p[i] <= '9'; ++i, ++digits)
+  {
+    v = v * 10u + (uint64_t)(p[i] - '0');
+    if (v > UINT32_MAX)
+    {
+      return false;
+    }
+  }
+  while (i < len && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n'))
+  {
+    ++i;
+  }
+  if (digits == 0 || i != len)
+  {
+    return false;
+  }
+  *out = (uint32_t)v;
+  return true;
+}
+
 static size_t on_header(char* data, size_t size, size_t count, void* user)
 {
   sample_https_response* r = (sample_https_response*)user;
   size_t n = size * count;
   static const char name[] = "retry-after:";
-  if (n > sizeof(name) && header_is(data, n, name))
+  uint32_t seconds = 0;
+  if (header_is(data, n, name)
+      && parse_retry_after(data + sizeof(name) - 1, n - (sizeof(name) - 1), &seconds))
   {
-    r->retry_after_seconds = (uint32_t)strtoul(data + sizeof(name) - 1, NULL, 10);
+    r->retry_after_seconds = seconds;
   }
   return n;
 }
@@ -310,7 +345,7 @@ int main(int argc, char** argv)
   size_t ek_len, srk_len;
   sample_tpm_sim_ek_public(ctx.tpm, &ek, &ek_len);
   sample_tpm_sim_srk_public(ctx.tpm, &srk, &srk_len);
-  char reg_id[AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE];
+  char reg_id[AZ_IOT_DPS_TPM_ID_MAX + 1]; /* also fits AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE */
   if (reg_id_env != NULL)
   {
     if (!sample_copy_str(reg_id, sizeof(reg_id), reg_id_env))

@@ -820,7 +820,8 @@ static bool https_request(
     int* out_status,
     char* resp_buf,
     size_t resp_buf_size,
-    size_t* out_resp_len)
+    size_t* out_resp_len,
+    unsigned* out_retry_after)
 {
   char* cert_pem = (client_cert_path != NULL) ? read_file_alloc(client_cert_path) : NULL;
   char* key_pem = (client_key_path != NULL) ? read_file_alloc(client_key_path) : NULL;
@@ -867,6 +868,10 @@ static bool https_request(
       if (out_status != NULL)
       {
         *out_status = e2e_http_status(r);
+      }
+      if (out_retry_after != NULL)
+      {
+        *out_retry_after = e2e_http_retry_after(r);
       }
       int b_len = 0;
       const uint8_t* b = e2e_http_body(r, &b_len);
@@ -927,7 +932,8 @@ bool az_iot_e2e_https_request(
       out_status,
       resp_buf,
       resp_buf_size,
-      out_resp_len);
+      out_resp_len,
+      NULL);
 }
 
 bool az_iot_e2e_https_request_auth(
@@ -941,7 +947,8 @@ bool az_iot_e2e_https_request_auth(
     int* out_status,
     char* resp_buf,
     size_t resp_buf_size,
-    size_t* out_resp_len)
+    size_t* out_resp_len,
+    unsigned* out_retry_after)
 {
   return https_request(
       host,
@@ -957,7 +964,8 @@ bool az_iot_e2e_https_request_auth(
       out_status,
       resp_buf,
       resp_buf_size,
-      out_resp_len);
+      out_resp_len,
+      out_retry_after);
 }
 
 /* ---- DPS service: individual enrollments -------------------------------------- */
@@ -998,6 +1006,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       &status,
       resp,
       sizeof(resp),
+      NULL,
       NULL);
   return ok && ((status >= 200 && status < 300) || (allow_404 && status == 404));
 }
@@ -1056,6 +1065,7 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       &status,
       NULL,
       0,
+      NULL,
       NULL);
   return ok && ((status >= 200 && status < 300) || status == 404);
 }

@@ -510,22 +510,30 @@ static bool json_unescape_bounded(az_span slice, char* out, size_t out_size, boo
   return true;
 }
 
-/** @brief Records the string token at @p jr into @p out; anything else leaves it empty. */
-static void take_string(const az_json_reader* jr, az_span* out)
+/**
+ * @brief Records the string token at @p jr into @p out.
+ * @return True for a string or null (which leaves @p out empty); false otherwise.
+ */
+static bool take_string(const az_json_reader* jr, az_span* out)
 {
   if (jr->token.kind == AZ_JSON_TOKEN_STRING)
   {
     *out = jr->token.slice;
   }
+  return jr->token.kind == AZ_JSON_TOKEN_STRING || jr->token.kind == AZ_JSON_TOKEN_NULL;
 }
 
-/** @brief Records the token at @p jr when it is a string; JSON escapes stay pending. */
-static void take_string_token(const az_json_reader* jr, az_json_token* out)
+/**
+ * @brief Records the string token at @p jr into @p out; JSON escapes stay pending.
+ * @return True for a string or null (which leaves @p out empty); false otherwise.
+ */
+static bool take_string_token(const az_json_reader* jr, az_json_token* out)
 {
   if (jr->token.kind == AZ_JSON_TOKEN_STRING)
   {
     *out = jr->token;
   }
+  return jr->token.kind == AZ_JSON_TOKEN_STRING || jr->token.kind == AZ_JSON_TOKEN_NULL;
 }
 
 /** @brief Reads the integer token at @p jr into @p out; false when it is not one. */
@@ -567,7 +575,10 @@ static bool read_tpm_object(az_json_reader* jr, dps_tpm_fields* f)
     }
     if (is_key)
     {
-      take_string(jr, &f->hub_key);
+      if (!take_string(jr, &f->hub_key))
+      {
+        return false;
+      }
     }
     else if (!skip_value(jr))
     {
@@ -593,11 +604,17 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
     }
     if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("assignedHub")))
     {
-      take_string_token(jr, &f->assigned_hub);
+      if (!take_string_token(jr, &f->assigned_hub))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("deviceId")))
     {
-      take_string_token(jr, &f->device_id);
+      if (!take_string_token(jr, &f->device_id))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("errorCode")))
     {
@@ -698,19 +715,31 @@ static bool read_fields(az_span body, dps_tpm_fields* f)
     }
     if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("status")))
     {
-      take_string(&jr, &f->status);
+      if (!take_string(&jr, &f->status))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("operationId")))
     {
-      take_string_token(&jr, &f->operation_id);
+      if (!take_string_token(&jr, &f->operation_id))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("authenticationKey")))
     {
-      take_string(&jr, &f->authentication_key);
+      if (!take_string(&jr, &f->authentication_key))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("keyName")))
     {
-      take_string(&jr, &f->key_name);
+      if (!take_string(&jr, &f->key_name))
+      {
+        return false;
+      }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("errorCode")))
     {

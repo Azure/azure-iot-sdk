@@ -115,6 +115,31 @@ static void http_parse_headers(e2e_http_request* r)
           r->content_length = value;
         }
       }
+      else if (ci_starts_with(line, line_len, "retry-after:"))
+      {
+        int p = (int)strlen("retry-after:");
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        unsigned long value = 0;
+        int digits = 0;
+        while (p < line_len && line[p] >= '0' && line[p] <= '9' && value <= 86400ul)
+        {
+          value = value * 10ul + (unsigned long)(line[p] - '0');
+          digits++;
+          p++;
+        }
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        /* Delay-seconds only, capped at a day; an HTTP-date leaves it 0. */
+        if (digits > 0 && p == line_len && value <= 86400ul)
+        {
+          r->retry_after_s = (unsigned)value;
+        }
+      }
       line_start = i + 2;
       i++; /* skip the '\n' */
     }
@@ -410,6 +435,8 @@ int e2e_http_poll(e2e_http_request* r)
 }
 
 int e2e_http_status(const e2e_http_request* r) { return r->http_status; }
+
+unsigned e2e_http_retry_after(const e2e_http_request* r) { return r->retry_after_s; }
 
 const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 {

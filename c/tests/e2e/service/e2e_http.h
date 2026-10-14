@@ -61,6 +61,7 @@ extern "C"
     int body_start;
     int content_length; /* -1 until parsed / unknown */
     int http_status;
+    unsigned retry_after_s; /* Retry-After in delay-seconds form; 0 when absent */
 
     const char* err;
   } e2e_http_request;
@@ -104,6 +105,10 @@ extern "C"
 
   /* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
   int e2e_http_status(const e2e_http_request* r);
+
+  /* Valid once e2e_http_poll returns 1: Retry-After in seconds, 0 when absent or
+   * not in delay-seconds form. */
+  unsigned e2e_http_retry_after(const e2e_http_request* r);
 
   /* Valid once e2e_http_poll returns 1: the response body bytes and length. */
   const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len);

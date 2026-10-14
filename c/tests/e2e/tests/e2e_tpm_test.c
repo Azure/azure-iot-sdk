@@ -70,6 +70,7 @@ static bool https_send(
   static char body[SAMPLE_DPS_TPM_RESPONSE_MAX + 1];
   int status = 0;
   size_t len = 0;
+  unsigned retry_after = 0;
   if (!az_iot_e2e_https_request_auth(
           host,
           request->method,
@@ -81,11 +82,13 @@ static bool https_send(
           &status,
           body,
           sizeof(body),
-          &len))
+          &len,
+          &retry_after))
   {
     return false;
   }
   response->status = (uint16_t)status;
+  response->retry_after_seconds = retry_after;
   memcpy(response->body, body, len);
   response->body_len = len;
   return true;
@@ -287,7 +290,10 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
 
   /* Clean up before asserting, so a failure leaves nothing behind. */
   bool enrollment_deleted = az_iot_e2e_dps_enrollment_delete(reg_id);
-  bool device_deleted = device_id[0] == '\0' || az_iot_e2e_service_device_delete(svc, device_id);
+  /* The enrollment sets no deviceId, so DPS names the device after the registration ID;
+   * delete it even when registration failed after DPS created it (404 counts as deleted). */
+  bool device_deleted
+      = az_iot_e2e_service_device_delete(svc, device_id[0] != '\0' ? device_id : reg_id);
   bool cleaned = enrollment_deleted && device_deleted;
   bool mqttv3 = assigned && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   bool hub_key = assigned && a->hub_key_imported;

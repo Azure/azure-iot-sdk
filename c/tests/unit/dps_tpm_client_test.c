@@ -569,6 +569,12 @@ static void malformed_challenges_are_protocol_errors(void** state)
     "{\"authenticationKey\":\"A$==\"}",
     "{\"authenticationKey\":\"AA\\nA\"}",
     "{\"authenticationKey\":\"AAAA\",\"keyName\":\"bad name\"}",
+    /* Truncated: a container in a string member must not end the response. */
+    "{\"authenticationKey\":\"" CHALLENGE_KEY_JSON "\",\"status\":{}",
+    "{\"authenticationKey\":\"" CHALLENGE_KEY_JSON "\",\"keyName\":[]",
+    "{\"authenticationKey\":\"" CHALLENGE_KEY_JSON "\",\"status\":{}}",
+    "{\"authenticationKey\":{},\"keyName\":\"registration\"}",
+    "{\"authenticationKey\":\"" CHALLENGE_KEY_JSON "\",\"keyName\":1}",
   };
   for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); ++i)
   {
@@ -702,6 +708,13 @@ static void assignment_problems_are_protocol_errors(void** state)
     "\"d\"}}",
     "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
     "\"tpm\":{\"authenticationKey\":\"@@@@\"}}}",
+    /* Truncated: a container in a string member must not end the response. */
+    "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":{}}",
+    "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":[],\"deviceId\":\"d\","
+    "\"tpm\":{\"authenticationKey\":\"" HUB_KEY_B64 "\"}}}",
+    "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+    "\"tpm\":{\"authenticationKey\":{}}}",
+    "{\"operationId\":{},\"status\":\"assigning\"}",
   };
   for (size_t i = 0; i < sizeof(bodies) / sizeof(bodies[0]); ++i)
   {

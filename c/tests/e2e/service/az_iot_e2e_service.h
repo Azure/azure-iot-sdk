@@ -297,7 +297,8 @@ extern "C"
       size_t* out_resp_len);
 
   /* As az_iot_e2e_https_request(), anonymous TLS, with an Authorization header
-   * (@p authorization NULL: none), for device requests authenticated by SAS. */
+   * (@p authorization NULL: none), for device requests authenticated by SAS.
+   * @p out_retry_after (optional) receives Retry-After in seconds, 0 when absent. */
   bool az_iot_e2e_https_request_auth(
       const char* host,
       const char* method,
@@ -309,7 +310,8 @@ extern "C"
       int* out_status,
       char* resp_buf,
       size_t resp_buf_size,
-      size_t* out_resp_len);
+      size_t* out_resp_len,
+      unsigned* out_retry_after);
 
   /* ---- DPS service (IOT_DPS_CONNECTION_STRING) ------------------------------- */
 
