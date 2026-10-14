@@ -128,7 +128,7 @@ extern "C"
    * An entry with a NULL key is skipped; a NULL value reads as empty. The array must outlive the
    * view.
    *
-   * @param[in] array May be NULL when @p count is 0.
+   * @param[in] array May be NULL: no properties, whatever @p count.
    * @param[in] count Entries in @p array.
    *
    * @return The view; no properties when @p array is NULL or @p count is 0.
