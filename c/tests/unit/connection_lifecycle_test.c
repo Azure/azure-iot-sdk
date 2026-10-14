@@ -531,11 +531,52 @@ static void the_username_carries_an_api_version(void** state)
       "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING);
 }
 
+/** @brief Fills @p id (capacity AZ_IOT_MQTT_USERNAME_BUF) with a client id
+ * that makes the MQTTv3 username plus NUL exceed AZ_IOT_MQTT_USERNAME_BUF by
+ * @p excess bytes. */
+static void client_id_for_username_excess(char* id, size_t excess)
+{
+  static const char k_fixed[] = "broker.example/"
+                                "/?api-version=2025-08-01-preview"
+                                "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING;
+  size_t id_len = AZ_IOT_MQTT_USERNAME_BUF - sizeof(k_fixed) + excess;
+  memset(id, 'd', id_len);
+  id[id_len] = '\0';
+}
+
+static void a_username_that_exactly_fills_the_buffer_connects(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 0);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.client_id = id;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(strlen(c.username), AZ_IOT_MQTT_USERNAME_BUF - 1u);
+}
+
+static void a_username_one_byte_too_long_fails_the_open(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 1);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.client_id = id;
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
+}
+
 static void the_model_id_is_announced_in_the_username(void** state)
 {
   (void)state;
-  /* Plug and Play model announcement. Device Update discovers a device by this
-   * value, so losing it silently disables software updates on every device. */
+  /* Plug and Play model announcement, percent-encoded. */
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;
@@ -1341,6 +1382,8 @@ int main(void)
     cmocka_unit_test(connect_timeout_is_configurable),
     cmocka_unit_test(the_username_carries_the_host_and_device_id),
     cmocka_unit_test(the_username_carries_an_api_version),
+    cmocka_unit_test(a_username_that_exactly_fills_the_buffer_connects),
+    cmocka_unit_test(a_username_one_byte_too_long_fails_the_open),
     cmocka_unit_test(the_model_id_is_announced_in_the_username),
     cmocka_unit_test(no_model_id_means_none_in_the_username),
     cmocka_unit_test(an_empty_model_id_is_treated_as_none),

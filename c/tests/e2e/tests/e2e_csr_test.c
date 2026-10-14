@@ -55,6 +55,9 @@
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 120
+/* The SDK waits up to 120 s for the 202 and, after it, 120 s for the 200. */
+#define E2E_RENEW_TIMEOUT_S 270
+#define E2E_RENEW_ATTEMPTS 3
 
 /* ---- device callbacks ----------------------------------------------------- */
 
@@ -76,6 +79,8 @@ typedef struct
   az_iot_result renew_status;
   az_iot_result renew_store_status;
   size_t renew_issued_count;
+  /* Set when the hub session is lost (RETRY_PENDING). */
+  bool hub_dropped;
 } csr_ctx;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -123,6 +128,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   az_iot_result reason = event->reason;
   c->conn_state = s;
   c->last_reason = reason;
+  if (s == AZ_IOT_CONN_STATE_RETRY_PENDING)
+  {
+    c->hub_dropped = true;
+  }
   fprintf(
       stderr,
       "[e2e-csr] conn state -> %s (0x%x) reason %s (0x%x)\n",
@@ -192,19 +201,49 @@ static void pump_until_hub_state(
 }
 
 /** @brief Renews the operational certificate over the connected mqttv3 hub
- * session, then reconnects with the renewed certificate. */
+ * session, then reconnects with the renewed certificate.
+ *
+ * If the hub session drops before a terminal response, the request is
+ * resubmitted with the same request id once reconnected (documented recovery
+ * for az_iot_connection_client_send_csr()). */
 static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
 {
-  assert_int_equal(
-      AZ_IOT_OK, az_iot_connection_client_send_csr(conn, NULL, NULL, on_renew_event, ctx));
-  /* The SDK fails the operation after its own 120 s timeout. */
-  time_t start = time(NULL);
-  while (!ctx->renew_done && (time(NULL) - start) < 150)
+  char request_id[32];
+  (void)snprintf(
+      request_id,
+      sizeof(request_id),
+      "%08x-%08x",
+      (unsigned)time(NULL),
+      (unsigned)(uintptr_t)ctx & 0xffffffffu);
+
+  int attempt = 0;
+  while (!ctx->renew_done && attempt < E2E_RENEW_ATTEMPTS)
   {
-    (void)az_iot_connection_client_do_work(conn, 50);
+    if (attempt > 0)
+    {
+      pump_until_hub_state(conn, ctx, AZ_IOT_CONN_STATE_CONNECTED, E2E_CONNECT_TIMEOUT_S);
+      assert_int_equal(ctx->conn_state, AZ_IOT_CONN_STATE_CONNECTED);
+      if (ctx->renew_done)
+      {
+        break;
+      }
+      az_iot_result cancelled = az_iot_connection_client_cancel_csr(conn);
+      assert_true(cancelled == AZ_IOT_OK || cancelled == AZ_IOT_ERR_NOT_FOUND);
+      fprintf(stderr, "[e2e-csr] hub session lost; resubmitting renewal %s\n", request_id);
+    }
+    ++attempt;
+    ctx->hub_dropped = false;
+    assert_int_equal(
+        AZ_IOT_OK, az_iot_connection_client_send_csr(conn, request_id, NULL, on_renew_event, ctx));
+    time_t start = time(NULL);
+    while (!ctx->renew_done && !ctx->hub_dropped && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
+    {
+      (void)az_iot_connection_client_do_work(conn, 50);
+    }
   }
   assert_true(ctx->renew_done);
-  assert_true(ctx->renew_accepted);
+  /* A resubmitted request may complete without a fresh 202. */
+  assert_true(ctx->renew_accepted || attempt > 1);
   assert_int_equal(ctx->renew_kind, AZ_IOT_CSR_ISSUED);
   assert_int_equal(ctx->renew_status, AZ_IOT_OK);
   assert_int_equal(ctx->renew_store_status, AZ_IOT_OK);
