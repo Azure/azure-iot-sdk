@@ -122,11 +122,10 @@ jobs:
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          # Certificate management integration tests (including the symmetric-key
-          # CSR test) run in the dedicated ci-dotnet-e2e-csr pipeline; everything
-          # else runs here.
+          # Tests labeled Category=CertificateManagement run in ci-dotnet-e2e-csr;
+          # all other tests, including those without a category, run here.
           dotnet test ./dotnet/Project.slnx `
-            --filter "FullyQualifiedName!~CertificateManagementIntegrationTests&FullyQualifiedName!~SymmetricKeyAndCertificateSigning" `
+            --filter "Category!=CertificateManagement" `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `

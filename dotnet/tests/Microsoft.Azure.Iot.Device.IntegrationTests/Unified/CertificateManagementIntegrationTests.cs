@@ -17,6 +17,7 @@ using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
@@ -92,7 +93,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         }
 
         // Requires a DPS with certificate management enabled and a symmetric-key enrollment group linked to its signing
-        // CA, so it runs in the ci-dotnet-e2e-csr pipeline rather than ci-dotnet (matched by "SymmetricKeyAndCertificateSigning").
+        // CA, so the class's CertificateManagement trait routes it to ci-dotnet-e2e-csr rather than ci-dotnet.
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate()
         {
