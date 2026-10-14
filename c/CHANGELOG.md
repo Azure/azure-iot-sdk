@@ -37,8 +37,9 @@
   validate or probe certificates is released at once), and a provider should then wipe any
   in-memory private key or password it handed out. The PEM provider now reads the private key at
   `load()`, wipes it at the last `release()`, and wipes the key and its password at `deinit()`;
-  `client_key_pem` is no longer valid until `deinit()`. Adapters must copy every
-  `az_iot_mqtt_tls_options` string during `connect()`. See
+  each `client_key_pem` it returns is valid only until the matching `release()`, no longer until
+  `deinit()`. Adapters must copy every `az_iot_mqtt_tls_options` string during `connect()`
+  (`sign` and `sign_ctx` stay valid until the adapter client is destroyed). See
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
