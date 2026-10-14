@@ -233,8 +233,8 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   if (assigned && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3 && a->hub_key_imported)
   {
     az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-    opts.host = a->assigned_hub;
-    opts.client_id = a->device_id;
+    opts.iothub_hostname = a->assigned_hub;
+    opts.device_id = a->device_id;
     opts.connection_profile = a->connection_profile;
     opts.hub_auth.sas.on_sas_token_required = on_token_required;
     opts.hub_auth.sas.user_ctx = &ctx;

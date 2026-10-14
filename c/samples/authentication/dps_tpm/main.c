@@ -373,8 +373,8 @@ int main(int argc, char** argv)
   hub_auth.sas.on_sas_token_required = on_token_required;
   hub_auth.sas.user_ctx = &ctx;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = a->assigned_hub;
-  opts.client_id = a->device_id;
+  opts.iothub_hostname = a->assigned_hub;
+  opts.device_id = a->device_id;
   opts.connection_profile = a->connection_profile;
   opts.hub_auth = hub_auth;
   static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))];
