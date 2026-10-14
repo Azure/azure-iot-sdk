@@ -99,6 +99,11 @@ extern "C"
       const char* client_cert_pem,
       const char* client_key_pem);
 
+  /* Parse the status line, Content-Length and Retry-After from r->response once the
+   * header block is complete; no-op before that or once parsed. Called by
+   * e2e_http_poll; exposed for tests. */
+  void e2e_http_parse_headers(e2e_http_request* r);
+
   /* Advance the request state machine a little without blocking on the device.
    * Returns 0 while pending, 1 when the response is complete, -1 on error. */
   int e2e_http_poll(e2e_http_request* r);

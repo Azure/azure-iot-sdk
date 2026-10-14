@@ -51,8 +51,8 @@ static bool ci_starts_with(const uint8_t* line, int line_len, const char* prefix
   return true;
 }
 
-/* Parse the status line and Content-Length once the header terminator is present. */
-static void http_parse_headers(e2e_http_request* r)
+/* Parse the status line, Content-Length and Retry-After once the header terminator is present. */
+void e2e_http_parse_headers(e2e_http_request* r)
 {
   if (r->headers_done)
   {
@@ -87,9 +87,9 @@ static void http_parse_headers(e2e_http_request* r)
     }
   }
 
-  /* Header lines up to header_end. */
+  /* Header lines, the last one ending with the CRLF at header_end. */
   int line_start = 0;
-  for (int i = 0; i + 1 <= header_end; i++)
+  for (int i = 0; i <= header_end; i++)
   {
     if (r->response[i] == '\r' && r->response[i + 1] == '\n')
     {
@@ -389,7 +389,7 @@ int e2e_http_poll(e2e_http_request* r)
       int cap = E2E_HTTP_RESPONSE_MAX - r->response_len;
       if (cap <= 0)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -399,7 +399,7 @@ int e2e_http_poll(e2e_http_request* r)
       if (status == AZ_AMQP_TRANSPORT_STATUS_OK)
       {
         r->response_len += (int)got;
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         if (r->headers_done && r->content_length >= 0
             && (r->response_len - r->body_start) >= r->content_length)
         {
@@ -416,7 +416,7 @@ int e2e_http_poll(e2e_http_request* r)
       }
       if (status == AZ_AMQP_TRANSPORT_STATUS_CLOSED)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
