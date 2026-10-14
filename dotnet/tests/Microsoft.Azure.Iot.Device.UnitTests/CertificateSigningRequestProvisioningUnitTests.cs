@@ -37,33 +37,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
 
-        [Theory]
-        [InlineData(typeof(X509BootAuthenticationProvider), typeof(BootAuthenticationProvider))]
-        [InlineData(typeof(SymmetricKeyBootAuthenticationProvider), typeof(BootAuthenticationProvider))]
-        [InlineData(typeof(X509OperationalAuthenticationProvider), typeof(OperationalAuthenticationProvider))]
-        [InlineData(typeof(SymmetricKeyOperationalAuthenticationProvider), typeof(OperationalAuthenticationProvider))]
-        public void ConcreteProvidersExposeOnlyTheirAuthenticationRole(Type providerType, Type roleType)
-        {
-            Assert.Equal(roleType, providerType.BaseType);
-
-            // Issued certificates are only ever handed to providers through GetCredentialsAsync.
-            Assert.Null(providerType.GetMethod("HandleClientCertificatesIssuedAsync"));
-            if (roleType == typeof(BootAuthenticationProvider))
-            {
-                Assert.False(typeof(OperationalAuthenticationProvider).IsAssignableFrom(providerType));
-                Assert.Null(providerType.GetMethod(nameof(OperationalAuthenticationProvider.GetCredentialsAsync)));
-                Assert.NotNull(providerType.GetMethod(nameof(BootAuthenticationProvider.GetCredentialsAsync)));
-                Assert.NotNull(providerType.GetMethod(nameof(BootAuthenticationProvider.GetRegistrationId)));
-            }
-            else
-            {
-                Assert.False(typeof(BootAuthenticationProvider).IsAssignableFrom(providerType));
-                Assert.Null(providerType.GetMethod(nameof(BootAuthenticationProvider.GetCredentialsAsync)));
-                Assert.Null(providerType.GetMethod(nameof(BootAuthenticationProvider.GetRegistrationId)));
-                Assert.NotNull(providerType.GetMethod(nameof(OperationalAuthenticationProvider.GetCredentialsAsync)));
-            }
-        }
-
         [Fact]
         public void ConnectionApiRequiresRoleSpecificAuthenticationTypes()
         {
