@@ -25,17 +25,17 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_mqtt_role role);
 
-  /* Override opts.iothub_hostname with a heap-owned copy of `host`. Used by the DPS handoff
-   * helper to redirect a freshly-created (and still-IDLE) connection client at
-   * the assigned hub. The client owns the duplicate; it is freed in deinit().
-   * Rejects the call when state != IDLE so live sessions can never have their
-   * target rewritten under them. */
+  /** @brief Copies @p iothub_hostname into the client's fixed buffer and points
+   * opts.iothub_hostname at it (no heap).
+   * @return AZ_IOT_ERR_ALREADY_INITIALIZED unless fully IDLE;
+   * AZ_IOT_ERR_INVALID_ARG for a NULL client or a NULL/empty name;
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit. */
   az_iot_result az_iot_connection_client__set_iothub_hostname(
       az_iot_connection_client* client,
       const char* iothub_hostname);
 
-  /* Override opts.device_id with a heap-owned copy of `device_id`. Same
-   * IDLE-only constraint as __set_iothub_hostname. */
+  /** @brief As az_iot_connection_client__set_iothub_hostname(), for
+   * opts.device_id. */
   az_iot_result az_iot_connection_client__set_device_id(
       az_iot_connection_client* client,
       const char* device_id);
@@ -170,9 +170,9 @@ extern "C"
       az_iot_connection_state_callback cb,
       void* user_ctx);
 
-  /* Returns the configured device id (== options.device_id). NULL only when the
-   * client was created with a NULL device_id (rejected at create time, so this
-   * is effectively never NULL for a live client). */
+  /** @brief Current opts.device_id: the caller's, or the adopted DPS one.
+   * @return NULL when none is set (a DPS client before an assignment is
+   * adopted, or a direct client whose open() will reject it). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 
   /* --- Provisioning-session seam ------------------------------------------- */

@@ -25,8 +25,8 @@ int main(void)
   CHECK(az_span_size(az_span_create_from_str("abc")) == 3);
 
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
-  options.host = "hub.example";
-  options.client_id = "install-test";
+  options.iothub_hostname = "hub.example";
+  options.device_id = "install-test";
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
   CHECK(
       az_iot_connection_client_get_state(&g_conn, AZ_IOT_CONN_SCOPE_HUB) == AZ_IOT_CONN_STATE_IDLE);
