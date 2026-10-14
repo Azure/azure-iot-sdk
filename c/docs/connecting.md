@@ -162,7 +162,7 @@ opts.dps.registration_id = "<registration-id>";
 - A registration replaces the hub, device id and profile. Save them again after `HUB:CONNECTED`.
 - `connection_profile` is declared, as for a direct connect: a feature client for the other
   generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
-- `iothub_hostname` without `device_id` fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
+- An empty `iothub_hostname`, or one without `device_id`, fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
 - Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
   returns the stored chain, the saved hub is connected with it and no certificate is requested.
   DPS still authenticates with the bootstrap credential.

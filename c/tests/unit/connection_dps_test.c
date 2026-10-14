@@ -5280,6 +5280,29 @@ static void a_saved_hub_without_a_device_id_is_refused(void** state)
   }
 }
 
+/* An empty iothub_hostname is refused, also when a re-provision is due. */
+static void an_empty_saved_hub_hostname_is_refused(void** state)
+{
+  (void)state;
+  for (int reprovision = 0; reprovision < 2; ++reprovision)
+  {
+    az_iot_connection_client_options opts = saved_hub_options();
+    opts.iothub_hostname = "";
+    az_iot_connection_client c;
+    assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+    az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+    assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f3), AZ_IOT_OK);
+    if (reprovision)
+    {
+      assert_int_equal(az_iot_connection_client_request_reprovision(&c), AZ_IOT_OK);
+    }
+    assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
+    assert_null(az_iot_mock_mqtt_factory_last_client(f3));
+    az_iot_connection_client_deinit(&c);
+    az_iot_mock_mqtt_factory_destroy(f3);
+  }
+}
+
 /* Provider holding an operational certificate stored before a reboot. */
 typedef struct saved_cert_provider
 {
@@ -5874,6 +5897,7 @@ int main(void)
         request_reprovision_skips_the_saved_hub, setup_saved_hub, teardown),
     cmocka_unit_test(a_saved_hub_profile_is_declared),
     cmocka_unit_test(a_saved_hub_without_a_device_id_is_refused),
+    cmocka_unit_test(an_empty_saved_hub_hostname_is_refused),
     cmocka_unit_test(a_saved_hub_uses_the_stored_operational_certificate),
     cmocka_unit_test(a_failed_enrollment_keeps_the_saved_profile),
     cmocka_unit_test(a_cancelled_assignment_keeps_the_saved_profile),

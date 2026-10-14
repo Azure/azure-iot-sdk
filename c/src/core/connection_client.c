@@ -6605,12 +6605,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
-  /* A host names a hub only together with its device id, whichever route this
-   * open() takes. */
-  if (client->opts.iothub_hostname && !is_nonempty_cstr(client->opts.device_id))
+  /* A set iothub_hostname names a hub only when non-empty and paired with a
+   * device id, whichever route this open() takes. */
+  if (client->opts.iothub_hostname
+      && (!is_nonempty_cstr(client->opts.iothub_hostname)
+          || !is_nonempty_cstr(client->opts.device_id)))
   {
     AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_CONNECTION, "open: iothub_hostname is set without device_id");
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "open: iothub_hostname is empty or set without device_id");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
