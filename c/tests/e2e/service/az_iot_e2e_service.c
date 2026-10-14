@@ -806,10 +806,11 @@ static char* read_file_alloc(const char* path)
   return buf;
 }
 
-bool az_iot_e2e_https_request(
+static bool https_request(
     const char* host,
     const char* method,
     const char* path,
+    const char* authorization,
     const char* client_cert_path,
     const char* client_key_path,
     const char* content_type,
@@ -844,7 +845,7 @@ bool az_iot_e2e_https_request(
       host,
       method,
       path,
-      NULL /* no Authorization */,
+      authorization,
       content_type,
       extra_header,
       body,
@@ -895,4 +896,166 @@ bool az_iot_e2e_https_request(
   free(cert_pem);
   free(key_pem);
   return ok;
+}
+
+bool az_iot_e2e_https_request(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* client_cert_path,
+    const char* client_key_path,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len)
+{
+  return https_request(
+      host,
+      method,
+      path,
+      NULL,
+      client_cert_path,
+      client_key_path,
+      content_type,
+      extra_header,
+      body,
+      body_len,
+      out_status,
+      resp_buf,
+      resp_buf_size,
+      out_resp_len);
+}
+
+bool az_iot_e2e_https_request_auth(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* authorization,
+    const char* content_type,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len)
+{
+  return https_request(
+      host,
+      method,
+      path,
+      authorization,
+      NULL,
+      NULL,
+      content_type,
+      NULL,
+      body,
+      body_len,
+      out_status,
+      resp_buf,
+      resp_buf_size,
+      out_resp_len);
+}
+
+/* ---- DPS service: individual enrollments -------------------------------------- */
+
+#define E2E_DPS_API_VERSION "2021-10-01"
+
+/** @brief The DPS service host and a SAS token from IOT_DPS_CONNECTION_STRING. */
+static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
+{
+  char cs[512];
+  return env_copy("IOT_DPS_CONNECTION_STRING", cs, sizeof(cs)) && e2e_conn_info_parse(cs, info)
+      && e2e_sas_token_create(
+             info->host, info->key_name, info->key, true, sas_expiry(), sas, sas_size);
+}
+
+/** @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404). */
+static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
+{
+  e2e_conn_info info;
+  char sas[512];
+  if (!dps_service_auth(&info, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  int status = 0;
+  char resp[1024];
+  bool ok = https_request(
+      info.host,
+      method,
+      path,
+      sas,
+      NULL,
+      NULL,
+      body != NULL ? "application/json" : NULL,
+      strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
+      body,
+      body != NULL ? strlen(body) : 0,
+      &status,
+      resp,
+      sizeof(resp),
+      NULL);
+  return ok && ((status >= 200 && status < 300) || (allow_404 && status == 404));
+}
+
+bool az_iot_e2e_dps_tpm_enrollment_create(
+    const char* registration_id,
+    const char* endorsement_key_base64)
+{
+  char path[256];
+  char body[2048];
+  int n = snprintf(
+      path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  int m = snprintf(
+      body,
+      sizeof(body),
+      "{\"registrationId\":\"%s\",\"attestation\":{\"type\":\"tpm\",\"tpm\":"
+      "{\"endorsementKey\":\"%s\"}}}",
+      registration_id,
+      endorsement_key_base64);
+  return n > 0 && (size_t)n < sizeof(path) && m > 0 && (size_t)m < sizeof(body)
+      && dps_service_call("PUT", path, body, false);
+}
+
+bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+{
+  char path[256];
+  int n = snprintf(
+      path, sizeof(path), "/registrations/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  bool ok = n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
+  n = snprintf(
+      path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true) && ok;
+}
+
+bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)
+{
+  char sas[512];
+  char path[256];
+  int n = snprintf(path, sizeof(path), "/devices/%s?api-version=%s", device_id, E2E_API_VERSION);
+  if (!build_hub_sas(svc, sas, sizeof(sas)) || n <= 0 || (size_t)n >= sizeof(path))
+  {
+    return false;
+  }
+  int status = 0;
+  bool ok = https_request(
+      svc->hub_info.host,
+      "DELETE",
+      path,
+      sas,
+      NULL,
+      NULL,
+      NULL,
+      "If-Match: *",
+      NULL,
+      0,
+      &status,
+      NULL,
+      0,
+      NULL);
+  return ok && ((status >= 200 && status < 300) || status == 404);
 }
