@@ -485,8 +485,11 @@ static void formatted_device_id_template_is_routed(void** state)
       az_iot_mqttv5_custom_topic_client_format_topic(
           &fx->custom, "e2e/{deviceId}/fmt/a-b_c.0", topic, sizeof(topic), &topic_len),
       AZ_IOT_OK);
+  /* The hub-assigned id, which need not equal the registration id. */
+  const char* device_id = az_iot_connection_client_get_device_id(&fx->dev.conn);
+  assert_non_null(device_id);
   char expected[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
-  snprintf(expected, sizeof(expected), "e2e/%s/fmt/a-b_c.0", fx->dev.device_id);
+  snprintf(expected, sizeof(expected), "e2e/%s/fmt/a-b_c.0", device_id);
   assert_string_equal(topic, expected);
   assert_int_equal(topic_len, strlen(expected));
   assert_accepted_and_routed(fx, topic);
