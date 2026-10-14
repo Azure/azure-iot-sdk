@@ -210,6 +210,14 @@ static bool is_base64_text(az_span text, bool json_escapes)
   return pad == 0 || (pad == 1 && (last & 0x03) == 0) || (pad == 2 && (last & 0x0F) == 0);
 }
 
+/** @brief Whether @p csr is canonical padded base64 that fits an az_span. */
+static bool is_csr(const char* csr)
+{
+  size_t len = strlen(csr);
+  return len <= (size_t)INT32_MAX
+      && is_base64_text(az_span_create((uint8_t*)(uintptr_t)csr, (int32_t)len), false);
+}
+
 AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_init(
     az_iot_dps_tpm_client* client,
     const az_iot_dps_tpm_client_options* options)
@@ -225,8 +233,7 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_init(
       || options->storage_root_key == NULL || options->storage_root_key_len == 0
       || options->storage_root_key_len > UINT16_MAX + 2u
       || (options->payload != NULL && !is_json_object(options->payload))
-      || (options->csr != NULL
-          && !is_base64_text(az_span_create_from_str((char*)(uintptr_t)options->csr), false))
+      || (options->csr != NULL && !is_csr(options->csr))
       || (options->api_version != NULL
           && !is_valid_id(options->api_version, AZ_IOT_DPS_TPM_ID_MAX, false))
       || options->tpm.import_key == NULL || options->tpm.hmac_sha256 == NULL)
