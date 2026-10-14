@@ -45,7 +45,7 @@ internal class Program
 
         // Every certificate signing request in this sample is signed with this private key, so every certificate issued for them
         // (by DPS or by IoT Hub) pairs with it.
-        AsymmetricAlgorithm privateKey = SampleConstants.LoadSymmetricKeyDevice();
+        AsymmetricAlgorithm privateKey = SampleConstants.LoadSymmetricKeyDevicePrivateKey();
 
         // This approach relies on creating new X509Certificate2 objects from the device's private key and the newly issued client certificates.
         // The IssuedCertificateOperationalAuthenticationProvider class offers another constructor which allows for custom handling of this process.
