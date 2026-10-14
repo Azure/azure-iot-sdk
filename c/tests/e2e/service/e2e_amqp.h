@@ -18,6 +18,7 @@
 #include <azure/az_amqp.h>
 
 #include "az_amqp_sample_transport.h"
+#include "az_iot_e2e_service.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -103,13 +104,15 @@ extern "C"
    * endpoint (@p hub_host:5671), authorizing with @p sas_token (audience = hub
    * host). Blocks (pumping internally) until IoT Hub accepts the message or an
    * error/timeout occurs. Opens and tears down its own short-lived connection.
-   * Returns true only when the delivery outcome is `accepted`. */
+   * Returns true only when the delivery outcome is `accepted`. @p properties may
+   * be NULL. */
   bool e2e_amqp_send_c2d(
       const char* hub_host,
       const char* sas_token,
       const char* device_id,
       const uint8_t* payload,
       size_t payload_len,
+      const az_iot_e2e_c2d_properties* properties,
       const char** err_out);
 
 #define E2E_AMQP_NOTIFY_CAPTURE_MAX 8

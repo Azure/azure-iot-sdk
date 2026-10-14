@@ -405,6 +405,26 @@ static az_iot_result decode_into(const char* in, char* out, size_t capacity)
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
+static void url_decoded_length_measures_and_optionally_rejects_nul(void** state)
+{
+  (void)state;
+  size_t n = 99;
+  assert_int_equal(az_iot_url_decoded_length("a%2Fb", 5, false, &n), AZ_IOT_OK);
+  assert_int_equal(n, 3);
+  assert_int_equal(az_iot_url_decoded_length("a%00b", 5, false, &n), AZ_IOT_OK);
+  assert_int_equal(n, 3);
+  /* A NUL would cut a C string, so readers that produce one reject it. */
+  n = 99;
+  assert_int_equal(az_iot_url_decoded_length("a%00b", 5, true, &n), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(n, 99);
+  assert_int_equal(az_iot_url_decoded_length("a%2", 3, false, &n), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(az_iot_url_decoded_length("%zz", 3, false, &n), AZ_IOT_ERR_PROTOCOL);
+
+  uint8_t out[3];
+  az_iot_url_decode_into("a%2Fb", 5, out);
+  assert_memory_equal(out, "a/b", 3);
+}
+
 static void url_decoding_reverses_the_encoder(void** state)
 {
   (void)state;
@@ -579,6 +599,7 @@ int main(void)
     cmocka_unit_test(url_encoding_follows_rfc3986_unreserved),
     cmocka_unit_test(url_encoding_is_all_or_nothing_on_overflow),
     cmocka_unit_test(url_encoding_rejects_null),
+    cmocka_unit_test(url_decoded_length_measures_and_optionally_rejects_nul),
     cmocka_unit_test(url_decoding_reverses_the_encoder),
     cmocka_unit_test(url_decoding_accepts_either_hex_case),
     cmocka_unit_test(url_decoding_rejects_a_malformed_escape),

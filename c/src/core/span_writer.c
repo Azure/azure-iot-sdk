@@ -197,6 +197,55 @@ static int hex_digit_value(uint8_t c)
   return -1;
 }
 
+int az_iot_url_decode_byte(const char* value, size_t length, size_t* pos)
+{
+  const uint8_t* source = (const uint8_t*)value;
+  if (source[*pos] != (uint8_t)'%')
+  {
+    return source[(*pos)++];
+  }
+  /* A truncated or non-hexadecimal escape is rejected rather than passed
+   * through: the service always sends well-formed encoding, so a bad one means
+   * the input was not what we think it is, and inventing a plausible value from
+   * it would hand the application data that was never sent. */
+  if (length - *pos < 3)
+  {
+    return -1;
+  }
+  int hi = hex_digit_value(source[*pos + 1]);
+  int lo = hex_digit_value(source[*pos + 2]);
+  if (hi < 0 || lo < 0)
+  {
+    return -1;
+  }
+  *pos += 3;
+  return (hi << 4) | lo;
+}
+
+AZ_NODISCARD az_iot_result
+az_iot_url_decoded_length(const char* value, size_t length, bool reject_nul, size_t* out_length)
+{
+  size_t decoded = 0;
+  for (size_t pos = 0; pos < length; ++decoded)
+  {
+    int b = az_iot_url_decode_byte(value, length, &pos);
+    if (b < 0 || (reject_nul && b == 0))
+    {
+      return AZ_IOT_ERR_PROTOCOL;
+    }
+  }
+  *out_length = decoded;
+  return AZ_IOT_OK;
+}
+
+void az_iot_url_decode_into(const char* value, size_t length, uint8_t* out)
+{
+  for (size_t pos = 0; pos < length;)
+  {
+    *out++ = (uint8_t)az_iot_url_decode_byte(value, length, &pos);
+  }
+}
+
 void az_iot_span_writer_append_url_decoded(
     az_iot_span_writer* writer,
     const char* value,
@@ -221,48 +270,21 @@ void az_iot_span_writer_append_url_decoded(
     return;
   }
 
-  const uint8_t* source = (const uint8_t*)value;
-
-  /* Measure and validate in one pass before writing anything, so a malformed
-   * escape late in the input cannot leave a half-decoded value behind. A
-   * truncated or non-hexadecimal escape is rejected rather than passed through:
-   * the service always sends well-formed encoding, so a bad one means the topic
-   * was not what we think it is, and inventing a plausible value from it would
-   * hand the application data that was never sent. */
-  int32_t decoded_length = 0;
-  for (size_t i = 0; i < length; ++i)
+  /* Measure and validate before writing anything, so a malformed escape late
+   * in the input cannot leave a half-decoded value behind. */
+  size_t decoded_length = 0;
+  if (az_iot_url_decoded_length(value, length, false, &decoded_length) != AZ_IOT_OK)
   {
-    if (source[i] == (uint8_t)'%')
-    {
-      if (i + 2 >= length || hex_digit_value(source[i + 1]) < 0
-          || hex_digit_value(source[i + 2]) < 0)
-      {
-        writer_fail(writer, AZ_IOT_ERR_PROTOCOL);
-        return;
-      }
-      i += 2;
-    }
-    decoded_length++;
+    writer_fail(writer, AZ_IOT_ERR_PROTOCOL);
+    return;
   }
 
-  uint8_t* cursor = writer_reserve(writer, decoded_length);
+  uint8_t* cursor = writer_reserve(writer, (int32_t)decoded_length);
   if (cursor == NULL)
   {
     return;
   }
-
-  for (size_t i = 0; i < length; ++i)
-  {
-    if (source[i] == (uint8_t)'%')
-    {
-      *cursor++ = (uint8_t)((hex_digit_value(source[i + 1]) << 4) | hex_digit_value(source[i + 2]));
-      i += 2;
-    }
-    else
-    {
-      *cursor++ = source[i];
-    }
-  }
+  az_iot_url_decode_into(value, length, cursor);
 }
 
 void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value)

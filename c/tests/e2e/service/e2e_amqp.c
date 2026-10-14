@@ -569,6 +569,7 @@ bool e2e_amqp_send_c2d(
     const char* device_id,
     const uint8_t* payload,
     size_t payload_len,
+    const az_iot_e2e_c2d_properties* c2d_properties,
     const char** err_out)
 {
   const char* err = NULL;
@@ -737,6 +738,34 @@ bool e2e_amqp_send_c2d(
   az_amqp_message_properties properties = { 0 };
   properties.to = az_span_create((uint8_t*)c->to_buffer, to_length);
   properties.content_type = AZ_SPAN_FROM_STR("application/octet-stream");
+  if (c2d_properties != NULL)
+  {
+    if (c2d_properties->message_id != NULL)
+    {
+      properties.message_id = az_amqp_message_id_from_string(
+          az_span_create_from_str((char*)(uintptr_t)c2d_properties->message_id));
+    }
+    if (c2d_properties->correlation_id != NULL)
+    {
+      properties.correlation_id = az_amqp_message_id_from_string(
+          az_span_create_from_str((char*)(uintptr_t)c2d_properties->correlation_id));
+    }
+    if (c2d_properties->content_type != NULL)
+    {
+      properties.content_type
+          = az_span_create_from_str((char*)(uintptr_t)c2d_properties->content_type);
+    }
+    if (c2d_properties->content_encoding != NULL)
+    {
+      properties.content_encoding
+          = az_span_create_from_str((char*)(uintptr_t)c2d_properties->content_encoding);
+    }
+    if (c2d_properties->absolute_expiry_time_ms != 0)
+    {
+      properties.absolute_expiry_time_ms = c2d_properties->absolute_expiry_time_ms;
+      properties.has_absolute_expiry_time = true;
+    }
+  }
   E2E_AMQP_DISCARD(az_amqp_message_set_properties(&message, &properties));
   E2E_AMQP_DISCARD(az_amqp_message_set_body_data(
       &message, az_span_create((uint8_t*)(uintptr_t)payload, (int32_t)payload_len)));
