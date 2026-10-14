@@ -222,11 +222,8 @@ int az_iot_url_decode_byte(const char* value, size_t length, size_t* pos)
   return (hi << 4) | lo;
 }
 
-az_iot_result az_iot_url_decoded_length(
-    const char* value,
-    size_t length,
-    bool reject_nul,
-    size_t* out_length)
+AZ_NODISCARD az_iot_result
+az_iot_url_decoded_length(const char* value, size_t length, bool reject_nul, size_t* out_length)
 {
   size_t decoded = 0;
   for (size_t pos = 0; pos < length; ++decoded)
