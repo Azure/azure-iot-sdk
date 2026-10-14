@@ -247,23 +247,27 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
 
 int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out)
 {
-  memset(out, 0, sizeof(*out));
-  if (!dev->conn_ok)
+  if (!dev->conn_ok || dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return 1;
   }
+  /* @p out may be the saved hub the connection still borrows: read everything first. */
   const char* host = az_iot_connection_client_get_iothub_address(&dev->conn);
   const char* device_id = az_iot_connection_client_get_device_id(&dev->conn);
   az_iot_hub_profile profile;
   if (host == NULL || device_id == NULL
       || az_iot_connection_client_get_hub_profile(&dev->conn, &profile) != AZ_IOT_OK
+      || profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_UNKNOWN
       || strlen(host) >= sizeof(out->hostname) || strlen(device_id) >= sizeof(out->device_id))
   {
     return 1;
   }
-  snprintf(out->hostname, sizeof(out->hostname), "%s", host);
-  snprintf(out->device_id, sizeof(out->device_id), "%s", device_id);
-  out->profile = profile.connection_profile;
+  e2e_device_hub hub;
+  memset(&hub, 0, sizeof(hub));
+  snprintf(hub.hostname, sizeof(hub.hostname), "%s", host);
+  snprintf(hub.device_id, sizeof(hub.device_id), "%s", device_id);
+  hub.profile = profile.connection_profile;
+  *out = hub;
   return 0;
 }
 

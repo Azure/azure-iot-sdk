@@ -120,8 +120,9 @@ extern "C"
     az_iot_connection_profile profile;
   } e2e_device_hub;
 
-  /** @brief Copies the connected hub's host name, device id and profile to @p out.
-   * Returns 0 on success, non-zero when not connected or a value does not fit. */
+  /** @brief Copies the hub's host name, device id and profile to @p out while the hub state is
+   * CONNECTED. Returns 0 on success; non-zero, leaving @p out untouched, when not CONNECTED, the
+   * profile is unknown or a value does not fit. @p out may be the connection's saved hub. */
   int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out);
 
   /* As e2e_device_connect(), with @p opts (NULL for the defaults). */

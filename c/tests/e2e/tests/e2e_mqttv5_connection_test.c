@@ -616,23 +616,37 @@ static void saved_hub_declared_mqttv3_is_corrected_by_dps(void** state)
   opts.identity_recovery_policy = &retry;
   opts.max_hub_connect_attempts_before_reprovision = E2E_REPROVISION_THRESHOLD;
   opts.connect_timeout_s = E2E_FALLBACK_TIMEOUT_S;
+  const time_t start = time(NULL);
   connect_a(fx, &opts);
 
+  /* The first CONNECTED may be the MQTT 3.1.1 session; keep pumping until DPS restores mqttv5. */
   az_iot_hub_profile profile;
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&fx->a.conn, &profile), AZ_IOT_OK);
-  if (profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  bool on_v5 = false;
+  for (;;)
   {
-    /* Keep the session a little longer to log whether the hub drops it. */
-    for (time_t start = time(NULL); (time(NULL) - start) < 15;)
+    on_v5 = fx->a.conn_state == AZ_IOT_CONN_STATE_CONNECTED
+        && az_iot_connection_client_get_hub_profile(&fx->a.conn, &profile) == AZ_IOT_OK
+        && profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    if (on_v5 || fx->a.conn_state == AZ_IOT_CONN_STATE_FAULTED
+        || (time(NULL) - start) >= E2E_FALLBACK_TIMEOUT_S)
     {
-      pump(fx);
+      break;
     }
-    print_log(&fx->a_log);
+    pump(fx);
+  }
+  print_log(&fx->a_log);
+  if (!on_v5)
+  {
+    memset(&profile, 0, sizeof(profile));
+    const az_iot_result got = az_iot_connection_client_get_hub_profile(&fx->a.conn, &profile);
     fail_msg(
-        "the mqttv5 hub accepted an MQTT 3.1.1 CONNECT: the device stayed on profile %d '%s' "
-        "(DPS connected %d times, hub drops since %d)",
+        "no mqttv5 session within %ds: hub state %s, profile %s %d '%s' (DPS connected %d times, "
+        "hub drops %d)",
+        E2E_FALLBACK_TIMEOUT_S,
+        state_name(fx->a.conn_state),
+        az_iot_result_to_string(got),
         (int)profile.connection_profile,
-        profile.connection_profile_raw,
+        got == AZ_IOT_OK ? profile.connection_profile_raw : "",
         fx->a_log.dps_connected,
         fx->a_log.hub_drops);
   }
