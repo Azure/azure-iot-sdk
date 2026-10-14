@@ -49,11 +49,18 @@ extern "C"
 {
 #endif
 
-  /* Key type used when a new operational key must be generated. */
+  /**
+   * @brief Key type used when a new operational key must be generated.
+   *
+   * The CSR digest follows the operational key actually in use (generated or
+   * loaded). EC: SHA-256 up to 256 bits, SHA-384 up to 384 bits, SHA-512
+   * above. RSA: SHA-256.
+   */
   typedef enum
   {
-    AZ_IOT_MANAGED_KEY_EC_P256 = 0, /* default: ECDSA P-256 */
-    AZ_IOT_MANAGED_KEY_RSA_2048 /* RSA 2048 */
+    AZ_IOT_MANAGED_KEY_EC_P256 = 0, /**< Default. ECDSA P-256, CSR signed with SHA-256. */
+    AZ_IOT_MANAGED_KEY_RSA_2048, /**< RSA 2048, CSR signed with SHA-256. */
+    AZ_IOT_MANAGED_KEY_EC_P384 /**< ECDSA P-384 (secp384r1), CSR signed with SHA-384. */
   } az_iot_certificate_managed_key_type;
 
   typedef struct az_iot_certificate_provider_managed_options
@@ -76,7 +83,9 @@ extern "C"
      * only if every certificate parses and the leaf certifies the operational
      * key. Required. */
     const char* operational_cert_pem_path; /* required */
-    /* Key type used only when generating a new operational key. */
+    /* Key type used only when generating a new operational key; a loaded key
+     * is kept whatever its type. A value outside the enum fails init with
+     * AZ_IOT_ERR_INVALID_ARG. */
     az_iot_certificate_managed_key_type key_type;
   } az_iot_certificate_provider_managed_options;
 
@@ -102,12 +111,12 @@ extern "C"
 
   /* Initialize the managed provider. Loads or generates the operational key and
    * detects any previously-persisted operational certificate. Returns
-   * ERR_INVALID_ARG if a required path is missing, an operational path does not
-   * end in a file name (ends in a separator, ".", or ".."), or a configured path starts
-   * with "<operational key or cert path>.aziot-" (the temporary-file names), or
-   * ERR_INTERNAL on OpenSSL
-   * failure. The provider base pointer can be passed wherever
-   * az_iot_certificate_provider* is expected. */
+   * ERR_INVALID_ARG if a required path is missing, key_type is unknown, an
+   * operational path does not end in a file name (ends in a separator, ".", or
+   * ".."), or a configured path starts with
+   * "<operational key or cert path>.aziot-" (the temporary-file names), or
+   * ERR_INTERNAL on OpenSSL failure. The provider base pointer can be passed
+   * wherever az_iot_certificate_provider* is expected. */
   az_iot_result az_iot_certificate_provider_managed_init(
       az_iot_certificate_provider_managed* provider,
       const az_iot_certificate_provider_managed_options* opts);
