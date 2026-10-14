@@ -77,7 +77,7 @@ comes from, in order:
 | `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE` | 270336 (264 KiB) | 8192 (8 KiB) | Largest outgoing packet. A larger connect or publish fails. |
 | `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
-| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties per packet. |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
 | `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. Macro only. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
@@ -85,7 +85,7 @@ messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and s
 8 KiB.
 
 Each client allocates, when created, the send and receive buffers, a buffer for the strings of a
-received PUBLISH (receive size + 3 + 2 × `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` bytes) and the
+received PUBLISH (receive size + 3 bytes; user properties are read in place) and the
 transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5:
 also `session_expiry_seconds` > 0) it also allocates the message store, kept until the client is
 destroyed. Per client: about 792 KiB with `DEFAULT` (1,056 KiB with such a session), 272 KiB with
@@ -184,7 +184,6 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
-| `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` | 16 | User properties on one mqttv5 telemetry message, 2 of them added by the client. Extra properties are dropped with a warning. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |

@@ -200,9 +200,8 @@ int main(void)
      * client percent-encodes into its topic, so a message means the same thing
      * on either generation.
      *
-     * The budget is AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES counting the two
-     * added above. Properties past it are dropped, because the buffer is fixed,
-     * but the send warns once naming the first one lost. */
+     * There is no fixed limit on the number of properties: the client passes
+     * them to the MQTT adapter without copying them. */
     static const uint8_t payload[] = "{\"temp\":23}";
     az_iot_telemetry_property props[] = {
       { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },

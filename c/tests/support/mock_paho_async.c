@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The adapter only ever stores the handle and hands it back to us, so any
@@ -51,7 +52,7 @@ static MQTTAsync_connectionLost* s_connection_lost;
 
 /* Scripted inbound v5 User Properties. Set up before any producer thread
  * starts and only read after that, so the table is never itself contended. */
-#define MOCK_PAHO_MAX_USER_PROPERTIES 8
+#define MOCK_PAHO_MAX_USER_PROPERTIES 32
 static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
 static int s_user_property_count;
 
@@ -308,7 +309,16 @@ int MQTTAsync_sendMessage(
 
 void MQTTAsync_free(void* ptr) { (void)ptr; }
 
-void MQTTAsync_freeMessage(MQTTAsync_message** msg) { (void)msg; }
+/* Frees the struct only: tests allocate it with malloc() and point its payload
+ * and properties at storage they own, as mock_paho_inbound_properties() does. */
+void MQTTAsync_freeMessage(MQTTAsync_message** msg)
+{
+  if (msg != NULL)
+  {
+    free(*msg);
+    *msg = NULL;
+  }
+}
 
 void MQTTAsync_setTraceLevel(enum MQTTASYNC_TRACE_LEVELS level) { (void)level; }
 
@@ -381,4 +391,13 @@ void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
     s_user_properties[i].value.value.len = (int)strlen(pairs[2 * i + 1]);
   }
   s_user_property_count = count;
+}
+
+MQTTProperties mock_paho_inbound_properties(void)
+{
+  MQTTProperties props = MQTTProperties_initializer;
+  props.count = s_user_property_count;
+  props.max_count = s_user_property_count;
+  props.array = s_user_properties;
+  return props;
 }

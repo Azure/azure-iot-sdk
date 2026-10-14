@@ -173,8 +173,7 @@ static void open_v5(fixture* test)
   message.topic = "ih/ut-device/dev/presence";
   message.correlation_data = nonce;
   message.correlation_data_len = sizeof(nonce);
-  message.user_properties = &type;
-  message.user_properties_count = 1;
+  message.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
   az_iot_mqtt_event ack = { 0 };
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   ack.message = &message;

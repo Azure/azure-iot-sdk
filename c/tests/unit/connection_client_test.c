@@ -747,8 +747,7 @@ static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -814,8 +813,7 @@ static void hub_mqtt_v5_ignores_mismatched_birth_ack(void** state)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = wrong;
   ack_msg.correlation_data_len = sizeof(wrong);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -851,8 +849,7 @@ static void hub_mqtt_v5_birth_ack_after_close_is_ignored(void** state)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -968,8 +965,7 @@ static void hub_mqtt_v5_ignores_wrong_type_ack(void** state)
   msg.topic = "ih/ut-device/dev/presence";
   msg.correlation_data = nonce;
   msg.correlation_data_len = sizeof(nonce);
-  msg.user_properties = &wrong_type;
-  msg.user_properties_count = 1;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&wrong_type, 1);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -977,6 +973,53 @@ static void hub_mqtt_v5_ignores_wrong_type_ack(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &evt));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+/* Inject a presence message echoing the nonce, with `type` set to @p type_value
+ * after 20 other User Properties. */
+static void inject_presence_type_late(fixture* fx, const char* type_value)
+{
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type_value;
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "ih/ut-device/dev/presence";
+  msg.correlation_data = nonce;
+  msg.correlation_data_len = sizeof(nonce);
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, 21);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  evt.message = &msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &evt));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* `type` = "birth-ack", with no schema version, is found after 20 other
+ * properties and completes the handshake. */
+static void hub_mqtt_v5_birth_ack_type_found_past_other_properties(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_presence_type_late(fx, "birth-ack");
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* "birth-acked" only starts with "birth-ack": not a birth-ack. */
+static void hub_mqtt_v5_birth_ack_type_is_matched_whole(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_presence_type_late(fx, "birth-acked:1");
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
@@ -1230,8 +1273,7 @@ static void drive_to_connected_with_birth_ack(
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = payload;
   ack_msg.payload_len = payload_len;
   az_iot_mqtt_event ack;
@@ -3916,6 +3958,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_after_close_is_ignored, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(hub_mqtt_v5_ignores_wrong_type_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_type_found_past_other_properties, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_type_is_matched_whole, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(hub_mqtt_v5_suback_failure_faults, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(hub_mqtt_v5_birth_ack_timeout_faults, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connect_skips_birth_handshake, setup, teardown),

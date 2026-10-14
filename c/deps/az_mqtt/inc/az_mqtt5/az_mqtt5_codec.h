@@ -138,6 +138,19 @@ AZ_NODISCARD az_result
 az_mqtt5_codec_decode_publish(az_span body, uint8_t flags, az_mqtt5_publish_data* out);
 
 /**
+ * @brief Read the next User Property from the Properties of a packet.
+ * @param[in] properties  Properties, after Property Length (az_mqtt5_publish_data.properties).
+ * @param[in,out] cursor  Byte offset: 0 first; advanced past the property returned.
+ * @param[out] out        Key and value, views into @p properties.
+ * @retval AZ_OK                          @p out holds the property.
+ * @retval AZ_ERROR_ITEM_NOT_FOUND        No more User Properties.
+ * @retval AZ_MQTT_ERROR_MALFORMED_PACKET A property is truncated, unknown or not valid UTF-8.
+ * @retval AZ_ERROR_ARG                   @p cursor is outside @p properties.
+ */
+AZ_NODISCARD az_result
+az_mqtt5_codec_next_user_property(az_span properties, int32_t* cursor, az_mqtt5_user_property* out);
+
+/**
  * @brief Decode PUBACK/PUBREC/PUBREL/PUBCOMP body.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_decode_ack(az_span body, az_mqtt5_ack_data* out);

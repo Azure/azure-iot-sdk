@@ -56,15 +56,30 @@ The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properti
 - `correlation_data` / `correlation_data_len` → Correlation Data property
 - `response_topic` → Response Topic property
 - `content_type` → Content Type property
-- `user_properties` / `user_properties_count` → User Property pairs
-
+- `user_properties` → User Property pairs: read every one with `az_iot_mqtt_user_properties_next()` (UTF-8, not NUL-terminated: use the lengths) and send them in order. The view is valid only during `publish()`; serialize or copy during the call. There is no count limit; if the packet cannot carry them, fail the publish (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`), never drop some.
 **On inbound MESSAGE** — extract these MQTT v5 properties from the received packet and populate the corresponding `az_iot_mqtt_message` fields before delivering `EVT_MESSAGE`:
 - Correlation Data → `correlation_data` / `correlation_data_len`
 - Response Topic → `response_topic`
 - Content Type → `content_type`
-- User Properties → `user_properties` / `user_properties_count`
+- User Properties → `user_properties`, an `az_iot_mqtt_user_properties` view. Implement its `next` over your client's own storage (the received bytes, a property list), so nothing is copied and none is dropped; or, if your client already copies them into NUL-terminated pairs, use `az_iot_mqtt_user_properties_from_array()`. It must stay valid until your event callback returns. A malformed property makes `next` return `AZ_IOT_ERR_PROTOCOL`.
 
-If any property is absent in the packet, set the pointer to NULL and the length/count to 0.
+If any property is absent in the packet, set the pointer to NULL and the length to 0; leave `user_properties` zero-initialized for none.
+
+A `next` over a list your client keeps (`my_prop` is its element type):
+
+```c
+static az_iot_result my_next(const void* src, size_t len, size_t* cursor,
+                             az_iot_mqtt_user_property_view* out)
+{
+  const my_prop* list = (const my_prop*)src;
+  if (*cursor >= len) { return AZ_IOT_ERR_NOT_FOUND; }
+  const my_prop* p = &list[(*cursor)++];
+  out->key = p->key;     out->key_len = p->key_len;     /* never NULL */
+  out->value = p->value; out->value_len = p->value_len; /* never NULL */
+  return AZ_IOT_OK;
+}
+/* inbound: msg.user_properties = (az_iot_mqtt_user_properties){ my_next, list, count }; */
+```
 
 **On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`. MQTT 3.1.1 carries the flag too, so a v3.1.1 adapter must populate it as well: a session connected with Clean Session 0 has no other way to learn whether the broker resumed it.
 

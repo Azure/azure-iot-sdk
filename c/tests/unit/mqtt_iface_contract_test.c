@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <cmocka.h>
@@ -459,9 +460,157 @@ static void publish_refused_has_a_name(void** state)
       az_iot_result_to_string(AZ_IOT_ERR_PUBLISH_REFUSED), "AZ_IOT_ERR_PUBLISH_REFUSED");
 }
 
+/* ------------------------------------------------------------------------- */
+/* User Property views                                                       */
+/* ------------------------------------------------------------------------- */
+
+static void user_properties_from_array_yields_every_entry_in_order(void** state)
+{
+  (void)state;
+  az_iot_mqtt_user_property array[24];
+  char keys[24][8];
+  for (int i = 0; i < 24; ++i)
+  {
+    snprintf(keys[i], sizeof(keys[i]), "k%02d", i);
+    array[i].key = keys[i];
+    array[i].value = (i == 5) ? NULL : "v";
+  }
+  array[7].key = NULL; /* skipped */
+  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(array, 24);
+
+  size_t cursor = 0;
+  size_t seen = 0;
+  az_iot_mqtt_user_property_view p;
+  az_iot_result r;
+  while ((r = az_iot_mqtt_user_properties_next(&props, &cursor, &p)) == AZ_IOT_OK)
+  {
+    size_t expected = seen < 7 ? seen : seen + 1;
+    assert_int_equal(p.key_len, 3);
+    assert_memory_equal(p.key, keys[expected], 3);
+    assert_non_null(p.value);
+    assert_int_equal(p.value_len, expected == 5 ? 0 : 1);
+    seen++;
+  }
+  assert_int_equal(r, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(seen, 23);
+  /* The end is sticky. */
+  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
+}
+
+static void user_properties_empty_views_have_none(void** state)
+{
+  (void)state;
+  az_iot_mqtt_user_properties zero = { 0 };
+  az_iot_mqtt_user_properties none = az_iot_mqtt_user_properties_from_array(NULL, 3);
+  az_iot_mqtt_user_property one = { "k", "v" };
+  az_iot_mqtt_user_properties counted_zero = az_iot_mqtt_user_properties_from_array(&one, 0);
+  az_iot_mqtt_user_property_view p;
+  size_t cursor = 0;
+  assert_int_equal(az_iot_mqtt_user_properties_next(&zero, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(az_iot_mqtt_user_properties_next(&none, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(
+      az_iot_mqtt_user_properties_next(&counted_zero, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&zero, "k", &p), AZ_IOT_ERR_NOT_FOUND);
+}
+
+static void user_properties_find_matches_whole_keys_and_the_first(void** state)
+{
+  (void)state;
+  az_iot_mqtt_user_property array[] = {
+    { "typ", "short" },  { "types", "long" },  { "", "empty-key" },
+    { "type", "first" }, { "type", "second" },
+  };
+  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(array, 5);
+  az_iot_mqtt_user_property_view p;
+
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "type", &p), AZ_IOT_OK);
+  assert_int_equal(p.value_len, 5);
+  assert_memory_equal(p.value, "first", 5);
+
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "", &p), AZ_IOT_OK);
+  assert_memory_equal(p.value, "empty-key", 9);
+
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "ty", &p), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "TYPE", &p), AZ_IOT_ERR_NOT_FOUND);
+}
+
+/* A producer reporting malformed data stops the iteration; find reports it
+ * rather than "not found". */
+static az_iot_result malformed_after_one(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source;
+  (void)source_len;
+  if ((*cursor)++ == 0)
+  {
+    out->key = "a";
+    out->key_len = 1;
+    out->value = "";
+    out->value_len = 0;
+    return AZ_IOT_OK;
+  }
+  return AZ_IOT_ERR_PROTOCOL;
+}
+
+/* A producer handing out a NULL pointer breaks the view's contract. */
+static az_iot_result null_key(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source;
+  (void)source_len;
+  (*cursor)++;
+  out->key = NULL;
+  out->key_len = 0;
+  out->value = "";
+  out->value_len = 0;
+  return AZ_IOT_OK;
+}
+
+static void user_properties_malformed_sources_are_reported(void** state)
+{
+  (void)state;
+  az_iot_mqtt_user_properties props = { malformed_after_one, NULL, 0 };
+  az_iot_mqtt_user_property_view p;
+  size_t cursor = 0;
+  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "a", &p), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "b", &p), AZ_IOT_ERR_PROTOCOL);
+
+  az_iot_mqtt_user_properties bad = { null_key, NULL, 0 };
+  cursor = 0;
+  assert_int_equal(az_iot_mqtt_user_properties_next(&bad, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
+}
+
+static void user_properties_null_arguments_are_refused(void** state)
+{
+  (void)state;
+  az_iot_mqtt_user_property one = { "k", "v" };
+  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(&one, 1);
+  az_iot_mqtt_user_property_view p;
+  size_t cursor = 0;
+  assert_int_equal(az_iot_mqtt_user_properties_next(NULL, &cursor, &p), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqtt_user_properties_next(&props, NULL, &p), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqtt_user_properties_find(NULL, "k", &p), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, NULL, &p), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "k", NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(user_properties_from_array_yields_every_entry_in_order),
+    cmocka_unit_test(user_properties_empty_views_have_none),
+    cmocka_unit_test(user_properties_find_matches_whole_keys_and_the_first),
+    cmocka_unit_test(user_properties_malformed_sources_are_reported),
+    cmocka_unit_test(user_properties_null_arguments_are_refused),
     cmocka_unit_test(factory_advertises_version),
     cmocka_unit_test(client_carries_iface_pointer_with_version),
     cmocka_unit_test(publish_records_topic_payload_and_assigns_packet_id),

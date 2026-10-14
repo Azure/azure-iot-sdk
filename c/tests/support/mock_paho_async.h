@@ -121,4 +121,8 @@ MQTTAsync_connectionLost* mock_paho_connection_lost(void);
  * allocations that this mock's no-op MQTTProperties_free() would then leak. */
 void mock_paho_set_inbound_user_properties(const char* const* pairs, int count);
 
+/** @brief An MQTTProperties over the table set by mock_paho_set_inbound_user_properties(), for an
+ * inbound message. Points into the table; MQTTProperties_free() is a no-op. */
+MQTTProperties mock_paho_inbound_properties(void);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

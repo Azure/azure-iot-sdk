@@ -198,6 +198,20 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void)
 /* Length of a length-delimited MQTT UTF-8 string, counting NULL as empty. */
 static size_t lenstr_len(const char* s) { return s ? strlen(s) : 0u; }
 
+/* Bytes a Variable Byte Integer of @p v takes (v < 2^21: every packet built here is far smaller).
+ */
+static size_t vbi_len(size_t v) { return v < 128u ? 1u : (v < 16384u ? 2u : 3u); }
+
+static void write_vbi(uint8_t* buf, size_t* pos, size_t v)
+{
+  do
+  {
+    uint8_t b = (uint8_t)(v % 128u);
+    v /= 128u;
+    buf[(*pos)++] = v > 0 ? (uint8_t)(b | 0x80u) : b;
+  } while (v > 0);
+}
+
 /* Append a two-byte length followed by the bytes themselves. `pos` is advanced;
  * the caller has already proved the result fits. */
 static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
@@ -242,17 +256,17 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
     props_len
         += 1u + 2u + lenstr_len(user_properties[i].key) + 2u + lenstr_len(user_properties[i].value);
   }
-  size_t remaining = 2u + strlen(topic) + 1u + props_len + payload_len;
-  if (props_len > 127u || remaining > 127u || remaining + 2u > sizeof(p.bytes))
+  size_t remaining = 2u + strlen(topic) + vbi_len(props_len) + props_len + payload_len;
+  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
   {
     return p;
   }
 
   size_t pos = 0;
   p.bytes[pos++] = 0x30u; /* PUBLISH, QoS 0, no DUP, no RETAIN */
-  p.bytes[pos++] = (uint8_t)remaining;
+  write_vbi(p.bytes, &pos, remaining);
   write_lenstr(p.bytes, &pos, topic);
-  p.bytes[pos++] = (uint8_t)props_len;
+  write_vbi(p.bytes, &pos, props_len);
   if (content_type != NULL)
   {
     p.bytes[pos++] = 0x03u; /* Content Type */
