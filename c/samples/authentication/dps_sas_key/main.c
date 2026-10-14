@@ -241,7 +241,7 @@ int main(void)
   }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.client_id = config.reg_id;
+  opts.device_id = config.reg_id;
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.endpoint;

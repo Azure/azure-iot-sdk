@@ -99,7 +99,7 @@ static void open_without_host_or_dps_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   /* No host, no dps.id_scope: there is nothing to connect to. */
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -111,7 +111,7 @@ static void open_without_client_id_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   /* A direct hub connect needs an identity as well as an endpoint. */
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -359,8 +359,8 @@ static void the_default_options_retry_a_refused_connack(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   /* initial_delay_ms is deliberately NOT overridden: it is the field that
    * decides whether reconnection happens at all, so the test has to depend on
    * the default supplying it. Only the cap is shortened, which bounds the
@@ -413,8 +413,8 @@ static void reconnection_can_still_be_disabled(void** state)
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.reconnection_policy.initial_delay_ms = 0;
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -448,8 +448,8 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -550,7 +550,7 @@ static void a_username_that_exactly_fills_the_buffer_connects(void** state)
   static char id[AZ_IOT_MQTT_USERNAME_BUF];
   client_id_for_username_excess(id, 0);
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
-  opts.client_id = id;
+  opts.device_id = id;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(strlen(c.username), AZ_IOT_MQTT_USERNAME_BUF - 1u);
@@ -562,7 +562,7 @@ static void a_username_one_byte_too_long_fails_the_open(void** state)
   static char id[AZ_IOT_MQTT_USERNAME_BUF];
   client_id_for_username_excess(id, 1);
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
-  opts.client_id = id;
+  opts.device_id = id;
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);

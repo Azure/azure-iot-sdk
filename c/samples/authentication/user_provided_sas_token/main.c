@@ -267,7 +267,7 @@ int main(void)
   tokens.sas.user_ctx = &ctx;
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.client_id = reg_id;
+  opts.device_id = reg_id;
   opts.dps.id_scope = id_scope;
   opts.dps.registration_id = reg_id;
   opts.dps.global_endpoint = endpoint;

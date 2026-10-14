@@ -252,7 +252,7 @@ int main(void)
   int telemetry_initialized = 0;
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.client_id = config.reg_id;
+  copts.device_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
    * the shared sample_config, so it sets the DPS fields directly -- including
    * the optional endpoint, so it targets the same provisioning service as every

@@ -227,9 +227,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
@@ -563,9 +563,9 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
    * answered at init rather than deferred to connect. */
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -588,9 +588,9 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 

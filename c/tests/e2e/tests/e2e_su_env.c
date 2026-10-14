@@ -100,8 +100,8 @@ void e2e_su_env_apply(
   pem->client_key_pem_path = env->key_path;
   pem->trusted_ca_pem_path = env->trusted_ca;
 
-  conn->host = NULL; /* DPS mode */
-  conn->client_id = env->registration_id;
+  conn->iothub_hostname = NULL; /* DPS mode */
+  conn->device_id = env->registration_id;
   conn->dps.id_scope = env->id_scope;
   conn->dps.registration_id = env->registration_id;
   conn->dps.global_endpoint = env->dps_host;

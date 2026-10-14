@@ -147,8 +147,8 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
   {
-    copts.host = dev->hub_hostname;
-    copts.client_id = dev->hub_device_id;
+    copts.iothub_hostname = dev->hub_hostname;
+    copts.device_id = dev->hub_device_id;
     copts.connection_profile = dev->hub_profile;
   }
   else

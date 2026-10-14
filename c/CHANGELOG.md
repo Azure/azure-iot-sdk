@@ -89,8 +89,8 @@
   update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
-  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.host`, `opts.port` and
-  `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
+  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
+  `opts.device_id`, `opts.port` and `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
   scripts (`tests/manual`) are removed.
 - Breaking: mqttv5 telemetry sends `$.cid` as the native MQTT v5 Correlation Data (UTF-8, at
   most 65535 bytes, else `AZ_IOT_ERR_INVALID_ARG`) instead of a user property; the hub reads the
@@ -117,3 +117,10 @@
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (with the size needed), `AZ_IOT_ERR_PROTOCOL` or
   `AZ_IOT_ERR_NOT_FOUND`, so nothing is dropped silently and there is no limit on the number or
   size of properties. Adds `AZ_IOT_MSG_PROP_EXPIRY_TIME`.
+- Breaking: `az_iot_connection_client_options` fields `host` and `client_id` are renamed
+  `iothub_hostname` and `device_id`.
+- Saved hub with DPS fallback: `iothub_hostname`, `device_id` and `connection_profile` set together with the
+  `dps` fields connect to that hub first and use DPS only when a re-provision is due. The saved
+  `connection_profile` is now declared, so a feature client for the other hub generation fails
+  with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
+  generation. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).

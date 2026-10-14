@@ -75,8 +75,8 @@ static void a_registered_factory_is_destroyed_by_the_application_after_deinit(vo
   (void)state;
   az_iot_connection_client conn;
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
-  options.host = "hub.example";
-  options.client_id = "az-mqtt-adapter-test";
+  options.iothub_hostname = "hub.example";
+  options.device_id = "az-mqtt-adapter-test";
   assert_int_equal(az_iot_connection_client_init(&conn, &options), AZ_IOT_OK);
   az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, v5), AZ_IOT_OK);

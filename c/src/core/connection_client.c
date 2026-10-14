@@ -11,8 +11,10 @@
  *   - the lifecycle state machine
  *     (IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE,
  *      with RETRY_PENDING and FAULTED side branches)
- *   - DPS provisioning (when opts.dps.id_scope is set and opts.host is NULL,
- *     open() internally provisions via DPS before connecting to the hub)
+ *   - DPS provisioning (when opts.dps.id_scope is set and opts.iothub_hostname is NULL,
+ *     open() internally provisions via DPS before connecting to the hub; with
+ *     opts.iothub_hostname set too, open() connects to that saved hub and DPS is the
+ *     fallback)
  *
  * Single-threaded contract: every state transition and every user state-callback
  * fires from inside az_iot_connection_client_do_work(). The MQTT adapter's
@@ -737,7 +739,8 @@ static void set_state_to(
     {
       recovery.classification = classify_failure(scope, reason);
     }
-    recovery.endpoint = (scope == AZ_IOT_CONN_SCOPE_DPS) ? dps_endpoint(c) : c->opts.host;
+    recovery.endpoint
+        = (scope == AZ_IOT_CONN_SCOPE_DPS) ? dps_endpoint(c) : c->opts.iothub_hostname;
     event.recovery = &recovery;
   }
   /* Detail rides only an event that is actually reporting a failure, and only
@@ -1296,18 +1299,18 @@ static bool is_span_safe_cstr(const char* s)
 }
 
 /**
- * @brief (Re)initializes c->hub_client from the current opts.host /
- * opts.client_id. Not cached: DPS (re)provisioning replaces both, and the
+ * @brief (Re)initializes c->hub_client from the current opts.iothub_hostname /
+ * opts.device_id. Not cached: DPS (re)provisioning replaces both, and the
  * client holds spans of their old lengths. Cheap: it only stores spans.
  */
 static bool ensure_hub_client(az_iot_connection_client* c)
 {
   c->hub_client_initialized = false;
-  if (is_span_safe_cstr(c->opts.host) && is_span_safe_cstr(c->opts.client_id)
+  if (is_span_safe_cstr(c->opts.iothub_hostname) && is_span_safe_cstr(c->opts.device_id)
       && (c->opts.model_id == NULL || strlen(c->opts.model_id) <= (size_t)INT32_MAX))
   {
-    az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.host);
-    az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.client_id);
+    az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.iothub_hostname);
+    az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.device_id);
     az_iot_hub_client_options hub_opts = az_iot_hub_client_options_default();
     if (is_nonempty_cstr(c->opts.model_id))
     {
@@ -1329,9 +1332,9 @@ static az_iot_result hub_build_username(const az_iot_connection_client* c, char*
 {
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
-  az_iot_span_writer_append_str(&writer, c->opts.host);
+  az_iot_span_writer_append_str(&writer, c->opts.iothub_hostname);
   az_iot_span_writer_append_str(&writer, "/");
-  az_iot_span_writer_append_str(&writer, c->opts.client_id);
+  az_iot_span_writer_append_str(&writer, c->opts.device_id);
   az_iot_span_writer_append_str(
       &writer, "/?api-version=" HUB_API_VERSION "&DeviceClientType=" HUB_DEVICE_CLIENT_TYPE);
   if (is_nonempty_cstr(c->opts.model_id))
@@ -1352,8 +1355,8 @@ static az_iot_result hub_build_username(const az_iot_connection_client* c, char*
 static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
-  const char* first = is_dps ? c->opts.dps.id_scope : c->opts.host;
-  const char* second = is_dps ? c->opts.dps.registration_id : c->opts.client_id;
+  const char* first = is_dps ? c->opts.dps.id_scope : c->opts.iothub_hostname;
+  const char* second = is_dps ? c->opts.dps.registration_id : c->opts.device_id;
   if (first == NULL || second == NULL)
   {
     return false;
@@ -2920,7 +2923,12 @@ static bool dps_parse_operation_refusal(
  * buffer is stored truncated and treated as unknown, which is correct: every
  * profile this SDK recognises is short, so an overlong one cannot be one of
  * them. */
-static void connection_profile_set(az_iot_connection_client* c, az_span raw)
+static void profile_record(
+    az_span raw,
+    az_iot_connection_profile* profile,
+    char* raw_buf,
+    size_t raw_cap,
+    bool* raw_truncated)
 {
   int32_t n = az_span_size(raw);
   if (n < 0)
@@ -2928,52 +2936,82 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
     n = 0;
   }
   bool truncated = false;
-  if ((size_t)n >= sizeof(c->connection_profile_raw))
+  if ((size_t)n >= raw_cap)
   {
-    n = (int32_t)(sizeof(c->connection_profile_raw) - 1);
+    n = (int32_t)(raw_cap - 1);
     truncated = true;
   }
   if (n > 0)
   {
-    memcpy(c->connection_profile_raw, az_span_ptr(raw), (size_t)n);
+    memcpy(raw_buf, az_span_ptr(raw), (size_t)n);
   }
-  c->connection_profile_raw[n] = '\0';
-  c->connection_profile_raw_truncated = truncated;
+  raw_buf[n] = '\0';
+  *raw_truncated = truncated;
 
   if (truncated)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_DPS,
         "connectionProfile is longer than %u bytes and was truncated to \"%s\"",
-        (unsigned)sizeof(c->connection_profile_raw),
-        c->connection_profile_raw);
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+        (unsigned)raw_cap,
+        raw_buf);
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   }
   else
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
+}
+
+/** @brief Records @p raw as the profile of the hub @p c is bound to. */
+static void connection_profile_set(az_iot_connection_client* c, az_span raw)
+{
+  profile_record(
+      raw,
+      &c->connection_profile,
+      c->connection_profile_raw,
+      sizeof(c->connection_profile_raw),
+      &c->connection_profile_raw_truncated);
+}
+
+/** @brief Records @p raw as the pending assignment's profile, adopted with its hub. */
+static void dps_assigned_profile_set(az_iot_connection_client* c, az_span raw)
+{
+  profile_record(
+      raw,
+      &c->dps_assigned_profile,
+      c->dps_assigned_profile_raw,
+      sizeof(c->dps_assigned_profile_raw),
+      &c->dps_assigned_profile_raw_truncated);
+}
+
+/** @brief Records the pending assignment's profile, as it is adopted. */
+static void dps_assigned_profile_commit(az_iot_connection_client* c)
+{
+  c->connection_profile = c->dps_assigned_profile;
+  memcpy(c->connection_profile_raw, c->dps_assigned_profile_raw, sizeof(c->connection_profile_raw));
+  c->connection_profile_raw_truncated = c->dps_assigned_profile_raw_truncated;
 }
 
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
  * meaning "classic" -- so it leaves the MQTTv3 default set on entry. Only a malformed payload fails
- * here; an unrecognised *value* fails later, at the point the session role is chosen, so the
- * profile is already recorded and readable when it does. */
+ * here; an unrecognised *value* fails later, at the point the session role is chosen, once the
+ * profile is adopted and readable. Written to the pending dps_assigned_profile* fields. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
   /* Each assignment starts from the default: an absent profile must not keep
    * the one an earlier, failed assignment recorded. */
-  connection_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+  dps_assigned_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
 
   az_json_reader jr;
   az_iot_result r = dps_enter_registration_state(&jr, payload);
@@ -2999,7 +3037,7 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
     {
       if (jr.token.kind == AZ_JSON_TOKEN_STRING)
       {
-        connection_profile_set(c, jr.token.slice);
+        dps_assigned_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
       /* null (or any non-string) resolves to the MQTTv3 default. */
@@ -3305,8 +3343,9 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
-          /* Which hub generation we were assigned to. Read before the issued
-           * cert so the profile is recorded even if the cert path fails. */
+          /* Which hub generation we were assigned to. Held pending and recorded
+           * only when the assignment is adopted (dps_apply_deferred()): until
+           * then the cached or saved hub, and its profile, still apply. */
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
           if (pr != AZ_IOT_OK)
           {
@@ -3334,7 +3373,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               "assigned hub=%s device_id=%s profile=%s",
               c->dps_assigned_hub,
               c->dps_assigned_device_id,
-              profile_name(c->connection_profile));
+              profile_name(c->dps_assigned_profile));
           if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
           {
             c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
@@ -3812,8 +3851,8 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
 /* Fail an assignment this client cannot use, and make sure the NEXT open()
  * goes back to DPS instead of to whatever assignment is still cached.
  *
- * Declining to adopt the new values is not enough on a re-provision: opts.host
- * and opts.client_id still name the hub from the previous assignment, and
+ * Declining to adopt the new values is not enough on a re-provision: opts.iothub_hostname
+ * and opts.device_id still name the hub from the previous assignment, and
  * open() skips DPS whenever a host is set. Without this the client would
  * connect to the stale hub -- and for a profile mismatch it would do so with
  * session_role already switched to the generation this very response was
@@ -3834,7 +3873,7 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 /* Process deferred DPS finalization. Called from _do_work() after process_loop.
  *
  * On success, tears down the DPS MQTT session, validates the assigned profile,
- * adopts host/client_id and starts the hub connect.
+ * adopts iothub_hostname/device_id and starts the hub connect.
  *
  * On failure, retries under the reconnection policy when one is configured and
  * the application has not closed the client, and transitions to FAULTED
@@ -4016,6 +4055,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
+  /* close() from a teardown event above cancels the assignment. */
+  if (c->close_count != closes)
+  {
+    return;
+  }
+  dps_assigned_profile_commit(c);
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
    * -- a device that appears to connect and then misbehaves is far worse to
@@ -4023,10 +4068,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * az_iot_connection_client_get_hub_profile() so the offending value can be
    * logged or reported.
    *
-   * Checked BEFORE the assignment is applied to opts.host / opts.client_id,
+   * Checked BEFORE the assignment is applied to opts.iothub_hostname / opts.device_id,
    * which is what keeps a rejected assignment from being adopted. Refusing to
    * adopt it is only half of the job, though: on a RE-provision the previous
-   * assignment is still cached in opts.host, and open() skips DPS whenever a
+   * assignment is still cached in opts.iothub_hostname, and open() skips DPS whenever a
    * host is set. reject_assignment() therefore also demands that the next
    * open() go back to DPS -- see its comment. */
   az_iot_result r;
@@ -4097,12 +4142,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
+      &c->opts.iothub_hostname,
       c->dps_assigned_hub);
   (void)replace_owned_string(
       c->provisioned_device_id,
       sizeof(c->provisioned_device_id),
-      &c->opts.client_id,
+      &c->opts.device_id,
       c->dps_assigned_device_id);
   drop_subscriptions_from_other_generations(c);
   /* A hub token asked for, or held, before this assignment may be for
@@ -4565,7 +4610,7 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUB_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -4608,7 +4653,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -4663,7 +4708,7 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -5012,14 +5057,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   mc->iface->set_inbound_cb(mc, on_mqtt_event, c);
 
   az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = c->opts.host;
-  copts.client_id = c->opts.client_id;
+  copts.host = c->opts.iothub_hostname;
+  copts.client_id = c->opts.device_id;
   resolve_connect_timings(c, &copts);
   resolve_connect_transport(c, &copts, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
   /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
-  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
+  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
   {
     /* IoT Hub requires the username: fail locally rather than CONNECT without it. */
     if (!ensure_hub_client(c))
@@ -5045,7 +5091,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
     copts.username = c->hub_username;
   }
-  else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
+  else if (
+      c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
   {
     /* MQTTv5: generate the per-attempt connection nonce now so it
      * rides the CONNECT username (correlationId) and is reused as the birth
@@ -5558,7 +5606,7 @@ static void fail_sas_token_attempt(
       /* As any registration that failed to start: re-registered, or the
        * cached hub tried; see do_work(). */
       c->dps_registration_ref = false;
-      c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+      c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, reason);
     }
     else
@@ -5632,7 +5680,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
   if (c->dps_registration_ref)
   {
     c->dps_registration_ref = false;
-    c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+    c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
     schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, r);
     return;
   }
@@ -6011,10 +6059,10 @@ static size_t sas_key_refs(const az_iot_connection_client* c, sas_key_ref refs[4
     const az_iot_auth* auth
         = scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
     /* A group key derives per device: the registration ID, which DPS also
-     * makes the device ID, or client_id for a direct hub connection. */
+     * makes the device ID, or device_id for a direct hub connection. */
     const char* id = (scope == AZ_IOT_CONN_SCOPE_DPS || dps_configured(c))
         ? c->opts.dps.registration_id
-        : c->opts.client_id;
+        : c->opts.device_id;
     const char* keys[2] = { auth->sas.primary_key_base64, auth->sas.secondary_key_base64 };
     for (int k = 0; k < 2 && is_nonempty_cstr(keys[k]); ++k)
     {
@@ -6201,7 +6249,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
    * during their init (which happens before open()). */
-  if (client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  if (client->opts.iothub_hostname
+      && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
      * (host == NULL) the profile is learned during provisioning, so
@@ -6220,8 +6269,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
       client->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5
           ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
           : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
-  /* A direct connect has no service to ask, so the seed above is the answer. */
-  client->connection_profile_resolved = !dps_configured(client);
+  /* A direct connect has no service to ask, and a saved hub (host with DPS
+   * configured) declares its profile, so the seed above is the answer until a
+   * registration replaces it. */
+  client->connection_profile_resolved
+      = !dps_configured(client) || is_nonempty_cstr(client->opts.iothub_hostname);
   /* send_csr() needs opts.csr_payload_buffer, so its presence is what marks a device that may
    * renew. Reserving now, with nothing in flight, cannot fail and keeps every renewal tracked. */
   if (az_span_size(client->opts.csr_payload_buffer) > 0)
@@ -6497,7 +6549,7 @@ static void log_open_summary(const az_iot_connection_client* c)
 {
   const char* transport
       = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
-  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.iothub_hostname) || c->needs_reprovision))
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6517,8 +6569,8 @@ static void log_open_summary(const az_iot_connection_client* c)
       AZ_IOT_LOG_COMPONENT_CONNECTION,
       "open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
       az_iot_version_string(),
-      text_or_none(c->opts.host),
-      text_or_none(c->opts.client_id),
+      text_or_none(c->opts.iothub_hostname),
+      text_or_none(c->opts.device_id),
       profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
@@ -6553,7 +6605,18 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
-  /* Rejected rather than quietly ignored: opts.host names the hub this option
+  /* A set iothub_hostname names a hub only when non-empty and paired with a
+   * device id, whichever route this open() takes. */
+  if (client->opts.iothub_hostname
+      && (!is_nonempty_cstr(client->opts.iothub_hostname)
+          || !is_nonempty_cstr(client->opts.device_id)))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "open: iothub_hostname is empty or set without device_id");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* Rejected rather than quietly ignored: opts.iothub_hostname names the hub this option
    * says does not exist, and an operational certificate is issued BY a
    * registration, which this device never performs. */
   if (client->opts.dps.provision_only)
@@ -6564,11 +6627,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
           AZ_IOT_LOG_COMPONENT_CONNECTION, "open: dps.provision_only requires dps.id_scope");
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (is_nonempty_cstr(client->opts.host))
+    if (is_nonempty_cstr(client->opts.iothub_hostname))
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "open: dps.provision_only is set, but opts.host names a hub");
+          "open: dps.provision_only is set, but opts.iothub_hostname names a hub");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     if (client->opts.dps.request_operational_certificate)
@@ -6725,7 +6788,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * -- do not collect it, and re-establish it if it drops.
    *
    * Before the registration route below, which would otherwise claim this
-   * client: opts.host is NULL on a provision_only device, so it matches. */
+   * client: opts.iothub_hostname is NULL on a provision_only device, so it matches. */
   if (client->opts.dps.provision_only)
   {
     client->dps_standing_ref = true;
@@ -6750,7 +6813,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
 
   /* DPS will be used for registration: no hub is cached, or a previous outcome
    * demanded re-provisioning even though one is. */
-  if (dps_configured(client) && (!client->opts.host || client->needs_reprovision))
+  if (dps_configured(client) && (!client->opts.iothub_hostname || client->needs_reprovision))
   {
     /* Raised before the start, so a session that is already up is adopted
      * rather than replaced. */
@@ -6798,11 +6861,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return r;
   }
 
-  if (!client->opts.host || !client->opts.client_id)
+  if (!client->opts.iothub_hostname || !client->opts.device_id)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "open: host or client_id not set (and DPS not configured)");
+        "open: iothub_hostname or device_id not set, and no DPS registration is due");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -7331,10 +7394,10 @@ az_iot_result az_iot_connection_client_do_work(
        * assignment to fall back to. That fallback exists so a failing
        * dps_start() cannot loop through provisioning forever -- but it is only
        * a fallback if the hub path has somewhere to go. With no assignment
-       * (opts.host still NULL) an ordinary retry would hand the adapter a NULL
+       * (opts.iothub_hostname still NULL) an ordinary retry would hand the adapter a NULL
        * endpoint and the client would never reach DPS again, so the demand
        * survives and the next retry provisions. */
-      client->needs_reprovision = (client->opts.host == NULL);
+      client->needs_reprovision = (client->opts.iothub_hostname == NULL);
       /* session_role stays the cached hub's: the provisioning session carries
        * its own role, and the hub fallback must keep the assigned protocol. */
       attempted = AZ_IOT_CONN_SCOPE_DPS;
@@ -7428,7 +7491,7 @@ az_iot_result az_iot_connection_client__set_session_role(
   return AZ_IOT_OK;
 }
 
-/* Internal helper used by both __set_host and __set_client_id. Copies `s` into
+/* Internal helper used by both __set_iothub_hostname and __set_device_id. Copies `s` into
  * the in-struct fixed buffer `owned_buf` (bounded by `buf_cap`) and points
  * `*opts_slot` (the live pointer the rest of the code reads) at it. No heap. */
 /* Whether `s` could be adopted into a buffer of `buf_cap` bytes. Split out of
@@ -7467,7 +7530,9 @@ static az_iot_result replace_owned_string(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* client, const char* host)
+az_iot_result az_iot_connection_client__set_iothub_hostname(
+    az_iot_connection_client* client,
+    const char* iothub_hostname)
 {
   if (!client)
   {
@@ -7480,13 +7545,13 @@ az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* clien
   return replace_owned_string(
       client->provisioned_iot_hub_hostname,
       sizeof(client->provisioned_iot_hub_hostname),
-      &client->opts.host,
-      host);
+      &client->opts.iothub_hostname,
+      iothub_hostname);
 }
 
-az_iot_result az_iot_connection_client__set_client_id(
+az_iot_result az_iot_connection_client__set_device_id(
     az_iot_connection_client* client,
-    const char* client_id)
+    const char* device_id)
 {
   if (!client)
   {
@@ -7499,8 +7564,8 @@ az_iot_result az_iot_connection_client__set_client_id(
   return replace_owned_string(
       client->provisioned_device_id,
       sizeof(client->provisioned_device_id),
-      &client->opts.client_id,
-      client_id);
+      &client->opts.device_id,
+      device_id);
 }
 
 void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed)
@@ -7708,24 +7773,24 @@ bool az_iot_connection_client__is_connected(const az_iot_connection_client* clie
 
 const char* az_iot_connection_client__device_id(const az_iot_connection_client* client)
 {
-  return client ? client->opts.client_id : NULL;
+  return client ? client->opts.device_id : NULL;
 }
 
 const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client)
 {
-  /* opts.host tracks the effective hub: the caller-supplied host for a direct
+  /* opts.iothub_hostname tracks the effective hub: the caller-supplied host for a direct
    * connection, or the DPS-assigned hub (copied into provisioned_iot_hub_hostname
    * and pointed-to here) after provisioning. NULL for a not-yet-provisioned
    * DPS-only client. */
-  return client ? client->opts.host : NULL;
+  return client ? client->opts.iothub_hostname : NULL;
 }
 
 const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client)
 {
-  /* Gated on opts.host so the pair is never half-set: a DPS client may carry a
-   * caller client_id that is not the device id DPS will assign. Both are
+  /* Gated on opts.iothub_hostname so the pair is never half-set: a DPS client may carry a
+   * caller device_id that is not the device id DPS will assign. Both are
    * replaced together when an assignment is adopted. */
-  return (client && client->opts.host) ? client->opts.client_id : NULL;
+  return (client && client->opts.iothub_hostname) ? client->opts.device_id : NULL;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
@@ -9341,9 +9406,9 @@ static az_iot_result check_sas_token_identity(
   }
   else
   {
-    parts[0] = c->opts.host;
+    parts[0] = c->opts.iothub_hostname;
     parts[1] = "/devices/";
-    parts[2] = c->opts.client_id;
+    parts[2] = c->opts.device_id;
   }
   if (!is_nonempty_cstr(parts[0]) || !is_nonempty_cstr(parts[2]))
   {

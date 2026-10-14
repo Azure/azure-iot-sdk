@@ -1042,9 +1042,9 @@ static int setup(void** state)
 
   fx->crypto = make_mock_crypto(&fx->log);
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.crypto = &fx->crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
@@ -2203,9 +2203,9 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   /* The client takes its crypto backend from the connection. */
   az_iot_connection_client conn;
   az_iot_connection_client_options copts = { 0 };
-  copts.host = "broker.example";
+  copts.iothub_hostname = "broker.example";
   copts.port = 8883;
-  copts.client_id = "ut-su-public";
+  copts.device_id = "ut-su-public";
   copts.crypto = &crypto.base;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
 
@@ -2315,9 +2315,9 @@ static void device_properties_too_small_is_rejected(void** state)
   az_iot_su_channel channel;
   az_iot_su_client su;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device2";
+  opts.device_id = "ut-device2";
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
@@ -2390,9 +2390,9 @@ static void device_properties_buffer_size_matches_need(void** state)
   fake_channel fc;
   az_iot_su_channel channel;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device3";
+  opts.device_id = "ut-device3";
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
   memset(&fc, 0, sizeof(fc));
   channel.vtable = &k_fake_channel_vtable;
@@ -5346,9 +5346,9 @@ static void init_requires_a_crypto_backend_that_verifies(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options copts = { 0 };
-  copts.host = "broker.example";
+  copts.iothub_hostname = "broker.example";
   copts.port = 8883;
-  copts.client_id = "ut-no-crypto";
+  copts.device_id = "ut-no-crypto";
   assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
   az_iot_connection_client_deinit(&conn);
@@ -6813,7 +6813,7 @@ static int setup_wire_error_case(void** state)
   az_iot_su_client_deinit(&fx->su);
   az_iot_connection_client_deinit(&fx->conn);
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 60000;

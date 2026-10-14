@@ -146,8 +146,8 @@ static payload_fixture* fixture_create(void)
 static az_iot_connection_client_options fixture_options(payload_fixture* fx)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
@@ -502,7 +502,7 @@ static void a_direct_connect_ignores_the_registration_payload(void** state)
   (void)state;
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.dps.id_scope = NULL;
   opts.dps.registration_id = NULL;
   /* Deliberately no body buffer: nothing will be built. */

@@ -187,9 +187,9 @@ typedef struct fixture
 static void init_connection_ex(az_iot_connection_client* conn, bool push_desired)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
   assert_int_equal(az_iot_test_connection_client_init(conn, &opts), AZ_IOT_OK);
@@ -2524,8 +2524,8 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   /* A direct connection declares its generation up front, so the pin can be
    * answered at init rather than deferred to connect. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);

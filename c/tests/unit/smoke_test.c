@@ -49,7 +49,7 @@ static void connection_client_init_deinit_roundtrip(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_connection_client_deinit(&c);
