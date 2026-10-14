@@ -23,7 +23,7 @@ internal class Program
         var (csrBase64, privateKey) = GenerateCsrAndPrivateKey(registrationId, CsrAlgorithm.RSA);
 
         // Pair any certificate issued for this CSR (by DPS or IoT hub) with its private key when connecting to IoT hub
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadBootAuthenticationProvider();
+        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
         X509OperationalAuthenticationProvider operationalAuthentication = new(privateKey);
 
         using ConnectionClient connectionClient = new();

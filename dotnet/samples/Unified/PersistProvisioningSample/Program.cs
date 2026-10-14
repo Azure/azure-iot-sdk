@@ -25,7 +25,7 @@ internal class Program
         // The device should always have access to its provisioning credentials
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadBootAuthenticationProvider();
+        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
         X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
         ProvisioningSettings provisioningSettings = new(idScope);
 

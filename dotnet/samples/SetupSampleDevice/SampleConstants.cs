@@ -156,7 +156,7 @@ namespace SetupSampleDevice
             return File.ReadAllBytes(outputPath + "certificate.pfx");
         }
 
-        public static X509BootAuthenticationProvider LoadBootAuthenticationProvider()
+        public static X509BootAuthenticationProvider LoadX509BootAuthenticationProvider()
         {
             X509Certificate2 certificate;
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
