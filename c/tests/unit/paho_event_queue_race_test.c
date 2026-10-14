@@ -521,6 +521,18 @@ static void malformed_inbound_properties_are_reported(void** state)
 
   assert_int_equal(seen.count, 0);
   assert_int_equal(seen.end, AZ_IOT_ERR_PROTOCOL);
+
+  /* More entries than the array holds: refused too, not read past. */
+  memset(&seen, 0, sizeof(seen));
+  msg = (MQTTAsync_message*)malloc(sizeof(*msg));
+  assert_non_null(msg);
+  *msg = initializer;
+  msg->properties = mock_paho_inbound_properties();
+  msg->properties.count = msg->properties.max_count + 1;
+  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t) "race/topic", 10, msg);
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+  assert_int_equal(seen.count, 0);
+  assert_int_equal(seen.end, AZ_IOT_ERR_PROTOCOL);
   fixture_teardown(&f);
 }
 

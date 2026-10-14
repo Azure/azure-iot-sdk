@@ -255,7 +255,8 @@ static az_iot_result paho_user_property_next(
 {
   (void)source_len;
   const MQTTProperties* props = (const MQTTProperties*)source;
-  if (props->count < 0 || (props->count > 0 && props->array == NULL))
+  if (props->count < 0 || props->count > props->max_count
+      || (props->count > 0 && props->array == NULL))
   {
     return AZ_IOT_ERR_PROTOCOL;
   }
@@ -323,9 +324,9 @@ static bool enqueue_message(
 
   /* With User Properties the node keeps v5_src, which they are read from; its payload is then
    * used in place rather than copied. A malformed property set is kept too, unread, so the view
-   * reports AZ_IOT_ERR_PROTOCOL: Paho's getters would dereference its NULL array. */
+   * reports AZ_IOT_ERR_PROTOCOL: Paho's getters would read past its array. */
   bool const malformed = v5_src != NULL
-      && (v5_src->properties.count < 0
+      && (v5_src->properties.count < 0 || v5_src->properties.count > v5_src->properties.max_count
           || (v5_src->properties.count > 0 && v5_src->properties.array == NULL));
   bool const keep = v5_src != NULL
       && (malformed
