@@ -10,16 +10,16 @@ using System.Security.Cryptography.X509Certificates;
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
     /// <summary>
-    /// The device authentication for using an X509 certificate object.
+    /// IoT Hub operational authentication using an existing or issued X509 certificate.
     /// </summary>
-    public class X509AuthenticationProvider : AuthenticationProvider
+    public class X509OperationalAuthenticationProvider : OperationalAuthenticationProvider
     {
         /// <summary>
         /// Creates an operational provider that presents issued certificates paired with the CSR private key.
         /// A certificate must be issued by DPS or restored in the connection context before connecting to IoT Hub.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
         /// </summary>
-        public X509AuthenticationProvider(
+        public X509OperationalAuthenticationProvider(
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// its private key. It runs once per chain; failures are surfaced to the caller.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
         /// </summary>
-        public X509AuthenticationProvider(
+        public X509OperationalAuthenticationProvider(
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
@@ -67,7 +67,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </para>
         /// </param>
         /// <param name="certificateChain">
-        /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
+        /// The operational certificate chain.
         /// </param>
         /// <param name="remoteCertificateValidationCallback">
         /// An optional callback used to perform custom validation of the server (remote) certificate presented during
@@ -81,7 +81,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <paramref name="clientCertificate"/> is presented. The selected certificate must be able to sign with its
         /// associated (possibly HSM-backed) private key.
         /// </param>
-        public X509AuthenticationProvider(
+        public X509OperationalAuthenticationProvider(
             X509Certificate2 clientCertificate,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
@@ -100,8 +100,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// private key their certificate signing requests were generated with, to IoT Hub.
         /// </summary>
         /// <param name="clientCertificate">
-        /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
-        /// client certificate is issued to this device.
+        /// The operational client certificate used with IoT Hub until a client certificate is issued to this device.
         /// </param>
         /// <param name="issuedCertificatePrivateKey">
         /// The private key that this device's certificate signing requests are generated with. When a client certificate
@@ -109,7 +108,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// issued device certificate is paired with this key and presented to IoT Hub instead of <paramref name="clientCertificate"/>.
         /// </param>
         /// <param name="certificateChain">
-        /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
+        /// The operational certificate chain.
         /// </param>
         /// <param name="remoteCertificateValidationCallback">
         /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
@@ -118,7 +117,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="localCertificateSelectionCallback">
         /// An optional callback used to select which client certificate to present during the TLS handshake.
         /// </param>
-        public X509AuthenticationProvider(
+        public X509OperationalAuthenticationProvider(
             X509Certificate2 clientCertificate,
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             X509Certificate2Collection? certificateChain = null,
@@ -138,8 +137,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Creates an instance of this class that delegates handling of issued client certificates to a callback.
         /// </summary>
         /// <param name="clientCertificate">
-        /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
-        /// client certificate is issued to this device.
+        /// The operational client certificate used with IoT Hub until a client certificate is issued to this device.
         /// </param>
         /// <param name="handleCertificateSigningCompleteAsync">
         /// Invoked when a client certificate chain is issued to this device, either by the device provisioning service
@@ -150,7 +148,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// IoT Hub, that certificate signing operation fails.
         /// </param>
         /// <param name="certificateChain">
-        /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
+        /// The operational certificate chain.
         /// </param>
         /// <param name="remoteCertificateValidationCallback">
         /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
@@ -159,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="localCertificateSelectionCallback">
         /// An optional callback used to select which client certificate to present during the TLS handshake.
         /// </param>
-        public X509AuthenticationProvider(
+        public X509OperationalAuthenticationProvider(
             X509Certificate2 clientCertificate,
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             X509Certificate2Collection? certificateChain = null,
@@ -233,11 +231,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult(ClientCertificate);
         }
 
-        public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
-        {
-            return CreateCredentials(ClientCertificate);
-        }
-
         private AuthenticationCredentials CreateCredentials(X509Certificate2 clientCertificate)
         {
             return new AuthenticationCredentials()
@@ -248,9 +241,5 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             };
         }
 
-        public override string GetRegistrationId()
-        {
-            return ClientCertificate.GetNameInfo(X509NameType.DnsName, false);
-        }
     }
 }

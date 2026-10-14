@@ -79,20 +79,21 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509BootAuthenticationProvider bootAuthenticationProvider = new(pfx);
+            X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(pfx);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                AuthenticationProvider = x509AuthenticationProvider,
+                BootAuthenticationProvider = bootAuthenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }
@@ -127,9 +128,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509BootAuthenticationProvider bootAuthenticationProvider = new(pfx);
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
+            X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(privateKey);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
@@ -138,7 +140,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
@@ -146,7 +148,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
-                AuthenticationProvider = x509AuthenticationProvider,
+                BootAuthenticationProvider = bootAuthenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }
@@ -162,20 +164,21 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            SymmetricKeyAuthenticationProvider authentication = new(registrationId, DpsIdScope, symmetricKey);
+            SymmetricKeyBootAuthenticationProvider bootAuthenticationProvider = new(registrationId, DpsIdScope, symmetricKey);
+            SymmetricKeyOperationalAuthenticationProvider operationalAuthenticationProvider = new(symmetricKey);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                AuthenticationProvider = authentication,
+                BootAuthenticationProvider = bootAuthenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }

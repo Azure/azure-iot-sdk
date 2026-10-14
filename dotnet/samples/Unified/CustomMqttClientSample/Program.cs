@@ -15,8 +15,8 @@ internal class Program
     {
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509AuthenticationProvider bootAuthentication = SampleConstants.LoadAuthenticationProvider();
-        X509AuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadBootAuthenticationProvider();
+        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
         // This SDK includes a single implementation of the MQTT client interface using MQTTnet as the client library

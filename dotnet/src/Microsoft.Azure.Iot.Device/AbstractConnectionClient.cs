@@ -121,8 +121,8 @@ namespace Microsoft.Azure.Iot.Device
         // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
         // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
         private ProvisioningSettings? _lastProvisioningSettings;
-        private AuthenticationProvider? _lastProvisioningAuthentication;
-        private AuthenticationProvider? _lastOperationalAuthentication;
+        private BootAuthenticationProvider? _lastProvisioningAuthentication;
+        private OperationalAuthenticationProvider? _lastOperationalAuthentication;
 
         // Set while a re-provisioning attempt started by an identity fault is in flight. Only one such attempt may run
         // at a time because each one takes over this client's single connection.
@@ -252,7 +252,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device connected to.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider bootAuthenticationProvider, AuthenticationProvider operationalAuthenticationProvider, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider bootAuthenticationProvider, OperationalAuthenticationProvider operationalAuthenticationProvider, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             ArgumentNullException.ThrowIfNull(provisioningSettings);
@@ -391,7 +391,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="operationalAuthenticationProvider">The authentication provider used for IoT Hub.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device was assigned and connected to.</returns>
-        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider bootAuthenticationProvider, AuthenticationProvider operationalAuthenticationProvider, CancellationToken cancellationToken)
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider bootAuthenticationProvider, OperationalAuthenticationProvider operationalAuthenticationProvider, CancellationToken cancellationToken)
         {
             var provisioningResult = await ProvisionAsync(provisioningSettings, bootAuthenticationProvider, cancellationToken);
 
@@ -581,7 +581,7 @@ namespace Microsoft.Azure.Iot.Device
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
             // connect with the operational certificate DPS issued rather than its boot credentials.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationProvider hubAuthentication = connectionContext.OperationalAuthenticationProvider;
+            OperationalAuthenticationProvider hubAuthentication = connectionContext.OperationalAuthenticationProvider;
             IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
 
             // Normally a no-op since providers are notified when certificates are issued, but covers a provider that was
@@ -723,8 +723,8 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             ProvisioningSettings? provisioningSettings = _lastProvisioningSettings;
-            AuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
-            AuthenticationProvider? operationalAuthentication = CurrentConnectionContext?.OperationalAuthenticationProvider ?? _lastOperationalAuthentication;
+            BootAuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
+            OperationalAuthenticationProvider? operationalAuthentication = CurrentConnectionContext?.OperationalAuthenticationProvider ?? _lastOperationalAuthentication;
 
             if (provisioningSettings == null || provisioningAuthentication == null || operationalAuthentication == null)
             {
@@ -801,8 +801,8 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="cancellationToken">Cancels the whole retry loop when this client is disconnected or disposed.</param>
         private async Task ReprovisionWithRetryAsync(
             ProvisioningSettings provisioningSettings,
-            AuthenticationProvider provisioningAuthentication,
-            AuthenticationProvider operationalAuthentication,
+            BootAuthenticationProvider provisioningAuthentication,
+            OperationalAuthenticationProvider operationalAuthentication,
             CancellationToken cancellationToken)
         {
             uint attempt = 0;
@@ -985,7 +985,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="authentication">The authentication to use when connecting to Device Provisioning Service.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The terminal registration result reported by Device Provisioning Service.</returns>
-        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -1266,7 +1266,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
+        private MqttConnect CreateProvisioningConnectPacket(BootAuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
         {
             string hostName = globalDeviceEndpoint;
 

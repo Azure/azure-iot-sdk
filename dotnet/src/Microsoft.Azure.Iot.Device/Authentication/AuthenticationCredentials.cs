@@ -7,7 +7,8 @@ using System.Security.Cryptography.X509Certificates;
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
     /// <summary>
-    /// Protocol-agnostic authentication material produced by an <see cref="AuthenticationProvider"/>.
+    /// Protocol-agnostic authentication material produced by a <see cref="BootAuthenticationProvider"/> or
+    /// <see cref="OperationalAuthenticationProvider"/>.
     /// Each transport (MQTT, HTTP, ...) maps these values onto its own connection options.
     /// </summary>
     public class AuthenticationCredentials

@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// <summary>
         /// The most recently issued client certificate chain (Base64-encoded, device certificate first), whether signed
         /// during provisioning or signed by IoT Hub. Passed to
-        /// <see cref="AuthenticationProvider.GetIotHubAuthentication(string, string, IReadOnlyList{string}?)"/> on every
+        /// <see cref="OperationalAuthenticationProvider.GetIotHubAuthentication(string, string, IReadOnlyList{string}?)"/> on every
         /// connection attempt to IoT Hub. Null if no client certificate has been issued.
         /// </summary>
         public IReadOnlyList<string>? IssuedClientCertificates
@@ -45,6 +45,6 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// The operational authentication provider used for all IoT Hub connections and issued certificates.
         /// Boot authentication for Device Provisioning Service is supplied separately when provisioning.
         /// </summary>
-        public required AuthenticationProvider OperationalAuthenticationProvider { get; set; }
+        public required OperationalAuthenticationProvider OperationalAuthenticationProvider { get; set; }
     }
 }

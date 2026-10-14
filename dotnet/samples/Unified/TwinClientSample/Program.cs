@@ -27,8 +27,8 @@ internal class Program
 
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509AuthenticationProvider bootAuthentication = SampleConstants.LoadAuthenticationProvider();
-        X509AuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadBootAuthenticationProvider();
+        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
 
         using ConnectionClient connectionClient = new ConnectionClient();
 

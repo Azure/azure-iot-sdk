@@ -16,9 +16,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         /// <summary>
         /// The boot authentication this device provisioned with, for example an
-        /// <see cref="X509AuthenticationProvider"/> or a <see cref="SymmetricKeyAuthenticationProvider"/>.
+        /// <see cref="X509BootAuthenticationProvider"/> or a <see cref="SymmetricKeyBootAuthenticationProvider"/>.
         /// </summary>
-        public required AuthenticationProvider BootAuthenticationProvider { get; set; }
+        public required BootAuthenticationProvider BootAuthenticationProvider { get; set; }
 
         public string? PrivateKeyPem { get; set; }
 
