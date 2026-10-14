@@ -72,7 +72,9 @@ the issued certificate with its private key, and turns each issued chain into a 
 inside `GetCredentialsAsync`. Issued-certificate-only providers fail if no certificate is
 available; they never fall back to a boot certificate or SAS token. To present an existing
 operational certificate until one is issued, pass that certificate along with the CSR private
-key or callback to `X509OperationalAuthenticationProvider` instead.
+key or callback to `X509OperationalAuthenticationProvider` instead. Likewise, to authenticate
+with a symmetric key until a certificate is issued, pass the key along with the CSR private key
+or callback to `SymmetricKeyOperationalAuthenticationProvider`.
 
 Only the operational provider receives certificates issued by DPS or Hub.
 `ConnectionContext.OperationalAuthenticationProvider` is used on every Hub
