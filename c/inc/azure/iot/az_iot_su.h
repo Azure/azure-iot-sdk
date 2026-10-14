@@ -146,6 +146,17 @@ extern "C"
 #error "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE must be between 1 and 65535"
 #endif
 
+/* Body of the SDK channel's update checks and status reports: 2048 at the default storage sizes
+ * and never less, so the largest status report still fits. Grows 1:1 with compatibility storage
+ * above 256 (update checks) and 6:1 with installed-ID storage above 192 (an installed ID is sent
+ * on status reports, where JSON escaping takes up to 6 bytes per byte). */
+#define _az_IOT_SU_CHANNEL_BODY_SIZE                                                               \
+  (2048                                                                                            \
+   + (AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE > 256 ? AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE - 256 : 0) \
+   + 6                                                                                             \
+       * (AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE > 192 ? AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE - 192    \
+                                                    : 0))
+
 /** @brief Capacity of the packed applied update id (provider, name, version). */
 #define AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE 192
 
@@ -800,13 +811,13 @@ extern "C"
 
       /* Storage for the SDK-built channel. Opaque here: sized so the client
        * stays caller-allocated with no hidden allocation. Holds a copy of the
-       * property strings and an update-check body, both sized from them. */
+       * property strings and the request body, both sized from them. */
       struct
       {
         void* pointers[24];
         uint8_t bytes
-            [2432
-             + 2 * (AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)];
+            [832 + AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE
+             + _az_IOT_SU_CHANNEL_BODY_SIZE];
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;

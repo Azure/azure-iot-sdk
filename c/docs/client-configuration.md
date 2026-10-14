@@ -234,9 +234,9 @@ Related limits, each checked separately:
 
 | Limit | Owner | Notes |
 | --- | --- | --- |
-| The two storage macros above | SDK, compiled in | Raising them grows `az_iot_su_client` by twice the increase (a copy of the strings and an update-check body that grows with them), and the peak stack of a property call by up to twice the increase (scratch copies validated before they replace the current ones). |
+| The two storage macros above | SDK, compiled in | `az_iot_su_client` holds a copy of the strings (their sum) and the request body below; a property call also uses up to twice their sum of stack (scratch copies validated before they replace the current ones). |
 | `device_properties_buffer` | Application | Holds the client's copy of the strings. `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()` declares `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` bytes, which follows the two macros. A larger buffer alone raises no limit. |
-| Update-check body | SDK, compiled in | 2048 bytes by default, growing byte for byte with the two macros. Strings that need JSON escaping (quotes, backslashes, control characters) take more bytes in the body than in storage. |
+| Request body | SDK, compiled in | Update checks and status reports. 2048 bytes at the default sizes, and never less, so the largest status report fits. Grows 1 byte per byte of `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE` above 256 and 6 per byte of `AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE` above 192 (the installed ID is also sent on status reports, and JSON escaping takes up to 6 bytes per byte). Strings that need JSON escaping (quotes, backslashes, control characters) take more bytes in an update check than in storage; one that does not fit is rejected when the properties are set. |
 
 When a limit is exceeded, init or the replacement fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, a
 replacement keeps the previously accepted properties, and an `ERROR` log names what to raise,

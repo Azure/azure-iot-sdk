@@ -215,12 +215,10 @@ extern "C"
    * allocated and needs no heap.
    */
   /* Bound on a request/response body. A compliant update-check response fits
-   * every transport the service offers; this is sized for that. Grows byte for
-   * byte with the property storage (2048 by default), so property strings that
-   * need no JSON escaping and fit that storage also fit the update-check body. */
+   * every transport the service offers; this is sized for that. See
+   * _az_IOT_SU_CHANNEL_BODY_SIZE for how it follows the property storage. */
 #ifndef AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE
-#define AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE \
-  (1600 + AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)
+#define AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE _az_IOT_SU_CHANNEL_BODY_SIZE
 #endif
 
 /** @brief Compatibility properties the channel sends; the service's limit. */

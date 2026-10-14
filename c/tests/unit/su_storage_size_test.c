@@ -6,8 +6,8 @@
 
 /* Device-property storage limits through the public API. Built twice (tests/CMakeLists.txt):
  * with the default AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE and AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE,
- * and with both overridden for the SDK sources and the test alike. Expectations derive from the
- * macros, so both builds check the exact-fit and one-over boundaries. */
+ * and with both enlarged or reduced for the SDK sources and the test alike. Expectations derive
+ * from the macros, so every build checks the same boundaries. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -25,6 +25,8 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "support/test_provider.h"
+#include "su_channel_internal.h"
+#include "su_protocol_internal.h"
 
 #define COMPAT_SIZE ((size_t)AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE)
 #define INSTALLED_SIZE ((size_t)AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)
@@ -328,10 +330,59 @@ static void a_short_cache_is_logged(void** state)
   assert_non_null(strstr(g_last_error, "need 8"));
 }
 
+/* The largest status report fits the channel body at any storage size: the longest workflow ID,
+ * an installed or applied update ID filling the larger of its storage and
+ * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, every byte of both escaped, and every step failed. */
+static void the_largest_status_report_fits_the_channel_body(void** state)
+{
+  (void)state;
+  assert_true(AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE >= 2048);
+
+  char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+  memset(workflow_id, 0x01, sizeof(workflow_id) - 1);
+  workflow_id[sizeof(workflow_id) - 1] = '\0';
+
+  /* Three NUL-terminated parts filling id_size bytes: provider takes all but four. */
+  size_t id_size = INSTALLED_SIZE > AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE
+      ? INSTALLED_SIZE
+      : (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE;
+  char* provider = (char*)malloc(id_size - 4);
+  assert_non_null(provider);
+  memset(provider, 0x01, id_size - 5);
+  provider[id_size - 5] = '\0';
+  const az_iot_su_report_update_id installed = { provider, "\x01", "\x01" };
+
+  az_iot_su_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  memset(steps, 0, sizeof(steps));
+  for (int32_t i = 0; i < _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS; ++i)
+  {
+    steps[i].outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    steps[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+    steps[i].result_code = INT32_MIN;
+    steps[i].extended_result_code = (int32_t)0xFFFFFFFFu;
+  }
+  az_iot_su_report report = { 0 };
+  report.workflow_id = workflow_id;
+  report.installed_update_id = &installed;
+  report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = INT32_MIN;
+  report.extended_result_codes = "ffffffff";
+  report.step_results = steps;
+  report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+
+  static uint8_t body[AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE];
+  size_t len = 0;
+  assert_int_equal(az_iot_su__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
+  assert_true(len > 0 && len <= sizeof(body));
+  free(provider);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(defaults_cover_both_storages),
+    cmocka_unit_test(the_largest_status_report_fits_the_channel_body),
     cmocka_unit_test_setup_teardown(three_long_custom_properties_need_294_bytes, setup, teardown),
     cmocka_unit_test_setup_teardown(compatibility_storage_exact_fit_and_one_over, setup, teardown),
     cmocka_unit_test_setup_teardown(installed_id_storage_exact_fit_and_one_over, setup, teardown),
