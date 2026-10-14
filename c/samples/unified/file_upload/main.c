@@ -28,8 +28,10 @@
  * unavailable and the sample explains how to enable them.
  *
  * Authentication: the hub REST calls use the X.509 device certificate (mutual
- * TLS) -- the same cert/key used for MQTT. The Storage PUT is authenticated by
- * the SAS token embedded in the blob URI.
+ * TLS) -- the same cert/key used for MQTT. For a SAS-key device the SDK passes a
+ * hub SAS token as `authorization`, which the hook sends as the Authorization
+ * header. The Storage PUT is authenticated by the SAS token embedded in the blob
+ * URI.
  */
 #include <stdio.h>
 #include <stdlib.h>

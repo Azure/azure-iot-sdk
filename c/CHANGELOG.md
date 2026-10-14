@@ -32,6 +32,9 @@
   provisioning session kept open without a registration, reconnect with a new token; those state
   events carry `is_credential_renewal`. See
   [docs/connecting.md](docs/connecting.md#authentication).
+- mqttv3 file upload for SAS-key devices: when the connection authenticates the hub with a SAS
+  key, the HTTP transport hook receives a hub SAS token as `authorization`. Sized by
+  `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX`.
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
   tries them in order when the service rejects one, before the SAS sources, and reports the index

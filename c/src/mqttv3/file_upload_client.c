@@ -10,6 +10,10 @@
  * builds the request and parses the response here. The blob bytes always go to
  * Azure Storage via an app HTTPS PUT to the SAS URI.
  *
+ * When the connection authenticates the hub with a SAS key, each request carries
+ * a freshly signed hub SAS token as its authorization; otherwise it is "" and the
+ * hook authenticates (mutual TLS, or the application's own token).
+ *
  * There is no mqttv5 counterpart: file upload is not carried on the MQTT v5 hub
  * for now. This client pins the MQTTv3 profile, so an MQTT v5 connection is
  * refused at init() rather than at the first upload.
@@ -25,6 +29,7 @@
 #include "azure/iot/mqttv3/az_iot_file_upload_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/crypto.h"
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
 
@@ -277,6 +282,34 @@ static az_iot_result build_request_url(
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Fills @p auth with the authorization for a hub request: a hub SAS
+ * token when the connection authenticates the hub with a key, else "".
+ *
+ * @return AZ_IOT_OK; the signing error otherwise (see
+ *         az_iot_connection_client__sign_hub_sas_token()).
+ */
+static az_iot_result fileupload_authorization(
+    const az_iot_mqttv3_file_upload_client* client,
+    char (*auth)[AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX])
+{
+  az_iot_result r
+      = az_iot_connection_client__sign_hub_sas_token(FI(client).conn, *auth, sizeof(*auth));
+  if (r == AZ_IOT_ERR_NOT_FOUND)
+  {
+    (*auth)[0] = '\0';
+    return AZ_IOT_OK;
+  }
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD,
+        "could not sign the hub SAS token (%s)",
+        az_iot_result_to_string(r));
+  }
+  return r;
+}
+
 /* ------------------------------------------------------------------------- */
 /* public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -382,6 +415,13 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
     return br;
   }
 
+  char auth[AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX];
+  er = fileupload_authorization(client, &auth);
+  if (er != AZ_IOT_OK)
+  {
+    return er;
+  }
+
   uint8_t rbuf[AZ_IOT_FILE_UPLOAD_SAS_URI_MAX];
   az_iot_file_upload_http_response resp;
   memset(&resp, 0, sizeof(resp));
@@ -391,12 +431,13 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_get_sas_uri(
   az_iot_result tr = FI(client).http_send(
       AZ_IOT_FILEUPLOAD_METHOD_POST,
       url,
-      "",
+      auth,
       AZ_IOT_FILEUPLOAD_CONTENT_TYPE_JSON,
       (const uint8_t*)body,
       body_len,
       &resp,
       FI(client).http_ctx);
+  az_iot_crypto__wipe(auth, sizeof(auth));
   if (tr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
@@ -500,18 +541,26 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_file_upload_client_notify_complete(
     return br;
   }
 
+  char auth[AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX];
+  er = fileupload_authorization(client, &auth);
+  if (er != AZ_IOT_OK)
+  {
+    return er;
+  }
+
   az_iot_file_upload_http_response resp;
   memset(&resp, 0, sizeof(resp));
 
   az_iot_result tr = FI(client).http_send(
       AZ_IOT_FILEUPLOAD_METHOD_POST,
       url,
-      "",
+      auth,
       AZ_IOT_FILEUPLOAD_CONTENT_TYPE_JSON,
       (const uint8_t*)body,
       body_len,
       &resp,
       FI(client).http_ctx);
+  az_iot_crypto__wipe(auth, sizeof(auth));
   if (tr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
