@@ -45,7 +45,9 @@ extern "C"
     AZ_IOT_MOCK_CALL_DESTROY
   } az_iot_mock_call_kind;
 
-#define AZ_IOT_MOCK_TOPIC_MAX 256
+/* Covers an mqttv3 C2D topic whose property bag overruns the SDK's decode
+ * buffers, which tests must be able to inject without the mock truncating it. */
+#define AZ_IOT_MOCK_TOPIC_MAX 1024
 /* Must be at least the largest number any feature client can send on one
  * PUBLISH (telemetry forwards up to AZ_IOT_TELEMETRY_MAX_USER_PROPS = 16),
  * otherwise the mock silently truncates and a test asserting on the tail

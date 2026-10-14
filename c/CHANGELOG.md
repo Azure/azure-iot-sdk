@@ -96,3 +96,15 @@
   `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
   lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
   `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
+- Breaking: mqttv3 C2D properties are read on demand instead of being decoded into SDK buffers.
+  `az_iot_c2d_message` keeps `payload`/`payload_len` and gains `properties`, a read-only view of
+  the topic property bag; `content_type`, the `properties` array, `properties_count`,
+  `az_iot_c2d_property`, `az_iot_c2d_message_property()`, `AZ_IOT_C2D_MAX_PROPERTIES` and
+  `AZ_IOT_C2D_PROPERTY_BUFFER` are removed. `az_iot_c2d_properties_next()` iterates,
+  `az_iot_c2d_properties_find()` looks one up by name, and typed accessors read the system
+  properties: `az_iot_c2d_message_get_message_id()` (`$.mid`), `_correlation_id()` (`$.cid`),
+  `_expiry_time()` (`$.exp`), `_content_type()` (`$.ct`), `_content_encoding()` (`$.ce`) and
+  `_user_id()` (`$.uid`). Each percent-decodes into a buffer the application provides and returns
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (with the size needed), `AZ_IOT_ERR_PROTOCOL` or
+  `AZ_IOT_ERR_NOT_FOUND`, so nothing is dropped silently and there is no limit on the number or
+  size of properties. Adds `AZ_IOT_MSG_PROP_EXPIRY_TIME`.

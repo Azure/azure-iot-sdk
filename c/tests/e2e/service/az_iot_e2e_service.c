@@ -380,6 +380,16 @@ bool az_iot_e2e_service_send_c2d(
     const uint8_t* payload,
     size_t payload_len)
 {
+  return az_iot_e2e_service_send_c2d_with_properties(svc, device_id, payload, payload_len, NULL);
+}
+
+bool az_iot_e2e_service_send_c2d_with_properties(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    const uint8_t* payload,
+    size_t payload_len,
+    const az_iot_e2e_c2d_properties* properties)
+{
   /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
   char sas[512];
   if (!e2e_sas_token_create(
@@ -396,7 +406,8 @@ bool az_iot_e2e_service_send_c2d(
   }
 
   const char* err = NULL;
-  if (!e2e_amqp_send_c2d(svc->hub_info.host, sas, device_id, payload, payload_len, &err))
+  if (!e2e_amqp_send_c2d(
+          svc->hub_info.host, sas, device_id, payload, payload_len, properties, &err))
   {
     set_error(svc, (err != NULL) ? err : "c2d: send failed");
     return false;
