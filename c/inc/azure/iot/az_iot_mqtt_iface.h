@@ -58,9 +58,9 @@ extern "C"
    * @brief Reads the User Property at @p *cursor from @p source and advances @p *cursor.
    *
    * Implemented by whoever owns the properties (an adapter, or the SDK for outbound messages).
-   * Restarting from cursor 0 must yield the same sequence. A property returned must advance
+   * Restarting from cursor 0 must yield the same sequence. A property returned must increase
    * @p *cursor. Called only through az_iot_mqtt_user_properties_next(), which validates the
-   * arguments and reports a property returned without advancing as AZ_IOT_ERR_PROTOCOL.
+   * arguments and reports a property returned without increasing it as AZ_IOT_ERR_PROTOCOL.
    *
    * @retval AZ_IOT_OK            @p out holds the property.
    * @retval AZ_IOT_ERR_NOT_FOUND No more properties.

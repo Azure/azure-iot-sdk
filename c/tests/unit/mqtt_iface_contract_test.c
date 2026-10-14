@@ -589,6 +589,23 @@ static az_iot_result stuck(
   return AZ_IOT_OK;
 }
 
+/* A producer that moves the cursor back would loop forever too. */
+static az_iot_result backward(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source;
+  (void)source_len;
+  *cursor = (*cursor == 0) ? 1 : 0;
+  out->key = "k";
+  out->key_len = 1;
+  out->value = "";
+  out->value_len = 0;
+  return AZ_IOT_OK;
+}
+
 static void user_properties_malformed_sources_are_reported(void** state)
 {
   (void)state;
@@ -609,6 +626,12 @@ static void user_properties_malformed_sources_are_reported(void** state)
   assert_int_equal(
       az_iot_mqtt_user_properties_next(&stuck_props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
   assert_int_equal(az_iot_mqtt_user_properties_find(&stuck_props, "x", &p), AZ_IOT_ERR_PROTOCOL);
+
+  az_iot_mqtt_user_properties back_props = { backward, NULL, 0 };
+  cursor = 0;
+  assert_int_equal(az_iot_mqtt_user_properties_next(&back_props, &cursor, &p), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqtt_user_properties_next(&back_props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&back_props, "x", &p), AZ_IOT_ERR_PROTOCOL);
 }
 
 static void user_properties_null_arguments_are_refused(void** state)
