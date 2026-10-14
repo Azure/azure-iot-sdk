@@ -1645,16 +1645,18 @@ extern "C"
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 
     /* What this connection is to. Seeded from opts.connection_profile at init so
-     * a direct connect is always answerable, then overwritten on the DPS path by
-     * whatever `connectionProfile` the ASSIGNED payload carried. The raw string
-     * is kept verbatim so an unrecognised profile is still reportable. */
+     * a direct connect or saved hub is always answerable, then overwritten by
+     * the `connectionProfile` of a DPS assignment when that assignment is
+     * adopted (dps_assigned_profile* holds it until then). The raw string is
+     * kept verbatim so an unrecognised profile is still reportable. */
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
     /* True once connection_profile is authoritative rather than the value
-     * seeded at init: immediately for a direct connect, where opts declares it,
-     * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
-     * carries no connectionProfile, since absent resolves to "classic". */
+     * seeded at init: immediately when opts.host is set (direct connect or
+     * saved hub), where opts declares it, and otherwise when a DPS assignment is
+     * adopted -- including one that carries no connectionProfile, since absent
+     * resolves to "classic". */
     bool connection_profile_resolved;
 
     /* The generation the attached feature clients require, refcounted by them.
