@@ -10,6 +10,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <openssl/crypto.h>
+
 #include "azure/iot/az_iot_sas_token.h"
 #include "sample_utils.h"
 
@@ -97,6 +99,6 @@ az_iot_result sample_dps_tpm_sign_token(
       ? az_iot_sas_token_from_signature(
             resource_uri, key_name, expiry_unix_seconds, mac, out, out_size, out_len)
       : AZ_IOT_ERR_INTERNAL;
-  memset(mac, 0, sizeof(mac));
+  OPENSSL_cleanse(mac, sizeof(mac));
   return r;
 }

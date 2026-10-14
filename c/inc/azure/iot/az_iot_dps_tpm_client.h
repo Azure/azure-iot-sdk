@@ -125,8 +125,8 @@ extern "C"
     /**
      * @brief Imports a key DPS encrypted to the TPM, replacing any earlier one.
      *
-     * The TPM runs TPM2_ActivateCredential (EK, SRK), TPM2_Import and
-     * TPM2_Load under the SRK, then keeps the key for hmac_sha256 (typically
+     * The TPM runs TPM2_ActivateCredential (activateHandle SRK, keyHandle EK),
+     * TPM2_Import and TPM2_Load under the SRK, then keeps the key for hmac_sha256 (typically
      * persisted with TPM2_EvictControl). az_iot_dps_tpm_parse_key() splits
      * @p key into those commands' inputs.
      *

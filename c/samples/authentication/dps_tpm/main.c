@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include <curl/curl.h>
+#include <openssl/crypto.h>
 
 #include <azure/core/az_base64.h>
 
@@ -168,7 +169,7 @@ static bool https_send(
   {
     fprintf(stderr, "[dps_tpm] HTTPS failed: %s\n", curl_easy_strerror(rc));
   }
-  memset(auth, 0, sizeof(auth));
+  OPENSSL_cleanse(auth, sizeof(auth));
   curl_slist_free_all(headers);
   curl_easy_cleanup(curl);
   return rc == CURLE_OK;
@@ -212,7 +213,7 @@ static void issue_token(az_iot_connection_client* client, sample_context* ctx)
         client, AZ_IOT_CONN_SCOPE_HUB, token, len, SAMPLE_TOKEN_LIFETIME_S);
   }
   fprintf(stderr, "[dps_tpm] hub token: %s\n", az_iot_result_to_string(r));
-  memset(token, 0, sizeof(token));
+  OPENSSL_cleanse(token, sizeof(token));
 }
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -396,6 +397,7 @@ int main(int argc, char** argv)
     msg.payload_len = sizeof(payload) - 1;
     if (az_iot_mqttv3_telemetry_client_send(&telemetry, &msg, on_sent, &ctx) == AZ_IOT_OK)
     {
+      deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
       while (!ctx.sent && sample_now_ms() < deadline)
       {
         (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
