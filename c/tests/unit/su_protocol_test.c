@@ -208,7 +208,7 @@ static az_iot_su_agent_info make_agent_info(void)
   return a;
 }
 
-static void onboarding_request_omits_the_installed_update_id(void** state)
+static void fetch_request_without_an_installed_id_omits_the_key(void** state)
 {
   (void)state;
   uint8_t buf[512];
@@ -226,7 +226,7 @@ static void onboarding_request_omits_the_installed_update_id(void** state)
   assert_non_null(strstr(json, "\"agentProfile\":1"));
   assert_null(strstr(json, "\"agentProfile\":\"1\""));
   assert_non_null(strstr(json, "\"manufacturer\":\"Contoso\""));
-  /* A day-0 device has nothing installed: the key is absent, not null. */
+  /* Nothing installed: the key is absent, not null. */
   assert_null(strstr(json, "installedUpdateId"));
   assert_null(strstr(json, "null"));
 }
@@ -1490,7 +1490,7 @@ int main(void)
     cmocka_unit_test(a_retry_after_is_read_off_the_response_topic),
     cmocka_unit_test(an_absent_or_unusable_retry_after_reads_as_zero),
     cmocka_unit_test(malformed_response_topics_are_rejected),
-    cmocka_unit_test(onboarding_request_omits_the_installed_update_id),
+    cmocka_unit_test(fetch_request_without_an_installed_id_omits_the_key),
     cmocka_unit_test(operational_request_carries_the_installed_update_id),
     cmocka_unit_test(etags_are_echoed_only_when_held),
     cmocka_unit_test(a_partial_installed_update_id_is_rejected),
