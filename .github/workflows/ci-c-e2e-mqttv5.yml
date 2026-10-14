@@ -207,6 +207,8 @@ jobs:
 
   connection:
     name: connection / linux
+  transport:
+    name: transport / linux
     needs: adr-namespace
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
@@ -223,12 +225,46 @@ jobs:
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install ninja and tinyproxy
+        run: sudo apt-get update && sudo apt-get install -y ninja-build tinyproxy
+
+      # An HTTP CONNECT proxy on loopback, run as the runner user so its log is readable; the
+      # proxy tests assert the CONNECT lines for the DPS and hub hosts appear in that log.
+      - name: Start the proxy
+        run: |
+          sudo systemctl stop tinyproxy || true
+          conf="$RUNNER_TEMP/tinyproxy.conf"
+          log="$RUNNER_TEMP/tinyproxy.log"
+          cat > "$conf" <<EOF
+          Port 3128
+          Listen 127.0.0.1
+          Timeout 600
+          LogFile "$log"
+          LogLevel Info
+          PidFile "$RUNNER_TEMP/tinyproxy.pid"
+          MaxClients 50
+          Allow 127.0.0.1
+          ConnectPort 443
+          ConnectPort 8883
+          EOF
+          tinyproxy -c "$conf"
+          for _ in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/3128)
+          {
+            echo "AZ_IOT_PROXY_HOST=127.0.0.1"
+            echo "AZ_IOT_PROXY_PORT=3128"
+            echo "AZ_IOT_E2E_PROXY_LOG=$log"
+          } >> "$GITHUB_ENV"
 
       - name: Build
         working-directory: c
         run: |
           cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_connection
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_transport
 
       - name: Issue a device
         shell: pwsh
@@ -239,6 +275,7 @@ jobs:
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
           E2E_REGISTRATION_ID: ci-mqttv5-cn-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tr-${{ github.run_id }}-${{ github.run_attempt }}
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
@@ -270,3 +307,9 @@ jobs:
 
           ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_connection `
             --verbose --no-tests=error --timeout 900
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_transport `
+            --verbose --no-tests=error --timeout 900
+
+      - name: Proxy log
+        if: always()
+        run: cat "$RUNNER_TEMP/tinyproxy.log" || true

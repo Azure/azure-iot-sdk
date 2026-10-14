@@ -246,6 +246,16 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
+    # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_E2E_PROXY_LOG); fails without them.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_transport
+        tests/e2e_mqttv5_transport_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_transport PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    if(UNIX)
+        # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
+        target_compile_definitions(az_iot_tests_e2e_mqttv5_transport PRIVATE _POSIX_C_SOURCE=200809L)
+    endif()
 endif()
 
 endif() # AZ_IOT_WITH_PAHO
