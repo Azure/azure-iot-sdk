@@ -388,7 +388,7 @@ static void capture_add_i64(e2e_amqp_capture* c, const char* name, int64_t value
   capture_add(c, name, text);
 }
 
-/** @brief Captures the properties section under its AMQP field names. */
+/** @brief Captures the properties section as "amqp:<field>". */
 static void capture_properties(e2e_amqp_capture* c, const az_amqp_message* message)
 {
   az_amqp_message_properties p;
@@ -396,33 +396,33 @@ static void capture_properties(e2e_amqp_capture* c, const az_amqp_message* messa
   {
     return;
   }
-  capture_add_id(c, "message-id", &p.message_id);
+  capture_add_id(c, "amqp:message-id", &p.message_id);
   if (az_span_size(p.user_id) > 0)
   {
     char value[E2E_AMQP_VALUE_TEXT_MAX];
     binary_to_text(p.user_id, value, sizeof(value));
-    capture_add(c, "user-id", value);
+    capture_add(c, "amqp:user-id", value);
   }
-  capture_add_span(c, "to", p.to);
-  capture_add_span(c, "subject", p.subject);
-  capture_add_span(c, "reply-to", p.reply_to);
-  capture_add_id(c, "correlation-id", &p.correlation_id);
-  capture_add_span(c, "content-type", p.content_type);
-  capture_add_span(c, "content-encoding", p.content_encoding);
+  capture_add_span(c, "amqp:to", p.to);
+  capture_add_span(c, "amqp:subject", p.subject);
+  capture_add_span(c, "amqp:reply-to", p.reply_to);
+  capture_add_id(c, "amqp:correlation-id", &p.correlation_id);
+  capture_add_span(c, "amqp:content-type", p.content_type);
+  capture_add_span(c, "amqp:content-encoding", p.content_encoding);
   if (p.has_absolute_expiry_time)
   {
-    capture_add_i64(c, "absolute-expiry-time", p.absolute_expiry_time_ms);
+    capture_add_i64(c, "amqp:absolute-expiry-time", p.absolute_expiry_time_ms);
   }
   if (p.has_creation_time)
   {
-    capture_add_i64(c, "creation-time", p.creation_time_ms);
+    capture_add_i64(c, "amqp:creation-time", p.creation_time_ms);
   }
-  capture_add_span(c, "group-id", p.group_id);
+  capture_add_span(c, "amqp:group-id", p.group_id);
   if (p.has_group_sequence)
   {
-    capture_add_i64(c, "group-sequence", (int64_t)p.group_sequence);
+    capture_add_i64(c, "amqp:group-sequence", (int64_t)p.group_sequence);
   }
-  capture_add_span(c, "reply-to-group-id", p.reply_to_group_id);
+  capture_add_span(c, "amqp:reply-to-group-id", p.reply_to_group_id);
 }
 
 /** @brief Captures every pair of the encoded map @p encoded, keys prefixed with @p prefix. */
@@ -444,7 +444,7 @@ static void capture_map(e2e_amqp_capture* c, az_span encoded, const char* prefix
     if (az_result_failed(az_amqp_decoder_decode(&pairs, &key))
         || az_result_failed(az_amqp_decoder_decode(&pairs, &value)))
     {
-      capture_add(c, prefix[0] != '\0' ? "annotations" : "application-properties", "<undecodable>");
+      capture_add(c, prefix, "<undecodable>");
       return;
     }
     char key_text[256];
@@ -490,7 +490,7 @@ static void on_message_received(
     az_span map;
     if (az_result_succeeded(az_amqp_message_get_application_properties(message, &map)))
     {
-      capture_map(slot, map, "");
+      capture_map(slot, map, "app:");
     }
     if (az_result_succeeded(az_amqp_message_get_message_annotations(message, &map)))
     {

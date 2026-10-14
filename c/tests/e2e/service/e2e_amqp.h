@@ -43,8 +43,8 @@ extern "C"
   {
     char body[E2E_AMQP_CAPTURE_BODY_MAX]; /* NUL-terminated prefix, for substring search */
     size_t body_size; /* full body size */
-    /* "name\0value\0" pairs: the properties section under its AMQP field names ("message-id"),
-     * application properties under their keys, message annotations as "annotation:<key>". */
+    /* "name\0value\0" pairs, named by section: "amqp:<field>" for the properties section,
+     * "app:<key>" for application properties, "annotation:<key>" for message annotations. */
     char props[E2E_AMQP_CAPTURE_PROPS_MAX];
     size_t props_len;
     bool props_truncated;

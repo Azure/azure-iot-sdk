@@ -66,10 +66,11 @@ extern "C"
   int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char* needle);
 
   /* Copies property @p name of the message into @p out (NUL-terminated, truncated to fit).
-   * @p name is an AMQP properties field ("message-id", "user-id", "subject", "correlation-id",
-   * "content-type", "content-encoding", "creation-time", ...), an application property key, or
-   * "annotation:<key>" for a message annotation. Non-string values are given in a printable
-   * form. On a miss, prints every property captured for the message. Returns false on a miss. */
+   * @p name names the section: "amqp:<field>" for an AMQP properties field ("amqp:message-id",
+   * "amqp:content-type", ...), "app:<key>" for an application property, "annotation:<key>" for a
+   * message annotation. Non-string values are given in a printable form; "amqp:creation-time" is
+   * decimal epoch milliseconds. On a miss, prints every property captured for the message.
+   * Returns false on a miss. */
   bool az_iot_e2e_service_telemetry_property(
       const az_iot_e2e_service* svc,
       const char* needle,
@@ -77,8 +78,8 @@ extern "C"
       char* out,
       size_t out_size);
 
-  /* Copies into @p name_out the name of the first property of the message whose value is
-   * exactly @p value. Returns false if there is none. */
+  /* Copies into @p name_out the section-qualified name (as above) of the first property of the
+   * message whose value is exactly @p value. Returns false if there is none. */
   bool az_iot_e2e_service_telemetry_find_value(
       const az_iot_e2e_service* svc,
       const char* needle,
@@ -86,7 +87,8 @@ extern "C"
       char* name_out,
       size_t name_out_size);
 
-  /* Prints every property captured for the message (or that none arrived) to stdout. */
+  /* Prints every property captured for the message, with its section-qualified name (or that
+   * none arrived), to stdout. */
   void az_iot_e2e_service_telemetry_dump(const az_iot_e2e_service* svc, const char* needle);
 
   /* Stop watching telemetry and release the underlying connection. Safe to call

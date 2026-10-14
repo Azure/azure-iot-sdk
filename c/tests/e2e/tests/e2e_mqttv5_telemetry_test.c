@@ -47,6 +47,8 @@
  * for the properties. */
 #define E2E_PAYLOAD_AT_LIMIT (255 * 1024)
 #define E2E_PAYLOAD_PAST_LIMIT (256 * 1024 + 1024)
+/* Not the SDK default (application/json), so a dropped $.ct cannot pass. */
+#define E2E_CONTENT_TYPE "application/vnd.e2e+json"
 
 typedef struct
 {
@@ -340,9 +342,24 @@ static bool property_is(fixture* fx, const char* marker, const char* name, const
   return true;
 }
 
+/** @brief Whether @p text is decimal epoch milliseconds (optionally "timestamp:"-prefixed)
+ * within the second @p epoch_s. */
+static bool epoch_ms_matches(const char* text, time_t epoch_s)
+{
+  static const char prefix[] = "timestamp:";
+  if (strncmp(text, prefix, sizeof(prefix) - 1) == 0)
+  {
+    text += sizeof(prefix) - 1;
+  }
+  char* end = NULL;
+  const long long ms = strtoll(text, &end, 10);
+  return end != text && *end == '\0' && ms >= 0 && ms / 1000 == (long long)epoch_s;
+}
+
 /** @brief For a property whose service-side name is unconfirmed: passes when @p expected is the
  * value of any property, or when one of @p names holds a value matching its first
- * @p match_len characters (0: exact match only). Logs the name it was found under. */
+ * @p match_len characters (0: exact match only) or, when @p expected_epoch_s >= 0, epoch
+ * milliseconds within that second. Logs the name it was found under. */
 static bool property_found(
     fixture* fx,
     const char* marker,
@@ -350,7 +367,8 @@ static bool property_found(
     const char* const* names,
     size_t names_count,
     const char* expected,
-    size_t match_len)
+    size_t match_len,
+    time_t expected_epoch_s)
 {
   char name[E2E_VALUE_MAX];
   if (az_iot_e2e_service_telemetry_find_value(fx->service, marker, expected, name, sizeof(name)))
@@ -365,7 +383,8 @@ static bool property_found(
             fx->service, marker, names[i], actual, sizeof(actual)))
     {
       printf("[e2e] %s '%s' arrived as '%s' = '%s'\n", label, expected, names[i], actual);
-      if (match_len > 0 && strncmp(actual, expected, match_len) == 0)
+      if ((match_len > 0 && strncmp(actual, expected, match_len) == 0)
+          || (expected_epoch_s >= 0 && epoch_ms_matches(actual, expected_epoch_s)))
       {
         return true;
       }
@@ -391,7 +410,8 @@ static void telemetry_is_routed(void** state)
 }
 
 /* $.ct and $.cid travel as native Content Type and Correlation Data, and the service reads them
- * as the AMQP content-type and correlation-id (not as application properties). */
+ * as the AMQP content-type and correlation-id (not as application properties). The content type
+ * is not the SDK default, so it can only come from $.ct. */
 static void content_type_and_correlation_id_are_native(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -401,15 +421,15 @@ static void content_type_and_correlation_id_are_native(void** state)
 
   watch_begin(fx);
   const az_iot_telemetry_property properties[] = {
-    { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
+    { AZ_IOT_MSG_PROP_CONTENT_TYPE, E2E_CONTENT_TYPE },
     { AZ_IOT_MSG_PROP_CORRELATION_ID, marker },
   };
   publish_record* record
       = send_marked(fx, marker, properties, sizeof(properties) / sizeof(properties[0]));
   assert_delivered(fx, marker, record);
 
-  const bool content_type_ok = property_is(fx, marker, "content-type", "application/json");
-  const bool correlation_id_ok = property_is(fx, marker, "correlation-id", marker);
+  const bool content_type_ok = property_is(fx, marker, "amqp:content-type", E2E_CONTENT_TYPE);
+  const bool correlation_id_ok = property_is(fx, marker, "amqp:correlation-id", marker);
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_true(content_type_ok);
   assert_true(correlation_id_ok);
@@ -431,9 +451,15 @@ static void system_properties_arrive(void** state)
   snprintf(message_id, sizeof(message_id), "mid-%s", marker);
   char creation_time[32];
   const time_t now = time(NULL);
-  const struct tm* utc = gmtime(&now);
-  assert_non_null(utc);
-  assert_true(strftime(creation_time, sizeof(creation_time), "%Y-%m-%dT%H:%M:%S.000Z", utc) > 0);
+  struct tm utc;
+#ifdef _MSC_VER
+  assert_int_equal(gmtime_s(&utc, &now), 0);
+#else
+  const struct tm* utc_p = gmtime(&now);
+  assert_non_null(utc_p);
+  utc = *utc_p;
+#endif
+  assert_true(strftime(creation_time, sizeof(creation_time), "%Y-%m-%dT%H:%M:%S.000Z", &utc) > 0);
   const char* component = "e2eComponent";
 
   watch_begin(fx);
@@ -471,13 +497,16 @@ static void system_properties_arrive(void** state)
   }
   else
   {
-    static const char* const ctime_names[] = { "iothub-creation-time-utc", "creation-time" };
-    static const char* const sub_names[] = { "dt-subject", "subject" };
-    failures += property_is(fx, marker, "message-id", message_id) ? 0 : 1;
-    failures += property_is(fx, marker, "content-encoding", "utf-8") ? 0 : 1;
-    /* Compared to the second: the hub may normalize the fraction. */
-    failures += property_found(fx, marker, "$.ctime", ctime_names, 2, creation_time, 19) ? 0 : 1;
-    failures += property_found(fx, marker, "$.sub", sub_names, 2, component, 0) ? 0 : 1;
+    static const char* const ctime_names[]
+        = { "app:iothub-creation-time-utc", "amqp:creation-time" };
+    static const char* const sub_names[] = { "app:dt-subject", "amqp:subject" };
+    failures += property_is(fx, marker, "amqp:message-id", message_id) ? 0 : 1;
+    failures += property_is(fx, marker, "amqp:content-encoding", "utf-8") ? 0 : 1;
+    /* Compared to the second, as ISO-8601 or epoch milliseconds: the hub may normalize the
+     * fraction. */
+    failures
+        += property_found(fx, marker, "$.ctime", ctime_names, 2, creation_time, 19, now) ? 0 : 1;
+    failures += property_found(fx, marker, "$.sub", sub_names, 2, component, 0, -1) ? 0 : 1;
   }
   if (!uid_seen || !uid_record->done || uid_record->status != AZ_IOT_OK)
   {
@@ -486,7 +515,7 @@ static void system_properties_arrive(void** state)
   }
   else
   {
-    failures += property_is(fx, uid_marker, "user-id", fx->dev.device_id) ? 0 : 1;
+    failures += property_is(fx, uid_marker, "amqp:user-id", fx->dev.device_id) ? 0 : 1;
   }
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_int_equal(failures, 0);
@@ -502,6 +531,10 @@ static void application_properties_arrive(void** state)
 
   static const char* const keys[E2E_APP_PROPERTIES]
       = { "e2e-a", "e2e-b", "e2e-c", "e2e-d", "e2e-e", "e2e-f", "e2e-g", "e2e-h" };
+  static const char* const app_names[E2E_APP_PROPERTIES] = {
+    "app:e2e-a", "app:e2e-b", "app:e2e-c", "app:e2e-d",
+    "app:e2e-e", "app:e2e-f", "app:e2e-g", "app:e2e-h",
+  };
   char values[E2E_APP_PROPERTIES][32];
   az_iot_telemetry_property properties[E2E_APP_PROPERTIES];
   for (size_t i = 0; i < E2E_APP_PROPERTIES; ++i)
@@ -518,7 +551,7 @@ static void application_properties_arrive(void** state)
   int failures = 0;
   for (size_t i = 0; i < E2E_APP_PROPERTIES; ++i)
   {
-    failures += property_is(fx, marker, keys[i], values[i]) ? 0 : 1;
+    failures += property_is(fx, marker, app_names[i], values[i]) ? 0 : 1;
   }
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_int_equal(failures, 0);
