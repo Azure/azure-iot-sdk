@@ -98,7 +98,31 @@ extern "C"
      * clients that must see the first messages. Non-zero aborts the connect. Optional. */
     int (*before_open)(e2e_device* dev, void* ctx);
     void* before_open_ctx;
+    /** @brief Saved hub to connect to first, with DPS as the fallback; NULL for none. */
+    const struct e2e_device_hub* saved_hub;
+    /** @brief Replaces the default reconnection_policy; NULL keeps it. */
+    const az_iot_retry_policy* reconnection_policy;
+    /** @brief Replaces the default identity_recovery.mode (RETRY_HUB); NULL keeps it. */
+    const az_iot_identity_recovery_mode* identity_recovery_mode;
+    /** @brief Replaces the default identity_recovery.policy; NULL keeps it. */
+    const az_iot_retry_policy* identity_recovery_policy;
+    /** @brief dps.max_hub_connect_attempts_before_reprovision; 0 keeps the default. */
+    uint32_t max_hub_connect_attempts_before_reprovision;
+    /** @brief Seconds to wait for CONNECTED; 0 keeps the default. */
+    int connect_timeout_s;
   } e2e_device_connect_options;
+
+  /** @brief A hub assignment, as saved after a connect (see e2e_device_get_hub()). */
+  typedef struct e2e_device_hub
+  {
+    char hostname[256];
+    char device_id[129];
+    az_iot_connection_profile profile;
+  } e2e_device_hub;
+
+  /** @brief Copies the connected hub's host name, device id and profile to @p out.
+   * Returns 0 on success, non-zero when not connected or a value does not fit. */
+  int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out);
 
   /* As e2e_device_connect(), with @p opts (NULL for the defaults). */
   int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* opts);

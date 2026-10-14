@@ -139,6 +139,13 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   patched through the service REST API. Without `twin_push.push_desired`, no change arrives while
   connected and a GET delivers it as a snapshot; with it, the snapshot is pushed on connect and each
   change arrives as a patch. One connection per test, on one device. `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_connection_test.c`](../../tests/e2e/tests/e2e_mqttv5_connection_test.c) — DPS
+  reports the `mqttV5` profile; the saved hub (`iothub_hostname`, `device_id`, `connection_profile`
+  with the `dps` fields) connects without DPS and its telemetry reaches the events endpoint; an
+  unreachable saved hub and a saved hub declared mqttv3 both end on the mqttv5 hub through DPS;
+  three `close()`/`open()` cycles each complete a twin GET; a second connection with the same
+  identity evicts the first, which reconnects and sends telemetry and a twin GET. Every state
+  transition is printed. `ci-c-e2e-mqttv5`.
 
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
