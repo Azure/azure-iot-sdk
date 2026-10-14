@@ -185,8 +185,6 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
 | `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` | 16 | User properties on one mqttv5 telemetry message, 2 of them added by the client. Extra properties are dropped with a warning. |
-| `AZ_IOT_C2D_MAX_PROPERTIES` | 8 | Properties surfaced on one cloud-to-device message. Extra properties are dropped with a warning; the message is still delivered. |
-| `AZ_IOT_C2D_PROPERTY_BUFFER` | 256 | Decoded property names and values of one cloud-to-device message. The typed system property values (`message_id`, `correlation_id`, `expiry_time`, `content_type`, `content_encoding`, `user_id`) take their space first; a value that does not fit is left NULL with a `WARN` log. When the rest does not fit, the message is delivered with no generic properties, the typed fields kept, and a `WARN` log. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |

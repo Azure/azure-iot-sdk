@@ -36,70 +36,90 @@
 /* fixtures                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/* Large enough for every value a test sends; a test passes a smaller
+ * value_size to exercise the not-enough-space path. */
+#define REC_VALUE_MAX 512
+#define REC_PROPERTIES_MAX 16
+
+typedef struct getter_record
+{
+  az_iot_result result;
+  char value[REC_VALUE_MAX];
+  size_t len;
+} getter_record;
+
 typedef struct message_record
 {
   int count;
   char payload[128];
   size_t payload_len;
   bool had_payload_pointer;
-  bool content_type_was_null;
-  char content_type[64];
+  /* Buffer size handed to every reader; 0 means REC_VALUE_MAX. */
+  size_t value_size;
+  getter_record message_id, correlation_id, expiry_time, content_type, content_encoding, user_id;
+  /* Optional az_iot_c2d_properties_find() probe. */
+  const char* find_key;
+  getter_record found;
+  /* az_iot_c2d_properties_next() results, up to AZ_IOT_ERR_NOT_FOUND. */
   size_t properties_count;
-  char keys[AZ_IOT_C2D_MAX_PROPERTIES][64];
-  char values[AZ_IOT_C2D_MAX_PROPERTIES][64];
-  bool value_was_null[AZ_IOT_C2D_MAX_PROPERTIES];
-  /* Typed system property fields. NULL is recorded as was_null. */
   struct
   {
-    bool was_null;
-    char value[64];
-  } message_id, correlation_id, expiry_time, content_encoding, user_id;
+    az_iot_result result;
+    char key[64];
+    char value[REC_VALUE_MAX];
+    bool has_value;
+  } properties[REC_PROPERTIES_MAX];
 } message_record;
 
-static void copy_optional(bool* was_null, char* dst, size_t dst_size, const char* src)
-{
-  *was_null = (src == NULL);
-  snprintf(dst, dst_size, "%s", src ? src : "");
-}
+#define RECORD_GETTER(r, msg, size, name) \
+  ((r)->name.result = az_iot_c2d_message_get_##name((msg), (r)->name.value, (size), &(r)->name.len))
 
-#define COPY_FIELD(r, msg, f) \
-  copy_optional(&(r)->f.was_null, (r)->f.value, sizeof((r)->f.value), (msg)->f)
-
+/* Read everything inside the callback: the header promises the message is
+ * valid only for its duration, so a test that read it afterwards would be
+ * asserting on a dangling pointer. */
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
   message_record* r = (message_record*)user_ctx;
-  COPY_FIELD(r, msg, message_id);
-  COPY_FIELD(r, msg, correlation_id);
-  COPY_FIELD(r, msg, expiry_time);
-  COPY_FIELD(r, msg, content_encoding);
-  COPY_FIELD(r, msg, user_id);
+  size_t value_size = r->value_size ? r->value_size : REC_VALUE_MAX;
   r->count++;
   r->payload_len = msg->payload_len;
   r->had_payload_pointer = (msg->payload != NULL);
-  r->content_type_was_null = (msg->content_type == NULL);
-  if (msg->content_type != NULL)
-  {
-    snprintf(r->content_type, sizeof(r->content_type), "%s", msg->content_type);
-  }
   if (msg->payload != NULL && msg->payload_len > 0 && msg->payload_len < sizeof(r->payload))
   {
     memcpy(r->payload, msg->payload, msg->payload_len);
     r->payload[msg->payload_len] = '\0';
   }
 
-  /* Copy the properties out: the header promises they are valid only for the
-   * duration of this call, and a test that read them afterwards would be
-   * asserting on a dangling pointer. */
-  r->properties_count = msg->properties_count;
-  for (size_t i = 0; i < msg->properties_count && i < AZ_IOT_C2D_MAX_PROPERTIES; ++i)
+  RECORD_GETTER(r, msg, value_size, message_id);
+  RECORD_GETTER(r, msg, value_size, correlation_id);
+  RECORD_GETTER(r, msg, value_size, expiry_time);
+  RECORD_GETTER(r, msg, value_size, content_type);
+  RECORD_GETTER(r, msg, value_size, content_encoding);
+  RECORD_GETTER(r, msg, value_size, user_id);
+  if (r->find_key != NULL)
   {
-    snprintf(r->keys[i], sizeof(r->keys[i]), "%s", msg->properties[i].key);
-    r->value_was_null[i] = (msg->properties[i].value == NULL);
-    snprintf(
-        r->values[i],
-        sizeof(r->values[i]),
-        "%s",
-        msg->properties[i].value ? msg->properties[i].value : "");
+    r->found.result = az_iot_c2d_properties_find(
+        &msg->properties, r->find_key, r->found.value, value_size, &r->found.len);
+  }
+
+  size_t cursor = 0;
+  r->properties_count = 0;
+  for (size_t i = 0; i < REC_PROPERTIES_MAX; ++i)
+  {
+    az_iot_result result = az_iot_c2d_properties_next(
+        &msg->properties,
+        &cursor,
+        r->properties[i].key,
+        sizeof(r->properties[i].key),
+        r->properties[i].value,
+        value_size,
+        &r->properties[i].has_value);
+    if (result == AZ_IOT_ERR_NOT_FOUND)
+    {
+      break;
+    }
+    r->properties[i].result = result;
+    r->properties_count++;
   }
 }
 
@@ -444,12 +464,11 @@ static void a_message_addressed_to_another_device_is_not_delivered(void** state)
 
   assert_int_equal(rec.count, 0);
 }
-
 /* ------------------------------------------------------------------------- */
 /* properties                                                                */
 /* ------------------------------------------------------------------------- */
 
-static void the_content_type_is_decoded_from_the_property_bag(void** state)
+static void the_content_type_is_read_with_a_typed_accessor(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -460,8 +479,9 @@ static void the_content_type_is_decoded_from_the_property_bag(void** state)
   inject(fx, C2D_TOPIC "%24.ct=application%2Fjson", "{}");
 
   assert_int_equal(rec.count, 1);
-  assert_false(rec.content_type_was_null);
-  assert_string_equal(rec.content_type, "application/json");
+  assert_int_equal(rec.content_type.result, AZ_IOT_OK);
+  assert_string_equal(rec.content_type.value, "application/json");
+  assert_int_equal(rec.content_type.len, 16);
 }
 
 static void property_keys_and_values_arrive_as_plain_text(void** state)
@@ -478,10 +498,12 @@ static void property_keys_and_values_arrive_as_plain_text(void** state)
 
   assert_int_equal(rec.count, 1);
   assert_int_equal(rec.properties_count, 2);
-  assert_string_equal(rec.keys[0], "$.mid");
-  assert_string_equal(rec.values[0], "id-1");
-  assert_string_equal(rec.keys[1], "note");
-  assert_string_equal(rec.values[1], "a&b=c d%e");
+  assert_int_equal(rec.properties[0].result, AZ_IOT_OK);
+  assert_string_equal(rec.properties[0].key, "$.mid");
+  assert_string_equal(rec.properties[0].value, "id-1");
+  assert_int_equal(rec.properties[1].result, AZ_IOT_OK);
+  assert_string_equal(rec.properties[1].key, "note");
+  assert_string_equal(rec.properties[1].value, "a&b=c d%e");
 }
 
 static void the_three_property_bag_value_forms_are_distinguished(void** state)
@@ -500,15 +522,17 @@ static void the_three_property_bag_value_forms_are_distinguished(void** state)
   assert_int_equal(rec.count, 1);
   assert_int_equal(rec.properties_count, 3);
 
-  assert_string_equal(rec.keys[0], "?prop1");
-  assert_true(rec.value_was_null[0]);
+  assert_string_equal(rec.properties[0].key, "?prop1");
+  assert_false(rec.properties[0].has_value);
+  assert_string_equal(rec.properties[0].value, "");
 
-  assert_string_equal(rec.keys[1], "prop2");
-  assert_false(rec.value_was_null[1]);
-  assert_string_equal(rec.values[1], "");
+  assert_string_equal(rec.properties[1].key, "prop2");
+  assert_true(rec.properties[1].has_value);
+  assert_string_equal(rec.properties[1].value, "");
 
-  assert_string_equal(rec.keys[2], "prop3");
-  assert_string_equal(rec.values[2], "a string");
+  assert_string_equal(rec.properties[2].key, "prop3");
+  assert_true(rec.properties[2].has_value);
+  assert_string_equal(rec.properties[2].value, "a string");
 }
 
 static void a_message_with_no_property_bag_has_no_properties(void** state)
@@ -523,84 +547,89 @@ static void a_message_with_no_property_bag_has_no_properties(void** state)
 
   assert_int_equal(rec.count, 1);
   assert_int_equal(rec.properties_count, 0);
-  assert_true(rec.content_type_was_null);
+  assert_int_equal(rec.content_type.result, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(rec.message_id.result, AZ_IOT_ERR_NOT_FOUND);
 }
 
-static void a_malformed_escape_drops_the_properties_but_keeps_the_message(void** state)
+static void a_malformed_escape_fails_only_that_property(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
   message_record rec = { 0 };
+  rec.find_key = "bad";
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
   /* "%zz" is not a valid escape. Guessing at it would hand the application
-   * bytes the service never sent, but losing the payload over an unreadable
-   * property would be the worse trade. */
-  inject(fx, C2D_TOPIC "good=1&bad=%zz", "still delivered");
+   * bytes the service never sent; the error is reported for that property
+   * alone, and the payload and the other properties are still delivered. */
+  inject(fx, C2D_TOPIC "good=1&bad=%zz&%24.mid=m-1", "still delivered");
 
   assert_int_equal(rec.count, 1);
   assert_string_equal(rec.payload, "still delivered");
-  assert_int_equal(rec.properties_count, 0);
+  assert_int_equal(rec.properties_count, 3);
+  assert_int_equal(rec.properties[0].result, AZ_IOT_OK);
+  assert_int_equal(rec.properties[1].result, AZ_IOT_ERR_PROTOCOL);
+  assert_string_equal(rec.properties[1].key, "");
+  assert_string_equal(rec.properties[1].value, "");
+  assert_int_equal(rec.properties[2].result, AZ_IOT_OK);
+  assert_int_equal(rec.found.result, AZ_IOT_ERR_PROTOCOL);
+  assert_string_equal(rec.message_id.value, "m-1");
 }
 
-static void properties_past_the_bound_are_dropped_and_the_message_survives(void** state)
+static void every_property_is_reachable(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
   message_record rec = { 0 };
+  rec.find_key = "k10";
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
+  /* No SDK-side cap on the number of properties. */
   char topic[512];
   int n = snprintf(topic, sizeof(topic), "%s", C2D_TOPIC);
-  for (int i = 0; i < AZ_IOT_C2D_MAX_PROPERTIES + 3; ++i)
+  for (int i = 0; i < 11; ++i)
   {
     n += snprintf(topic + n, sizeof(topic) - (size_t)n, "%sk%d=v%d", i ? "&" : "", i, i);
   }
   inject(fx, topic, "body");
 
   assert_int_equal(rec.count, 1);
-  assert_string_equal(rec.payload, "body");
-  assert_int_equal(rec.properties_count, AZ_IOT_C2D_MAX_PROPERTIES);
+  assert_int_equal(rec.properties_count, 11);
+  assert_string_equal(rec.properties[10].key, "k10");
+  assert_string_equal(rec.properties[10].value, "v10");
+  assert_int_equal(rec.found.result, AZ_IOT_OK);
+  assert_string_equal(rec.found.value, "v10");
 }
 
-static void a_property_can_be_looked_up_by_name(void** state)
+static void a_long_value_needs_no_sdk_buffer(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-  inject(fx, C2D_TOPIC "%24.ct=text%2Fplain&colour=blue", "body");
+
+  /* Longer than any fixed buffer the SDK used to decode into. */
+  const size_t mid_len = 400;
+  char topic[REC_VALUE_MAX + 128];
+  int n = snprintf(topic, sizeof(topic), "%s%%24.mid=", C2D_TOPIC);
+  memset(topic + n, 'm', mid_len);
+  topic[n + (int)mid_len] = '\0';
+  inject(fx, topic, "body");
+
   assert_int_equal(rec.count, 1);
-
-  /* Rebuild an equivalent message to exercise the accessor directly: the
-   * SDK-owned one is gone once the handler returns. */
-  az_iot_c2d_property props[] = { { "$.ct", "text/plain" }, { "colour", "blue" } };
-  az_iot_c2d_message msg = { 0 };
-  msg.properties = props;
-  msg.properties_count = 2;
-
-  assert_string_equal(az_iot_c2d_message_property(&msg, "colour"), "blue");
-  assert_string_equal(
-      az_iot_c2d_message_property(&msg, AZ_IOT_MSG_PROP_CONTENT_TYPE), "text/plain");
-  assert_null(az_iot_c2d_message_property(&msg, "absent"));
-  assert_null(az_iot_c2d_message_property(NULL, "colour"));
-  assert_null(az_iot_c2d_message_property(&msg, NULL));
-
-  /* A hand-built message with a count but no array is a caller mistake, and
-   * this is public API: answer NULL rather than dereferencing it. */
-  az_iot_c2d_message bad = { 0 };
-  bad.properties_count = 3;
-  assert_null(az_iot_c2d_message_property(&bad, "colour"));
+  assert_int_equal(rec.message_id.result, AZ_IOT_OK);
+  assert_int_equal(rec.message_id.len, mid_len);
+  assert_int_equal(strlen(rec.message_id.value), mid_len);
 }
 
 /* ------------------------------------------------------------------------- */
 /* typed system properties                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void system_properties_arrive_as_typed_fields(void** state)
+static void system_properties_are_read_with_typed_accessors(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -622,14 +651,14 @@ static void system_properties_arrive_as_typed_fields(void** state)
   assert_string_equal(rec.expiry_time.value, "2026-10-13T07:01:14.930Z");
   assert_string_equal(rec.content_encoding.value, "utf-8");
   assert_string_equal(rec.user_id.value, "user-1");
-  assert_string_equal(rec.content_type, "application/json");
-  /* Still in the generic list, as received. */
+  assert_string_equal(rec.content_type.value, "application/json");
+  assert_int_equal(rec.message_id.result, AZ_IOT_OK);
+  assert_int_equal(rec.expiry_time.result, AZ_IOT_OK);
   assert_int_equal(rec.properties_count, 8);
-  assert_string_equal(rec.keys[0], AZ_IOT_MSG_PROP_MESSAGE_ID);
-  assert_string_equal(rec.keys[3], AZ_IOT_MSG_PROP_EXPIRY_TIME);
+  assert_string_equal(rec.properties[3].key, AZ_IOT_MSG_PROP_EXPIRY_TIME);
 }
 
-static void absent_or_valueless_system_properties_are_null(void** state)
+static void absent_and_valueless_system_properties(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -637,23 +666,27 @@ static void absent_or_valueless_system_properties_are_null(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  /* A bare key is a null value and stays NULL; a trailing '=' is an empty one.
-   * "$.mid" must also not match a longer key that starts with it, nor one
-   * that decodes to it followed by a NUL; the latter is not a first
-   * occurrence either. */
+  /* A bare key and a trailing '=' are both present, with an empty value.
+   * "$.mid" must not match a longer key that starts with it, nor one that
+   * decodes to it followed by a NUL. */
   inject(fx, C2D_TOPIC "%24.mid&%24.cid=&%24.midx=1&mid=2&%24.ce%00x=bad&%24.ce=utf-8", "body");
 
   assert_int_equal(rec.count, 1);
-  assert_true(rec.message_id.was_null);
-  assert_false(rec.correlation_id.was_null);
+  assert_int_equal(rec.message_id.result, AZ_IOT_OK);
+  assert_string_equal(rec.message_id.value, "");
+  assert_int_equal(rec.message_id.len, 0);
+  assert_int_equal(rec.correlation_id.result, AZ_IOT_OK);
   assert_string_equal(rec.correlation_id.value, "");
-  assert_true(rec.expiry_time.was_null);
+  assert_int_equal(rec.expiry_time.result, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(rec.user_id.result, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(rec.content_type.result, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(rec.content_encoding.result, AZ_IOT_OK);
   assert_string_equal(rec.content_encoding.value, "utf-8");
-  assert_true(rec.user_id.was_null);
-  assert_true(rec.content_type_was_null);
+  /* The NUL key cannot be decoded into a C string either. */
+  assert_int_equal(rec.properties[4].result, AZ_IOT_ERR_PROTOCOL);
 }
 
-static void the_first_occurrence_of_a_system_property_wins(void** state)
+static void the_first_occurrence_of_a_property_wins(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -661,16 +694,39 @@ static void the_first_occurrence_of_a_system_property_wins(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  /* Same answer az_iot_c2d_message_property() gives. A first occurrence with
-   * no value is still the first. */
+  /* A first occurrence with no value is still the first. */
   inject(fx, C2D_TOPIC "%24.mid=first&%24.mid=second&%24.cid&%24.cid=later", "body");
 
   assert_int_equal(rec.count, 1);
   assert_string_equal(rec.message_id.value, "first");
-  assert_true(rec.correlation_id.was_null);
+  assert_int_equal(rec.correlation_id.result, AZ_IOT_OK);
+  assert_string_equal(rec.correlation_id.value, "");
 }
 
-static void system_properties_survive_a_full_property_list(void** state)
+static void a_value_too_large_reports_the_size_it_needs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  message_record rec = { 0 };
+  rec.value_size = 4;
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+
+  /* "abcd" needs 5 bytes with its terminator; "abc" fits exactly. */
+  inject(fx, C2D_TOPIC "%24.mid=abcd&%24.cid=abc", "body");
+
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.message_id.result, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(rec.message_id.len, 4);
+  assert_string_equal(rec.message_id.value, "");
+  assert_int_equal(rec.correlation_id.result, AZ_IOT_OK);
+  assert_string_equal(rec.correlation_id.value, "abc");
+  assert_int_equal(rec.properties_count, 2);
+  assert_int_equal(rec.properties[0].result, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(rec.properties[1].result, AZ_IOT_OK);
+}
+
+static void a_key_too_large_fails_only_that_property(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -678,23 +734,20 @@ static void system_properties_survive_a_full_property_list(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  /* System properties after the generic list is full. */
-  char topic[512];
+  char topic[256];
   int n = snprintf(topic, sizeof(topic), "%s", C2D_TOPIC);
-  for (int i = 0; i < AZ_IOT_C2D_MAX_PROPERTIES; ++i)
-  {
-    n += snprintf(topic + n, sizeof(topic) - (size_t)n, "k%d=v%d&", i, i);
-  }
-  snprintf(topic + n, sizeof(topic) - (size_t)n, "%%24.mid=m-9&%%24.ct=text%%2Fplain");
+  memset(topic + n, 'k', 70); /* the record's key buffer holds 63 */
+  n += 70;
+  snprintf(topic + n, sizeof(topic) - (size_t)n, "=v&next=1");
   inject(fx, topic, "body");
 
-  assert_int_equal(rec.count, 1);
-  assert_int_equal(rec.properties_count, AZ_IOT_C2D_MAX_PROPERTIES);
-  assert_string_equal(rec.message_id.value, "m-9");
-  assert_string_equal(rec.content_type, "text/plain");
+  assert_int_equal(rec.properties_count, 2);
+  assert_int_equal(rec.properties[0].result, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(rec.properties[1].result, AZ_IOT_OK);
+  assert_string_equal(rec.properties[1].key, "next");
 }
 
-static void system_properties_survive_a_property_buffer_overflow(void** state)
+static void a_value_with_an_encoded_nul_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -702,161 +755,54 @@ static void system_properties_survive_a_property_buffer_overflow(void** state)
   message_record rec = { 0 };
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
 
-  /* A user property too large for AZ_IOT_C2D_PROPERTY_BUFFER drops the
-   * generic list; the typed fields are kept. */
-  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
-  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-1&big=", C2D_TOPIC);
-  memset(topic + n, 'x', AZ_IOT_C2D_PROPERTY_BUFFER);
-  n += AZ_IOT_C2D_PROPERTY_BUFFER;
-  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.mid=m-2");
-  inject(fx, topic, "body");
+  /* Truncating at the NUL would hand back a different value. */
+  inject(fx, C2D_TOPIC "%24.ct=a%00b&%24.cid=c-3", "body");
 
-  assert_int_equal(rec.count, 1);
-  assert_int_equal(rec.properties_count, 0);
-  assert_string_equal(rec.correlation_id.value, "c-1");
-  assert_string_equal(rec.message_id.value, "m-2");
-}
-
-static void a_system_value_that_does_not_fit_or_decode_is_omitted(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  message_record rec = { 0 };
-  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
-
-  /* An oversized $.mid, a malformed $.uid and a $.ct with a decoded NUL are
-   * omitted on their own; the space the failed ones did not use is still there
-   * for $.cid. */
-  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
-  int n = snprintf(topic, sizeof(topic), "%s%%24.mid=", C2D_TOPIC);
-  memset(topic + n, 'm', AZ_IOT_C2D_PROPERTY_BUFFER);
-  n += AZ_IOT_C2D_PROPERTY_BUFFER;
-  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.uid=%%zz&%%24.ct=a%%00b&%%24.cid=c-3");
-  inject(fx, topic, "body");
-
-  assert_int_equal(rec.count, 1);
-  assert_string_equal(rec.payload, "body");
-  assert_true(rec.message_id.was_null);
-  assert_true(rec.user_id.was_null);
-  assert_true(rec.content_type_was_null);
+  assert_int_equal(rec.content_type.result, AZ_IOT_ERR_PROTOCOL);
+  assert_string_equal(rec.content_type.value, "");
   assert_string_equal(rec.correlation_id.value, "c-3");
 }
 
-typedef struct length_probe
+static void property_readers_reject_invalid_arguments(void** state)
 {
-  int count;
-  size_t message_id_len;
-  bool content_encoding_was_null;
-  char correlation_id[16];
-} length_probe;
+  (void)state;
+  char key[8];
+  char value[8];
+  size_t cursor = 0;
+  az_iot_c2d_message msg = { 0 };
+  const az_iot_c2d_properties* props = &msg.properties;
 
-static void on_c2d_lengths(const az_iot_c2d_message* msg, void* user_ctx)
-{
-  length_probe* p = (length_probe*)user_ctx;
-  p->count++;
-  p->message_id_len = msg->message_id ? strlen(msg->message_id) : 0;
-  p->content_encoding_was_null = (msg->content_encoding == NULL);
-  snprintf(
-      p->correlation_id,
-      sizeof(p->correlation_id),
-      "%s",
-      msg->correlation_id ? msg->correlation_id : "");
-}
-
-static void system_properties_fill_the_buffer_exactly(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  length_probe probe = { 0 };
   assert_int_equal(
-      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_lengths, &probe), AZ_IOT_OK);
-
-  /* "c-4" and its terminator take 4 bytes; a $.mid of the rest fits to the
-   * byte, and nothing is left for $.ce. */
-  const size_t mid_len = AZ_IOT_C2D_PROPERTY_BUFFER - 4 - 1;
-  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
-  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-4&%%24.mid=", C2D_TOPIC);
-  memset(topic + n, 'm', mid_len);
-  n += (int)mid_len;
-  snprintf(topic + n, sizeof(topic) - (size_t)n, "&%%24.ce=utf-8");
-  inject(fx, topic, "body");
-
-  assert_int_equal(probe.count, 1);
-  assert_string_equal(probe.correlation_id, "c-4");
-  assert_int_equal(probe.message_id_len, mid_len);
-  assert_true(probe.content_encoding_was_null);
-}
-
-typedef struct sharing_probe
-{
-  int count;
-  bool shared;
-} sharing_probe;
-
-static void on_c2d_sharing(const az_iot_c2d_message* msg, void* user_ctx)
-{
-  sharing_probe* p = (sharing_probe*)user_ctx;
-  p->count++;
-  p->shared = msg->properties_count == 2 && msg->message_id != NULL
-      && strcmp(msg->properties[0].key, AZ_IOT_MSG_PROP_MESSAGE_ID) == 0
-      && msg->properties[0].value == msg->message_id;
-}
-
-static void a_system_value_is_shared_with_the_property_list(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  sharing_probe probe = { 0 };
+      az_iot_c2d_properties_next(NULL, &cursor, key, sizeof(key), value, sizeof(value), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_sharing, &probe), AZ_IOT_OK);
-
-  /* Decoded once: both views point at the same text. */
-  inject(fx, C2D_TOPIC "%24.mid=m-5&k=v", "body");
-
-  assert_int_equal(probe.count, 1);
-  assert_true(probe.shared);
-}
-
-typedef struct exact_fill_probe
-{
-  int count;
-  size_t properties_count;
-  bool shared;
-} exact_fill_probe;
-
-static void on_c2d_exact_fill(const az_iot_c2d_message* msg, void* user_ctx)
-{
-  exact_fill_probe* p = (exact_fill_probe*)user_ctx;
-  p->count++;
-  p->properties_count = msg->properties_count;
-  p->shared = msg->properties_count == 2 && msg->properties[0].value == msg->correlation_id
-      && msg->properties[1].value == msg->message_id;
-}
-
-static void typed_values_filling_the_buffer_keep_their_list_entries(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
-
-  exact_fill_probe probe = { 0 };
+      az_iot_c2d_properties_next(props, NULL, key, sizeof(key), value, sizeof(value), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d_exact_fill, &probe), AZ_IOT_OK);
+      az_iot_c2d_properties_next(props, &cursor, NULL, sizeof(key), value, sizeof(value), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_properties_next(props, &cursor, key, 0, value, sizeof(value), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), NULL, sizeof(value), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), value, 0, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_properties_find(props, NULL, value, sizeof(value), NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_properties_find(props, "", value, sizeof(value), NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_c2d_message_get_message_id(NULL, value, sizeof(value), NULL), AZ_IOT_ERR_INVALID_ARG);
 
-  /* No space is left for the generic list, but both entries reuse typed values
-   * and need none. */
-  const size_t mid_len = AZ_IOT_C2D_PROPERTY_BUFFER - 4 - 1;
-  char topic[AZ_IOT_C2D_PROPERTY_BUFFER + 128];
-  int n = snprintf(topic, sizeof(topic), "%s%%24.cid=c-4&%%24.mid=", C2D_TOPIC);
-  memset(topic + n, 'm', mid_len);
-  topic[n + (int)mid_len] = '\0';
-  inject(fx, topic, "body");
-
-  assert_int_equal(probe.count, 1);
-  assert_int_equal(probe.properties_count, 2);
-  assert_true(probe.shared);
+  /* A message with no property bag is valid and simply has none. */
+  assert_int_equal(
+      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), value, sizeof(value), NULL),
+      AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(
+      az_iot_c2d_message_get_message_id(&msg, value, sizeof(value), NULL), AZ_IOT_ERR_NOT_FOUND);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1029,33 +975,23 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_message_addressed_to_another_device_is_not_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_content_type_is_decoded_from_the_property_bag, setup, teardown),
+        the_content_type_is_read_with_a_typed_accessor, setup, teardown),
     cmocka_unit_test_setup_teardown(property_keys_and_values_arrive_as_plain_text, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_three_property_bag_value_forms_are_distinguished, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_message_with_no_property_bag_has_no_properties, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_malformed_escape_fails_only_that_property, setup, teardown),
+    cmocka_unit_test_setup_teardown(every_property_is_reachable, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_long_value_needs_no_sdk_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_malformed_escape_drops_the_properties_but_keeps_the_message, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        properties_past_the_bound_are_dropped_and_the_message_survives, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_property_can_be_looked_up_by_name, setup, teardown),
-    cmocka_unit_test_setup_teardown(system_properties_arrive_as_typed_fields, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        absent_or_valueless_system_properties_are_null, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        the_first_occurrence_of_a_system_property_wins, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        system_properties_survive_a_full_property_list, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        system_properties_survive_a_property_buffer_overflow, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_system_value_that_does_not_fit_or_decode_is_omitted, setup, teardown),
-    cmocka_unit_test_setup_teardown(system_properties_fill_the_buffer_exactly, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_system_value_is_shared_with_the_property_list, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        typed_values_filling_the_buffer_keep_their_list_entries, setup, teardown),
+        system_properties_are_read_with_typed_accessors, setup, teardown),
+    cmocka_unit_test_setup_teardown(absent_and_valueless_system_properties, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_first_occurrence_of_a_property_wins, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_value_too_large_reports_the_size_it_needs, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_key_too_large_fails_only_that_property, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_value_with_an_encoded_nul_is_rejected, setup, teardown),
+    cmocka_unit_test(property_readers_reject_invalid_arguments),
     cmocka_unit_test_setup_teardown(
         a_second_client_for_the_same_identity_fails_the_connect_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(

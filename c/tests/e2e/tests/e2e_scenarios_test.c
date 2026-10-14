@@ -243,18 +243,14 @@ typedef struct
   char expected[64];
   bool received;
   bool matched;
-  /* Typed system property fields, copied out of the callback. */
+  /* System properties, decoded inside the callback. */
   char message_id[96];
   char correlation_id[96];
   char content_type[64];
   char content_encoding[64];
   char expiry_time[64];
+  az_iot_result results[5];
 } c2d_ctx;
-
-static void copy_field(char* dst, size_t cap, const char* src)
-{
-  snprintf(dst, cap, "%s", src ? src : "");
-}
 
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
@@ -262,11 +258,18 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   size_t expected_len = strlen(c->expected);
   c->matched = (msg->payload_len == expected_len)
       && (memcmp(msg->payload, c->expected, expected_len) == 0);
-  copy_field(c->message_id, sizeof(c->message_id), msg->message_id);
-  copy_field(c->correlation_id, sizeof(c->correlation_id), msg->correlation_id);
-  copy_field(c->content_type, sizeof(c->content_type), msg->content_type);
-  copy_field(c->content_encoding, sizeof(c->content_encoding), msg->content_encoding);
-  copy_field(c->expiry_time, sizeof(c->expiry_time), msg->expiry_time);
+  /* Each reader leaves its buffer empty when the property is absent or does
+   * not decode, which the assertions then catch. */
+  c->results[0]
+      = az_iot_c2d_message_get_message_id(msg, c->message_id, sizeof(c->message_id), NULL);
+  c->results[1] = az_iot_c2d_message_get_correlation_id(
+      msg, c->correlation_id, sizeof(c->correlation_id), NULL);
+  c->results[2]
+      = az_iot_c2d_message_get_content_type(msg, c->content_type, sizeof(c->content_type), NULL);
+  c->results[3] = az_iot_c2d_message_get_content_encoding(
+      msg, c->content_encoding, sizeof(c->content_encoding), NULL);
+  c->results[4]
+      = az_iot_c2d_message_get_expiry_time(msg, c->expiry_time, sizeof(c->expiry_time), NULL);
   c->received = true;
 }
 
@@ -363,6 +366,10 @@ static void test_c2d_system_properties(void** state)
 
   assert_true(cctx.received);
   assert_true(cctx.matched);
+  for (size_t i = 0; i < sizeof(cctx.results) / sizeof(cctx.results[0]); ++i)
+  {
+    assert_int_equal(cctx.results[i], AZ_IOT_OK);
+  }
   assert_string_equal(cctx.message_id, message_id);
   assert_string_equal(cctx.correlation_id, correlation_id);
   assert_string_equal(cctx.content_type, "application/json");

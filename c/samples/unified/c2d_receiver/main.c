@@ -98,33 +98,35 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   ctx->messages_received++;
 
   printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
-  if (msg->content_type)
+
+  /* Properties are decoded on demand into buffers the application owns. */
+  char value[128];
+  if (az_iot_c2d_message_get_message_id(msg, value, sizeof(value), NULL) == AZ_IOT_OK)
   {
-    /* The "$.ct" property out of the topic. */
-    printf(" [%s]", msg->content_type);
+    printf(" mid=%s", value);
   }
-  /* Typed system properties: kept even when the generic list below is cut. */
-  if (msg->message_id)
+  if (az_iot_c2d_message_get_correlation_id(msg, value, sizeof(value), NULL) == AZ_IOT_OK)
   {
-    printf(" mid=%s", msg->message_id);
-  }
-  if (msg->correlation_id)
-  {
-    printf(" cid=%s", msg->correlation_id);
-  }
-  if (msg->expiry_time)
-  {
-    printf(" exp=%s", msg->expiry_time);
+    printf(" cid=%s", value);
   }
 
-  /* Plain text. Past AZ_IOT_C2D_MAX_PROPERTIES the rest are dropped with a
-   * warning. A decoded bag that overruns AZ_IOT_C2D_PROPERTY_BUFFER, or a
-   * malformed escape, surfaces NO properties rather than a truncated one. The
-   * message itself is always delivered. */
-  for (size_t i = 0; i < msg->properties_count; ++i)
+  /* Every property, system ones included. One that does not fit or does not
+   * decode is reported and skipped; the message is still delivered. */
+  char key[64];
+  size_t cursor = 0;
+  az_iot_result r;
+  while ((r = az_iot_c2d_properties_next(
+              &msg->properties, &cursor, key, sizeof(key), value, sizeof(value), NULL))
+         != AZ_IOT_ERR_NOT_FOUND)
   {
-    printf(
-        " %s=%s", msg->properties[i].key, msg->properties[i].value ? msg->properties[i].value : "");
+    if (r == AZ_IOT_OK)
+    {
+      printf(" %s=%s", key, value);
+    }
+    else
+    {
+      printf(" [property skipped: %s]", az_iot_result_to_string(r));
+    }
   }
 
   if (msg->payload_len > 0 && msg->payload_len <= 256)

@@ -70,34 +70,25 @@ extern "C"
 
   typedef void (*az_iot_telemetry_send_callback)(az_iot_result status, void* user_ctx);
 
-/* Maximum number of properties surfaced on one received C2D message. A message
- * carrying more is still delivered; the properties past this bound are dropped
- * and a warning is logged. */
-#ifndef AZ_IOT_C2D_MAX_PROPERTIES
-#define AZ_IOT_C2D_MAX_PROPERTIES 8
-#endif
-/* Bytes available to hold the decoded property names and values of one
- * message, typed system property values included. Decoding never grows the
- * text, so this only has to cover the property-bag portion of an mqttv3
- * topic. */
-#ifndef AZ_IOT_C2D_PROPERTY_BUFFER
-#define AZ_IOT_C2D_PROPERTY_BUFFER 256
-#endif
-
   /**
-   * @brief One property carried by a cloud-to-device message.
+   * @brief Read-only view of the property bag of a received cloud-to-device
+   *        message.
    *
-   * Plain text, already decoded: mqttv3 reverses the percent-encoding IoT Hub
-   * applies to the topic property bag, so a value sent as `application%2Fjson`
-   * arrives as `application/json` and a system property key arrives as `$.ct`
-   * rather than `%24.ct`. Same shape az_iot_telemetry_property uses on the way
-   * out, so a property survives a round trip unchanged.
+   * Points into the received topic: nothing is copied or decoded until the
+   * application asks, so there is no SDK buffer and no limit on the number or
+   * size of properties. Read it with az_iot_c2d_properties_next(),
+   * az_iot_c2d_properties_find() or the az_iot_c2d_message_get_*() accessors,
+   * which percent-decode into buffers the application provides. Valid only for
+   * the duration of the handler callback. Opaque -- do NOT read _internal.
    */
-  typedef struct az_iot_c2d_property
+  typedef struct az_iot_c2d_properties
   {
-    const char* key;
-    const char* value; /**< NULL when the property was sent with no value. */
-  } az_iot_c2d_property;
+    struct
+    {
+      const char* bag;
+      size_t bag_len;
+    } _internal;
+  } az_iot_c2d_properties;
 
   /**
    * @brief A received cloud-to-device message.
@@ -106,39 +97,117 @@ extern "C"
    *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
-   *
-   * The system property fields are decoded before @p properties and take
-   * AZ_IOT_C2D_PROPERTY_BUFFER space first, so they are set even when
-   * @p properties was truncated or dropped. Each is NULL when the message
-   * carries no such property, carries it with no value, or its value did not
-   * fit or decode, or holds an encoded NUL (logged). A key holding an encoded
-   * NUL matches no field. They also appear in @p properties, as received,
-   * unless that list was truncated before them or dropped.
    */
   typedef struct az_iot_c2d_message
   {
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
-    const char* content_type; /**< `$.ct`. */
-    const az_iot_c2d_property* properties;
-    size_t properties_count;
-    const char* message_id; /**< `$.mid`. */
-    const char* correlation_id; /**< `$.cid`. */
-    const char* expiry_time; /**< `$.exp`, ISO 8601 UTC, as sent by the service. */
-    const char* content_encoding; /**< `$.ce`. */
-    const char* user_id; /**< `$.uid`. */
+    az_iot_c2d_properties properties;
   } az_iot_c2d_message;
 
   typedef void (*az_iot_c2d_handler_callback)(const az_iot_c2d_message* msg, void* user_ctx);
 
   /**
-   * @brief Look up one property by name.
+   * @brief Decode the next property.
    *
-   * @return The property value, or NULL when the message carries no such
-   *         property. A property sent with no value also yields NULL; walk
-   *         @p msg->properties directly to tell the two apart.
+   * IoT Hub sends a null value as a bare key and an empty value as `key=`;
+   * both yield an empty @p value, told apart by @p out_has_value.
+   *
+   * @param[in] props         Properties of the message.
+   * @param[in,out] cursor    Start at 0. Advanced past the property even when
+   *                          this call fails, so a loop always ends.
+   * @param[out] key          Decoded, NUL-terminated name.
+   * @param[in] key_size      Size of @p key, terminator included.
+   * @param[out] value        Decoded, NUL-terminated value.
+   * @param[in] value_size    Size of @p value, terminator included.
+   * @param[out] out_has_value Optional. false for a bare key.
+   *
+   * @retval AZ_IOT_OK                   @p key and @p value hold the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND        No more properties.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p key or @p value is too small; both
+   *                                     are left empty.
+   * @retval AZ_IOT_ERR_PROTOCOL         Malformed or NUL percent-escape; both
+   *                                     are left empty.
+   * @retval AZ_IOT_ERR_INVALID_ARG      A NULL pointer or a zero size.
    */
-  const char* az_iot_c2d_message_property(const az_iot_c2d_message* msg, const char* key);
+  AZ_NODISCARD az_iot_result az_iot_c2d_properties_next(
+      const az_iot_c2d_properties* props,
+      size_t* cursor,
+      char* key,
+      size_t key_size,
+      char* value,
+      size_t value_size,
+      bool* out_has_value);
+
+  /**
+   * @brief Decode the value of the first property named @p key.
+   *
+   * @param[in] props          Properties of the message.
+   * @param[in] key            Plain-text name, e.g. #AZ_IOT_MSG_PROP_MESSAGE_ID.
+   * @param[out] value         Decoded, NUL-terminated value; empty for a bare
+   *                           key or `key=`.
+   * @param[in] value_size     Size of @p value, terminator included.
+   * @param[out] out_value_len Optional. Decoded length, terminator excluded;
+   *                           also set on AZ_IOT_ERR_NOT_ENOUGH_SPACE so the
+   *                           caller can size a retry.
+   *
+   * @retval AZ_IOT_OK                   @p value holds the value.
+   * @retval AZ_IOT_ERR_NOT_FOUND        No such property.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p value is too small; left empty.
+   * @retval AZ_IOT_ERR_PROTOCOL         Malformed or NUL percent-escape in the
+   *                                     value; left empty.
+   * @retval AZ_IOT_ERR_INVALID_ARG      A NULL pointer or a zero size.
+   */
+  AZ_NODISCARD az_iot_result az_iot_c2d_properties_find(
+      const az_iot_c2d_properties* props,
+      const char* key,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+
+  /**
+   * @name Typed system property accessors
+   * az_iot_c2d_properties_find() on @p msg->properties for one system property:
+   * same parameters after @p msg, same results.
+   * @{
+   */
+  /** @brief `$.mid`. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_message_id(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @brief `$.cid`. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_correlation_id(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @brief `$.exp`: absolute expiry, ISO 8601 UTC, as sent by the service. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_expiry_time(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @brief `$.ct`. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_content_type(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @brief `$.ce`. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_content_encoding(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @brief `$.uid`. */
+  AZ_NODISCARD az_iot_result az_iot_c2d_message_get_user_id(
+      const az_iot_c2d_message* msg,
+      char* value,
+      size_t value_size,
+      size_t* out_value_len);
+  /** @} */
 
 /* Storage bounds for the request handle below. Compile-time footprint knobs:
  * #define before including to tune. */
