@@ -139,6 +139,8 @@ az_mqtt5_codec_decode_publish(az_span body, uint8_t flags, az_mqtt5_publish_data
 
 /**
  * @brief Read the next User Property from the Properties of a packet.
+ * Other properties are skipped by structure only; their values are not checked (for
+ * az_mqtt5_publish_data.properties, az_mqtt5_codec_decode_publish() has checked them).
  * @param[in] properties  Properties, after Property Length (az_mqtt5_publish_data.properties).
  * @param[in,out] cursor  Byte offset: 0 first; advanced past the property returned.
  * @param[out] out        Key and value, views into @p properties.
