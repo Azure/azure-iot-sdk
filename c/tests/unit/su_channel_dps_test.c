@@ -542,6 +542,62 @@ static void registration_does_not_cost_the_channel_its_request(void** state)
   assert_int_equal(fx->last_result, AZ_IOT_OK);
 }
 
+/* Asserts the published body's top-level installedUpdateId is exactly
+ * {provider, name, version}, compared unescaped; absent when provider is NULL. */
+static void assert_installed_id_on_wire(
+    const az_iot_mock_call* pub,
+    const char* provider,
+    const char* name,
+    const char* version)
+{
+  const char* names[] = { "provider", "name", "version" };
+  const char* values[] = { provider, name, version };
+  az_json_reader reader;
+  assert_int_equal(
+      az_json_reader_init(
+          &reader, az_span_create((uint8_t*)pub->payload, (int32_t)pub->payload_len), NULL),
+      AZ_OK);
+  size_t found = 0;
+  int depth = 0;
+  while (az_result_succeeded(az_json_reader_next_token(&reader)))
+  {
+    if (reader.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT
+        || reader.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
+      depth++;
+    }
+    else if (
+        reader.token.kind == AZ_JSON_TOKEN_END_OBJECT
+        || reader.token.kind == AZ_JSON_TOKEN_END_ARRAY)
+    {
+      depth--;
+    }
+    else if (
+        depth == 1 && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+        && az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("installedUpdateId")))
+    {
+      found++;
+      assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+      assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_BEGIN_OBJECT);
+      for (size_t i = 0; i < 3; ++i)
+      {
+        assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+        assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_PROPERTY_NAME);
+        assert_true(
+            az_json_token_is_text_equal(&reader.token, az_span_create_from_str((char*)names[i])));
+        assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+        assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_STRING);
+        assert_true(
+            az_json_token_is_text_equal(&reader.token, az_span_create_from_str((char*)values[i])));
+      }
+      assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+      assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_END_OBJECT);
+    }
+  }
+  assert_int_equal(depth, 0);
+  assert_int_equal(found, provider != NULL ? 1 : 0);
+}
+
 /* Refreshing device properties must reach the channel: otherwise every later
  * fetch still carries the identity captured at startup. */
 static void updated_device_properties_change_what_is_sent(void** state)
@@ -565,18 +621,17 @@ static void updated_device_properties_change_what_is_sent(void** state)
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
-  /* The onboarding request carries the compatibility properties (the installed
-   * update id rides the later get-update request), so that is what proves the
-   * refresh reached the channel. */
   assert_non_null(strstr((const char*)pub->payload, "Fabrikam"));
   assert_non_null(strstr((const char*)pub->payload, "Gizmo"));
+  assert_installed_id_on_wire(pub, "Fabrikam", "Gizmo", "2.0");
   /* The startup identity is gone, not merely appended to. */
   assert_null(strstr((const char*)pub->payload, "Contoso"));
 }
 
-/* The route reaches the wire: onboarding picks its own topic and omits
- * installedUpdateId, which a day-0 device has nothing to put in. */
-static void the_onboarding_route_selects_its_topic_and_omits_the_installed_id(void** state)
+/* The route reaches the wire: onboarding picks its own topic, and still sends
+ * the installed update id the device holds -- an unprovisioned device may
+ * already have one, and the service uses it to withhold an offer for it. */
+static void the_onboarding_route_selects_its_topic_and_sends_the_installed_id(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
@@ -588,7 +643,7 @@ static void the_onboarding_route_selects_its_topic_and_omits_the_installed_id(vo
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "iotdps-get-onboarding-deviceupdate"));
-  assert_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_installed_id_on_wire(pub, "Contoso", "Foobar", "1.0");
 }
 
 /* The regular route is a different topic, and it DOES carry installedUpdateId --
@@ -605,7 +660,37 @@ static void the_regular_route_selects_its_topic_and_sends_the_installed_id(void*
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "iotdps-get-deviceupdate"));
   assert_null(strstr(pub->topic, "onboarding"));
-  assert_non_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_installed_id_on_wire(pub, "Contoso", "Foobar", "1.0");
+}
+
+/* Nothing installed: the key is absent on either route, never null or empty. */
+static void assert_route_omits_the_installed_id_when_nothing_is_installed(
+    fixture* fx,
+    az_iot_su_operation operation)
+{
+  az_iot_su_device_properties dp = { .manufacturer = "Contoso", .model = "Foobar" };
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_installed_id_on_wire(pub, NULL, NULL, NULL);
+  assert_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_null(strstr((const char*)pub->payload, "null"));
+}
+
+static void the_onboarding_route_omits_the_installed_id_when_nothing_is_installed(void** state)
+{
+  assert_route_omits_the_installed_id_when_nothing_is_installed(
+      (fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+}
+
+static void the_regular_route_omits_the_installed_id_when_nothing_is_installed(void** state)
+{
+  assert_route_omits_the_installed_id_when_nothing_is_installed(
+      (fixture*)*state, AZ_IOT_SU_OP_GET_UPDATE);
 }
 
 /* Report status is not a fetch route; the fetch entry point must not accept it. */
@@ -1138,14 +1223,17 @@ static void malformed_saved_state_is_refused(void** state)
 }
 
 /* Cached ETags never make a validated property set unsendable: properties are
- * sized without them, and a request they would overflow is sent without them. */
-static void oversized_cached_etags_are_dropped_from_the_request(void** state)
+ * sized without them, and a request they would overflow is sent without them.
+ * The installed update id is part of the sized body on both routes, and
+ * survives the drop escaped. */
+static void assert_oversized_cached_etags_are_dropped(fixture* fx, az_iot_su_operation operation)
 {
-  fixture* fx = (fixture*)*state;
   char manufacturer[151];
   memset(manufacturer, '\1', sizeof(manufacturer) - 1);
   manufacturer[sizeof(manufacturer) - 1] = '\0';
-  az_iot_su_device_properties properties = { .manufacturer = manufacturer };
+  az_iot_su_device_properties properties
+      = { .manufacturer = manufacturer,
+          .installed_update_id = { "Contoso\"\\", "Foo\tbar", "1.0\n" } };
 
   /* Worst-case escaped ETags already cached. */
   memset(fx->channel_state.agent_info_etag, '\1', sizeof(fx->channel_state.agent_info_etag) - 1);
@@ -1159,8 +1247,7 @@ static void oversized_cached_etags_are_dropped_from_the_request(void** state)
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
 
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
-  assert_int_equal(
-      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   char body[2048 + 1];
@@ -1169,8 +1256,19 @@ static void oversized_cached_etags_are_dropped_from_the_request(void** state)
   body[pub->payload_len] = '\0';
   assert_null(strstr(body, "Etag"));
   assert_non_null(strstr(body, "manufacturer"));
+  assert_installed_id_on_wire(pub, "Contoso\"\\", "Foo\tbar", "1.0\n");
   assert_string_equal(fx->channel_state.agent_info_etag, "");
   assert_string_equal(fx->channel_state.service_config_etag, "");
+}
+
+static void oversized_cached_etags_are_dropped_from_the_request(void** state)
+{
+  assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+static void oversized_cached_etags_are_dropped_from_an_onboarding_request(void** state)
+{
+  assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
 }
 
 static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void** state)
@@ -3025,15 +3123,21 @@ int main(void)
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(
         oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        oversized_cached_etags_are_dropped_from_an_onboarding_request, setup, teardown),
     cmocka_unit_test_setup_teardown(etags_round_trip_through_saved_state, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_onboarding_route_selects_its_topic_and_omits_the_installed_id, setup, teardown),
+        the_onboarding_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_regular_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_onboarding_route_omits_the_installed_id_when_nothing_is_installed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_regular_route_omits_the_installed_id_when_nothing_is_installed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_for_a_non_fetch_operation_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
