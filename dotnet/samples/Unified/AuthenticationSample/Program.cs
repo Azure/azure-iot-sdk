@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Authentication.Boot;
 using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using SetupSampleDevice;
 
