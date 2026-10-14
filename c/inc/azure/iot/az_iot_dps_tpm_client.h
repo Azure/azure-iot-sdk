@@ -204,7 +204,8 @@ extern "C"
   /** @brief The registration result. Strings live in the client. */
   typedef struct az_iot_dps_tpm_assignment
   {
-    const char* assigned_hub; /**< Hub host name: az_iot_connection_client_options::iothub_hostname. */
+    /** Hub host name: az_iot_connection_client_options::iothub_hostname. */
+    const char* assigned_hub;
     const char* device_id; /**< Device ID: az_iot_connection_client_options::device_id. */
     /** az_iot_connection_client_options::connection_profile. Absent, null or
      * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other strings: UNKNOWN. Any
