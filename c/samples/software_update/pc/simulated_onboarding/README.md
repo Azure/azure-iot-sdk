@@ -44,7 +44,7 @@ offered (see [main.c](main.c)):
 |---|---|---|---|
 | Manufacturer | `Contoso` | `AZ_IOT_SU_MANUFACTURER` | yes |
 | Model | `SU-Sim` | `AZ_IOT_SU_MODEL` | yes |
-| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only, and omitted on the onboarding route |
+| Installed update id | `{ provider: Contoso, name: SU-Sim, version: 1.0.0 }` | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no — reported only |
 
 The sample prints what it reported at startup, so a mismatch is visible rather
 than silent.
@@ -91,8 +91,9 @@ requires them.
 | `AZ_IOT_SU_MODEL` | `SU-Sim` |
 
 **Reported, not matched.** The installed update id says what is on the device
-now. It takes no part in matching, and the onboarding route this sample uses
-omits it entirely — changing it cannot make an update eligible.
+now. It is sent on the update check but takes no part in matching — changing it
+cannot make an update eligible. The service only uses it to withhold an offer
+for the update already installed.
 
 | Variable | Default |
 |---|---|
@@ -307,7 +308,7 @@ At startup, with the defaults (SDK log lines omitted):
 
 ```
 Matched against a deployed update: manufacturer=Contoso model=SU-Sim
-Reported only (not matched, and omitted on the onboarding route): installedUpdateId=Contoso/SU-Sim/1.0.0
+Reported only (not matched): installedUpdateId=Contoso/SU-Sim/1.0.0
 Provisioning: Idle -> Setting up (AZ_IOT_OK)
 ...
 Provisioning: Connecting -> Connected (AZ_IOT_OK)

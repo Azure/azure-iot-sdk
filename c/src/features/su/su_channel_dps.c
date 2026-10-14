@@ -788,13 +788,11 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
    * record" and "malformed request" share one error code, so a probe-and-fall-
    * back would fire on genuinely bad requests too. */
 
-  /* The onboarding route omits installedUpdateId by contract: a day-0 device
-   * has nothing installed. The operational route sends it, which is how the
-   * service knows what to offer next. */
+  /* Both routes send installedUpdateId when one is known: an unprovisioned
+   * device may already hold an update, and the service uses it to withhold an
+   * offer for what is installed. Omitted when nothing is installed. */
   const az_iot_su_report_update_id* installed
-      = (operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE || !c->has_installed_update_id)
-      ? NULL
-      : &c->installed_update_id;
+      = c->has_installed_update_id ? &c->installed_update_id : NULL;
 
   size_t body_len = 0;
   az_iot_result r = az_iot_su__build_fetch_request(
@@ -887,9 +885,9 @@ static az_iot_result channel_set_device_properties(
   az_iot_su_report_update_id installed = { snapshot.properties.installed_update_id.provider,
                                            snapshot.properties.installed_update_id.name,
                                            snapshot.properties.installed_update_id.version };
-  /* Size only: c->body may hold an outstanding operation. Check the
-   * operational shape too, even when this session uses onboarding. ETags are
-   * left out: they are optional, and a request that cannot fit them drops them. */
+  /* Size only: c->body may hold an outstanding operation. Both routes send the
+   * same body, installed ID included. ETags are left out: they are optional,
+   * and a request that cannot fit them drops them. */
   r = az_iot_su__fetch_request_size(
       &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, sizeof(c->body), NULL);
   if (r != AZ_IOT_OK)

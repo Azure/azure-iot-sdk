@@ -118,9 +118,9 @@ extern "C"
   /**
    * Build a fetch request body.
    *
-   * agentInfo is always emitted. installed_update_id is omitted entirely when
-   * NULL, which is the day-0 onboarding case -- a device with nothing installed
-   * must not send a null or an empty triple. The ETags are omitted when NULL, and
+   * Used by both fetch routes. agentInfo is always emitted. installed_update_id
+   * is omitted entirely when NULL (nothing installed), never sent as a null or
+   * an empty triple. The ETags are omitted when NULL, and
    * are echoed back so the service can tell us our view is stale.
    * Requires 1-5 unique, nonempty compatibility keys and non-NULL values.
    * A supplied installed_update_id must be a complete nonempty triple.

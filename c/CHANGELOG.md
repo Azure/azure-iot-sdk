@@ -87,6 +87,10 @@
   `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` (redelivery of the current workflow ignored) and
   `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`report_terminal` marks the final report). An undecodable
   update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
+- Software updates: the onboarding update check
+  (`az_iot_su_client_request_onboarding_update()`) now sends `installedUpdateId` when the device
+  properties set one, as the regular check does, so the service does not offer an update that is
+  already installed. It is still omitted when nothing is installed.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
