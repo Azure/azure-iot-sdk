@@ -30,7 +30,9 @@ struct az_iot_e2e_service
 
   e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
   e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
-  e2e_http_request* http; /* non-NULL while a REST call is in flight */
+  /* Non-NULL while a REST call is in flight. [0] backs the single-request API;
+   * the rest are handles. */
+  e2e_http_request* http[AZ_IOT_E2E_SERVICE_MAX_REQUESTS];
 
   char last_error[256];
 };
@@ -68,6 +70,17 @@ static void set_error(az_iot_e2e_service* svc, const char* message)
 }
 
 static int64_t sas_expiry(void) { return (int64_t)time(NULL) + E2E_SAS_TTL_SECONDS; }
+
+/** @brief Close and free REST slot @p slot, if in use. */
+static void end_slot(az_iot_e2e_service* svc, int slot)
+{
+  if (svc->http[slot] != NULL)
+  {
+    e2e_http_end(svc->http[slot]);
+    free(svc->http[slot]);
+    svc->http[slot] = NULL;
+  }
+}
 
 az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
 {
@@ -170,10 +183,9 @@ void az_iot_e2e_service_destroy(az_iot_e2e_service* svc)
     e2e_amqp_filenotify_end(svc->filenotify);
     free(svc->filenotify);
   }
-  if (svc->http != NULL)
+  for (int i = 0; i < AZ_IOT_E2E_SERVICE_MAX_REQUESTS; i++)
   {
-    e2e_http_end(svc->http);
-    free(svc->http);
+    end_slot(svc, i);
   }
   free(svc);
 }
@@ -433,7 +445,33 @@ static bool build_hub_sas(az_iot_e2e_service* svc, char* out, size_t out_size)
   return true;
 }
 
-/* Start a REST request, replacing any previous one. */
+/** @brief Start a REST request in @p slot, replacing any previous one there. */
+static bool begin_request_in(
+    az_iot_e2e_service* svc,
+    int slot,
+    const char* method,
+    const char* path,
+    const char* sas,
+    const char* body)
+{
+  end_slot(svc, slot);
+  e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
+  if (r == NULL)
+  {
+    set_error(svc, "rest: out of memory");
+    return false;
+  }
+  if (!e2e_http_begin(r, svc->hub_info.host, method, path, sas, body))
+  {
+    set_error(svc, e2e_http_error(r));
+    free(r);
+    return false;
+  }
+  svc->http[slot] = r;
+  return true;
+}
+
+/** @brief Start a REST request in the single-request slot. */
 static bool begin_request(
     az_iot_e2e_service* svc,
     const char* method,
@@ -441,33 +479,18 @@ static bool begin_request(
     const char* sas,
     const char* body)
 {
-  if (svc->http != NULL)
-  {
-    e2e_http_end(svc->http);
-    free(svc->http);
-    svc->http = NULL;
-  }
-  svc->http = (e2e_http_request*)calloc(1, sizeof(*svc->http));
-  if (svc->http == NULL)
-  {
-    set_error(svc, "rest: out of memory");
-    return false;
-  }
-  if (!e2e_http_begin(svc->http, svc->hub_info.host, method, path, sas, body))
-  {
-    set_error(svc, e2e_http_error(svc->http));
-    free(svc->http);
-    svc->http = NULL;
-    return false;
-  }
-  return true;
+  return begin_request_in(svc, 0, method, path, sas, body);
 }
 
-bool az_iot_e2e_service_method_invoke_begin(
+/** @brief Start a direct-method invocation in @p slot. */
+static bool begin_method_invoke(
     az_iot_e2e_service* svc,
+    int slot,
     const char* device_id,
     const char* method_name,
-    const char* json_payload)
+    const char* json_payload,
+    int response_timeout_s,
+    int connect_timeout_s)
 {
   char sas[512];
   if (!build_hub_sas(svc, sas, sizeof(sas)))
@@ -476,15 +499,72 @@ bool az_iot_e2e_service_method_invoke_begin(
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s/methods?api-version=%s", device_id, E2E_API_VERSION);
-  char body[1024];
-  snprintf(
+  char body[2048];
+  int n = snprintf(
       body,
       sizeof(body),
-      "{\"methodName\":\"%s\",\"responseTimeoutInSeconds\":30,"
-      "\"connectTimeoutInSeconds\":30,\"payload\":%s}",
+      "{\"methodName\":\"%s\",\"responseTimeoutInSeconds\":%d,"
+      "\"connectTimeoutInSeconds\":%d,\"payload\":%s}",
       method_name,
+      response_timeout_s,
+      connect_timeout_s,
       (json_payload != NULL) ? json_payload : "null");
-  return begin_request(svc, "POST", path, sas, body);
+  if (n < 0 || n >= (int)sizeof(body))
+  {
+    set_error(svc, "rest: method invocation body too large");
+    return false;
+  }
+  return begin_request_in(svc, slot, "POST", path, sas, body);
+}
+
+bool az_iot_e2e_service_method_invoke_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    const char* method_name,
+    const char* json_payload)
+{
+  return az_iot_e2e_service_method_invoke_with_timeout_begin(
+      svc, device_id, method_name, json_payload, 30, 30);
+}
+
+bool az_iot_e2e_service_method_invoke_with_timeout_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    const char* method_name,
+    const char* json_payload,
+    int response_timeout_s,
+    int connect_timeout_s)
+{
+  return begin_method_invoke(
+      svc, 0, device_id, method_name, json_payload, response_timeout_s, connect_timeout_s);
+}
+
+int az_iot_e2e_service_method_invoke_start(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    const char* method_name,
+    const char* json_payload,
+    int response_timeout_s,
+    int connect_timeout_s)
+{
+  for (int slot = 1; slot < AZ_IOT_E2E_SERVICE_MAX_REQUESTS; slot++)
+  {
+    if (svc->http[slot] == NULL)
+    {
+      return begin_method_invoke(
+                 svc,
+                 slot,
+                 device_id,
+                 method_name,
+                 json_payload,
+                 response_timeout_s,
+                 connect_timeout_s)
+          ? slot
+          : -1;
+    }
+  }
+  set_error(svc, "rest: no free request slot");
+  return -1;
 }
 
 bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* device_id)
@@ -522,19 +602,22 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
   return begin_request(svc, "PATCH", path, sas, body);
 }
 
-int az_iot_e2e_service_request_poll(
+/** @brief Advance REST slot @p slot; on completion copy out and release it. */
+static int poll_slot(
     az_iot_e2e_service* svc,
+    int slot,
     int* out_http_status,
     char* resp_buf,
     size_t resp_buf_size)
 {
-  if (svc->http == NULL)
+  e2e_http_request* r = svc->http[slot];
+  if (r == NULL)
   {
     set_error(svc, "rest: no request in flight");
     return -1;
   }
 
-  int rc = e2e_http_poll(svc->http);
+  int rc = e2e_http_poll(r);
   if (rc == 0)
   {
     return 0;
@@ -544,12 +627,12 @@ int az_iot_e2e_service_request_poll(
   {
     if (out_http_status != NULL)
     {
-      *out_http_status = e2e_http_status(svc->http);
+      *out_http_status = e2e_http_status(r);
     }
     if (resp_buf != NULL && resp_buf_size > 0)
     {
       int body_len = 0;
-      const uint8_t* body = e2e_http_body(svc->http, &body_len);
+      const uint8_t* body = e2e_http_body(r, &body_len);
       size_t copy = (size_t)body_len;
       if (copy > resp_buf_size - 1)
       {
@@ -561,13 +644,43 @@ int az_iot_e2e_service_request_poll(
   }
   else
   {
-    set_error(svc, e2e_http_error(svc->http));
+    set_error(svc, e2e_http_error(r));
   }
 
-  e2e_http_end(svc->http);
-  free(svc->http);
-  svc->http = NULL;
+  end_slot(svc, slot);
   return rc;
+}
+
+int az_iot_e2e_service_request_poll(
+    az_iot_e2e_service* svc,
+    int* out_http_status,
+    char* resp_buf,
+    size_t resp_buf_size)
+{
+  return poll_slot(svc, 0, out_http_status, resp_buf, resp_buf_size);
+}
+
+int az_iot_e2e_service_request_poll_handle(
+    az_iot_e2e_service* svc,
+    int handle,
+    int* out_http_status,
+    char* resp_buf,
+    size_t resp_buf_size)
+{
+  if (handle < 1 || handle >= AZ_IOT_E2E_SERVICE_MAX_REQUESTS)
+  {
+    set_error(svc, "rest: invalid request handle");
+    return -1;
+  }
+  return poll_slot(svc, handle, out_http_status, resp_buf, resp_buf_size);
+}
+
+void az_iot_e2e_service_request_cancel(az_iot_e2e_service* svc, int handle)
+{
+  if (handle >= 1 && handle < AZ_IOT_E2E_SERVICE_MAX_REQUESTS)
+  {
+    end_slot(svc, handle);
+  }
 }
 
 /* ---- Device-side HTTPS helper --------------------------------------------- */

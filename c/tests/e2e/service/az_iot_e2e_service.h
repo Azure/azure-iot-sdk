@@ -134,14 +134,69 @@ extern "C"
 
   /* ---- Direct methods & twin (HTTPS REST, non-blocking / pumpable) ---------- */
 
+  /**
+   * @brief REST requests in flight at once. One slot backs the single-request
+   *        functions (the *_begin calls and az_iot_e2e_service_request_poll);
+   *        the rest are handles from az_iot_e2e_service_method_invoke_start.
+   *
+   * Each request is its own TLS connection. OpenSSL (Linux/macOS) keeps state
+   * per connection; the Windows reference transport (Schannel) keeps ONE global
+   * TLS session, so on Windows only one request -- handle or not -- may be in
+   * flight at a time. Suites that use handles are Linux-only.
+   */
+#define AZ_IOT_E2E_SERVICE_MAX_REQUESTS 8
+
   /* Begin a direct-method invocation on @p device_id. @p json_payload is the raw
-   * JSON value to deliver as the method payload (e.g. "\"ping\"" or "{\"a\":1}").
-   * Drive to completion with az_iot_e2e_service_request_poll. */
+   * JSON value to deliver as the method payload (e.g. "\"ping\"" or "{\"a\":1}"),
+   * or NULL for a JSON null. Both timeouts are 30 seconds. Drive to completion
+   * with az_iot_e2e_service_request_poll. */
   bool az_iot_e2e_service_method_invoke_begin(
       az_iot_e2e_service* svc,
       const char* device_id,
       const char* method_name,
       const char* json_payload);
+
+  /**
+   * @brief As az_iot_e2e_service_method_invoke_begin(), with the request's
+   *        responseTimeoutInSeconds and connectTimeoutInSeconds.
+   */
+  bool az_iot_e2e_service_method_invoke_with_timeout_begin(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const char* method_name,
+      const char* json_payload,
+      int response_timeout_s,
+      int connect_timeout_s);
+
+  /**
+   * @brief As az_iot_e2e_service_method_invoke_with_timeout_begin(), on a free
+   *        slot of its own so several invocations can be in flight together (see
+   *        AZ_IOT_E2E_SERVICE_MAX_REQUESTS for the platform limit).
+   *
+   * @return A handle (> 0) for az_iot_e2e_service_request_poll_handle, or -1
+   *         when no slot is free or the request cannot be built.
+   */
+  int az_iot_e2e_service_method_invoke_start(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const char* method_name,
+      const char* json_payload,
+      int response_timeout_s,
+      int connect_timeout_s);
+
+  /**
+   * @brief As az_iot_e2e_service_request_poll(), for the request named by
+   *        @p handle. The handle is released once this returns 1 or -1.
+   */
+  int az_iot_e2e_service_request_poll_handle(
+      az_iot_e2e_service* svc,
+      int handle,
+      int* out_http_status,
+      char* resp_buf,
+      size_t resp_buf_size);
+
+  /** @brief Abandon the request named by @p handle; safe once it completed. */
+  void az_iot_e2e_service_request_cancel(az_iot_e2e_service* svc, int handle);
 
   /* Begin a twin GET for @p device_id. Drive with az_iot_e2e_service_request_poll. */
   bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* device_id);
