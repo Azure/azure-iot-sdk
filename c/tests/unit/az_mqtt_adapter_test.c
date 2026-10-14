@@ -655,6 +655,36 @@ static void codec_refuses_a_reader_that_changes_or_fails(void** state)
   assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_NOT_ENOUGH_SPACE);
 }
 
+/* Reader of 2047 properties with 65,535-byte keys and values: 268,310,525 bytes, under the
+ * Variable Byte Integer maximum (268,435,455) on its own. */
+static char s_big[65535];
+
+static az_result read_big(void* context, int32_t* cursor, az_mqtt5_user_property* out)
+{
+  (void)context;
+  if (*cursor >= 2047)
+  {
+    return AZ_ERROR_ITEM_NOT_FOUND;
+  }
+  out->key = az_span_create((uint8_t*)s_big, (int32_t)sizeof(s_big));
+  out->value = out->key;
+  (*cursor)++;
+  return AZ_OK;
+}
+
+static void codec_refuses_a_remaining_length_past_the_vbi_maximum(void** state)
+{
+  (void)state;
+  az_mqtt5_publish_options o = az_mqtt5_publish_options_default();
+  o.topic = AZ_SPAN_FROM_STR("t");
+  o.user_property_next = read_big;
+  // Never read: the encode fails on the size alone.
+  o.payload = az_span_create((uint8_t*)s_big, 200000);
+  uint8_t buf[64];
+  az_span s = AZ_SPAN_FROM_BUFFER(buf);
+  assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_NOT_ENOUGH_SPACE);
+}
+
 int main(void)
 {
 #if defined(_WIN32)
@@ -670,6 +700,7 @@ int main(void)
     cmocka_unit_test(codec_next_user_property_reports_malformed_blocks),
     cmocka_unit_test(codec_encodes_user_properties_from_a_reader),
     cmocka_unit_test(codec_refuses_a_reader_that_changes_or_fails),
+    cmocka_unit_test(codec_refuses_a_remaining_length_past_the_vbi_maximum),
     cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),

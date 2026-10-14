@@ -245,9 +245,10 @@ typedef struct
   /**
    * @brief Optional. When set, User Properties are read with it instead of from @p user_properties:
    * it sets *out to the property at *cursor (0 first), advances *cursor, and returns AZ_OK, or
-   * AZ_ERROR_ITEM_NOT_FOUND after the last. Any other result fails the encode with it. It must yield
-   * the same sequence each time it restarts from 0: the encoder reads it once to size and once to
-   * write.
+   * AZ_ERROR_ITEM_NOT_FOUND after the last. A failure result fails the encode with it; any other
+   * result, with AZ_ERROR_ARG. It must yield the same sequence each time it restarts from 0: the
+   * encoder reads it once to size and once to write, and fails with AZ_ERROR_ARG if the encoded
+   * length differs (only the length is compared; writes never pass it).
    */
   az_result (*user_property_next)(void* context, int32_t* cursor, az_mqtt5_user_property* out);
   void* user_property_context; /**< Passed to @p user_property_next. */

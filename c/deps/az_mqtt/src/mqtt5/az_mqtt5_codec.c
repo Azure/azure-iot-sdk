@@ -638,7 +638,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
     return rc;
   int64_t const total = (int64_t)remaining + _az_mqtt_vbi_size(prop_len) + prop_len
       + az_span_size(opts->payload); // Payload (no length prefix)
-  if (total > INT32_MAX)
+  if (total > _AZ_MQTT_VBI_MAX) // Remaining Length is a Variable Byte Integer.
     return AZ_ERROR_NOT_ENOUGH_SPACE;
   remaining = (int32_t)total;
 
