@@ -569,6 +569,10 @@ static az_iot_result esp_publish(
     while ((up_rc = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v))
            == AZ_IOT_OK)
     {
+      if (v.key_len > UINT16_MAX || v.value_len > UINT16_MAX)
+      {
+        return AZ_IOT_ERR_INVALID_ARG; /* Over MQTT's string limit. */
+      }
       ++up_count;
     }
     if (up_rc != AZ_IOT_ERR_NOT_FOUND || up_count > UINT8_MAX)
@@ -583,7 +587,8 @@ static az_iot_result esp_publish(
       cursor = 0;
       for (size_t i = 0; ok && i < up_count; ++i)
       {
-        ok = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v) == AZ_IOT_OK;
+        ok = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v) == AZ_IOT_OK
+            && v.key_len <= UINT16_MAX && v.value_len <= UINT16_MAX;
         char* k = ok ? (char*)malloc(v.key_len + 1) : NULL;
         char* val = ok ? (char*)malloc(v.value_len + 1) : NULL;
         if (k && val)

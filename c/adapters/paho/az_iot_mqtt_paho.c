@@ -1586,13 +1586,14 @@ static az_iot_result paho_iface_publish(
   MQTTProperties props = MQTTProperties_initializer;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
+    bool added = true;
     if (is_nonempty_cstr(msg->content_type))
     {
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_CONTENT_TYPE;
       p.value.data.data = (char*)(uintptr_t)msg->content_type;
       p.value.data.len = (int)strlen(msg->content_type);
-      MQTTProperties_add(&props, &p);
+      added = MQTTProperties_add(&props, &p) == 0;
     }
     if (msg->correlation_data && msg->correlation_data_len > 0)
     {
@@ -1600,14 +1601,19 @@ static az_iot_result paho_iface_publish(
       p.identifier = MQTTPROPERTY_CODE_CORRELATION_DATA;
       p.value.data.data = (char*)(uintptr_t)msg->correlation_data;
       p.value.data.len = (int)msg->correlation_data_len;
-      MQTTProperties_add(&props, &p);
+      added = added && MQTTProperties_add(&props, &p) == 0;
     }
     if (msg->message_expiry_seconds > 0)
     {
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_MESSAGE_EXPIRY_INTERVAL;
       p.value.integer4 = (int)msg->message_expiry_seconds;
-      MQTTProperties_add(&props, &p);
+      added = added && MQTTProperties_add(&props, &p) == 0;
+    }
+    if (!added)
+    {
+      MQTTProperties_free(&props);
+      return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
     size_t cursor = 0;
     az_iot_mqtt_user_property_view up;
