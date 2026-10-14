@@ -735,6 +735,27 @@ static void codec_refuses_an_oversized_topic(void** state)
   assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_ARG);
 }
 
+/* A reader returning a property without increasing the cursor would loop forever. */
+static az_result read_stuck(void* context, int32_t* cursor, az_mqtt5_user_property* out)
+{
+  (void)context;
+  (void)cursor;
+  out->key = AZ_SPAN_FROM_STR("k");
+  out->value = AZ_SPAN_FROM_STR("v");
+  return AZ_OK;
+}
+
+static void codec_refuses_a_reader_that_does_not_advance(void** state)
+{
+  (void)state;
+  az_mqtt5_publish_options o = az_mqtt5_publish_options_default();
+  o.topic = AZ_SPAN_FROM_STR("t");
+  o.user_property_next = read_stuck;
+  uint8_t buf[64];
+  az_span s = AZ_SPAN_FROM_BUFFER(buf);
+  assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_ARG);
+}
+
 int main(void)
 {
 #if defined(_WIN32)
@@ -754,6 +775,7 @@ int main(void)
     cmocka_unit_test(codec_refuses_property_sizes_that_overflow),
     cmocka_unit_test(codec_refuses_native_property_sizes_that_overflow),
     cmocka_unit_test(codec_refuses_an_oversized_topic),
+    cmocka_unit_test(codec_refuses_a_reader_that_does_not_advance),
     cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),

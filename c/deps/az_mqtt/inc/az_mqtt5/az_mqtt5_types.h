@@ -244,9 +244,9 @@ typedef struct
   int32_t user_property_count;
   /**
    * @brief Optional. When set, User Properties are read with it instead of from @p user_properties:
-   * it sets *out to the property at *cursor (0 first), advances *cursor, and returns AZ_OK, or
+   * it sets *out to the property at *cursor (0 first), increases *cursor, and returns AZ_OK, or
    * AZ_ERROR_ITEM_NOT_FOUND after the last. A failure result fails the encode with it; any other
-   * result, with AZ_ERROR_ARG. It must yield the same sequence each time it restarts from 0: the
+   * result, or an AZ_OK that does not increase *cursor, with AZ_ERROR_ARG. It must yield the same sequence each time it restarts from 0: the
    * encoder reads it once to size and once to write, and fails with AZ_ERROR_ARG if the encoded
    * length differs (only the length is compared; writes never pass it).
    */

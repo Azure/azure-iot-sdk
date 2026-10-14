@@ -320,7 +320,10 @@ static az_result _publish_next_user_property(
 {
   if (opts->user_property_next != NULL)
   {
-    return opts->user_property_next(opts->user_property_context, cursor, out);
+    int32_t const before = *cursor;
+    az_result const rc = opts->user_property_next(opts->user_property_context, cursor, out);
+    // A property returned without increasing the cursor would loop forever.
+    return rc == AZ_OK && *cursor <= before ? AZ_ERROR_ARG : rc;
   }
   if (*cursor >= opts->user_property_count)
   {
