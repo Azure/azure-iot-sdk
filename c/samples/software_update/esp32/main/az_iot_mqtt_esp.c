@@ -612,6 +612,13 @@ static az_iot_result esp_publish(
           err = AZ_IOT_ERR_OUT_OF_MEMORY;
         }
       }
+      /* Nor more than it yielded when counted. */
+      if (err == AZ_IOT_OK
+          && az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v)
+              != AZ_IOT_ERR_NOT_FOUND)
+      {
+        err = AZ_IOT_ERR_INVALID_ARG;
+      }
       if (err == AZ_IOT_OK
           && esp_mqtt5_client_set_user_property(&up, items, (uint8_t)up_count) != ESP_OK)
       {
