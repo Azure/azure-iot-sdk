@@ -219,7 +219,7 @@ extern "C"
      * assignment without one is rejected unless issued_certificate_chain is set. */
     bool hub_key_imported;
     /** `registrationState.issuedCertificateChain` JSON array of one or more
-     * non-empty strings, a slice of the last response body; empty when absent.
+     * canonical base64 strings, a slice of the last response body; empty when absent.
      * Any other array makes the response malformed. */
     az_span issued_certificate_chain;
   } az_iot_dps_tpm_assignment;

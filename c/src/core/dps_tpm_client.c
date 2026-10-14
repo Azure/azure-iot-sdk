@@ -441,6 +441,68 @@ static bool json_unescape_bounded(az_span slice, char* out, size_t out_size, boo
   return true;
 }
 
+/**
+ * @brief True when JSON string @p text is canonical padded standard base64.
+ *
+ * Accepts the `\/` escape; any other escape, or none of the text, fails.
+ */
+static bool is_json_base64(az_span text)
+{
+  const uint8_t* p = az_span_ptr(text);
+  int32_t n = az_span_size(text);
+  int32_t total = 0;
+  int32_t pad = 0;
+  int32_t last = 0;
+  for (int32_t i = 0; i < n; ++i, ++total)
+  {
+    uint8_t c = p[i];
+    if (c == '\\')
+    {
+      if (i + 1 >= n || p[i + 1] != '/')
+      {
+        return false;
+      }
+      c = '/';
+      ++i;
+    }
+    if (c == '=')
+    {
+      ++pad;
+      continue;
+    }
+    if (pad > 0)
+    {
+      return false;
+    }
+    if (c >= 'A' && c <= 'Z')
+    {
+      last = c - 'A';
+    }
+    else if (c >= 'a' && c <= 'z')
+    {
+      last = c - 'a' + 26;
+    }
+    else if (c >= '0' && c <= '9')
+    {
+      last = c - '0' + 52;
+    }
+    else if (c == '+' || c == '/')
+    {
+      last = c == '+' ? 62 : 63;
+    }
+    else
+    {
+      return false;
+    }
+  }
+  /* Padding completes the last quantum; its unused bits must be zero. */
+  if (total == 0 || total % 4 != 0 || pad > 2 || total == pad)
+  {
+    return false;
+  }
+  return pad == 0 || (pad == 1 && (last & 0x03) == 0) || (pad == 2 && (last & 0x0F) == 0);
+}
+
 /** @brief Records the string token at @p jr into @p out; anything else leaves it empty. */
 static void take_string(const az_json_reader* jr, az_span* out)
 {
@@ -550,7 +612,7 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
         az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("issuedCertificateChain"))
         && jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
-      /* One or more non-empty strings; anything else makes the response malformed. */
+      /* One or more base64 strings; anything else makes the response malformed. */
       uint8_t* begin = az_span_ptr(jr->token.slice);
       int count = 0;
       for (;;)
@@ -563,7 +625,7 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
         {
           break;
         }
-        if (jr->token.kind != AZ_JSON_TOKEN_STRING || az_span_size(jr->token.slice) <= 0)
+        if (jr->token.kind != AZ_JSON_TOKEN_STRING || !is_json_base64(jr->token.slice))
         {
           return false;
         }

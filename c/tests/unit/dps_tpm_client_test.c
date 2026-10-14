@@ -301,7 +301,34 @@ static void an_mqttv3_assignment_needs_a_hub_key_or_a_certificate(void** state)
     { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
       "\"issuedCertificateChain\":[\"QQ==\"]}}",
       AZ_IOT_OK },
-    /* A chain must hold one or more non-empty strings. */
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QUJD\",\"Pz8\\/\",\"QUI=\"]}}",
+      AZ_IOT_OK },
+    /* A chain must hold one or more canonical base64 strings. */
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"@@@@\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QR==\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QUJ=\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"====\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"Q===\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ=A\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ\\n=\"]}}",
+      AZ_IOT_ERR_PROTOCOL },
     { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
       "\"issuedCertificateChain\":[]}}",
       AZ_IOT_ERR_PROTOCOL },
