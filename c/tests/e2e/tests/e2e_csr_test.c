@@ -15,6 +15,9 @@
  *      identity - reaching CONNECTED is the hub's proof that it authenticated
  *      the DPS-issued certificate.
  *   5. A telemetry publish completes on that same hub connection.
+ *   6. (renewal case) az_iot_connection_client_send_csr() on that hub session is
+ *      accepted (202) and issued (200), and a reconnect with the renewed
+ *      certificate reaches CONNECTED.
  *
  * This requires a DPS enrollment (group) linked to a signing CA so DPS issues an
  * operational cert - a setup only the ci-c-e2e-csr workflow provisions. It is
@@ -52,6 +55,9 @@
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 120
+/* The SDK waits up to 120 s for the 202 and, after it, 120 s for the 200. */
+#define E2E_RENEW_TIMEOUT_S 270
+#define E2E_RENEW_ATTEMPTS 3
 
 /* ---- device callbacks ----------------------------------------------------- */
 
@@ -66,6 +72,15 @@ typedef struct
   /* Per scope: X.509 index 0 refused, and the index that connected. */
   bool first_refused[AZ_IOT_CONN_SCOPE_COUNT];
   int connected_index[AZ_IOT_CONN_SCOPE_COUNT];
+  /* Hub renewal (send_csr) outcome. */
+  bool renew_accepted;
+  bool renew_done;
+  az_iot_csr_event_kind renew_kind;
+  az_iot_result renew_status;
+  az_iot_result renew_store_status;
+  size_t renew_issued_count;
+  /* Set when the hub session is lost (RETRY_PENDING). */
+  bool hub_dropped;
 } csr_ctx;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -113,6 +128,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   az_iot_result reason = event->reason;
   c->conn_state = s;
   c->last_reason = reason;
+  if (s == AZ_IOT_CONN_STATE_RETRY_PENDING)
+  {
+    c->hub_dropped = true;
+  }
   fprintf(
       stderr,
       "[e2e-csr] conn state -> %s (0x%x) reason %s (0x%x)\n",
@@ -137,6 +156,106 @@ static void on_send_done(az_iot_result status, void* user_ctx)
   csr_ctx* c = (csr_ctx*)user_ctx;
   c->send_status = status;
   c->send_done = 1;
+}
+
+static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
+{
+  csr_ctx* c = (csr_ctx*)user_ctx;
+  fprintf(
+      stderr,
+      "[e2e-csr] renewal event %d status %s service_code %ld retry_after %u"
+      " credential_error '%s' credential_message '%s' tracking_id '%s'\n",
+      (int)evt->kind,
+      az_iot_result_to_string(evt->status),
+      (long)evt->service_code,
+      (unsigned)evt->retry_after_s,
+      evt->credential_error ? evt->credential_error : "",
+      evt->credential_message ? evt->credential_message : "",
+      evt->tracking_id ? evt->tracking_id : "");
+  if (evt->kind == AZ_IOT_CSR_ACCEPTED)
+  {
+    c->renew_accepted = true;
+    return;
+  }
+  c->renew_kind = evt->kind;
+  c->renew_status = evt->status;
+  c->renew_store_status = evt->store_status;
+  c->renew_issued_count = evt->issued ? evt->issued->count : 0;
+  c->renew_done = true;
+}
+
+/** @brief Pumps @p conn until the hub state is @p want, it faults, or
+ * @p timeout_s elapses. */
+static void pump_until_hub_state(
+    az_iot_connection_client* conn,
+    const csr_ctx* ctx,
+    az_iot_connection_state want,
+    int timeout_s)
+{
+  time_t start = time(NULL);
+  while (ctx->conn_state != want && ctx->conn_state != AZ_IOT_CONN_STATE_FAULTED
+         && (time(NULL) - start) < timeout_s)
+  {
+    (void)az_iot_connection_client_do_work(conn, 50);
+  }
+}
+
+/** @brief Renews the operational certificate over the connected mqttv3 hub
+ * session, then reconnects with the renewed certificate.
+ *
+ * If the hub session drops before a terminal response, the request is
+ * resubmitted with the same request id once reconnected (documented recovery
+ * for az_iot_connection_client_send_csr()). */
+static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
+{
+  char request_id[32];
+  (void)snprintf(
+      request_id,
+      sizeof(request_id),
+      "%08x-%08x",
+      (unsigned)time(NULL),
+      (unsigned)(uintptr_t)ctx & 0xffffffffu);
+
+  int attempt = 0;
+  while (!ctx->renew_done && attempt < E2E_RENEW_ATTEMPTS)
+  {
+    if (attempt > 0)
+    {
+      pump_until_hub_state(conn, ctx, AZ_IOT_CONN_STATE_CONNECTED, E2E_CONNECT_TIMEOUT_S);
+      assert_int_equal(ctx->conn_state, AZ_IOT_CONN_STATE_CONNECTED);
+      if (ctx->renew_done)
+      {
+        break;
+      }
+      az_iot_result cancelled = az_iot_connection_client_cancel_csr(conn);
+      assert_true(cancelled == AZ_IOT_OK || cancelled == AZ_IOT_ERR_NOT_FOUND);
+      fprintf(stderr, "[e2e-csr] hub session lost; resubmitting renewal %s\n", request_id);
+    }
+    ++attempt;
+    ctx->hub_dropped = false;
+    assert_int_equal(
+        AZ_IOT_OK, az_iot_connection_client_send_csr(conn, request_id, NULL, on_renew_event, ctx));
+    time_t start = time(NULL);
+    while (!ctx->renew_done && !ctx->hub_dropped && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
+    {
+      (void)az_iot_connection_client_do_work(conn, 50);
+    }
+  }
+  assert_true(ctx->renew_done);
+  /* A resubmitted request may complete without a fresh 202. */
+  assert_true(ctx->renew_accepted || attempt > 1);
+  assert_int_equal(ctx->renew_kind, AZ_IOT_CSR_ISSUED);
+  assert_int_equal(ctx->renew_status, AZ_IOT_OK);
+  assert_int_equal(ctx->renew_store_status, AZ_IOT_OK);
+  assert_true(ctx->renew_issued_count >= 1);
+
+  /* A new client certificate needs a new TLS handshake. */
+  az_iot_connection_client_close(conn);
+  pump_until_hub_state(conn, ctx, AZ_IOT_CONN_STATE_IDLE, 5);
+  assert_int_equal(ctx->conn_state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(AZ_IOT_OK, az_iot_connection_client_open(conn));
+  pump_until_hub_state(conn, ctx, AZ_IOT_CONN_STATE_CONNECTED, E2E_CONNECT_TIMEOUT_S);
+  assert_int_equal(ctx->conn_state, AZ_IOT_CONN_STATE_CONNECTED);
 }
 
 /* ---- certificate fallback ----------------------------------------------- */
@@ -223,11 +342,13 @@ static az_iot_result rejected_first_store(
 /**
  * @param rejected_first Offer a refused certificate first for each role: DPS
  * and the hub must each fall back to the managed provider's certificate.
+ * @param renew Then renew the certificate on the hub (renew_on_hub()).
  */
 static void run_csr_enrollment(
     az_iot_certificate_managed_key_type key_type,
     const char* label,
-    bool rejected_first)
+    bool rejected_first,
+    bool renew)
 {
   char* id_scope = az_iot_test_env_dup("AZ_IOT_DPS_ID_SCOPE");
   char* reg_id = az_iot_test_env_dup("AZ_IOT_DPS_REGISTRATION_ID");
@@ -354,6 +475,11 @@ static void run_csr_enrollment(
   assert_int_equal(ctx.send_done, 1);
   assert_int_equal(ctx.send_status, AZ_IOT_OK);
 
+  if (renew)
+  {
+    renew_on_hub(&conn, &ctx);
+  }
+
   az_iot_connection_client_close(&conn);
   for (int i = 0; i < 100 && ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
@@ -380,19 +506,26 @@ static void run_csr_enrollment(
 static void test_dps_csr_enrollment_ec(void** state)
 {
   (void)state;
-  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "ec", false);
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "ec", false, false);
 }
 
 static void test_dps_csr_enrollment_rsa(void** state)
 {
   (void)state;
-  run_csr_enrollment(AZ_IOT_MANAGED_KEY_RSA_2048, "rsa", false);
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_RSA_2048, "rsa", false, false);
+}
+
+/* Renewal over the mqttv3 hub session the DPS-issued certificate opened. */
+static void test_hub_certificate_renewal(void** state)
+{
+  (void)state;
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "renew", false, true);
 }
 
 static void test_dps_csr_enrollment_ec_p384(void** state)
 {
   (void)state;
-  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P384, "ec_p384", false);
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P384, "ec_p384", false, false);
 }
 
 /* A refused certificate first for DPS and for the hub: each falls back to the
@@ -400,7 +533,7 @@ static void test_dps_csr_enrollment_ec_p384(void** state)
 static void test_each_role_falls_back_to_its_next_certificate(void** state)
 {
   (void)state;
-  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "fallback", true);
+  run_csr_enrollment(AZ_IOT_MANAGED_KEY_EC_P256, "fallback", true, false);
 }
 
 int main(void)
@@ -419,6 +552,7 @@ int main(void)
     cmocka_unit_test(test_dps_csr_enrollment_ec),
     cmocka_unit_test(test_dps_csr_enrollment_rsa),
     cmocka_unit_test(test_dps_csr_enrollment_ec_p384),
+    cmocka_unit_test(test_hub_certificate_renewal),
     cmocka_unit_test(test_each_role_falls_back_to_its_next_certificate),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

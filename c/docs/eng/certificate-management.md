@@ -151,6 +151,8 @@ operational credential is held.
 Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
 support it.
 
+- **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
+  carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
 - **Topics:** publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`, subscribe
   `$iothub/credentials/res/#`.
 - **Body:** `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|<request id>|null }`.
