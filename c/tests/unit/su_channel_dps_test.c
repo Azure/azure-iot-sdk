@@ -1271,9 +1271,47 @@ static void oversized_cached_etags_are_dropped_from_an_onboarding_request(void**
   assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
 }
 
+/* Counts ERROR logs about the escaped update-check body and keeps the last one. */
+static void body_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  (void)file;
+  (void)line;
+  char* last = (char*)user_ctx;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, "update-check body") != NULL)
+  {
+    snprintf(last, 256, "%s", msg);
+  }
+}
+
+static void assert_body_log(char* last)
+{
+  char expected[64];
+  snprintf(
+      expected,
+      sizeof(expected),
+      "exceeds %lu bytes once JSON-escaped",
+      (unsigned long)AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE);
+  assert_non_null(strstr(last, expected));
+  assert_non_null(strstr(last, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE"));
+  assert_non_null(strstr(last, "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE"));
+  last[0] = '\0';
+}
+
 static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void** state)
 {
   fixture* fx = (fixture*)*state;
+  /* Static: outlives this test if an assertion leaves the sink installed. */
+  static char last_log[256];
+  last_log[0] = '\0';
+  az_iot_log_sink sink = { body_log_sink, last_log, AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
   az_iot_su_platform_hooks hooks = { 0 };
   az_iot_su_device_properties properties = { .manufacturer = "original" };
   uint8_t storage[512] = { 0 };
@@ -1302,6 +1340,7 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   memcpy(storage_before, storage, sizeof(storage));
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &properties), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_body_log(last_log);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_memory_equal(storage, storage_before, sizeof(storage_before));
   az_iot_su_client_deinit(&client);
@@ -1309,8 +1348,10 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   /* The same validation must run during initialization, before opening the channel. */
   assert_int_equal(
       az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_body_log(last_log);
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
+  az_iot_log_set_global_sink(NULL);
 }
 
 /* Without a usable provisioning session there is nothing to publish onto. */

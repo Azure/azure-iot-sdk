@@ -235,51 +235,70 @@ static void three_long_custom_properties_need_294_bytes(void** state)
   az_iot_su_client_deinit(&fx->su);
 }
 
+/* Checks @p fit (exactly full) and @p over (one byte more) at init and on replacement. A
+ * rejected replacement keeps @p fit; the error log names @p macro and @p over_need. */
+static void check_boundary(
+    fixture* fx,
+    const az_iot_su_device_properties* fit,
+    const az_iot_su_device_properties* over,
+    size_t over_need,
+    const char* macro)
+{
+  char expected[96];
+  snprintf(expected, sizeof(expected), "need %lu bytes", (unsigned long)over_need);
+
+  assert_int_equal(az_iot_su_device_properties_buffer_size(over), 0);
+  g_last_error[0] = '\0';
+  assert_int_equal(init_client(fx, over), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_non_null(strstr(g_last_error, expected));
+  assert_non_null(strstr(g_last_error, macro));
+
+  assert_int_equal(init_client(fx, fit), AZ_IOT_OK);
+  size_t fit_size = az_iot_su_device_properties_buffer_size(fit);
+  assert_true(fit_size > 0);
+  uint8_t* saved = (uint8_t*)malloc(fit_size);
+  assert_non_null(saved);
+  memcpy(saved, fx->dp_buf, fit_size);
+  az_iot_su_device_properties kept = fx->su._internal.device_properties;
+
+  g_last_error[0] = '\0';
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, over), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_non_null(strstr(g_last_error, expected));
+  assert_non_null(strstr(g_last_error, macro));
+  assert_memory_equal(fx->dp_buf, saved, fit_size);
+  assert_memory_equal(&fx->su._internal.device_properties, &kept, sizeof(kept));
+
+  /* From a small set, the exact fit is accepted as a replacement too. */
+  az_iot_su_device_properties small = { .manufacturer = "m" };
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &small), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, fit), AZ_IOT_OK);
+  assert_memory_equal(fx->dp_buf, saved, fit_size);
+  free(saved);
+  az_iot_su_client_deinit(&fx->su);
+}
+
 static void compatibility_storage_exact_fit_and_one_over(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties first = { .manufacturer = "m" };
-  assert_int_equal(init_client(fx, &first), AZ_IOT_OK);
-
-  az_iot_su_device_properties dp = { .manufacturer = manufacturer_of(fx, COMPAT_SIZE - 1) };
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), COMPAT_SIZE);
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
-  assert_int_equal(strlen(fx->su._internal.device_properties.manufacturer), COMPAT_SIZE - 1);
-
-  /* One byte over: rejected, logged with the macro, and the accepted properties are kept. */
-  char* big = (char*)calloc(1, COMPAT_SIZE);
-  assert_non_null(big);
-  memset(big, 'z', COMPAT_SIZE - 2);
-  /* COMPAT_SIZE - 1 bytes for manufacturer and 2 for model. */
-  az_iot_su_device_properties over = { .manufacturer = big, .model = "x" };
-  g_last_error[0] = '\0';
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&over), 0);
-  assert_int_equal(
-      az_iot_su_client_update_device_properties(&fx->su, &over), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  char expected[96];
-  snprintf(expected, sizeof(expected), "need %lu bytes", (unsigned long)(COMPAT_SIZE + 1));
-  assert_non_null(strstr(g_last_error, expected));
-  assert_non_null(strstr(g_last_error, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE"));
-  assert_int_equal(strlen(fx->su._internal.device_properties.manufacturer), COMPAT_SIZE - 1);
-  assert_null(fx->su._internal.device_properties.model);
-  free(big);
-  az_iot_su_client_deinit(&fx->su);
+  az_iot_su_device_properties fit = { .manufacturer = manufacturer_of(fx, COMPAT_SIZE - 1) };
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&fit), COMPAT_SIZE);
+  /* An empty model adds its NUL terminator: one byte over. */
+  az_iot_su_device_properties over = { .manufacturer = fit.manufacturer, .model = "" };
+  check_boundary(fx, &fit, &over, COMPAT_SIZE + 1, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE");
 }
 
 static void installed_id_storage_exact_fit_and_one_over(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { .manufacturer = "m" };
-  dp.installed_update_id
+  /* provider + "n" + "v" with NUL terminators: INSTALLED_SIZE bytes. */
+  az_iot_su_device_properties fit = { .manufacturer = "m" };
+  fit.installed_update_id
       = (az_iot_su_update_id_info){ provider_of(fx, INSTALLED_SIZE - 5), "n", "v" };
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), 2 + INSTALLED_SIZE);
-  assert_int_equal(init_client(fx, &dp), AZ_IOT_OK);
-  az_iot_su_client_deinit(&fx->su);
-
-  dp.installed_update_id.provider = provider_of(fx, INSTALLED_SIZE - 4);
-  g_last_error[0] = '\0';
-  assert_int_equal(init_client(fx, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_non_null(strstr(g_last_error, "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE"));
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&fit), 2 + INSTALLED_SIZE);
+  az_iot_su_device_properties over = fit;
+  over.installed_update_id.version = "vv";
+  check_boundary(fx, &fit, &over, INSTALLED_SIZE + 1, "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE");
 }
 
 /* Both storages full at once fill the default cache exactly. */
