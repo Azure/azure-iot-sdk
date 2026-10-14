@@ -345,8 +345,8 @@ static az_iot_result write_fetch_request(
     r = az_json_writer_append_end_object(jw); /* agentInfo */
   }
 
-  /* Omitted entirely on the onboarding route: a day-0 device has nothing
-   * installed, and an empty triple is not the same statement. */
+  /* Omitted entirely when nothing is installed: an empty triple is not the
+   * same statement. */
   if (az_result_succeeded(r) && installed_update_id != NULL)
   {
     r = write_update_id(jw, "installedUpdateId", installed_update_id);

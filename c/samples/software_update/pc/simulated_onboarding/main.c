@@ -37,8 +37,9 @@
  *   AZ_IOT_SU_MODEL=<s>               default "SU-Sim"
  *
  * REPORTED, NOT MATCHED: the installed update id says what is on the device
- * now. It takes no part in matching, and the onboarding route this sample uses
- * omits it entirely -- changing it cannot make an update eligible.
+ * now. It is sent on the update check but takes no part in matching --
+ * changing it cannot make an update eligible. The service only uses it to
+ * withhold an offer for the update already installed.
  *   AZ_IOT_SU_INSTALLED_PROVIDER=<s>  default "Contoso"
  *   AZ_IOT_SU_INSTALLED_NAME=<s>      default "SU-Sim"
  *   AZ_IOT_SU_INSTALLED_VERSION=<s>   default "1.0.0"
@@ -494,7 +495,7 @@ int main(void)
 
   printf(
       "Matched against a deployed update: manufacturer=%s model=%s\n"
-      "Reported only (not matched, and omitted on the onboarding route): "
+      "Reported only (not matched): "
       "installedUpdateId=%s/%s/%s\n",
       state.su_device_properties.manufacturer,
       state.su_device_properties.model,

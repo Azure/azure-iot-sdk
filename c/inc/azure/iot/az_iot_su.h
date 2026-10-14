@@ -510,8 +510,8 @@ extern "C"
    * "what this workflow is about". It is therefore the previously installed
    * update while a workflow is in progress or has failed, and the newly applied
    * update once the workflow has succeeded. It may be NULL when the device has
-   * nothing installed (a day-0 onboarding device), in which case the channel
-   * omits it rather than serializing a null.
+   * nothing installed, in which case the channel omits it rather than
+   * serializing a null.
    */
   typedef struct az_iot_su_report
   {
@@ -556,8 +556,8 @@ extern "C"
    */
   typedef enum az_iot_su_operation
   {
-    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo and
-     * omits installedUpdateId. */
+    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo, and
+     * installedUpdateId when one is set. */
     AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE = 0,
     /* Operational fetch: the device is already registered. */
     AZ_IOT_SU_OP_GET_UPDATE,
@@ -595,8 +595,7 @@ extern "C"
      * az_iot_su_client_request_onboarding_update() for
      * AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, az_iot_su_client_request_update()
      * for AZ_IOT_SU_OP_GET_UPDATE. They are not interchangeable -- the regular
-     * route is rejected for a device with no registry entry, and the onboarding
-     * route omits installedUpdateId.
+     * route is rejected for a device with no registry entry.
      *
      * An abandoned AZ_IOT_SU_OP_REPORT_STATUS is DIFFERENT: there is no public
      * call to reissue one, and the event is diagnostic. The client reports
@@ -1123,8 +1122,9 @@ extern "C"
    * @brief Ask for an ONBOARDING update — the day-0/pre-registration route.
    *
    * Use this while the device has no device record with the service yet. It is
-   * the permissive route: it needs no registry entry, and it does not send
-   * `installedUpdateId`.
+   * the permissive route: it needs no registry entry. Like the regular route, it
+   * sends `installedUpdateId` when the device properties set one, so the
+   * service does not offer what is already installed; it is omitted otherwise.
    *
    * The application chooses the route because it is the only party that knows:
    * it persists its provisioning result across boots, while the SDK sees only
@@ -1179,7 +1179,8 @@ extern "C"
    * @brief Ask for a REGULAR (software) update — the operational route.
    *
    * Use this once the device is provisioned and has a device record. It sends
-   * `installedUpdateId`, which is how the service knows what to offer next.
+   * `installedUpdateId` when set, which is how the service knows what to offer
+   * next.
    *
    * Calling it on a device that has no device record yet is rejected by the
    * service as an invalid request; use
