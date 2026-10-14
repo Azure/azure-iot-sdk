@@ -105,9 +105,10 @@ void* mock_paho_callback_context(void);
 MQTTAsync_messageArrived* mock_paho_message_arrived(void);
 MQTTAsync_connectionLost* mock_paho_connection_lost(void);
 
-/* Script the MQTT v5 User Properties that MQTTProperties_getPropertyAt() will
- * report, so a test can drive the adapter's inbound property extraction
- * without a broker.
+/* Script the MQTT v5 User Properties that mock_paho_inbound_properties() returns
+ * for an inbound message, so a test can drive the adapter's inbound property
+ * handling without a broker. The getters walk the MQTTProperties they are given,
+ * as Paho's do.
  *
  * `pairs` is 2 * `count` NUL-terminated strings, key first. The mock keeps
  * POINTERS to them -- they must outlive the test -- and copies nothing, which
@@ -115,10 +116,8 @@ MQTTAsync_connectionLost* mock_paho_connection_lost(void);
  * threads without the mock itself becoming the race under investigation.
  * Call with count 0 to go back to reporting no properties.
  *
- * Deliberately a SEPARATE table rather than a real implementation over the
- * MQTTProperties the adapter builds: MQTTProperties_add() here is a no-op that
- * stores nothing, and making it real would hand the adapter's outbound path
- * allocations that this mock's no-op MQTTProperties_free() would then leak. */
+ * MQTTProperties_add() stays a no-op that stores nothing (outbound), so the
+ * outbound path makes no allocations for the no-op MQTTProperties_free() to leak. */
 void mock_paho_set_inbound_user_properties(const char* const* pairs, int count);
 
 /** @brief An MQTTProperties over the table set by mock_paho_set_inbound_user_properties(), for an

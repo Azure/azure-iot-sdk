@@ -364,10 +364,16 @@ void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 #define MOCK_PAHO_GETTER_PROPERTIES MQTTProperties
 #endif
 
+/* The getters walk props->array as Paho's do, so an adapter reading a malformed set (count > 0,
+ * array NULL) crashes here as it would with Paho. */
 int MQTTProperties_propertyCount(MOCK_PAHO_GETTER_PROPERTIES* props, enum MQTTPropertyCodes propid)
 {
-  (void)props;
-  return (propid == MQTTPROPERTY_CODE_USER_PROPERTY) ? s_user_property_count : 0;
+  int n = 0;
+  for (int i = 0; i < props->count; ++i)
+  {
+    n += props->array[i].identifier == propid;
+  }
+  return n;
 }
 
 MQTTProperty* MQTTProperties_getPropertyAt(
@@ -375,12 +381,14 @@ MQTTProperty* MQTTProperties_getPropertyAt(
     enum MQTTPropertyCodes propid,
     int index)
 {
-  (void)props;
-  if (propid != MQTTPROPERTY_CODE_USER_PROPERTY || index < 0 || index >= s_user_property_count)
+  for (int i = 0; i < props->count; ++i)
   {
-    return NULL;
+    if (props->array[i].identifier == propid && index-- == 0)
+    {
+      return &props->array[i];
+    }
   }
-  return &s_user_properties[index];
+  return NULL;
 }
 
 void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)

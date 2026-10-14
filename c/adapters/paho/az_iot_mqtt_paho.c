@@ -322,9 +322,15 @@ static bool enqueue_message(
   n->topic[tlen] = '\0';
 
   /* With User Properties the node keeps v5_src, which they are read from; its payload is then
-   * used in place rather than copied. */
+   * used in place rather than copied. A malformed property set is kept too, unread, so the view
+   * reports AZ_IOT_ERR_PROTOCOL: Paho's getters would dereference its NULL array. */
+  bool const malformed = v5_src != NULL
+      && (v5_src->properties.count < 0
+          || (v5_src->properties.count > 0 && v5_src->properties.array == NULL));
   bool const keep = v5_src != NULL
-      && MQTTProperties_propertyCount(&v5_src->properties, MQTTPROPERTY_CODE_USER_PROPERTY) > 0;
+      && (malformed
+          || MQTTProperties_propertyCount(&v5_src->properties, MQTTPROPERTY_CODE_USER_PROPERTY)
+              > 0);
   if (!keep && payload_len > 0 && payload)
   {
     n->payload = (uint8_t*)malloc((size_t)payload_len);
@@ -349,7 +355,7 @@ static bool enqueue_message(
   n->evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   n->evt.message = &n->msg;
 
-  if (v5_src)
+  if (v5_src && !malformed)
   {
     extract_v5_props(n, v5_src);
   }
