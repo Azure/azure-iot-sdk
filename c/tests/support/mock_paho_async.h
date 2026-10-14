@@ -125,4 +125,10 @@ void mock_paho_set_inbound_user_properties(const char* const* pairs, int count);
  * inbound message. Points into the table; MQTTProperties_free() is a no-op. */
 MQTTProperties mock_paho_inbound_properties(void);
 
+/** @brief Make the @p call-th MQTTProperties_add() from now (0 first) fail; -1: never. */
+void mock_paho_set_properties_add_fail_at(int call);
+
+/** @brief MQTTAsync_sendMessage() calls since mock_paho_reset(). */
+int mock_paho_send_calls(void);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

@@ -20,8 +20,9 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
+  size_t const before = *cursor;
   az_iot_result r = props->next(props->source, props->source_len, cursor, out);
-  if (r == AZ_IOT_OK && (out->key == NULL || out->value == NULL))
+  if (r == AZ_IOT_OK && (out->key == NULL || out->value == NULL || *cursor == before))
   {
     return AZ_IOT_ERR_PROTOCOL;
   }

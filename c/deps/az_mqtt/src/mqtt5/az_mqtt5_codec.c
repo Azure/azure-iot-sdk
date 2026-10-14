@@ -333,7 +333,8 @@ static az_result _publish_next_user_property(
 // Publish properties size.
 static az_result _publish_props_size(az_mqtt5_publish_options const* opts, int32_t* out_size)
 {
-  int32_t size = 0;
+  // In 64 bits: every span size may be up to INT32_MAX; each addition is checked below.
+  int64_t size = 0;
   if (opts->payload_format_indicator != 0)
   {
     size += 1 + 1;
@@ -348,34 +349,36 @@ static az_result _publish_props_size(az_mqtt5_publish_options const* opts, int32
   }
   if (az_span_size(opts->response_topic) > 0)
   {
-    size += 1 + 2 + az_span_size(opts->response_topic);
+    size += 3 + (int64_t)az_span_size(opts->response_topic);
   }
   if (az_span_size(opts->correlation_data) > 0)
   {
-    size += 1 + 2 + az_span_size(opts->correlation_data);
+    size += 3 + (int64_t)az_span_size(opts->correlation_data);
   }
   if (az_span_size(opts->content_type) > 0)
   {
-    size += 1 + 2 + az_span_size(opts->content_type);
+    size += 3 + (int64_t)az_span_size(opts->content_type);
+  }
+  if (size > _AZ_MQTT_VBI_MAX)
+  {
+    return AZ_ERROR_NOT_ENOUGH_SPACE;
   }
   int32_t cursor = 0;
   az_mqtt5_user_property p;
   az_result rc;
   while ((rc = _publish_next_user_property(opts, &cursor, &p)) == AZ_OK)
   {
-    // In 64 bits: the span sizes come from the reader and may be anything.
-    int64_t const total = (int64_t)size + 5 + az_span_size(p.key) + az_span_size(p.value);
-    if (total > _AZ_MQTT_VBI_MAX)
+    size += (int64_t)5 + az_span_size(p.key) + az_span_size(p.value);
+    if (size > _AZ_MQTT_VBI_MAX)
     {
       return AZ_ERROR_NOT_ENOUGH_SPACE;
     }
-    size = (int32_t)total;
   }
   if (rc != AZ_ERROR_ITEM_NOT_FOUND)
   {
     return az_result_failed(rc) ? rc : AZ_ERROR_ARG;
   }
-  *out_size = size;
+  *out_size = (int32_t)size;
   return AZ_OK;
 }
 
@@ -627,7 +630,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
   }
 
   // Calculate remaining length
-  int32_t remaining = 2 + az_span_size(opts->topic); // Topic Name
+  int64_t remaining = 2 + (int64_t)az_span_size(opts->topic); // Topic Name
   if (opts->qos != AZ_MQTT_QOS_AT_MOST_ONCE)
   {
     remaining += 2; // Packet Identifier
@@ -637,11 +640,10 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
   az_result rc = _publish_props_size(opts, &prop_len);
   if (az_result_failed(rc))
     return rc;
-  int64_t const total = (int64_t)remaining + _az_mqtt_vbi_size(prop_len) + prop_len
+  remaining += _az_mqtt_vbi_size(prop_len) + (int64_t)prop_len
       + az_span_size(opts->payload); // Payload (no length prefix)
-  if (total > _AZ_MQTT_VBI_MAX) // Remaining Length is a Variable Byte Integer.
+  if (remaining > _AZ_MQTT_VBI_MAX) // Remaining Length is a Variable Byte Integer.
     return AZ_ERROR_NOT_ENOUGH_SPACE;
-  remaining = (int32_t)total;
 
   // Fixed header
   uint8_t first_byte = (uint8_t)(AZ_MQTT_PACKET_TYPE_PUBLISH << 4);
@@ -654,7 +656,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
   rc = _az_mqtt_write_byte(dest, first_byte);
   if (az_result_failed(rc))
     return rc;
-  rc = _az_mqtt_write_vbi(dest, remaining);
+  rc = _az_mqtt_write_vbi(dest, (int32_t)remaining);
   if (az_result_failed(rc))
     return rc;
 

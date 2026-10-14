@@ -55,6 +55,9 @@ static MQTTAsync_connectionLost* s_connection_lost;
 #define MOCK_PAHO_MAX_USER_PROPERTIES 32
 static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
 static int s_user_property_count;
+static int s_send_calls;
+static int s_properties_add_fail_at = -1;
+static int s_properties_add_calls;
 
 void mock_paho_reset(void)
 {
@@ -82,6 +85,9 @@ void mock_paho_reset(void)
   s_message_arrived = NULL;
   s_connection_lost = NULL;
   s_user_property_count = 0;
+  s_send_calls = 0;
+  s_properties_add_fail_at = -1;
+  s_properties_add_calls = 0;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
@@ -300,6 +306,7 @@ int MQTTAsync_sendMessage(
     const MQTTAsync_message* msg,
     MQTTAsync_responseOptions* response)
 {
+  ++s_send_calls;
   (void)handle;
   (void)destinationName;
   (void)msg;
@@ -329,16 +336,24 @@ void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_cal
 MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
 /* ------------------------------------------------------------------------- */
-/* MQTTProperties. Reached only by the v5 branch of connect(); the adapter    */
-/* just builds and frees them, so accepting and discarding is enough.         */
+/* MQTTProperties. The v5 connect() and publish() build and free them;      */
+/* accepting and discarding is enough, except a scripted add() failure.     */
 /* ------------------------------------------------------------------------- */
 
 int MQTTProperties_add(MQTTProperties* props, const MQTTProperty* prop)
 {
   (void)props;
   (void)prop;
-  return 0;
+  return (s_properties_add_calls++ == s_properties_add_fail_at) ? -1 : 0;
 }
+
+void mock_paho_set_properties_add_fail_at(int call)
+{
+  s_properties_add_fail_at = call;
+  s_properties_add_calls = 0;
+}
+
+int mock_paho_send_calls(void) { return s_send_calls; }
 
 void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 

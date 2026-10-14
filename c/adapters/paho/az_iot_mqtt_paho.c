@@ -282,9 +282,9 @@ static az_iot_result paho_user_property_next(
 }
 
 /* Allocate + enqueue an inbound MESSAGE event. Topic, payload and v5 Content
- * Type and Correlation Data are copied; when the message carries User
- * Properties, the node keeps `v5_src` itself and returns true, so the caller
- * must not free it.
+ * Type and Correlation Data are copied. When the message carries User
+ * Properties, the node keeps `v5_src` instead (payload and User Properties are
+ * read from it in place) and returns true, so the caller must not free it.
  *
  * `v5_src` carries the properties to extract, or NULL for a v3.1.1 session.
  * They are attached BEFORE the event is published to the queue: q_push() makes
@@ -321,7 +321,11 @@ static bool enqueue_message(
   }
   n->topic[tlen] = '\0';
 
-  if (payload_len > 0 && payload)
+  /* With User Properties the node keeps v5_src, which they are read from; its payload is then
+   * used in place rather than copied. */
+  bool const keep = v5_src != NULL
+      && MQTTProperties_propertyCount(&v5_src->properties, MQTTPROPERTY_CODE_USER_PROPERTY) > 0;
+  if (!keep && payload_len > 0 && payload)
   {
     n->payload = (uint8_t*)malloc((size_t)payload_len);
     if (!n->payload)
@@ -336,8 +340,9 @@ static bool enqueue_message(
 
   n->has_message = true;
   n->msg.topic = n->topic;
-  n->msg.payload = n->payload;
-  n->msg.payload_len = n->payload_len;
+  n->msg.payload = keep ? (const uint8_t*)payload : n->payload;
+  n->msg.payload_len
+      = keep ? (payload && payload_len > 0 ? (size_t)payload_len : 0) : n->payload_len;
   n->msg.qos = (az_iot_mqtt_qos)qos;
   n->msg.retain = (retain != 0);
 
@@ -347,6 +352,12 @@ static bool enqueue_message(
   if (v5_src)
   {
     extract_v5_props(n, v5_src);
+  }
+  if (keep)
+  {
+    n->paho_msg = v5_src;
+    n->msg.user_properties.next = paho_user_property_next;
+    n->msg.user_properties.source = &v5_src->properties;
   }
 
   bool const kept = n->paho_msg != NULL;
@@ -421,14 +432,6 @@ static void extract_v5_props(queued_event* n, MQTTAsync_message* msg)
   if (me)
   {
     n->msg.message_expiry_seconds = (uint32_t)me->value.integer4;
-  }
-
-  /* User Properties: read in place from the message, which the node keeps. */
-  if (MQTTProperties_propertyCount(props, MQTTPROPERTY_CODE_USER_PROPERTY) > 0)
-  {
-    n->paho_msg = msg;
-    n->msg.user_properties.next = paho_user_property_next;
-    n->msg.user_properties.source = &msg->properties;
   }
 }
 

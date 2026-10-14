@@ -436,6 +436,8 @@ static void events_left_queued_at_destroy_are_freed(void** state)
 typedef struct props_seen
 {
   size_t count;
+  size_t payload_len;
+  char payload[8];
   az_iot_result end;
   char keys[32][8];
 } props_seen;
@@ -446,6 +448,11 @@ static void on_event_count_props(const az_iot_mqtt_event* evt, void* ctx)
   if (evt->kind != AZ_IOT_MQTT_EVT_MESSAGE)
   {
     return;
+  }
+  s->payload_len = evt->message->payload_len;
+  if (s->payload_len > 0 && s->payload_len < sizeof(s->payload))
+  {
+    memcpy(s->payload, evt->message->payload, s->payload_len);
   }
   size_t cursor = 0;
   az_iot_mqtt_user_property_view prop;
@@ -482,6 +489,9 @@ static void inbound_user_properties_are_not_capped(void** state)
   assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
 
   assert_int_equal(seen.count, 24);
+  /* The payload is read in place from the kept message. */
+  assert_int_equal(seen.payload_len, 4);
+  assert_memory_equal(seen.payload, "race", 4);
   assert_int_equal(seen.end, AZ_IOT_ERR_NOT_FOUND);
   assert_string_equal(seen.keys[0], "k00");
   assert_string_equal(seen.keys[23], "k23");
@@ -514,6 +524,35 @@ static void malformed_inbound_properties_are_reported(void** state)
   fixture_teardown(&f);
 }
 
+/* A failed MQTTProperties_add() fails the publish and sends nothing, whichever property it was. */
+static void a_failed_property_add_fails_the_publish(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+
+  static const az_iot_mqtt_user_property props[] = { { "a", "1" }, { "b", "2" } };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "t";
+  msg.content_type = "text/plain";
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, 2);
+
+  /* 0: Content Type; 1, 2: the User Properties. */
+  for (int fail_at = 0; fail_at < 3; ++fail_at)
+  {
+    mock_paho_set_properties_add_fail_at(fail_at);
+    int const sent = mock_paho_send_calls();
+    assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_ERR_OUT_OF_MEMORY);
+    assert_int_equal(mock_paho_send_calls(), sent);
+  }
+  mock_paho_set_properties_add_fail_at(-1);
+  int const sent = mock_paho_send_calls();
+  assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_OK);
+  assert_int_equal(mock_paho_send_calls(), sent + 1);
+
+  fixture_teardown(&f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -522,6 +561,7 @@ int main(void)
     cmocka_unit_test(events_left_queued_at_destroy_are_freed),
     cmocka_unit_test(inbound_user_properties_are_not_capped),
     cmocka_unit_test(malformed_inbound_properties_are_reported),
+    cmocka_unit_test(a_failed_property_add_fails_the_publish),
   };
   return cmocka_run_group_tests_name("paho_event_queue_race_tests", tests, NULL, NULL);
 }

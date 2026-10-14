@@ -641,6 +641,7 @@ static void codec_refuses_a_reader_that_changes_or_fails(void** state)
   assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_NOT_SUPPORTED);
 
   // A result that is neither AZ_OK, the end, nor an error is refused, not taken as the end.
+  // (az_result)0 is such a result: AZ_OK is 0x10000.
   r.passes = 0;
   r.fail_with = (az_result)0;
   s = AZ_SPAN_FROM_BUFFER(buf);
@@ -710,6 +711,19 @@ static void codec_refuses_property_sizes_that_overflow(void** state)
   assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_NOT_ENOUGH_SPACE);
 }
 
+/* Native property spans whose sizes overflow int32_t together: refused, not wrapped. Never read. */
+static void codec_refuses_native_property_sizes_that_overflow(void** state)
+{
+  (void)state;
+  az_mqtt5_publish_options o = az_mqtt5_publish_options_default();
+  o.topic = AZ_SPAN_FROM_STR("t");
+  o.content_type = az_span_create((uint8_t*)s_big, INT32_MAX);
+  o.correlation_data = az_span_create((uint8_t*)s_big, INT32_MAX);
+  uint8_t buf[64];
+  az_span s = AZ_SPAN_FROM_BUFFER(buf);
+  assert_int_equal(az_mqtt5_codec_encode_publish(&s, &o, 0), AZ_ERROR_NOT_ENOUGH_SPACE);
+}
+
 int main(void)
 {
 #if defined(_WIN32)
@@ -727,6 +741,7 @@ int main(void)
     cmocka_unit_test(codec_refuses_a_reader_that_changes_or_fails),
     cmocka_unit_test(codec_refuses_a_remaining_length_past_the_vbi_maximum),
     cmocka_unit_test(codec_refuses_property_sizes_that_overflow),
+    cmocka_unit_test(codec_refuses_native_property_sizes_that_overflow),
     cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),

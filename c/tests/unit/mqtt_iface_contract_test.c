@@ -572,6 +572,23 @@ static az_iot_result null_key(
   return AZ_IOT_OK;
 }
 
+/* A producer that returns a property without advancing would loop forever. */
+static az_iot_result stuck(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source;
+  (void)source_len;
+  (void)cursor;
+  out->key = "k";
+  out->key_len = 1;
+  out->value = "";
+  out->value_len = 0;
+  return AZ_IOT_OK;
+}
+
 static void user_properties_malformed_sources_are_reported(void** state)
 {
   (void)state;
@@ -586,6 +603,12 @@ static void user_properties_malformed_sources_are_reported(void** state)
   az_iot_mqtt_user_properties bad = { null_key, NULL, 0 };
   cursor = 0;
   assert_int_equal(az_iot_mqtt_user_properties_next(&bad, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
+
+  az_iot_mqtt_user_properties stuck_props = { stuck, NULL, 0 };
+  cursor = 0;
+  assert_int_equal(
+      az_iot_mqtt_user_properties_next(&stuck_props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(az_iot_mqtt_user_properties_find(&stuck_props, "x", &p), AZ_IOT_ERR_PROTOCOL);
 }
 
 static void user_properties_null_arguments_are_refused(void** state)
