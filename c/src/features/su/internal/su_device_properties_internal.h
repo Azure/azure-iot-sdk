@@ -12,11 +12,6 @@ extern "C"
 {
 #endif
 
-/** @brief Bytes for compatibility-property strings, NUL terminators included. */
-#define AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE 256
-/** @brief Bytes for installed-update-ID strings, NUL terminators included. */
-#define AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE 192
-
 /**
  * @brief Longest string passed to the JSON writer.
  *
@@ -71,7 +66,8 @@ extern "C"
    * @param[in] properties Caller's properties; must not overlap @p snapshot.
    * @param[out] snapshot Scratch copy.
    * @return AZ_IOT_OK, AZ_IOT_ERR_INVALID_ARG for malformed input, or
-   *   AZ_IOT_ERR_NOT_ENOUGH_SPACE if a count or storage limit is exceeded.
+   *   AZ_IOT_ERR_NOT_ENOUGH_SPACE if a count or storage limit is exceeded; a storage
+   *   overflow is logged with the bytes needed and the macro to raise.
    */
   az_iot_result az_iot_su__prepare_device_properties(
       const az_iot_su_device_properties* properties,

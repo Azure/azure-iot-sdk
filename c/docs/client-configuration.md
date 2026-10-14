@@ -198,8 +198,52 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures). A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
-| `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
+| `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE` | 256 | Compatibility-property strings the client copies, NUL terminators included (1 to 65535). Sizes `az_iot_su_client`. See [Sizing device-property storage](#sizing-device-property-storage). |
+| `AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE` | 192 | Installed-update-ID strings the client copies, NUL terminators included (1 to 65535). Sizes `az_iot_su_client`. |
+| `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE` (448) | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
 | `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
+
+##### Sizing device-property storage
+
+The software updates client copies the device properties at `az_iot_su_client_init()` and at
+every `az_iot_su_client_update_device_properties()` into storage fixed when the SDK is compiled.
+In this preview there is no dynamic allocation: the build must be sized for the largest property
+set the binary may ever use, including later replacements and every device variant that shares
+the binary. A replacement cannot raise the compiled capacity.
+
+Bytes needed, in UTF-8 bytes (not characters) and with a NUL terminator per string:
+
+- `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE`: `strlen(name) + 1 + strlen(value) + 1` per custom
+  property, plus `strlen(value) + 1` each for `manufacturer` and `model` when set (their key names
+  are not stored, but they count toward the limit of `AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES`,
+  5, properties in total).
+- `AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE`: `strlen(provider) + 1 + strlen(name) + 1 +
+  strlen(version) + 1`, or 0 when nothing is installed.
+
+Example: three custom properties with 32-byte names and 64-byte values need
+`3 * (32 + 1 + 64 + 1) = 294` bytes, more than the default 256. Build with
+`AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE=294` (or more) for both the SDK and the application, as
+described in [Limits in the public headers](#limits-in-the-public-headers):
+
+```cmake
+add_compile_definitions(AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE=294)
+add_subdirectory(azure-iot-sdk/c)
+```
+
+Related limits, each checked separately:
+
+| Limit | Owner | Notes |
+| --- | --- | --- |
+| The two storage macros above | SDK, compiled in | Raising them grows `az_iot_su_client` by twice the increase (a copy of the strings and an update-check body that grows with them), and the peak stack of a property call by up to twice the increase (scratch copies validated before they replace the current ones). |
+| `device_properties_buffer` | Application | Holds the client's copy of the strings. `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()` declares `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` bytes, which follows the two macros. A larger buffer alone raises no limit. |
+| Update-check body | SDK, compiled in | 2048 bytes by default, growing byte for byte with the two macros. Strings that need JSON escaping (quotes, backslashes, control characters) take more bytes in the body than in storage. |
+
+When a limit is exceeded, init or the replacement fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, a
+replacement keeps the previously accepted properties, and an `ERROR` log names what to raise,
+for example `compatibility-property strings need 294 bytes (NUL terminators included) but
+AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE is 256; raise it for both the SDK and the application`.
+`az_iot_su_device_properties_buffer_size()` returns 0 for properties that do not fit, so an
+application can check a property set before using it.
 
 #### Dispatch and logging
 

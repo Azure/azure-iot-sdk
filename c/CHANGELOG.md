@@ -84,6 +84,12 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Software updates: `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE` (256) and `AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE`
+  (192), the storage for copied device-property strings, are now public and can be overridden when
+  compiled; they size `az_iot_su_client`, so define them identically for the SDK and the application.
+  `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` now defaults to their sum (448, was 512). Properties that
+  do not fit fail with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log naming the macro to raise.
+  See [docs/client-configuration.md](docs/client-configuration.md#sizing-device-property-storage).
 - Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
   4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
   decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a

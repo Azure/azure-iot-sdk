@@ -116,6 +116,36 @@ extern "C"
 #define AZ_IOT_SU_VERIFY_SCRATCH_SIZE 8192
 #endif
 
+/**
+ * @brief Bytes the client copies compatibility-property strings into, NUL terminators included.
+ *
+ * Each custom property takes strlen(name) + 1 + strlen(value) + 1 bytes; manufacturer and model
+ * take strlen(value) + 1 each (their key names are not stored). Lengths are UTF-8 bytes. Size it
+ * for every property set the binary may use, including later
+ * az_iot_su_client_update_device_properties() calls. Properties that do not fit fail with
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE and an error log naming this macro. Sizes az_iot_su_client: define
+ * it identically for the application and the SDK. 1 to 65535.
+ */
+#ifndef AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE
+#define AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE 256
+#endif
+#if AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE < 1 || AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE > 65535
+#error "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE must be between 1 and 65535"
+#endif
+
+/**
+ * @brief Bytes the client copies the installed update ID into, NUL terminators included.
+ *
+ * strlen(provider) + 1 + strlen(name) + 1 + strlen(version) + 1 UTF-8 bytes. Otherwise as
+ * AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE. 1 to 65535.
+ */
+#ifndef AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE
+#define AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE 192
+#endif
+#if AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE < 1 || AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE > 65535
+#error "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE must be between 1 and 65535"
+#endif
+
 /** @brief Capacity of the packed applied update id (provider, name, version). */
 #define AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE 192
 
@@ -365,9 +395,10 @@ extern "C"
    * The managed client requires 1 to AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES
    * compatibility properties: manufacturer and model count one each when
    * non-NULL, plus the custom ones. az_iot_su_build_report() keeps its own
-   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility
-   * strings and 192 bytes of installed-ID strings, NUL terminators included; these are SDK storage
-   * limits, not protocol limits.
+   * limit of up to five custom properties. The copy holds at most
+   * AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE bytes of compatibility strings and
+   * AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE bytes of installed-ID strings, NUL terminators
+   * included; these are build-time SDK limits, not protocol limits.
    */
   typedef struct az_iot_su_device_properties
   {
@@ -380,15 +411,16 @@ extern "C"
   } az_iot_su_device_properties;
 
 /**
- * @brief Default size, in bytes, of the device-properties cache buffer.
+ * @brief Default size, in bytes, of the application's device-properties cache buffer.
  *
- * 512 covers the 448-byte maximum of property strings. Define a smaller value
- * before including to save memory, or size exactly with
- * az_iot_su_device_properties_buffer_size(). A larger value does not raise any
- * limit. The buffer holds strings only and needs no alignment.
+ * Defaults to the most the client copies: AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE +
+ * AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE. Define a smaller value before including to save
+ * memory, or size exactly with az_iot_su_device_properties_buffer_size(). A larger value
+ * does not raise any limit. The buffer holds strings only and needs no alignment.
  */
 #ifndef AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE
-#define AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE 512
+#define AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE \
+  (AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)
 #endif
 
 /**
@@ -767,11 +799,14 @@ extern "C"
       } channel;
 
       /* Storage for the SDK-built channel. Opaque here: sized so the client
-       * stays caller-allocated with no hidden allocation. */
+       * stays caller-allocated with no hidden allocation. Holds a copy of the
+       * property strings and an update-check body, both sized from them. */
       struct
       {
         void* pointers[24];
-        uint8_t bytes[3328];
+        uint8_t bytes
+            [2432
+             + 2 * (AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)];
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;

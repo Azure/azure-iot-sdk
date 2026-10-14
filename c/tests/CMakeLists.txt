@@ -286,10 +286,32 @@ target_include_directories(az_iot_tests_su_channel_dps PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/features/su/internal)
 
+# Device-property storage limits, at the default sizes and at overridden ones.
+# The override sizes az_iot_su_client, so the SU sources are compiled into that
+# target with it rather than linked from az_iot_core, which carries the default.
+# 294 is exactly three custom properties with 32-byte names and 64-byte values.
+az_iot_add_cmocka_test(az_iot_tests_su_storage_size unit/su_storage_size_test.c)
+target_link_libraries(az_iot_tests_su_storage_size PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_su_storage_size_tuned
+    unit/su_storage_size_test.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_client.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_device_properties.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_root_keys_microsoft.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_report.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_channel_dps.c
+    ${PROJECT_SOURCE_DIR}/src/features/su/su_protocol.c)
+target_link_libraries(az_iot_tests_su_storage_size_tuned PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_su_storage_size_tuned PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core
+    ${PROJECT_SOURCE_DIR}/src/features/su)
+target_compile_definitions(az_iot_tests_su_storage_size_tuned PRIVATE
+    AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE=294
+    AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE=200
+    AZ_IOT_TEST_SU_STORAGE_OVERRIDDEN=1)
 # Bound precondition hangs while leaving headroom for Valgrind instrumentation.
 set_tests_properties(
     az_iot_tests_su_client az_iot_tests_su_protocol
-    az_iot_tests_su_channel_dps
+    az_iot_tests_su_channel_dps az_iot_tests_su_storage_size az_iot_tests_su_storage_size_tuned
     PROPERTIES TIMEOUT 300)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so

@@ -102,6 +102,14 @@ static az_iot_result prepare_device_properties_cache(
   if (SU_I(client).device_properties_buffer == NULL
       || SU_I(client).device_properties_buffer_size < snapshot->strings_size)
   {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "device_properties_buffer holds %lu bytes but the properties need %lu; "
+        "size it with az_iot_su_device_properties_buffer_size()",
+        (unsigned long)(SU_I(client).device_properties_buffer != NULL
+                            ? SU_I(client).device_properties_buffer_size
+                            : 0u),
+        (unsigned long)snapshot->strings_size);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   return AZ_IOT_OK;
