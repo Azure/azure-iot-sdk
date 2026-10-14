@@ -269,8 +269,9 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   }
 
   /* Clean up before asserting, so a failure leaves nothing behind. */
-  bool cleaned = az_iot_e2e_dps_enrollment_delete(reg_id)
-      && (device_id[0] == '\0' || az_iot_e2e_service_device_delete(svc, device_id));
+  bool enrollment_deleted = az_iot_e2e_dps_enrollment_delete(reg_id);
+  bool device_deleted = device_id[0] == '\0' || az_iot_e2e_service_device_delete(svc, device_id);
+  bool cleaned = enrollment_deleted && device_deleted;
   bool mqttv3 = assigned && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   bool hub_key = assigned && a->hub_key_imported;
   az_iot_e2e_service_destroy(svc);

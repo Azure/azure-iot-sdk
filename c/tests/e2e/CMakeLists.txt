@@ -150,11 +150,11 @@ endif()
 #
 # DPS TPM attestation with a TPM simulated in software (samples/common): an
 # individual enrollment for a new EK (DPS service API), registration over
-# HTTPS, then the assigned mqttv3 hub with TPM-signed SAS tokens. Needs
-# IOT_DPS_CONNECTION_STRING besides the standard e2e environment. Linux only:
-# the simulated TPM uses OpenSSL directly.
+# HTTPS, then the assigned mqttv3 hub with TPM-signed SAS tokens. Built only
+# with AZ_IOT_BUILD_E2E_TPM, where IOT_DPS_CONNECTION_STRING is available to
+# create the enrollment. Linux only: the simulated TPM uses OpenSSL directly.
 # ---------------------------------------------------------------------------
-if(NOT WIN32)
+if(AZ_IOT_BUILD_E2E_TPM AND NOT WIN32)
     set(_e2e_sample_common ${PROJECT_SOURCE_DIR}/samples/common)
     az_iot_add_cmocka_test(az_iot_tests_e2e_tpm
         tests/e2e_tpm_test.c

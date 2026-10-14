@@ -66,7 +66,11 @@ az_iot_result sample_dps_tpm_register(
     {
       return AZ_IOT_OK;
     }
-    sample_sleep_ms((long)next.retry_after_seconds * 1000L);
+    /* Wait as asked, but not past the deadline. */
+    uint64_t now = sample_now_ms();
+    uint64_t wait_ms = (uint64_t)next.retry_after_seconds * 1000u;
+    uint64_t left_ms = deadline > now ? deadline - now : 0;
+    sample_sleep_ms((long)(wait_ms < left_ms ? wait_ms : left_ms));
   }
   return AZ_IOT_ERR_TIMEOUT;
 }

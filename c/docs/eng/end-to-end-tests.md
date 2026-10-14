@@ -125,7 +125,8 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
 
-**TPM suite** (every run on Linux; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING`,
+**TPM suite** (`AZ_IOT_BUILD_E2E_TPM`; Linux runs with provisioned resources, not the shared
+pull-request environment, which has no DPS service credential; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING`,
 `IOTHUB_CONNECTION_STRING`, `IOTHUB_EVENTHUB_CONNECTION_STRING`; optional `AZ_IOT_TRUSTED_CA`):
 
 - [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software

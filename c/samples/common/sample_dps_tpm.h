@@ -53,7 +53,7 @@ extern "C"
    * @brief Registers until assigned or failed, waiting as DPS asks between
    * requests. @p client must be initialized.
    *
-   * @param[in]  timeout_ms Overall limit.
+   * @param[in]  timeout_ms Overall limit, waits included.
    * @param[out] response   Storage for each response; the assignment's
    *                        issued_certificate_chain points into it.
    * @return AZ_IOT_OK when assigned; AZ_IOT_ERR_TIMEOUT; AZ_IOT_ERR_NOT_CONNECTED
