@@ -66,9 +66,20 @@ typedef struct message_record
   {
     az_iot_result result;
     char key[64];
+    size_t key_len;
     char value[REC_VALUE_MAX];
+    size_t value_len;
     bool has_value;
   } properties[REC_PROPERTIES_MAX];
+  /* The first property that did not fit, read again from the cursor saved
+   * before it, with full-size buffers. */
+  struct
+  {
+    bool attempted;
+    az_iot_result result;
+    char key[REC_VALUE_MAX];
+    char value[REC_VALUE_MAX];
+  } retry;
 } message_record;
 
 #define RECORD_GETTER(r, msg, size, name) \
@@ -106,17 +117,34 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   r->properties_count = 0;
   for (size_t i = 0; i < REC_PROPERTIES_MAX; ++i)
   {
+    size_t saved = cursor;
     az_iot_result result = az_iot_c2d_properties_next(
         &msg->properties,
         &cursor,
         r->properties[i].key,
         sizeof(r->properties[i].key),
+        &r->properties[i].key_len,
         r->properties[i].value,
         value_size,
+        &r->properties[i].value_len,
         &r->properties[i].has_value);
     if (result == AZ_IOT_ERR_NOT_FOUND)
     {
       break;
+    }
+    if (result == AZ_IOT_ERR_NOT_ENOUGH_SPACE && !r->retry.attempted)
+    {
+      r->retry.attempted = true;
+      r->retry.result = az_iot_c2d_properties_next(
+          &msg->properties,
+          &saved,
+          r->retry.key,
+          sizeof(r->retry.key),
+          NULL,
+          r->retry.value,
+          sizeof(r->retry.value),
+          NULL,
+          NULL);
     }
     r->properties[i].result = result;
     r->properties_count++;
@@ -723,7 +751,15 @@ static void a_value_too_large_reports_the_size_it_needs(void** state)
   assert_string_equal(rec.correlation_id.value, "abc");
   assert_int_equal(rec.properties_count, 2);
   assert_int_equal(rec.properties[0].result, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(rec.properties[0].key_len, 5);
+  assert_int_equal(rec.properties[0].value_len, 4);
   assert_int_equal(rec.properties[1].result, AZ_IOT_OK);
+  assert_int_equal(rec.properties[1].value_len, 3);
+  /* Retried from the saved cursor with bigger buffers. */
+  assert_true(rec.retry.attempted);
+  assert_int_equal(rec.retry.result, AZ_IOT_OK);
+  assert_string_equal(rec.retry.key, "$.mid");
+  assert_string_equal(rec.retry.value, "abcd");
 }
 
 static void a_key_too_large_fails_only_that_property(void** state)
@@ -743,8 +779,13 @@ static void a_key_too_large_fails_only_that_property(void** state)
 
   assert_int_equal(rec.properties_count, 2);
   assert_int_equal(rec.properties[0].result, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(rec.properties[0].key_len, 70);
+  assert_int_equal(rec.properties[0].value_len, 1);
   assert_int_equal(rec.properties[1].result, AZ_IOT_OK);
   assert_string_equal(rec.properties[1].key, "next");
+  assert_int_equal(rec.retry.result, AZ_IOT_OK);
+  assert_int_equal(strlen(rec.retry.key), 70);
+  assert_string_equal(rec.retry.value, "v");
 }
 
 static void a_value_with_an_encoded_nul_is_rejected(void** state)
@@ -773,22 +814,26 @@ static void property_readers_reject_invalid_arguments(void** state)
   const az_iot_c2d_properties* props = &msg.properties;
 
   assert_int_equal(
-      az_iot_c2d_properties_next(NULL, &cursor, key, sizeof(key), value, sizeof(value), NULL),
+      az_iot_c2d_properties_next(
+          NULL, &cursor, key, sizeof(key), NULL, value, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_c2d_properties_next(props, NULL, key, sizeof(key), value, sizeof(value), NULL),
+      az_iot_c2d_properties_next(
+          props, NULL, key, sizeof(key), NULL, value, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_c2d_properties_next(props, &cursor, NULL, sizeof(key), value, sizeof(value), NULL),
+      az_iot_c2d_properties_next(
+          props, &cursor, NULL, sizeof(key), NULL, value, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_c2d_properties_next(props, &cursor, key, 0, value, sizeof(value), NULL),
+      az_iot_c2d_properties_next(props, &cursor, key, 0, NULL, value, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), NULL, sizeof(value), NULL),
+      az_iot_c2d_properties_next(
+          props, &cursor, key, sizeof(key), NULL, NULL, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), value, 0, NULL),
+      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), NULL, value, 0, NULL, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       az_iot_c2d_properties_find(props, NULL, value, sizeof(value), NULL), AZ_IOT_ERR_INVALID_ARG);
@@ -799,7 +844,8 @@ static void property_readers_reject_invalid_arguments(void** state)
 
   /* A message with no property bag is valid and simply has none. */
   assert_int_equal(
-      az_iot_c2d_properties_next(props, &cursor, key, sizeof(key), value, sizeof(value), NULL),
+      az_iot_c2d_properties_next(
+          props, &cursor, key, sizeof(key), NULL, value, sizeof(value), NULL, NULL),
       AZ_IOT_ERR_NOT_FOUND);
   assert_int_equal(
       az_iot_c2d_message_get_message_id(&msg, value, sizeof(value), NULL), AZ_IOT_ERR_NOT_FOUND);

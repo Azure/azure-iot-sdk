@@ -15,90 +15,22 @@
 
 #include "azure/iot/az_iot_message.h"
 
-/** @brief Value of hex digit @p c, or -1. */
-static int c2d_hex(char c)
-{
-  if (c >= '0' && c <= '9')
-  {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f')
-  {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F')
-  {
-    return c - 'A' + 10;
-  }
-  return -1;
-}
+#include "internal/span_writer.h"
 
 /**
- * @brief Decode the byte at @p in[*pos], advancing @p pos.
- *
- * @return The byte, or -1 for a truncated or non-hex escape.
+ * @brief Validate and measure @p in percent-decoded; a decoded NUL is
+ *        malformed, as it would silently cut the C string.
  */
-static int c2d_decode_byte(const char* in, size_t len, size_t* pos)
+static az_iot_result c2d_measure(const char* in, size_t len, size_t* out_len)
 {
-  if (in[*pos] != '%')
-  {
-    return (unsigned char)in[(*pos)++];
-  }
-  if (len - *pos < 3)
-  {
-    return -1;
-  }
-  int hi = c2d_hex(in[*pos + 1]);
-  int lo = c2d_hex(in[*pos + 2]);
-  if (hi < 0 || lo < 0)
-  {
-    return -1;
-  }
-  *pos += 3;
-  return (hi << 4) | lo;
+  return az_iot_url_decoded_length(in, len, true, out_len);
 }
 
-/**
- * @brief Percent-decode @p in into @p out and NUL-terminate it.
- *
- * Validates all of @p in before writing, so @p out is either complete or left
- * empty. A decoded NUL is rejected: it would silently cut the C string.
- *
- * @param[out] out_len Optional. Decoded length, set whenever @p in is valid.
- */
-static az_iot_result c2d_decode(
-    const char* in,
-    size_t len,
-    char* out,
-    size_t out_size,
-    size_t* out_len)
+/** @brief Decode measured @p in into @p out and NUL-terminate it. */
+static void c2d_write(const char* in, size_t len, size_t decoded_len, char* out)
 {
-  size_t decoded = 0;
-  for (size_t pos = 0; pos < len; ++decoded)
-  {
-    int b = c2d_decode_byte(in, len, &pos);
-    if (b <= 0)
-    {
-      out[0] = '\0';
-      return AZ_IOT_ERR_PROTOCOL;
-    }
-  }
-  if (out_len)
-  {
-    *out_len = decoded;
-  }
-  if (decoded >= out_size)
-  {
-    out[0] = '\0';
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  size_t n = 0;
-  for (size_t pos = 0; pos < len;)
-  {
-    out[n++] = (char)c2d_decode_byte(in, len, &pos);
-  }
-  out[n] = '\0';
-  return AZ_IOT_OK;
+  az_iot_url_decode_into(in, len, (uint8_t*)out);
+  out[decoded_len] = '\0';
 }
 
 /** @brief Whether @p in percent-decodes to exactly @p key. */
@@ -108,7 +40,7 @@ static bool c2d_key_equals(const char* in, size_t len, const char* key)
   size_t k = 0;
   while (pos < len)
   {
-    int b = c2d_decode_byte(in, len, &pos);
+    int b = az_iot_url_decode_byte(in, len, &pos);
     if (b <= 0 || key[k] == '\0' || (unsigned char)key[k] != (unsigned char)b)
     {
       return false;
@@ -165,8 +97,10 @@ AZ_NODISCARD az_iot_result az_iot_c2d_properties_next(
     size_t* cursor,
     char* key,
     size_t key_size,
+    size_t* out_key_len,
     char* value,
     size_t value_size,
+    size_t* out_value_len,
     bool* out_has_value)
 {
   if (!props || !cursor || !key || key_size == 0 || !value || value_size == 0)
@@ -175,6 +109,14 @@ AZ_NODISCARD az_iot_result az_iot_c2d_properties_next(
   }
   key[0] = '\0';
   value[0] = '\0';
+  if (out_key_len)
+  {
+    *out_key_len = 0;
+  }
+  if (out_value_len)
+  {
+    *out_value_len = 0;
+  }
   if (out_has_value)
   {
     *out_has_value = false;
@@ -182,23 +124,37 @@ AZ_NODISCARD az_iot_result az_iot_c2d_properties_next(
 
   const char* k;
   const char* v;
-  size_t k_len;
-  size_t v_len;
-  if (!c2d_next_pair(props, cursor, &k, &k_len, &v, &v_len))
+  size_t k_enc;
+  size_t v_enc;
+  if (!c2d_next_pair(props, cursor, &k, &k_enc, &v, &v_enc))
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
 
-  az_iot_result r = c2d_decode(k, k_len, key, key_size, NULL);
-  if (r == AZ_IOT_OK && v != NULL)
+  size_t k_len = 0;
+  size_t v_len = 0;
+  if (c2d_measure(k, k_enc, &k_len) != AZ_IOT_OK
+      || (v != NULL && c2d_measure(v, v_enc, &v_len) != AZ_IOT_OK))
   {
-    r = c2d_decode(v, v_len, value, value_size, NULL);
+    return AZ_IOT_ERR_PROTOCOL;
   }
-  if (r != AZ_IOT_OK)
+  if (out_key_len)
   {
-    key[0] = '\0';
-    value[0] = '\0';
-    return r;
+    *out_key_len = k_len;
+  }
+  if (out_value_len)
+  {
+    *out_value_len = v_len;
+  }
+  if (k_len >= key_size || v_len >= value_size)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  c2d_write(k, k_enc, k_len, key);
+  if (v != NULL)
+  {
+    c2d_write(v, v_enc, v_len, value);
   }
   if (out_has_value)
   {
@@ -233,7 +189,25 @@ AZ_NODISCARD az_iot_result az_iot_c2d_properties_find(
   {
     if (c2d_key_equals(k, k_len, key))
     {
-      return v ? c2d_decode(v, v_len, value, value_size, out_value_len) : AZ_IOT_OK;
+      if (v == NULL)
+      {
+        return AZ_IOT_OK;
+      }
+      size_t decoded = 0;
+      if (c2d_measure(v, v_len, &decoded) != AZ_IOT_OK)
+      {
+        return AZ_IOT_ERR_PROTOCOL;
+      }
+      if (out_value_len)
+      {
+        *out_value_len = decoded;
+      }
+      if (decoded >= value_size)
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
+      c2d_write(v, v_len, decoded, value);
+      return AZ_IOT_OK;
     }
   }
   return AZ_IOT_ERR_NOT_FOUND;

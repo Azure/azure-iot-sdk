@@ -116,7 +116,7 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   size_t cursor = 0;
   az_iot_result r;
   while ((r = az_iot_c2d_properties_next(
-              &msg->properties, &cursor, key, sizeof(key), value, sizeof(value), NULL))
+              &msg->properties, &cursor, key, sizeof(key), NULL, value, sizeof(value), NULL, NULL))
          != AZ_IOT_ERR_NOT_FOUND)
   {
     if (r == AZ_IOT_OK)

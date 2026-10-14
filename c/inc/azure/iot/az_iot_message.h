@@ -113,13 +113,18 @@ extern "C"
    * IoT Hub sends a null value as a bare key and an empty value as `key=`;
    * both yield an empty @p value, told apart by @p out_has_value.
    *
-   * @param[in] props         Properties of the message.
-   * @param[in,out] cursor    Start at 0. Advanced past the property even when
-   *                          this call fails, so a loop always ends.
-   * @param[out] key          Decoded, NUL-terminated name.
-   * @param[in] key_size      Size of @p key, terminator included.
-   * @param[out] value        Decoded, NUL-terminated value.
-   * @param[in] value_size    Size of @p value, terminator included.
+   * @param[in] props          Properties of the message.
+   * @param[in,out] cursor     Start at 0. Advanced past the property even when
+   *                           this call fails, so a loop always ends; to retry
+   *                           one property with bigger buffers, call again
+   *                           with the cursor saved before this call.
+   * @param[out] key           Decoded, NUL-terminated name.
+   * @param[in] key_size       Size of @p key, terminator included.
+   * @param[out] out_key_len   Optional. Decoded name length, terminator
+   *                           excluded; also set on AZ_IOT_ERR_NOT_ENOUGH_SPACE.
+   * @param[out] value         Decoded, NUL-terminated value.
+   * @param[in] value_size     Size of @p value, terminator included.
+   * @param[out] out_value_len Optional. As @p out_key_len, for the value.
    * @param[out] out_has_value Optional. false for a bare key.
    *
    * @retval AZ_IOT_OK                   @p key and @p value hold the property.
@@ -135,8 +140,10 @@ extern "C"
       size_t* cursor,
       char* key,
       size_t key_size,
+      size_t* out_key_len,
       char* value,
       size_t value_size,
+      size_t* out_value_len,
       bool* out_has_value);
 
   /**
