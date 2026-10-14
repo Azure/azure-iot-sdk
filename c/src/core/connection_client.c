@@ -1206,6 +1206,42 @@ static void keep_provider_trust(
   copts->tls.trusted_ca_path = mat->trusted_ca_path;
 }
 
+static void release_material(az_iot_connection_client* c, az_iot_connection_scope scope);
+
+/**
+ * @brief Holds @p mat, from a successful load(), for @p scope's attempt until
+ * release_material(). The adapter's TLS options point into it.
+ */
+static void hold_material(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_certificate_material* mat)
+{
+  release_material(c, scope);
+  c->held_material[scope] = *mat;
+  c->material_held[scope] = true;
+}
+
+/**
+ * @brief Releases the material @p scope holds, if any. Called once the
+ * adapter's connect() has copied it, when the attempt ends first, and from
+ * close() and deinit(): an observer may close() and deinit the provider from
+ * the CONNECTING announcement, before the attempt resumes.
+ */
+static void release_material(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  az_iot_certificate_provider* p = c->opts.certificate_provider;
+  if (c->material_held[scope])
+  {
+    c->material_held[scope] = false;
+    if (p != NULL)
+    {
+      p->vtable->release(p, &c->held_material[scope]);
+    }
+    memset(&c->held_material[scope], 0, sizeof(c->held_material[scope]));
+  }
+}
+
 /** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
 static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_connect_options* copts)
 {
@@ -3553,7 +3589,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_DPS, &mat);
     }
     else if (lr == AZ_IOT_OK)
     {
@@ -3572,9 +3608,10 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
           key_uri,
           key_query != NULL ? "?<redacted>" : "",
           text_or_none(mat.crypto_engine_id));
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_DPS, &mat);
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, AZ_IOT_CONN_SCOPE_DPS);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, cr, "certificate material rejected");
         return cr;
@@ -3602,6 +3639,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, AZ_IOT_CONN_SCOPE_DPS);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -3615,6 +3653,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, AZ_IOT_CONN_SCOPE_DPS);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
@@ -3663,11 +3702,13 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
      * bookkeeping; recreating it here would undo the caller's own close. */
     c->dps_start_cancelled = true;
     sas_wipe_token(c);
+    release_material(c, AZ_IOT_CONN_SCOPE_DPS);
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, AZ_IOT_CONN_SCOPE_DPS);
   if (r != AZ_IOT_OK)
   {
     dps_teardown_mqtt(c);
@@ -5091,14 +5132,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      prov->vtable->release(prov, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_HUB, &mat);
     }
     else
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-      prov->vtable->release(prov, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_HUB, &mat);
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, AZ_IOT_CONN_SCOPE_HUB);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, cr, "certificate material rejected");
         return cr;
@@ -5116,6 +5158,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, AZ_IOT_CONN_SCOPE_HUB);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -5129,6 +5172,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, AZ_IOT_CONN_SCOPE_HUB);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
@@ -5155,11 +5199,13 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     AZ_IOT_LOG_DEBUG(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "attempt closed from the state callback; abandoned");
     sas_wipe_token(c);
+    release_material(c, AZ_IOT_CONN_SCOPE_HUB);
     mc->iface->destroy(mc);
     return AZ_IOT_OK;
   }
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, AZ_IOT_CONN_SCOPE_HUB);
   if (r != AZ_IOT_OK)
   {
     mc->iface->destroy(mc);
@@ -6225,6 +6271,8 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
     client->session_handlers[i].cb = NULL;
     client->session_handlers[i].user_ctx = NULL;
   }
+  release_material(client, AZ_IOT_CONN_SCOPE_DPS);
+  release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   teardown_active(client);
   dps_teardown_mqtt(client);
   sas_wipe(client);
@@ -6814,6 +6862,8 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   client->close_count++;
+  release_material(client, AZ_IOT_CONN_SCOPE_DPS);
+  release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
   client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_DPS] = 0;

@@ -121,6 +121,16 @@ extern "C"
         az_iot_cert_role role,
         uint8_t index,
         az_iot_certificate_material* out_material);
+    /** Ends the use of @p material from a successful load(); called once per
+     * such load(), and not after a failed one. Material for a connection
+     * attempt is released once the adapter's connect() has copied it, or when
+     * the attempt ends before connect(); material loaded only to validate or
+     * probe certificates is released at once. @p material itself is caller
+     * storage; the provider may then free what it references and SHOULD wipe
+     * any in-memory private key or password it handed out (as the PEM provider
+     * does) unless it still needs them;
+     * deinit() wipes any it kept. A non-extractable key (client_key_uri or
+     * sign()) keeps the key out of process memory altogether. */
     void (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
     void (*deinit)(az_iot_certificate_provider* self);
 

@@ -1816,6 +1816,10 @@ extern "C"
       const void* owner;
       uint16_t count;
     } puback_reservations[AZ_IOT_MAX_PUBACK_RESERVATIONS];
+    /* Provider material an attempt holds until connect() has copied it;
+     * close() and deinit() release it. */
+    az_iot_certificate_material held_material[AZ_IOT_CONN_SCOPE_COUNT];
+    bool material_held[AZ_IOT_CONN_SCOPE_COUNT];
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

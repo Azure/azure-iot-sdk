@@ -2264,6 +2264,82 @@ static void a_rejected_key_falls_back_to_the_user_token(void** state)
   assert_int_equal(e->delay_ms, 0);
 }
 
+/** @brief Provider counting successful load()s and release()s. */
+typedef struct counting_provider
+{
+  az_iot_certificate_provider base;
+  int loads;
+  int releases;
+} counting_provider;
+
+static az_iot_result counting_load(
+    az_iot_certificate_provider* self,
+    az_iot_cert_role role,
+    uint8_t index,
+    az_iot_certificate_material* out)
+{
+  (void)role;
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  memset(out, 0, sizeof(*out));
+  out->trusted_ca_path = "provider-ca.pem";
+  ((counting_provider*)self)->loads++;
+  return AZ_IOT_OK;
+}
+
+static void counting_release(az_iot_certificate_provider* self, az_iot_certificate_material* m)
+{
+  (void)m;
+  ((counting_provider*)self)->releases++;
+}
+
+static const az_iot_certificate_provider_vtable k_counting_vtable = {
+  .version = 1u,
+  .load = counting_load,
+  .release = counting_release,
+  .deinit = ca_only_deinit,
+};
+
+/* X.509 rejected: the SAS-key attempt that follows still loads the provider
+ * (for its trust anchors) and releases that material. */
+static void x509_rejected_then_a_key_releases_every_load(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Static: the client reaches the provider until teardown deinits it. */
+  static counting_provider provider;
+  provider = (counting_provider){ .base = { .vtable = &k_counting_vtable } };
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.certificate_provider = &provider.base;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+  assert_true(provider.loads >= 3);
+  assert_int_equal(provider.loads, provider.releases);
+}
+
+/* X.509 rejected with only a token callback: attempts waiting for the token
+ * end before connect(), and release what they loaded. */
+static void x509_rejected_then_a_pending_token_releases_every_load(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Static: the client reaches the provider until teardown deinits it. */
+  static counting_provider provider;
+  provider = (counting_provider){ .base = { .vtable = &k_counting_vtable } };
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  opts.certificate_provider = &provider.base;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  pump(fx, 3);
+  assert_true(g_fake.calls >= 1);
+  assert_true(no_connect_pending(fx));
+  assert_true(provider.loads >= 3);
+  assert_int_equal(provider.loads, provider.releases);
+}
+
 /* Primary, secondary and user-provided token rejected in turn: the pass ends,
  * paced by identity recovery, and the next pass starts at the primary key. */
 static void a_rejected_user_token_ends_the_pass(void** state)
@@ -3528,6 +3604,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         close_from_the_token_callback_ends_the_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
+    cmocka_unit_test_setup_teardown(x509_rejected_then_a_key_releases_every_load, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        x509_rejected_then_a_pending_token_releases_every_load, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_user_token_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),

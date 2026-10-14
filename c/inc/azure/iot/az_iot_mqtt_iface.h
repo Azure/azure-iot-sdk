@@ -134,7 +134,12 @@ extern "C"
 
   /* TLS credentials handed to an adapter on connect.
    *
-   * Populated by the SDK and read by the adapter. A new field must mean "not
+   * Populated by the SDK and read by the adapter. Every string, PEM buffer and
+   * path is valid only while connect() runs: the SDK then releases it to the
+   * certificate provider, which may wipe the private key and its password. An
+   * adapter copies what it needs during the call. sign and sign_ctx are the
+   * exception: they stay valid until the adapter client is destroyed, so the
+   * handshake may call sign() after connect() returns. A new field must mean "not
    * requested" when zero, so an adapter written before it keeps working once
    * rebuilt (see docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
@@ -184,6 +189,12 @@ extern "C"
     void* sign_ctx; /* opaque, passed back to sign() */
   } az_iot_mqtt_tls_options;
 
+  /* Options for az_iot_mqtt_iface::connect(). This struct and every pointer in
+   * it (strings, TLS material, Will, user properties) are valid only while
+   * connect() runs; the adapter copies what it uses afterwards, e.g. from
+   * process_loop(). The SDK wipes the SAS password and releases TLS material to
+   * the certificate provider, which may wipe the private key, once it returns.
+   * Exception: tls.sign and tls.sign_ctx (see az_iot_mqtt_tls_options). */
   typedef struct az_iot_mqtt_connect_options
   {
     const char* host;
@@ -315,6 +326,9 @@ extern "C"
   {
     az_iot_mqtt_version version;
 
+    /* @p opts and every pointer it holds are valid only during this call, except
+     * tls.sign and tls.sign_ctx (see az_iot_mqtt_tls_options); copy what is
+     * needed later. */
     az_iot_result (*connect)(az_iot_mqtt_client* self, const az_iot_mqtt_connect_options* opts);
     /* Orderly close of the session. On MQTT 5 the DISCONNECT carries the reason
      * code the session was connected with

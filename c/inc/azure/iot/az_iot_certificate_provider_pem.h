@@ -6,9 +6,14 @@
 /* Default file/PEM-loader implementation of az_iot_certificate_provider.
  *
  * Initialize via az_iot_certificate_provider_pem_init() with a set of file paths.
- * The first call to load() reads all configured files into heap buffers;
- * subsequent loads return the same buffered material (cheap). release() is
- * a no-op; the buffers live until deinit().
+ * init() reads the certificate and CA files into heap buffers that live until
+ * deinit(), and checks that the key file is readable. load() reads the private
+ * key into memory; the release() matching the last outstanding load() wipes and
+ * frees it. The key password is kept until deinit(), which wipes it.
+ *
+ * The key file stays on disk, and adapters that take file paths read it
+ * themselves. Prefer a non-extractable key (client_key_uri or sign(); see
+ * az_iot_certificate_provider.h) where the platform has one.
  *
  * This loader is the recommended starting point for X.509 device auth.
  * Production deployments that source cert material from a TPM/HSM/keyvault
@@ -19,6 +24,8 @@
 #define AZ_IOT_CERTIFICATE_PROVIDER_PEM_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "az_iot_certificate_provider.h"
 #include "az_iot_result.h"
@@ -48,23 +55,27 @@ extern "C"
     az_iot_certificate_provider base; /* MUST be first (vtable pointer) */
     char* trusted_ca;
     char* client_cert;
-    char* client_key;
+    char* client_key; /* only while loaned by load() */
     char* key_password;
     char* ca_path;
     char* cert_path;
     char* key_path;
     bool loaded;
+    size_t client_key_size; /* allocated size of client_key */
+    uint32_t client_key_refs; /* load() calls not yet released */
   } az_iot_certificate_provider_pem;
 
-  /* Initialize a file-backed certificate provider. Reads cert/key files from
-   * disk into heap buffers owned by the struct. Returns ERR_INVALID_ARG if
+  /* Initialize a file-backed certificate provider. Reads the cert and CA files
+   * into heap buffers owned by the struct and checks the key file is readable
+   * (the key itself is read by load()). Returns ERR_INVALID_ARG if
    * required paths are missing. The provider base pointer can be passed wherever
    * az_iot_certificate_provider* is expected. */
   AZ_NODISCARD az_iot_result az_iot_certificate_provider_pem_init(
       az_iot_certificate_provider_pem* provider,
       const az_iot_certificate_provider_pem_options* opts);
 
-  /* Release heap-owned file buffers. Does NOT free the struct itself. */
+  /* Release heap-owned file buffers, wiping the key and its password first.
+   * Does NOT free the struct itself. */
   void az_iot_certificate_provider_pem_deinit(az_iot_certificate_provider_pem* provider);
 
 #ifdef __cplusplus
