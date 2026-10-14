@@ -463,8 +463,8 @@ static az_iot_result sim_import_key(void* ctx, const uint8_t* key, size_t key_le
   const uint8_t *blob, *secret, *dup, *seed, *pub;
   size_t blob_len, secret_len, dup_len, seed_len, pub_len;
   if (!span_2b(parts.credential_blob, &blob, &blob_len)
-      || !span_2b(parts.secret, &secret, &secret_len)
-      || !span_2b(parts.duplicate, &dup, &dup_len) || !span_2b(parts.in_sym_seed, &seed, &seed_len)
+      || !span_2b(parts.secret, &secret, &secret_len) || !span_2b(parts.duplicate, &dup, &dup_len)
+      || !span_2b(parts.in_sym_seed, &seed, &seed_len)
       || !span_2b(parts.object_public, &pub, &pub_len) || pub_len < 2 + 2
       || ((pub[2] << 8) | pub[3]) != TPM_ALG_SHA256)
   {
@@ -569,7 +569,7 @@ static az_iot_result sim_hmac_op(
     uint8_t out[AZ_IOT_SHA256_SIZE])
 {
   return sample_tpm_sim_hmac((sample_tpm_sim*)ctx, data, data_len, out) ? AZ_IOT_OK
-                                                                         : AZ_IOT_ERR_INTERNAL;
+                                                                        : AZ_IOT_ERR_INTERNAL;
 }
 
 az_iot_dps_tpm_ops sample_tpm_sim_ops(sample_tpm_sim* sim)

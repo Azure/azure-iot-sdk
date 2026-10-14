@@ -253,7 +253,9 @@ static int print_enrollment(sample_tpm_sim* tpm, const char* reg_id)
   char ek_b64[1024];
   int32_t written = 0;
   if (az_result_failed(az_base64_encode(
-          AZ_SPAN_FROM_BUFFER(ek_b64), az_span_create((uint8_t*)(uintptr_t)ek, (int32_t)ek_len), &written))
+          AZ_SPAN_FROM_BUFFER(ek_b64),
+          az_span_create((uint8_t*)(uintptr_t)ek, (int32_t)ek_len),
+          &written))
       || (size_t)written >= sizeof(ek_b64))
   {
     return 1;

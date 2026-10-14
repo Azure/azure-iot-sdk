@@ -91,7 +91,7 @@ az_iot_result sample_dps_tpm_sign_token(
   uint8_t mac[AZ_IOT_SHA256_SIZE];
   r = sample_tpm_sim_hmac(tpm, (const uint8_t*)to_sign, to_sign_len, mac)
       ? az_iot_sas_token_from_signature(
-          resource_uri, key_name, expiry_unix_seconds, mac, out, out_size, out_len)
+            resource_uri, key_name, expiry_unix_seconds, mac, out, out_size, out_len)
       : AZ_IOT_ERR_INTERNAL;
   memset(mac, 0, sizeof(mac));
   return r;

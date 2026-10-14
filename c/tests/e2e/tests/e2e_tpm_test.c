@@ -236,8 +236,8 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
 
     uint64_t deadline = sample_now_ms() + E2E_TPM_TIMEOUT_MS;
-    while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED
-           && sample_now_ms() < deadline)
+    while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED
+           && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED && sample_now_ms() < deadline)
     {
       (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
       issue_token(&client, &ctx);
