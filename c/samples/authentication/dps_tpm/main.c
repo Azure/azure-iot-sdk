@@ -109,6 +109,18 @@ static size_t on_header(char* data, size_t size, size_t count, void* user)
   return n;
 }
 
+/** @brief Appends @p line to @p list, which is kept as it was on failure. */
+static bool add_header(struct curl_slist** list, const char* line)
+{
+  struct curl_slist* appended = curl_slist_append(*list, line);
+  if (appended == NULL)
+  {
+    return false;
+  }
+  *list = appended;
+  return true;
+}
+
 static bool https_send(
     void* ctx,
     const char* host,
@@ -122,24 +134,23 @@ static bool https_send(
   {
     return false;
   }
-  CURL* curl = curl_easy_init();
-  if (curl == NULL)
-  {
-    return false;
-  }
-  struct curl_slist* headers = curl_slist_append(NULL, "Accept: application/json");
-  if (request->body != NULL)
-  {
-    headers = curl_slist_append(headers, "Content-Type: " AZ_IOT_DPS_TPM_CONTENT_TYPE);
-  }
   char auth[AZ_IOT_SAS_TOKEN_SIZE(256) + 32];
-  if (request->authorization != NULL)
+  struct curl_slist* headers = NULL;
+  bool ok = add_header(&headers, "Accept: application/json")
+      && (request->body == NULL
+          || add_header(&headers, "Content-Type: " AZ_IOT_DPS_TPM_CONTENT_TYPE));
+  if (ok && request->authorization != NULL)
   {
     n = snprintf(auth, sizeof(auth), "Authorization: %s", request->authorization);
-    if (n > 0 && (size_t)n < sizeof(auth))
-    {
-      headers = curl_slist_append(headers, auth);
-    }
+    ok = n > 0 && (size_t)n < sizeof(auth) && add_header(&headers, auth);
+  }
+  CURL* curl = ok ? curl_easy_init() : NULL;
+  if (curl == NULL)
+  {
+    fprintf(stderr, "[dps_tpm] cannot prepare the HTTPS request\n");
+    OPENSSL_cleanse(auth, sizeof(auth));
+    curl_slist_free_all(headers);
+    return false;
   }
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request->method);
