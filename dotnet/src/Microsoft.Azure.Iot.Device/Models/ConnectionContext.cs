@@ -41,6 +41,10 @@ namespace Microsoft.Azure.Iot.Device.Models
         // reconnect attempts read it on another.
         private volatile IReadOnlyList<string>? _issuedClientCertificates;
 
-        public required AuthenticationProvider AuthenticationProvider { get; set; }
+        /// <summary>
+        /// The operational authentication provider used for all IoT Hub connections and issued certificates.
+        /// Boot authentication for Device Provisioning Service is supplied separately when provisioning.
+        /// </summary>
+        public required AuthenticationProvider OperationalAuthenticationProvider { get; set; }
     }
 }

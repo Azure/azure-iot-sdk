@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -13,6 +14,40 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// </summary>
     public class X509AuthenticationProvider : AuthenticationProvider
     {
+        /// <summary>
+        /// Creates an operational provider that presents issued certificates paired with the CSR private key.
+        /// A certificate must be issued by DPS or restored in the connection context before connecting to IoT Hub.
+        /// This provider cannot authenticate with DPS and never falls back to boot credentials.
+        /// </summary>
+        public X509AuthenticationProvider(
+            AsymmetricAlgorithm issuedCertificatePrivateKey,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
+            : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+        {
+            IssuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
+            HandleCertificateSigningCompleteAsync = IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
+            _issuedCertificateHandler = new IssuedCertificateHandler(HandleCertificateSigningCompleteAsync);
+        }
+
+        /// <summary>
+        /// Creates an operational provider that delegates preparation of issued certificates to a callback.
+        /// A certificate must be issued by DPS or restored in the connection context before connecting to IoT Hub.
+        /// The callback receives a Base64-encoded chain, device certificate first, and returns a certificate with
+        /// its private key. It runs once per chain; failures are surfaced to the caller.
+        /// This provider cannot authenticate with DPS and never falls back to boot credentials.
+        /// </summary>
+        public X509AuthenticationProvider(
+            Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
+            : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+        {
+            HandleCertificateSigningCompleteAsync = handleCertificateSigningCompleteAsync
+                ?? throw new ArgumentNullException(nameof(handleCertificateSigningCompleteAsync));
+            _issuedCertificateHandler = new IssuedCertificateHandler(handleCertificateSigningCompleteAsync);
+        }
+
         /// <summary>
         /// Creates an instance of this class that always presents <paramref name="clientCertificate"/>, even if a client
         /// certificate is issued to this device. To present issued certificates, use a constructor that takes the
@@ -52,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
+            _clientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
@@ -90,7 +125,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
+            _clientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
@@ -131,7 +166,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
+            _clientCertificate = clientCertificate
                 ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
 
             CertificateChain = certificateChain;
@@ -141,9 +176,13 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         }
 
         /// <summary>
-        /// The client certificate used for TLS device authentication.
+        /// The original client certificate used for TLS device authentication.
+        /// Throws if this is an issued-certificate-only operational provider.
         /// </summary>
-        public X509Certificate2 ClientCertificate { get; }
+        public X509Certificate2 ClientCertificate => _clientCertificate
+            ?? throw new InvalidOperationException("This operational provider requires an issued client certificate and has no original certificate.");
+
+        private readonly X509Certificate2? _clientCertificate;
 
         /// <summary>
         /// The certificate trust chain that will end in the Trusted Root installed on the server side.
@@ -181,12 +220,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
-            if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
-            {
-                return CreateCredentials(ClientCertificate);
-            }
-
-            return CreateCredentials(_issuedCertificateHandler.GetCertificate(issuedClientCertificates) ?? ClientCertificate);
+            X509Certificate2? certificate = issuedClientCertificates is { Count: > 0 }
+                ? _issuedCertificateHandler.GetCertificate(issuedClientCertificates)
+                : null;
+            return CreateCredentials(certificate ?? _clientCertificate
+                ?? throw new AuthenticationException("No issued client certificate is available for operational authentication."));
         }
 
         private Task<X509Certificate2> PresentOriginalCertificateAsync(IReadOnlyList<string> issuedClientCertificates)

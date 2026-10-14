@@ -11,24 +11,41 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 {
     public class SymmetricKeyAuthenticationProvider : AuthenticationProvider
     {
-        private string _symmetricKey; //TODO byte[]
+        private readonly string _symmetricKey; //TODO byte[]
         
-        private string _registrationId;
+        private readonly string? _registrationId;
 
-        private string _idScope;
+        private readonly string? _idScope;
 
+        /// <summary>
+        /// Creates an operational provider using the device's Base64-encoded IoT Hub symmetric key.
+        /// The assigned hostname and device Id are supplied on each connection attempt.
+        /// </summary>
+        public SymmetricKeyAuthenticationProvider(
+            string symmetricKey,
+            RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
+            : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(symmetricKey);
+            _symmetricKey = symmetricKey;
+        }
+
+        /// <summary>
+        /// Creates a boot provider using a DPS registration Id, Id scope and Base64-encoded symmetric key.
+        /// </summary>
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
             string symmetricKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) //TODO primary + secondary keys?
-            : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
+            : this(symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback)
         { 
+            ArgumentException.ThrowIfNullOrEmpty(registrationId);
+            ArgumentException.ThrowIfNullOrEmpty(idScope);
             _idScope = idScope;
             _registrationId = registrationId;
-            // Note that the device will use the same symmetric key when deriving SAS tokens to authenticate with IoT Hub and with DPS
-            _symmetricKey = symmetricKey;
         }
 
         public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
@@ -41,6 +58,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
         {
+            if (_idScope == null)
+            {
+                throw new InvalidOperationException("DPS authentication requires a boot provider with a registration Id and Id scope.");
+            }
+
             string sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), TimeSpan.FromHours(1)); //TODO configurable timespan
             return CreateCredentials(sasToken);
         }
@@ -57,7 +79,8 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         public override string GetRegistrationId()
         {
-            return _registrationId;
+            return _registrationId
+                ?? throw new InvalidOperationException("An operational symmetric key provider has no DPS registration Id.");
         }
 
         private static string BuildSasToken(string keyName, string key, string target, TimeSpan timeToLive)

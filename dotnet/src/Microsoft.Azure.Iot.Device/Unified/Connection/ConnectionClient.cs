@@ -179,7 +179,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             {
                                 try
                                 {
-                                    await CurrentConnectionContext.AuthenticationProvider.HandleClientCertificatesIssuedAsync(response.Certificates);
+                                    await CurrentConnectionContext.OperationalAuthenticationProvider.HandleClientCertificatesIssuedAsync(response.Certificates);
                                 }
                                 catch (Exception ex)
                                 {

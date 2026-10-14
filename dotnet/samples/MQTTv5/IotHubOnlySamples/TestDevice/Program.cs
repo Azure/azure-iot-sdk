@@ -47,7 +47,7 @@ internal class Program
         {
             DeviceId = deviceId,
             IotHubHostName = hostName,
-            AuthenticationProvider = authentication,
+            OperationalAuthenticationProvider = authentication,
             IsMQTTv5Hub = true,
         };
 

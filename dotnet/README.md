@@ -21,6 +21,60 @@ Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Servic
  - A single ```ConnectionClient``` instance handles all provisioning + connection logic
  - Separate "feature clients" (such as ```TelemetryClient```) use that ```ConnectionClient``` to perform twin/direct methods/telemetry operations
 
+## Boot and operational authentication
+
+`ProvisionAndConnectAsync` requires two explicitly supplied authentication providers:
+the **boot** provider authenticates with Device Provisioning Service (DPS), and the
+**operational** provider authenticates with IoT Hub. The providers can use different
+credentials and TLS callbacks. Both `X509AuthenticationProvider` and
+`SymmetricKeyAuthenticationProvider` support these roles without a combined provider class.
+
+```csharp
+// X.509 boot + X.509 operational using existing certificates.
+var boot = new X509AuthenticationProvider(bootCertificate);
+var operational = new X509AuthenticationProvider(operationalCertificate);
+ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
+    provisioningSettings, boot, operational, cancellationToken: cancellationToken);
+```
+
+For symmetric-key boot, use
+`new SymmetricKeyAuthenticationProvider(registrationId, idScope, bootKey)`.
+For symmetric-key operational authentication, use
+`new SymmetricKeyAuthenticationProvider(operationalKey)`; the assigned hub hostname
+and device Id are supplied by the connection client on each connection attempt.
+Each key is Base64-encoded and must match the corresponding DPS enrollment or Hub
+device identity. A standard symmetric-key DPS enrollment assigns the same device
+key to Hub, so pass that key to both providers in that configuration.
+
+For X.509 operational authentication with a certificate issued during provisioning:
+
+```csharp
+var boot = new SymmetricKeyAuthenticationProvider(registrationId, idScope, bootKey);
+var operational = new X509AuthenticationProvider(csrPrivateKey);
+provisioningSettings.CertificateSigningRequest = new(csrPrivateKey, base64Csr);
+ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
+    provisioningSettings, boot, operational, cancellationToken: cancellationToken);
+```
+
+The boot provider can instead be an `X509AuthenticationProvider` holding the boot
+certificate. The operational X.509 provider accepts either the CSR private key or
+an asynchronous callback that returns the issued certificate with its private key.
+Issued-certificate-only providers fail if no certificate is available; they never
+fall back to a boot certificate or SAS token.
+
+Only the operational provider receives certificates issued by DPS or Hub.
+`ConnectionContext.OperationalAuthenticationProvider` is used on every Hub
+connection, including reconnects and restored assignments. When calling
+`ProvisionAndConnectAsync` with a cached context, the supplied operational provider
+replaces the context's provider. Automatic reprovisioning retains the boot provider
+and uses the current operational provider for the new Hub assignment.
+
+**Migration:** supply both providers to `ProvisionAndConnectAsync`, rename
+`ConnectionContext.AuthenticationProvider` to `OperationalAuthenticationProvider`,
+and replace `SymmetricKeyWithIssuedCertificateAuthenticationProvider` with a
+symmetric-key boot provider and an X.509 operational provider. Hub-only connections
+need only the operational provider in their connection context.
+
 ## MQTTv5 Public Preview Notice
 
 > Please note that all preview APIs are subject to change prior to their formal release

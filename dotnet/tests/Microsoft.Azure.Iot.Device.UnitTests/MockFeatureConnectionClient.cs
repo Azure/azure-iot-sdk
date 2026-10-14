@@ -87,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 #pragma warning disable SYSLIB0026 // Mock certificate; no need to load a real one.
             return new ConnectionContext()
             {
-                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                OperationalAuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = deviceId,
                 IotHubHostName = iotHubHostName,
                 ConnectionProfile = connectionProfile,

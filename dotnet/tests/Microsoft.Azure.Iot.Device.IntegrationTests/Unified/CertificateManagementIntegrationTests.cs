@@ -39,7 +39,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, privateKey);
+            X509AuthenticationProvider bootAuthenticationProvider = new(deviceCertificate);
+            X509AuthenticationProvider operationalAuthenticationProvider = new(privateKey);
 
             ConnectionClient connectionClient = new();
 
@@ -49,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);

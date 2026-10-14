@@ -78,7 +78,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // The same key signs the DPS SAS token and, after provisioning, the IoT hub SAS token
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
 
-            Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
+            Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.BootAuthenticationProvider);
+            Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.ConnectionContext.OperationalAuthenticationProvider);
             Assert.False(string.IsNullOrEmpty(testDeviceContext.ConnectionContext.IotHubHostName));
             Assert.Equal(testDeviceContext.RegistrationId, testDeviceContext.ConnectionContext.DeviceId);
             Assert.Equal(
@@ -103,7 +104,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            SymmetricKeyWithIssuedCertificateAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, deviceKey, privateKey);
+            SymmetricKeyAuthenticationProvider bootAuthentication = new(registrationId, Setup.DpsIdScope, deviceKey);
+            X509AuthenticationProvider operationalAuthentication = new(privateKey);
             ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope)
             {
                 CertificateSigningRequest = new(privateKey, csrBase64),
@@ -116,14 +118,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 // Reaching the hub at all proves it accepted the issued certificate: once DPS issues one, the provider
                 // no longer offers the hub a SAS token.
                 connectionContext = await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
-                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken),
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, cancellationToken: TestContext.Current.CancellationToken),
                     TestContext.Current.CancellationToken);
 
                 Assert.Equal(registrationId, connectionContext.DeviceId);
                 Assert.NotNull(connectionContext.IssuedClientCertificates);
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-                AuthenticationCredentials hubCredentials = authentication.GetIotHubAuthentication(
+                AuthenticationCredentials hubCredentials = operationalAuthentication.GetIotHubAuthentication(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
                     connectionContext.IssuedClientCertificates);
@@ -134,7 +136,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Empty(hubCredentials.Password);
 
                 // DPS is still authenticated with a SAS token derived from the symmetric key.
-                AuthenticationCredentials dpsCredentials = authentication.GetDeviceProvisioningServiceAuthentication();
+                AuthenticationCredentials dpsCredentials = bootAuthentication.GetDeviceProvisioningServiceAuthentication();
                 Assert.Null(dpsCredentials.ClientCertificate);
                 Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
             }

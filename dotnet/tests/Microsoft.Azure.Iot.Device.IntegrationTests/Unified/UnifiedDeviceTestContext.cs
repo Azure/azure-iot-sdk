@@ -15,10 +15,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         public required ConnectionContext ConnectionContext { get; set; }
 
         /// <summary>
-        /// The authentication this device provisioned and connected with, for example an
+        /// The boot authentication this device provisioned with, for example an
         /// <see cref="X509AuthenticationProvider"/> or a <see cref="SymmetricKeyAuthenticationProvider"/>.
         /// </summary>
-        public required AuthenticationProvider AuthenticationProvider { get; set; }
+        public required AuthenticationProvider BootAuthenticationProvider { get; set; }
 
         public string? PrivateKeyPem { get; set; }
 

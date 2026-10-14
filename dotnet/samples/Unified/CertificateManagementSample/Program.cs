@@ -22,7 +22,8 @@ internal class Program
         var (csrBase64, privateKey) = GenerateCsrAndPrivateKey(registrationId, CsrAlgorithm.RSA);
 
         // Pair any certificate issued for this CSR (by DPS or IoT hub) with its private key when connecting to IoT hub
-        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider(privateKey);
+        X509AuthenticationProvider bootAuthentication = SampleConstants.LoadAuthenticationProvider();
+        X509AuthenticationProvider operationalAuthentication = new(privateKey);
 
         using ConnectionClient connectionClient = new();
 
@@ -33,7 +34,7 @@ internal class Program
         };
 
         // Provision the device using the boot certificates. Once provisioned, the device will connect to IoT hub using the operational certificates
-        ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
+        ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication);
 
         // Create a new certificate signing request to send to IoT Hub this time
         csrBase64 = GenerateCsrWithPrivateKey(registrationId, privateKey);

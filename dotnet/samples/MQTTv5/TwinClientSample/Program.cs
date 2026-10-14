@@ -27,7 +27,8 @@ internal class Program
 
         string deviceId = SampleConstants.LoadDeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
+        X509AuthenticationProvider bootAuthentication = SampleConstants.LoadAuthenticationProvider();
+        X509AuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
 
         TwinPushOptions twinPushOptions = new()
         {
@@ -100,7 +101,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
 
         currentTwin = await twinClient.GetTwinAsync(true, true, 0, 0, cts.Token);
