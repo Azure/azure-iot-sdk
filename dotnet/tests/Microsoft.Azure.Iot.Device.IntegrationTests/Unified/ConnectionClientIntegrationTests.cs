@@ -3,6 +3,8 @@
 
 using CaptureProxy;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
@@ -125,7 +127,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.NotNull(connectionContext.IssuedClientCertificates);
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-                AuthenticationCredentials hubCredentials = operationalAuthentication.GetIotHubAuthentication(
+                AuthenticationCredentials hubCredentials = operationalAuthentication.GetCredentials(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
                     connectionContext.IssuedClientCertificates);
@@ -136,7 +138,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Empty(hubCredentials.Password);
 
                 // DPS is still authenticated with a SAS token derived from the symmetric key.
-                AuthenticationCredentials dpsCredentials = bootAuthentication.GetDeviceProvisioningServiceAuthentication();
+                AuthenticationCredentials dpsCredentials = bootAuthentication.GetCredentials();
                 Assert.Null(dpsCredentials.ClientCertificate);
                 Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
             }

@@ -8,7 +8,8 @@ using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
-using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 internal class Program
 {

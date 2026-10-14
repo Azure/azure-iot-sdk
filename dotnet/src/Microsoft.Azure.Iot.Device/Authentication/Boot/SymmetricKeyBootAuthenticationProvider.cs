@@ -4,7 +4,7 @@
 using System.Net.Security;
 using System.Text;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Boot
 {
     /// <summary>
     /// Device Provisioning Service boot authentication using a device-scoped symmetric key.
@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
+        public override AuthenticationCredentials GetCredentials()
         {
             string token = SasTokenBuilder.BuildSasToken(
                 "registration", _symmetricKey, $"{_idScope}/registrations/{_registrationId}", TimeSpan.FromHours(1));

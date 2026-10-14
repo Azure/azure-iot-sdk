@@ -3,7 +3,7 @@
 
 using System.Net.Security;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Operational
 {
     /// <summary>
     /// Supplies operational authentication material for IoT Hub.
@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// The most recently issued certificate chain from DPS or IoT Hub, Base64-encoded and device certificate
         /// first, followed by intermediates. Null if no certificate has been issued.
         /// </param>
-        public abstract AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
+        public abstract AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
 
         /// <summary>
         /// Called when certificates are issued and before each connection attempt to IoT Hub.

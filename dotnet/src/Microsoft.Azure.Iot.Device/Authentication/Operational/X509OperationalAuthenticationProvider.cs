@@ -7,7 +7,7 @@ using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Operational
 {
     /// <summary>
     /// IoT Hub operational authentication using an existing or issued X509 certificate.
@@ -216,7 +216,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return _issuedCertificateHandler.HandleAsync(issuedClientCertificates);
         }
 
-        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
             X509Certificate2? certificate = issuedClientCertificates is { Count: > 0 }
                 ? _issuedCertificateHandler.GetCertificate(issuedClientCertificates)

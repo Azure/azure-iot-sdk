@@ -3,7 +3,7 @@
 
 using System.Net.Security;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Boot
 {
     /// <summary>
     /// Supplies boot authentication material for Device Provisioning Service.
@@ -15,7 +15,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// Called only on the boot provider.
         /// </summary>
-        public abstract AuthenticationCredentials GetDeviceProvisioningServiceAuthentication();
+        public abstract AuthenticationCredentials GetCredentials();
 
         /// <summary>
         /// Gets the DPS registration Id. Called only on the boot provider.

@@ -4,7 +4,7 @@
 using System.Net.Security;
 using System.Text;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Operational
 {
     /// <summary>
     /// IoT Hub operational authentication using a device-scoped symmetric key.
@@ -27,7 +27,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetIotHubAuthentication(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
             string token = SasTokenBuilder.BuildSasToken(
                 string.Empty, _symmetricKey, $"{hostName}/devices/{deviceId}", TimeSpan.FromHours(1));

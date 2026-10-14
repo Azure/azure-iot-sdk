@@ -18,6 +18,8 @@ using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 namespace Microsoft.Azure.Iot.Device
 {
@@ -591,7 +593,7 @@ namespace Microsoft.Azure.Iot.Device
                 await hubAuthentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates).ConfigureAwait(false);
             }
 
-            AuthenticationCredentials hubCredentials = hubAuthentication.GetIotHubAuthentication(
+            AuthenticationCredentials hubCredentials = hubAuthentication.GetCredentials(
                 connectPacketToEdit.HostName,
                 connectionContext.DeviceId,
                 issuedClientCertificates);
@@ -1293,7 +1295,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return ApplyAuthentication(authentication.GetDeviceProvisioningServiceAuthentication(), mqttConnect);
+            return ApplyAuthentication(authentication.GetCredentials(), mqttConnect);
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)

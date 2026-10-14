@@ -4,7 +4,7 @@
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
-namespace Microsoft.Azure.Iot.Device.Authentication
+namespace Microsoft.Azure.Iot.Device.Authentication.Boot
 {
     /// <summary>
     /// Device Provisioning Service boot authentication using an X509 certificate.
@@ -41,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        public override AuthenticationCredentials GetDeviceProvisioningServiceAuthentication()
+        public override AuthenticationCredentials GetCredentials()
         {
             return new AuthenticationCredentials()
             {
