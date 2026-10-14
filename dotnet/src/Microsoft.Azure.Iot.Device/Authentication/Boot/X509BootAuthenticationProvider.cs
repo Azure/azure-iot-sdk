@@ -41,14 +41,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Boot
         /// </summary>
         public X509Certificate2Collection? CertificateChain { get; }
 
-        public override AuthenticationCredentials GetCredentials()
+        public override Task<AuthenticationCredentials> GetCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return new AuthenticationCredentials()
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new AuthenticationCredentials()
             {
                 ClientCertificate = ClientCertificate,
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
                 LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
-            };
+            });
         }
 
         public override string GetRegistrationId()

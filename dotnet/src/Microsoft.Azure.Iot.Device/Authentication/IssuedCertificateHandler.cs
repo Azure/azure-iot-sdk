@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -9,7 +8,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 {
     /// <summary>
     /// Turns an issued client certificate chain into the certificate to present to IoT Hub by invoking a certificate
-    /// signing complete callback once per issued chain and remembering the certificate it returns.
+    /// signing complete callback once per distinct issued chain and remembering the certificate it returns.
     /// </summary>
     internal sealed class IssuedCertificateHandler
     {
@@ -32,27 +31,30 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         }
 
         /// <summary>
-        /// Invokes the callback for this chain, once per chain.
+        /// Gets the certificate to present for this chain, invoking the callback only the first time a chain is seen.
         /// </summary>
-        public async Task HandleAsync(IReadOnlyList<string> issuedClientCertificates)
+        public async Task<X509Certificate2> GetCertificateAsync(IReadOnlyList<string> issuedClientCertificates, CancellationToken cancellationToken)
         {
-            if (ReferenceEquals(_lastHandled?.Chain, issuedClientCertificates))
+            HandledChain? lastHandled = _lastHandled;
+            if (lastHandled != null && IsSameChain(lastHandled.Chain, issuedClientCertificates))
             {
-                return;
+                return lastHandled.Certificate;
             }
 
-            await _callbackLock.WaitAsync().ConfigureAwait(false);
+            await _callbackLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (ReferenceEquals(_lastHandled?.Chain, issuedClientCertificates))
+                lastHandled = _lastHandled;
+                if (lastHandled != null && IsSameChain(lastHandled.Chain, issuedClientCertificates))
                 {
-                    return;
+                    return lastHandled.Certificate;
                 }
 
                 X509Certificate2 certificate = await _callback(issuedClientCertificates).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("The certificate signing complete callback returned a null certificate.");
 
-                _lastHandled = new HandledChain(issuedClientCertificates, certificate);
+                _lastHandled = new HandledChain(issuedClientCertificates.ToArray(), certificate);
+                return certificate;
             }
             finally
             {
@@ -60,24 +62,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             }
         }
 
-        /// <summary>
-        /// Gets the certificate to present for this chain, or null if the callback has not produced one yet.
-        /// </summary>
-        public X509Certificate2? GetCertificate(IReadOnlyList<string> issuedClientCertificates)
+        private static bool IsSameChain(IReadOnlyList<string> handled, IReadOnlyList<string> issued)
         {
-            HandledChain? lastHandled = _lastHandled;
-            if (lastHandled == null)
-            {
-                Trace.TraceWarning("A client certificate was issued to this device, but the certificate signing complete callback has not produced a certificate for it.");
-                return null;
-            }
-
-            if (!ReferenceEquals(lastHandled.Chain, issuedClientCertificates))
-            {
-                Trace.TraceWarning("The certificate signing complete callback has not handled the most recently issued client certificate, so the previously returned certificate will be presented.");
-            }
-
-            return lastHandled.Certificate;
+            return ReferenceEquals(handled, issued) || handled.SequenceEqual(issued, StringComparer.Ordinal);
         }
 
         // The first certificate in the issued chain is the device certificate; the rest are intermediates.

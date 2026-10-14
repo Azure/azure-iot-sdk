@@ -15,7 +15,8 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Boot
         /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// Called only on the boot provider.
         /// </summary>
-        public abstract AuthenticationCredentials GetCredentials();
+        /// <param name="cancellationToken">The cancellation token.</param>
+        public abstract Task<AuthenticationCredentials> GetCredentialsAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the DPS registration Id. Called only on the boot provider.

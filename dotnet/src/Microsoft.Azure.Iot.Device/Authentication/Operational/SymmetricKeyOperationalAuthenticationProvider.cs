@@ -27,17 +27,22 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override Task<AuthenticationCredentials> GetCredentialsAsync(
+            string hostName,
+            string deviceId,
+            IReadOnlyList<string>? issuedClientCertificates,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             //TODO should actually use the issued client certificates to do x509 auth if configured. Maybe a constructor-time flag for this
             string token = SasTokenBuilder.BuildSasToken(
                 string.Empty, _symmetricKey, $"{hostName}/devices/{deviceId}", TimeSpan.FromHours(1));
-            return new AuthenticationCredentials()
+            return Task.FromResult(new AuthenticationCredentials()
             {
                 Password = Encoding.UTF8.GetBytes(token),
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
                 LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
-            };
+            });
         }
     }
 }

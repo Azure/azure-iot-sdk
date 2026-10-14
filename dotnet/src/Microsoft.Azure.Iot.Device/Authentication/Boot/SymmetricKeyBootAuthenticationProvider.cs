@@ -34,16 +34,17 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Boot
             _symmetricKey = symmetricKey;
         }
 
-        public override AuthenticationCredentials GetCredentials()
+        public override Task<AuthenticationCredentials> GetCredentialsAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string token = SasTokenBuilder.BuildSasToken(
                 "registration", _symmetricKey, $"{_idScope}/registrations/{_registrationId}", TimeSpan.FromHours(1));
-            return new AuthenticationCredentials()
+            return Task.FromResult(new AuthenticationCredentials()
             {
                 Password = Encoding.UTF8.GetBytes(token),
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
                 LocalCertificateSelectionCallback = LocalCertificateSelectionCallback,
-            };
+            });
         }
 
         public override string GetRegistrationId() => _registrationId;

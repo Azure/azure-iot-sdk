@@ -20,13 +20,16 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// The most recently issued certificate chain from DPS or IoT Hub, Base64-encoded and device certificate
         /// first, followed by intermediates. Null if no certificate has been issued.
         /// </param>
-        public abstract AuthenticationCredentials GetCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
-
-        /// <summary>
-        /// Called when certificates are issued and before each connection attempt to IoT Hub.
-        /// Prepares the certificate to present and must be idempotent per chain.
-        /// </summary>
-        public virtual Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates) => Task.CompletedTask;
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <remarks>
+        /// Called before each connection attempt to IoT Hub, always with the latest issued certificate chain. Implementations
+        /// are responsible for turning that chain into the certificate to present, and should cache the result per chain.
+        /// </remarks>
+        public abstract Task<AuthenticationCredentials> GetCredentialsAsync(
+            string hostName,
+            string deviceId,
+            IReadOnlyList<string>? issuedClientCertificates,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         /// An optional callback for validating the remote TLS certificate. Null uses platform validation.

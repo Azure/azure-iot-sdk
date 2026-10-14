@@ -130,10 +130,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.NotNull(connectionContext.IssuedClientCertificates);
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-                AuthenticationCredentials hubCredentials = operationalAuthentication.GetCredentials(
+                AuthenticationCredentials hubCredentials = await operationalAuthentication.GetCredentialsAsync(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
-                    connectionContext.IssuedClientCertificates);
+                    connectionContext.IssuedClientCertificates,
+                    TestContext.Current.CancellationToken);
                 using X509Certificate2 issuedCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(connectionContext.IssuedClientCertificates[0]));
                 Assert.NotNull(hubCredentials.ClientCertificate);
                 Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
@@ -141,7 +142,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Empty(hubCredentials.Password);
 
                 // DPS is still authenticated with a SAS token derived from the symmetric key.
-                AuthenticationCredentials dpsCredentials = bootAuthentication.GetCredentials();
+                AuthenticationCredentials dpsCredentials = await bootAuthentication.GetCredentialsAsync(TestContext.Current.CancellationToken);
                 Assert.Null(dpsCredentials.ClientCertificate);
                 Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
             }

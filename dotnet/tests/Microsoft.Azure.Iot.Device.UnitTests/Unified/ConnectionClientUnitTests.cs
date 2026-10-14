@@ -7,6 +7,8 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {

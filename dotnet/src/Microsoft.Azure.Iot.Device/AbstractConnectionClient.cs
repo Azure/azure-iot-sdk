@@ -467,10 +467,16 @@ namespace Microsoft.Azure.Iot.Device
                 ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
-            // Issued certificates belong to the operational provider, never the boot provider.
-            if (provisioningResult.IssuedClientCertificateChain is { Count: > 0 } issuedClientCertificates)
+            // Issued certificates belong to the operational provider, never the boot provider. Resolve the credentials
+            // up front so that a provider that cannot use the issued certificates fails provisioning rather than having
+            // every connect attempt retried.
+            if (CurrentConnectionContext.IssuedClientCertificates is { Count: > 0 })
             {
-                await operationalAuthenticationProvider.HandleClientCertificatesIssuedAsync(issuedClientCertificates);
+                await operationalAuthenticationProvider.GetCredentialsAsync(
+                    CurrentConnectionContext.IotHubHostName,
+                    CurrentConnectionContext.DeviceId,
+                    CurrentConnectionContext.IssuedClientCertificates,
+                    cancellationToken);
             }
 
             await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
@@ -584,19 +590,12 @@ namespace Microsoft.Azure.Iot.Device
             // connect with the operational certificate DPS issued rather than its boot credentials.
             ConnectionContext connectionContext = CurrentConnectionContext!;
             OperationalAuthenticationProvider hubAuthentication = connectionContext.OperationalAuthenticationProvider;
-            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
 
-            // Normally a no-op since providers are notified when certificates are issued, but covers a provider that was
-            // swapped into the connection context afterwards.
-            if (issuedClientCertificates is { Count: > 0 })
-            {
-                await hubAuthentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates).ConfigureAwait(false);
-            }
-
-            AuthenticationCredentials hubCredentials = hubAuthentication.GetCredentials(
+            // The operational provider turns the latest issued certificates (if any) into the certificate to present.
+            AuthenticationCredentials hubCredentials = await hubAuthentication.GetCredentialsAsync(
                 connectPacketToEdit.HostName,
                 connectionContext.DeviceId,
-                issuedClientCertificates);
+                connectionContext.IssuedClientCertificates).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
@@ -1021,10 +1020,11 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
-            MqttConnect connect = CreateProvisioningConnectPacket(
+            MqttConnect connect = await CreateProvisioningConnectPacketAsync(
                 authentication,
                 provisioningSettings.IdScope,
-                provisioningSettings.GlobalEndpointAddress);
+                provisioningSettings.GlobalEndpointAddress,
+                cancellationToken);
 
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
@@ -1268,7 +1268,11 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(BootAuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
+        private async Task<MqttConnect> CreateProvisioningConnectPacketAsync(
+            BootAuthenticationProvider authentication,
+            string idScope,
+            string globalDeviceEndpoint,
+            CancellationToken cancellationToken)
         {
             string hostName = globalDeviceEndpoint;
 
@@ -1295,7 +1299,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return ApplyAuthentication(authentication.GetCredentials(), mqttConnect);
+            return ApplyAuthentication(await authentication.GetCredentialsAsync(cancellationToken).ConfigureAwait(false), mqttConnect);
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)
