@@ -15,8 +15,9 @@
 #include "azure/iot/az_iot_sas_token.h"
 #include "sample_utils.h"
 
-/** @brief Longest resource URI signed here. */
-#define SAMPLE_URI_MAX 512
+/** @brief Longest resource URI signed here: a hub host, `%2Fdevices%2F` and a
+ * fully percent-encoded device ID (the DPS registration URI is shorter). */
+#define SAMPLE_URI_MAX (AZ_IOT_DPS_TPM_HOST_MAX + 13u + 3u * AZ_IOT_DPS_TPM_ID_MAX)
 
 az_iot_result sample_dps_tpm_register(
     az_iot_dps_tpm_client* client,

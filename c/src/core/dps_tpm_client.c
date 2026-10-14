@@ -614,6 +614,10 @@ static bool read_registration_state(az_json_reader* jr, dps_tpm_fields* f)
         f->connection_profile = jr->token.slice;
         f->has_connection_profile = true;
       }
+      else if (jr->token.kind != AZ_JSON_TOKEN_NULL)
+      {
+        return false; /* Only a string or null is a profile. */
+      }
     }
     else if (
         az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("issuedCertificateChain"))

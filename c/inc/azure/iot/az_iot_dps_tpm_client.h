@@ -206,8 +206,9 @@ extern "C"
   {
     const char* assigned_hub; /**< Hub host name: az_iot_connection_client_options::host. */
     const char* device_id; /**< Device ID: az_iot_connection_client_options::client_id. */
-    /** az_iot_connection_client_options::connection_profile. Absent or
-     * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other: UNKNOWN. */
+    /** az_iot_connection_client_options::connection_profile. Absent, null or
+     * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other strings: UNKNOWN. Any
+     * other JSON value makes the response malformed. */
     az_iot_connection_profile connection_profile;
     /** `connectionProfile` as sent, JSON-decoded; `classic` when absent or
      * null. At most AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1 characters. A

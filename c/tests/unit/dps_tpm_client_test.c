@@ -344,6 +344,16 @@ static void an_mqttv3_assignment_needs_a_hub_key_or_a_certificate(void** state)
     { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
       "\"connectionProfile\":\"mqttV5\"}}",
       AZ_IOT_OK },
+    /* A profile that is neither a string nor null is malformed. */
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ==\"],\"connectionProfile\":1}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ==\"],\"connectionProfile\":true}}",
+      AZ_IOT_ERR_PROTOCOL },
+    { "{\"status\":\"assigned\",\"registrationState\":{\"assignedHub\":\"h\",\"deviceId\":\"d\","
+      "\"issuedCertificateChain\":[\"QQ==\"],\"connectionProfile\":{}}}",
+      AZ_IOT_ERR_PROTOCOL },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
