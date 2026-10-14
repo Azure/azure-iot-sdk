@@ -2114,8 +2114,10 @@ extern "C"
   /* Returns the effective IoT Hub address (FQDN) this client is bound to: the
    * iothub_hostname supplied in options (direct or saved hub), or the DPS-assigned hub
    * once provisioning completes. Returns NULL when no host has been established
-   * yet (e.g. a DPS-only client that has not finished provisioning). The returned
-   * pointer is owned by the client and stays valid until deinit(). Useful for
+   * yet (e.g. a DPS-only client that has not finished provisioning). Points at the
+   * caller-supplied iothub_hostname, or at a buffer owned by the client; an adopted
+   * DPS assignment changes the value returned (the caller's string is never
+   * modified), so copy it to keep it. Useful for
    * protocol-independent, HTTPS-only features such as file upload that must reach
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
