@@ -110,6 +110,8 @@ extern "C"
     uint32_t max_hub_connect_attempts_before_reprovision;
     /** @brief Seconds to wait for CONNECTED; 0 keeps the default. */
     int connect_timeout_s;
+    /* Copied to the connection options' twin_push (mqttv5 only). */
+    bool twin_push_reported;
   } e2e_device_connect_options;
 
   /** @brief A hub assignment, as saved after a connect (see e2e_device_get_hub()). */

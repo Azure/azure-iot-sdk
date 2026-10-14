@@ -194,6 +194,7 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
           = opts->max_hub_connect_attempts_before_reprovision;
     }
   }
+  copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {

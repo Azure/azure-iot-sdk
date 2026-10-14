@@ -235,7 +235,7 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     target_link_libraries(az_iot_tests_e2e_mqttv5_custom_topic PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
 
-    # mqttv5 twin desired delivery with and without twin_push.push_desired.
+    # mqttv5 twin: desired delivery (push and pull), reported patches, GET options, push_reported.
     az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_twin
         tests/e2e_mqttv5_twin_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_twin PRIVATE
