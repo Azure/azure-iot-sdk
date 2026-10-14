@@ -9,7 +9,8 @@
  * Each test opens its own connection: the push mode is read from the birth, so it is fixed per
  * connection. The service side patches desired properties and reads the twin back over REST
  * (az_iot_e2e_service.h). The tests run in order on one device: the pull test leaves desired
- * state for the push test's snapshot on connect. The later tests each write their own markers.
+ * state for the push test's snapshot on connect. Reported properties use a fixed set of
+ * e2e_<tag> keys whose values carry the per-run marker, so the twin does not grow across runs.
  */
 #include <setjmp.h>
 #include <stdarg.h>
@@ -516,11 +517,32 @@ static bool twin_section_version(const char* section, uint64_t* out)
       && r.token.kind == AZ_JSON_TOKEN_NUMBER && az_json_token_get_uint64(&r.token, out) == AZ_OK;
 }
 
-/** @brief Whether `properties.<section>` of g_twin_json has a non-null member @p name. */
-static bool twin_section_has(const char* section, const char* name)
+/** @brief Whether g_twin_json is one complete JSON value (a truncated body is not). */
+static bool twin_json_valid(void)
 {
   az_json_reader r;
-  return twin_section(section, &r) && json_enter(&r, name) && r.token.kind != AZ_JSON_TOKEN_NULL;
+  return az_json_reader_init(
+             &r, az_span_create((uint8_t*)g_twin_json, (int32_t)strlen(g_twin_json)), NULL)
+      == AZ_OK
+      && az_json_reader_next_token(&r) == AZ_OK && az_json_reader_skip_children(&r) == AZ_OK
+      && az_json_reader_next_token(&r) == AZ_ERROR_JSON_READER_DONE;
+}
+
+/** @brief Whether reported member @p name exists in g_twin_json, whatever its value (even null). */
+static bool twin_reported_exists(const char* name)
+{
+  az_json_reader r;
+  return twin_section("reported", &r) && json_enter(&r, name);
+}
+
+/** @brief Whether reported member @p name of g_twin_json is the string @p value. */
+static bool twin_reported_is(const char* name, const char* value)
+{
+  az_json_reader r;
+  return twin_section("reported", &r) && json_enter(&r, name)
+      && r.token.kind == AZ_JSON_TOKEN_STRING
+      && az_json_token_is_text_equal(
+             &r.token, az_span_create((uint8_t*)(uintptr_t)value, (int32_t)strlen(value)));
 }
 
 static void print_twin_json(void)
@@ -529,19 +551,34 @@ static void print_twin_json(void)
       "[e2e] service twin (%zu bytes): %.*s\n", strlen(g_twin_json), E2E_LOG_BODY_MAX, g_twin_json);
 }
 
-/** @brief Re-read the twin until reported member @p name is (or is no longer) present. */
-static bool service_wait_reported(fixture* fx, const char* name, bool present)
+/**
+ * @brief Re-read the twin until reported member @p name is the string @p value or, with a NULL
+ * @p value, until the member is gone (a member kept with a null value is still present).
+ */
+static bool service_wait_reported(fixture* fx, const char* name, const char* value)
 {
   for (time_t start = time(NULL); (time(NULL) - start) < E2E_PROPAGATION_TIMEOUT_S;)
   {
     service_get_twin(fx);
-    if (twin_section_has("reported", name) == present)
+    if (value != NULL ? twin_reported_is(name, value)
+                      : twin_json_valid() && !twin_reported_exists(name))
     {
       return true;
     }
     pump_for(fx, 1);
   }
-  printf("[e2e] reported '%s' still %s\n", name, present ? "absent" : "present");
+  if (value != NULL)
+  {
+    printf("[e2e] reported '%s' never became \"%s\"\n", name, value);
+  }
+  else
+  {
+    printf(
+        "[e2e] reported '%s' not removed (exists=%d, valid json=%d)\n",
+        name,
+        (int)twin_reported_exists(name),
+        (int)twin_json_valid());
+  }
   print_twin_json();
   return false;
 }
@@ -632,7 +669,10 @@ static void assert_patch_ok(const patch_record* p)
   }
 }
 
-/** @brief Report {"e2e_<marker>":"<marker>"}; writes the member name and marker. */
+/**
+ * @brief Report {"e2e_<tag>":"<marker>"} with a new marker; writes the member name and marker.
+ * The key is fixed per tag, so repeated runs overwrite it instead of adding keys.
+ */
 static const patch_record* device_report_marker(
     fixture* fx,
     const char* tag,
@@ -640,7 +680,7 @@ static const patch_record* device_report_marker(
     char (*marker)[64])
 {
   make_marker(*marker, sizeof(*marker), tag);
-  snprintf(*name, sizeof(*name), "e2e_%s", *marker);
+  snprintf(*name, sizeof(*name), "e2e_%s", tag);
   char json[256];
   snprintf(json, sizeof(json), "{\"%s\":\"%s\"}", *name, *marker);
   const patch_record* p = device_patch(fx, NULL, json, strlen(json));
@@ -775,7 +815,7 @@ static void reported_patch_is_acked_and_visible(void** state)
   char marker[64];
   const patch_record* p = device_report_marker(fx, "rep", &name, &marker);
 
-  assert_true(service_wait_reported(fx, name, true));
+  assert_true(service_wait_reported(fx, name, marker));
   uint64_t v = 0;
   if (!twin_section_version("reported", &v) || v != p->version)
   {
@@ -795,7 +835,7 @@ static void get_returns_both_sections(void** state)
   char name[96];
   char marker[64];
   (void)device_report_marker(fx, "both", &name, &marker);
-  assert_true(service_wait_reported(fx, name, true));
+  assert_true(service_wait_reported(fx, name, marker));
 
   device_get_until(fx, fx->desired.marker, marker);
   const uint64_t desired_version = service_version(fx, "desired");
@@ -852,23 +892,19 @@ static void get_with_options_selects_sections(void** state)
   assert_true(contains(fx->get.reported, fx->get.reported_len, marker));
 }
 
-/* A null member in a reported patch removes the property. */
+/* A null member in a reported patch removes the key; keeping it with a null value fails. */
 static void null_member_deletes_reported_property(void** state)
 {
   fixture* fx = (fixture*)*state;
   char marker[64];
   char name[96];
-  make_marker(marker, sizeof(marker), "del");
-  snprintf(name, sizeof(name), "e2e_%s", marker);
-  char json[256];
+  (void)device_report_marker(fx, "del", &name, &marker);
+  assert_true(service_wait_reported(fx, name, marker));
 
-  snprintf(json, sizeof(json), "{\"%s\":\"v\"}", name);
-  assert_patch_ok(device_patch(fx, NULL, json, strlen(json)));
-  assert_true(service_wait_reported(fx, name, true));
-
+  char json[128];
   snprintf(json, sizeof(json), "{\"%s\":null}", name);
   assert_patch_ok(device_patch(fx, NULL, json, strlen(json)));
-  assert_true(service_wait_reported(fx, name, false));
+  assert_true(service_wait_reported(fx, name, NULL));
 }
 
 /* A patch whose if_match is behind the current version is refused; the next one applies. */
@@ -883,7 +919,7 @@ static void stale_if_match_is_refused(void** state)
 
   make_marker(marker, sizeof(marker), "ifm");
   char json[256];
-  snprintf(json, sizeof(json), "{\"e2e_%s\":\"%s\"}", marker, marker);
+  snprintf(json, sizeof(json), "{\"%s\":\"%s\"}", name, marker);
   const patch_record* stale = device_patch(fx, &old_version, json, strlen(json));
   assert_int_equal(stale->submit, AZ_IOT_OK);
   assert_true(stale->done);
@@ -910,10 +946,14 @@ static void invalid_reported_payload_is_refused(void** state)
   snprintf(bad, sizeof(bad), "e2e not json %s {", marker);
   const patch_record* p = device_patch(fx, NULL, bad, strlen(bad));
   assert_int_equal(p->submit, AZ_IOT_OK);
-  assert_true(p->done);
-  if (p->status == AZ_IOT_OK && p->verdict != AZ_IOT_MQTTV5_TWIN_PATCH_PAYLOAD_INVALID)
+  /* A timeout or an undecodable ack is not a refusal. */
+  if (!p->done || p->status != AZ_IOT_OK || p->verdict != AZ_IOT_MQTTV5_TWIN_PATCH_PAYLOAD_INVALID)
   {
-    fail_msg("invalid payload: expected PAYLOAD_INVALID, got %s", verdict_name(p->verdict));
+    fail_msg(
+        "invalid payload: expected ack OK with PAYLOAD_INVALID, got done=%d ack=%s verdict=%s",
+        (int)p->done,
+        p->done ? az_iot_result_to_string(p->status) : "-",
+        verdict_name(p->verdict));
   }
   assert_int_equal(fx->hub_drops, 0);
   assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
@@ -922,46 +962,85 @@ static void invalid_reported_payload_is_refused(void** state)
   (void)device_report_marker(fx, "bad", &name, &marker);
 }
 
-/* A reported patch above the mqttv3 limit is refused; the device can still patch after it. */
+/**
+ * @brief Whether the service twin may hold reported member @p name, read over
+ * E2E_PROPAGATION_TIMEOUT_S; a body that is not complete JSON (over the REST read limit) counts.
+ */
+static bool service_reported_may_exist(fixture* fx, const char* name)
+{
+  for (time_t start = time(NULL); (time(NULL) - start) < E2E_PROPAGATION_TIMEOUT_S;)
+  {
+    service_get_twin(fx);
+    const bool valid = twin_json_valid();
+    if (!valid || twin_reported_exists(name))
+    {
+      printf("[e2e] service twin: '%s' present or unreadable (valid json=%d)\n", name, (int)valid);
+      print_twin_json();
+      return true;
+    }
+    pump_for(fx, 1);
+  }
+  return false;
+}
+
+/* A reported patch above the mqttv3 limit is refused as PAYLOAD_TOO_LARGE. Without a decoded
+ * ack the service twin must not hold the property; the device can still patch after it. */
 static void oversized_reported_patch_is_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
   char marker[64];
-  char name[96];
+  const char* name = "e2e_big";
   make_marker(marker, sizeof(marker), "big");
-  snprintf(name, sizeof(name), "e2e_%s", marker);
-  const int head = snprintf(g_big, sizeof(g_big), "{\"%s\":\"", name);
+  const int head = snprintf(g_big, sizeof(g_big), "{\"%s\":\"%s", name, marker);
   assert_true(head > 0);
   memset(g_big + head, 'x', E2E_BIG_PATCH_LEN - (size_t)head - 2u);
   memcpy(g_big + E2E_BIG_PATCH_LEN - 2u, "\"}", 3);
 
   const patch_record* p = device_patch(fx, NULL, g_big, E2E_BIG_PATCH_LEN);
+  const bool acked = p->submit == AZ_IOT_OK && p->done && p->status == AZ_IOT_OK;
+  const char* outcome = p->submit != AZ_IOT_OK ? "submission failed"
+      : !p->done                               ? "no ack before the wait ended"
+      : p->status != AZ_IOT_OK                 ? "ack failed (timeout, disconnect or decode)"
+      : p->verdict == AZ_IOT_MQTTV5_TWIN_PATCH_PAYLOAD_TOO_LARGE ? "refused as PAYLOAD_TOO_LARGE"
+                                                                 : "acked with another verdict";
   printf(
-      "[e2e] oversized patch: submit=%s done=%d ack=%s verdict=%s v%llu hub_drops=%d\n",
+      "[e2e] oversized patch: %s; submit=%s done=%d ack=%s verdict=%s v%llu hub_drops=%d\n",
+      outcome,
       az_iot_result_to_string(p->submit),
       (int)p->done,
       p->done ? az_iot_result_to_string(p->status) : "-",
       verdict_name(p->verdict),
       (unsigned long long)p->version,
       fx->hub_drops);
-  const bool accepted = p->submit == AZ_IOT_OK && p->done && p->status == AZ_IOT_OK
-      && p->verdict == AZ_IOT_MQTTV5_TWIN_PATCH_OK;
-  if (accepted)
+
+  if (!acked || p->verdict != AZ_IOT_MQTTV5_TWIN_PATCH_PAYLOAD_TOO_LARGE)
   {
-    /* Keep the twin under the REST read limit for the tests that follow. */
-    char json[160];
-    snprintf(json, sizeof(json), "{\"%s\":null}", name);
-    (void)device_patch(fx, NULL, json, strlen(json));
-    fail_msg("a %u-byte reported patch was accepted", (unsigned)E2E_BIG_PATCH_LEN);
-  }
-  if (p->status == AZ_IOT_OK && p->done && p->verdict != AZ_IOT_MQTTV5_TWIN_PATCH_PAYLOAD_TOO_LARGE)
-  {
-    printf(
-        "[e2e] oversized patch refused as %s, not PAYLOAD_TOO_LARGE\n", verdict_name(p->verdict));
+    if (service_reported_may_exist(fx, name))
+    {
+      /* Keep the twin under the REST read limit for the tests that follow. */
+      char json[64];
+      snprintf(json, sizeof(json), "{\"%s\":null}", name);
+      const bool reconnected = wait_connected(fx);
+      if (reconnected)
+      {
+        (void)device_patch(fx, NULL, json, strlen(json));
+      }
+      fail_msg(
+          "oversized patch (%s) left '%s' in the service twin; delete %s",
+          outcome,
+          name,
+          reconnected ? "sent" : "not sent: device not reconnected");
+    }
+    if (acked)
+    {
+      fail_msg("oversized patch: expected PAYLOAD_TOO_LARGE, got %s", verdict_name(p->verdict));
+    }
+    printf("[e2e] oversized patch: %s and '%s' is absent from the service twin\n", outcome, name);
   }
 
   assert_true(wait_connected(fx));
-  (void)device_report_marker(fx, "big", &name, &marker);
+  char after[96];
+  (void)device_report_marker(fx, "after", &after, &marker);
 }
 
 /* With push_reported the service pushes the reported section on connect; without it, nothing. */
