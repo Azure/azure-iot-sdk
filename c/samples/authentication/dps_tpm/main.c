@@ -8,8 +8,8 @@
  * @brief DPS registration with TPM attestation, then telemetry to the assigned
  * mqttv3 hub with SAS tokens signed by the TPM.
  *
- * DPS takes TPM attestation over HTTPS only, so registration runs
- * az_iot_dps_tpm_client over libcurl; the hub connection is then a direct
+ * DPS takes TPM attestation over HTTPS or AMQP, not MQTT. This sample runs
+ * az_iot_dps_tpm_client over libcurl (HTTPS); the hub connection is then a direct
  * az_iot_connection_client connection. The TPM is simulated in software
  * (samples/common/sample_tpm_sim.c) so the sample runs anywhere: replace it
  * with your TSS for a real TPM.

@@ -49,7 +49,7 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | X.509 | X.509 | Supported | `unified/`, `mqttv5/` samples |
 | X.509 | SAS | Not provisioned by DPS | Expressible; no sample |
 | SAS | SAS, mqttv5 | Not supported by the service yet | Designed for; the token request carries the hub generation. Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED` |
-| TPM attestation | SAS signed by the TPM, mqttv3 | Over HTTPS only, not MQTT | `dps_tpm` |
+| TPM attestation | SAS signed by the TPM, mqttv3 | Supported over HTTPS and AMQP, not MQTT; the sample uses HTTPS | `dps_tpm` |
 
 ## Which non-extractable key route applies
 

@@ -13,7 +13,7 @@ TPM software stack instead.
 
 ## Sample features
 
-- DPS takes TPM attestation over HTTPS only, not MQTT. The sample registers with
+- DPS takes TPM attestation over HTTPS or AMQP, not MQTT. This sample uses HTTPS: it registers with
   [`az_iot_dps_tpm_client.h`](../../../inc/azure/iot/az_iot_dps_tpm_client.h) over libcurl:
   1. A register request with the endorsement key (EK) and storage root key (SRK).
   2. DPS answers 401 with a key encrypted to the TPM. The simulated TPM imports it, as
