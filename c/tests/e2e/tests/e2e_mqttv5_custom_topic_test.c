@@ -144,6 +144,17 @@ static void make_marker(char* out, size_t cap, const char* tag, const char* devi
       out, cap, "%s-%s-%08lx%03x", tag, device_id, (unsigned long)time(NULL), (counter++) & 0xfffu);
 }
 
+/** @brief Number of `/`-separated levels in @p topic. */
+static size_t count_levels(const char* topic)
+{
+  size_t levels = 1;
+  for (; *topic != '\0'; ++topic)
+  {
+    levels += *topic == '/' ? 1u : 0u;
+  }
+  return levels;
+}
+
 static int group_setup(void** state)
 {
   memset(&g_fx, 0, sizeof(g_fx));
@@ -251,7 +262,56 @@ static bool wait_routed(fixture* fx, const char* marker, int timeout_s, publish_
   return seen;
 }
 
-/* Publishes a marked message to @p topic_template; returns whether it was routed. */
+/** @brief Publishes a marked message to the concrete @p topic; returns whether it was routed. */
+static bool publish_topic_and_watch(
+    fixture* fx,
+    const char* topic,
+    az_iot_mqtt_qos qos,
+    const az_iot_mqtt_user_property* properties,
+    size_t properties_count,
+    int timeout_s,
+    publish_record** out_record)
+{
+  assert_true(wait_connected(fx));
+  publish_record* record = new_record(fx);
+  *out_record = record;
+
+  char marker[E2E_MARKER_MAX];
+  make_marker(marker, sizeof(marker), "ct", fx->dev.device_id);
+  char payload[E2E_MARKER_MAX + 16];
+  snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
+
+  watch_begin(fx);
+  az_iot_mqttv5_custom_topic_message message = { 0 };
+  message.topic = topic;
+  message.payload = (const uint8_t*)payload;
+  message.payload_len = strlen(payload);
+  message.qos = qos;
+  message.content_type = "application/json";
+  message.user_properties = properties;
+  message.user_properties_count = properties_count;
+  const az_iot_result rc
+      = az_iot_mqttv5_custom_topic_client_publish(&fx->custom, &message, on_publish, record);
+  if (rc != AZ_IOT_OK)
+  {
+    az_iot_e2e_service_telemetry_watch_end(fx->service);
+    fail_msg("publish to '%s' returned %s", topic, az_iot_result_to_string(rc));
+  }
+
+  const bool seen = wait_routed(fx, marker, timeout_s, record);
+  printf(
+      "[e2e] '%s' (%u bytes, %u levels) qos %d, %u properties: completion %s, routed %s\n",
+      topic,
+      (unsigned)strlen(topic),
+      (unsigned)count_levels(topic),
+      (int)qos,
+      (unsigned)properties_count,
+      record->done ? az_iot_result_to_string(record->status) : "(none)",
+      seen ? "yes" : "no");
+  return seen;
+}
+
+/** @brief Formats @p topic_template, then publishes it like publish_topic_and_watch(). */
 static bool publish_and_watch(
     fixture* fx,
     const char* topic_template,
@@ -260,41 +320,50 @@ static bool publish_and_watch(
     publish_record** out_record)
 {
   assert_true(wait_connected(fx));
-  publish_record* record = new_record(fx);
-  *out_record = record;
   char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
   assert_int_equal(
       az_iot_mqttv5_custom_topic_client_format_topic(
           &fx->custom, topic_template, topic, sizeof(topic), NULL),
       AZ_IOT_OK);
-
-  char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "ct", fx->dev.device_id);
-  char payload[E2E_MARKER_MAX + 16];
-  snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
-
-  watch_begin(fx);
   const az_iot_mqtt_user_property properties[] = { { "e2e", "custom-topic" } };
-  az_iot_mqttv5_custom_topic_message message = { 0 };
-  message.topic = topic;
-  message.payload = (const uint8_t*)payload;
-  message.payload_len = strlen(payload);
-  message.qos = qos;
-  message.content_type = "application/json";
-  message.user_properties = properties;
-  message.user_properties_count = sizeof(properties) / sizeof(properties[0]);
-  assert_int_equal(
-      az_iot_mqttv5_custom_topic_client_publish(&fx->custom, &message, on_publish, record),
-      AZ_IOT_OK);
-
-  const bool seen = wait_routed(fx, marker, timeout_s, record);
-  printf(
-      "[e2e] '%s' qos %d: completion %s, routed %s\n",
+  return publish_topic_and_watch(
+      fx,
       topic,
-      (int)qos,
-      record->done ? az_iot_result_to_string(record->status) : "(none)",
-      seen ? "yes" : "no");
-  return seen;
+      qos,
+      properties,
+      sizeof(properties) / sizeof(properties[0]),
+      timeout_s,
+      out_record);
+}
+
+/** @brief Builds `e2e/<device id>/len/` padded with `x` to exactly @p length bytes. */
+static void make_topic_of_length(fixture* fx, char* out, size_t out_size, size_t length)
+{
+  size_t used = 0;
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}/len/", out, out_size, &used),
+      AZ_IOT_OK);
+  assert_true(used < length && length < out_size);
+  memset(out + used, 'x', length - used);
+  out[length] = '\0';
+}
+
+/** @brief Builds `e2e/<device id>/l2/l3/...` with exactly @p levels levels. */
+static void make_topic_of_levels(fixture* fx, char* out, size_t out_size, size_t levels)
+{
+  size_t used = 0;
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}", out, out_size, &used),
+      AZ_IOT_OK);
+  for (size_t level = count_levels(out); level < levels; ++level)
+  {
+    const int written = snprintf(out + used, out_size - used, "/l%u", (unsigned)level);
+    assert_true(written > 0 && (size_t)written < out_size - used);
+    used += (size_t)written;
+  }
+  assert_int_equal(count_levels(out), levels);
 }
 
 /* Baseline: telemetry over the same session reaches the events endpoint, so a custom topic
@@ -387,6 +456,136 @@ static void publishing_continues_after_a_refusal(void** state)
   assert_int_equal(record->status, AZ_IOT_OK);
 }
 
+/** @brief QoS 1 publish of @p topic with one property; asserts the PUBACK and the routed check. */
+static void assert_accepted_and_routed(fixture* fx, const char* topic)
+{
+  const az_iot_mqtt_user_property properties[] = { { "e2e", "custom-topic" } };
+  publish_record* record;
+  const bool seen = publish_topic_and_watch(
+      fx,
+      topic,
+      AZ_IOT_MQTT_QOS_1,
+      properties,
+      sizeof(properties) / sizeof(properties[0]),
+      E2E_ROUTE_TIMEOUT_S,
+      &record);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+  assert_routed(seen);
+}
+
+/* `{deviceId}` expands to the connected device id, and the hub accepts the result. */
+static void formatted_device_id_template_is_routed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
+  size_t topic_len = 0;
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}/fmt/a-b_c.0", topic, sizeof(topic), &topic_len),
+      AZ_IOT_OK);
+  char expected[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
+  snprintf(expected, sizeof(expected), "e2e/%s/fmt/a-b_c.0", fx->dev.device_id);
+  assert_string_equal(topic, expected);
+  assert_int_equal(topic_len, strlen(expected));
+  assert_accepted_and_routed(fx, topic);
+}
+
+static void topic_at_max_length_is_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 2];
+  make_topic_of_length(fx, topic, sizeof(topic), AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN);
+  assert_accepted_and_routed(fx, topic);
+}
+
+static void topic_at_max_levels_is_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 2];
+  make_topic_of_levels(fx, topic, sizeof(topic), AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEVELS);
+  assert_accepted_and_routed(fx, topic);
+}
+
+/** @brief Asserts the client refuses @p topic with AZ_IOT_ERR_INVALID_ARG and sends nothing. */
+static void assert_rejected_locally(fixture* fx, const char* topic)
+{
+  publish_record* record = new_record(fx);
+  const char payload[] = "{}";
+  az_iot_mqttv5_custom_topic_message message = { 0 };
+  message.topic = topic;
+  message.payload = (const uint8_t*)payload;
+  message.payload_len = sizeof(payload) - 1;
+  message.qos = AZ_IOT_MQTT_QOS_1;
+  const az_iot_result rc
+      = az_iot_mqttv5_custom_topic_client_publish(&fx->custom, &message, on_publish, record);
+  for (int i = 0; i < 50; ++i)
+  {
+    pump(fx);
+  }
+  printf(
+      "[e2e] '%s' (%u bytes, %u levels): publish %s, completion %s\n",
+      topic,
+      (unsigned)strlen(topic),
+      (unsigned)count_levels(topic),
+      az_iot_result_to_string(rc),
+      record->done ? az_iot_result_to_string(record->status) : "(none)");
+  assert_int_equal(rc, AZ_IOT_ERR_INVALID_ARG);
+  assert_false(record->done);
+}
+
+/* One byte or one level past the limit is refused by the client; the session stays usable. */
+static void topic_past_limits_is_rejected_locally(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  const int drops = fx->hub_drops;
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 2];
+
+  make_topic_of_length(fx, topic, sizeof(topic), AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1);
+  assert_rejected_locally(fx, topic);
+  make_topic_of_levels(fx, topic, sizeof(topic), AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEVELS + 1);
+  assert_rejected_locally(fx, topic);
+
+  assert_int_equal(fx->hub_drops, drops);
+  assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
+  publish_record* record;
+  (void)publish_and_watch(fx, "e2e/{deviceId}/after-limits", AZ_IOT_MQTT_QOS_1, 1, &record);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+}
+
+/* The facade captures bodies only, so the routed check covers the body, not the properties. */
+static void user_properties_are_routed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}/props", topic, sizeof(topic), NULL),
+      AZ_IOT_OK);
+  const az_iot_mqtt_user_property properties[] = {
+    { "e2e", "custom-topic" },       { "color", "blue" }, { "with space", "a value with spaces" },
+    { "reserved", "a/b+c#d?e=f&g" }, { "empty", "" },     { "e2e", "repeated" },
+  };
+  publish_record* record;
+  const bool seen = publish_topic_and_watch(
+      fx,
+      topic,
+      AZ_IOT_MQTT_QOS_1,
+      properties,
+      sizeof(properties) / sizeof(properties[0]),
+      E2E_ROUTE_TIMEOUT_S,
+      &record);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+  assert_routed(seen);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -396,6 +595,11 @@ int main(void)
     cmocka_unit_test(a_topic_no_template_allows_is_refused),
     cmocka_unit_test(another_device_id_is_refused),
     cmocka_unit_test(publishing_continues_after_a_refusal),
+    cmocka_unit_test(formatted_device_id_template_is_routed),
+    cmocka_unit_test(topic_at_max_length_is_accepted),
+    cmocka_unit_test(topic_at_max_levels_is_accepted),
+    cmocka_unit_test(topic_past_limits_is_rejected_locally),
+    cmocka_unit_test(user_properties_are_routed),
   };
   return cmocka_run_group_tests_name("e2e_mqttv5_custom_topic", tests, group_setup, group_teardown);
 }
