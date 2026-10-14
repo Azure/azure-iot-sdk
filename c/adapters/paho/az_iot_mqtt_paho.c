@@ -1589,6 +1589,12 @@ static az_iot_result paho_iface_publish(
   MQTTProperties props = MQTTProperties_initializer;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
+    /* MQTT strings and binary data carry a 2-byte length. */
+    if ((msg->content_type != NULL && strlen(msg->content_type) > UINT16_MAX)
+        || (msg->correlation_data != NULL && msg->correlation_data_len > UINT16_MAX))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
     bool added = true;
     if (is_nonempty_cstr(msg->content_type))
     {

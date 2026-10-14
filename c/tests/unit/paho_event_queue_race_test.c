@@ -550,6 +550,13 @@ static void a_failed_property_add_fails_the_publish(void** state)
   assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_OK);
   assert_int_equal(mock_paho_send_calls(), sent + 1);
 
+  /* Over the 2-byte MQTT length: refused, not truncated. Never read. */
+  static const uint8_t corr[1] = { 0 };
+  msg.correlation_data = corr;
+  msg.correlation_data_len = 65536;
+  assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(mock_paho_send_calls(), sent + 1);
+
   fixture_teardown(&f);
 }
 
