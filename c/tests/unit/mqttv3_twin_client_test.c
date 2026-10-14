@@ -111,9 +111,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -571,9 +571,9 @@ static void deinitializing_the_connection_does_not_complete_pending_requests(voi
 
   /* Rebuild what teardown() expects to tear down. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
@@ -675,8 +675,8 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   /* A direct connection declares its generation up front, so the pin can be
    * answered at init rather than deferred to connect. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);

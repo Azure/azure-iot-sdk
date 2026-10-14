@@ -61,9 +61,9 @@ static int setup_profile(
   assert_non_null(test);
 
   az_iot_connection_client_options options = { 0 };
-  options.host = "broker.example";
+  options.iothub_hostname = "broker.example";
   options.port = 8883;
-  options.client_id = "ut-device";
+  options.device_id = "ut-device";
   options.connection_profile = profile;
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 
@@ -575,7 +575,7 @@ static void a_send_without_a_device_id_is_not_connected(void** state)
   fixture* test = (fixture*)*state;
   az_iot_connection_client_deinit(&test->connection);
   az_iot_connection_client_options options = { 0 };
-  options.host = "broker.example";
+  options.iothub_hostname = "broker.example";
   options.port = 8883;
   options.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);

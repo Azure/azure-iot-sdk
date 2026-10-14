@@ -225,7 +225,7 @@ static int teardown(void** state)
 static void init_client(fixture* fx, bool with_dps)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
   if (with_dps)
   {
@@ -234,7 +234,7 @@ static void init_client(fixture* fx, bool with_dps)
   }
   else
   {
-    opts.host = "broker.example";
+    opts.iothub_hostname = "broker.example";
     opts.port = 8883;
   }
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
@@ -767,7 +767,7 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   fx->provider.base.vtable = NULL;
 
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";

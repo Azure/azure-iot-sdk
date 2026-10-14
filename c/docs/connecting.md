@@ -72,7 +72,7 @@ az_iot_paho_factory_destroy(v3);
 az_iot_paho_factory_destroy(v5);
 ```
 
-To skip DPS and connect straight to a hub, set `host` and `client_id` instead of the `dps` fields,
+To skip DPS and connect straight to a hub, set `iothub_hostname` and `device_id` instead of the `dps` fields,
 and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
 is mqttv3). To connect to a saved hub and fall back to DPS, set both; see
 [Saved hub with DPS fallback](#saved-hub-with-dps-fallback).
@@ -148,8 +148,8 @@ The cache lives only as long as the client. To keep using an assignment across a
 application saves it and supplies it with the `dps` fields:
 
 ```c
-opts.host = saved_hub;                   /* az_iot_connection_client_get_iothub_address() */
-opts.client_id = saved_device_id;        /* az_iot_connection_client_get_device_id() */
+opts.iothub_hostname = saved_hub;        /* az_iot_connection_client_get_iothub_address() */
+opts.device_id = saved_device_id;        /* az_iot_connection_client_get_device_id() */
 opts.connection_profile = saved_profile; /* az_iot_connection_client_get_hub_profile() */
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
@@ -162,7 +162,7 @@ opts.dps.registration_id = "<registration-id>";
 - A registration replaces the hub, device id and profile. Save them again after `HUB:CONNECTED`.
 - `connection_profile` is declared, as for a direct connect: a feature client for the other
   generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
-- `host` without `client_id` fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
+- `iothub_hostname` without `device_id` fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
 - Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
   returns the stored chain, the saved hub is connected with it and no certificate is requested.
   DPS still authenticates with the bootstrap credential.

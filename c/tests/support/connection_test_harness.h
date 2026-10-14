@@ -236,9 +236,9 @@ static inline size_t az_iot_test_index_of(
 static inline az_iot_connection_client_options az_iot_test_mqtt_v3_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   return opts;
 }
 

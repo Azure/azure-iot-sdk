@@ -4,9 +4,9 @@
 
 /* SPDX-License-Identifier: MIT */
 /* ConnectionClient DPS-before-connect unit tests: the provisioning leg that
- * runs when opts.host is NULL and opts.dps is configured -- endpoint/version
+ * runs when opts.iothub_hostname is NULL and opts.dps is configured -- endpoint/version
  * selection, the register/poll handshake, the handoff to the assigned hub, and
- * the failure paths -- and the saved hub (opts.host with opts.dps) that falls
+ * the failure paths -- and the saved hub (opts.iothub_hostname with opts.dps) that falls
  * back to it.
  *
  * The CSR-enrollment variant of this flow is covered in connection_client_test.c
@@ -90,8 +90,8 @@ static const char k_assigned_profile_overlong[] = ASSIGNED_BODY_WITH_PROFILE(
 static az_iot_connection_client_options dps_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   return opts;
@@ -527,7 +527,7 @@ static void identity_rejection_without_a_policy_still_reprovisions_on_reopen(voi
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
-  assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
+  assert_string_equal(fx->client->opts.iothub_hostname, "myhub.azure-devices.net");
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   for (int i = 0; i < 3; ++i)
@@ -993,7 +993,7 @@ static void dps_failed_status_retries_against_dps(void** state)
  * failing dps_start() falls back to an ordinary retry rather than looping
  * through provisioning forever. That fallback is right for a device that HAS
  * an assignment -- it still has a hub to try. For a device that has never
- * registered, opts.host is NULL, so the hub path has no endpoint at all and
+ * registered, opts.iothub_hostname is NULL, so the hub path has no endpoint at all and
  * the client would never reach DPS again. */
 static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
 {
@@ -1001,7 +1001,7 @@ static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
   az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
 
   /* No assignment has ever been made. */
-  assert_null(fx->client->opts.host);
+  assert_null(fx->client->opts.iothub_hostname);
 
   /* Registration fails -> retry scheduled on the DPS ladder. */
   assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_failed_body));
@@ -2094,7 +2094,7 @@ static void dps_rejects_a_null_registration_id(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = NULL;
 
@@ -2108,7 +2108,7 @@ static void dps_rejects_an_empty_registration_id(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "";
 
@@ -2123,7 +2123,7 @@ static void dps_rejected_identity_leaves_the_client_idle(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "";
 
@@ -2796,7 +2796,7 @@ static void close_during_provisioning_drops_the_pending_outcome(void** state)
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 }
 
-/* An assignment the SDK cannot speak must not be adopted. If opts.host were
+/* An assignment the SDK cannot speak must not be adopted. If opts.iothub_hostname were
  * rewritten before the profile was checked, the next open() would see a host,
  * skip DPS and connect to that hub with the pre-provisioning session role --
  * speaking a protocol the service just said this hub does not use. */
@@ -2827,7 +2827,7 @@ static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
       AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
 
   /* The rejected assignment was not adopted. */
-  assert_null(fx->client->opts.host);
+  assert_null(fx->client->opts.iothub_hostname);
 
   /* So the retry asks DPS again instead of connecting to the rejected hub. */
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
@@ -2847,7 +2847,7 @@ static void an_unsupported_profile_does_not_adopt_the_assigned_hub(void** state)
 /* a rejected or unusable assignment must not leave a reusable cached one     */
 /*                                                                           */
 /* These all exist because FAULTED is now recoverable: close() + open() is a  */
-/* supported retry, and open() skips DPS whenever opts.host is set. Anything  */
+/* supported retry, and open() skips DPS whenever opts.iothub_hostname is set. Anything  */
 /* that faults while an assignment is cached therefore has to say explicitly  */
 /* that the cache is no good, or the retry walks straight back into it.       */
 /* ------------------------------------------------------------------------- */
@@ -2861,7 +2861,7 @@ static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
   use_reprovision_mode(fx);
 
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
-  assert_string_equal(fx->client->opts.host, "myhub.azure-devices.net");
+  assert_string_equal(fx->client->opts.iothub_hostname, "myhub.azure-devices.net");
 
   /* Hub refuses the identity, so the client goes back to DPS. */
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
@@ -2891,7 +2891,7 @@ static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED),
       AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
 
-  /* The retry must re-provision, NOT reconnect to the hub still in opts.host. */
+  /* The retry must re-provision, NOT reconnect to the hub still in opts.iothub_hostname. */
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -2920,7 +2920,7 @@ static void a_half_usable_assignment_is_not_partially_adopted(void** state)
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   /* The hub half was NOT committed on the way to the fault. */
-  assert_null(fx->client->opts.host);
+  assert_null(fx->client->opts.iothub_hostname);
 
   /* And the retry provisions again rather than connecting to a half-assignment. */
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
@@ -3622,14 +3622,14 @@ static void provision_only_rejects_a_second_open(void** state)
   (void)az_iot_connection_client_close(fx->client);
 }
 
-/* opts.host names the hub this option says does not exist. */
+/* opts.iothub_hostname names the hub this option says does not exist. */
 static void provision_only_with_a_host_is_rejected(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   fx->client->opts.dps.provision_only = true;
-  fx->client->opts.host = "example.azure-devices.net";
+  fx->client->opts.iothub_hostname = "example.azure-devices.net";
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_INVALID_ARG);
   assert_null(fx->client->dps_mqtt);
@@ -5074,8 +5074,8 @@ static void a_feature_session_ensured_from_close_idle_survives_the_outer_close(v
 static az_iot_connection_client_options saved_hub_options(void)
 {
   az_iot_connection_client_options opts = dps_options();
-  opts.host = SAVED_HUB;
-  opts.client_id = SAVED_DEVICE;
+  opts.iothub_hostname = SAVED_HUB;
+  opts.device_id = SAVED_DEVICE;
   opts.reconnection_policy.initial_delay_ms = REPROVISION_DELAY_MS;
   opts.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
   opts.reconnection_policy.jitter_pct = 0;
@@ -5264,7 +5264,7 @@ static void a_saved_hub_without_a_device_id_is_refused(void** state)
   {
     int reprovision = i & 1;
     az_iot_connection_client_options opts = saved_hub_options();
-    opts.client_id = (i & 2) ? "" : NULL;
+    opts.device_id = (i & 2) ? "" : NULL;
     az_iot_connection_client c;
     assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
     az_iot_mqtt_factory* f3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);

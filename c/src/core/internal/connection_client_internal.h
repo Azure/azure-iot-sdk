@@ -25,20 +25,20 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_mqtt_role role);
 
-  /* Override opts.host with a heap-owned copy of `host`. Used by the DPS handoff
+  /* Override opts.iothub_hostname with a heap-owned copy of `host`. Used by the DPS handoff
    * helper to redirect a freshly-created (and still-IDLE) connection client at
    * the assigned hub. The client owns the duplicate; it is freed in deinit().
    * Rejects the call when state != IDLE so live sessions can never have their
    * target rewritten under them. */
-  az_iot_result az_iot_connection_client__set_host(
+  az_iot_result az_iot_connection_client__set_iothub_hostname(
       az_iot_connection_client* client,
-      const char* host);
+      const char* iothub_hostname);
 
-  /* Override opts.client_id with a heap-owned copy of `client_id`. Same
-   * IDLE-only constraint as __set_host. */
-  az_iot_result az_iot_connection_client__set_client_id(
+  /* Override opts.device_id with a heap-owned copy of `device_id`. Same
+   * IDLE-only constraint as __set_iothub_hostname. */
+  az_iot_result az_iot_connection_client__set_device_id(
       az_iot_connection_client* client,
-      const char* client_id);
+      const char* device_id);
 
   /* Seed the jitter PRNG used by the reconnect logic. Tests use this to make
    * backoff timing deterministic. Production builds seed automatically from a
@@ -170,8 +170,8 @@ extern "C"
       az_iot_connection_state_callback cb,
       void* user_ctx);
 
-  /* Returns the configured device id (== options.client_id). NULL only when the
-   * client was created with a NULL client_id (rejected at create time, so this
+  /* Returns the configured device id (== options.device_id). NULL only when the
+   * client was created with a NULL device_id (rejected at create time, so this
    * is effectively never NULL for a live client). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 

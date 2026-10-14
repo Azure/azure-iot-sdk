@@ -188,8 +188,8 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   /* Short so the advisory-expiry case is testable without a long wait. */
@@ -1622,8 +1622,8 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL;
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL;
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 0; /* -> AZ_IOT_DPS_HOLD_TIMEOUT_MS */

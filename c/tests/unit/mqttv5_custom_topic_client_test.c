@@ -54,9 +54,9 @@ static int setup_profile(
   assert_non_null(test);
 
   az_iot_connection_client_options options = { 0 };
-  options.host = "broker.example";
+  options.iothub_hostname = "broker.example";
   options.port = 8883;
-  options.client_id = DEVICE_ID;
+  options.device_id = DEVICE_ID;
   options.connection_profile = profile;
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 

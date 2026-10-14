@@ -202,9 +202,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB; /* direct host => MQTTv3 flavor; no open needed */
+  opts.iothub_hostname = TEST_HUB; /* direct host => MQTTv3 flavor; no open needed */
   opts.port = 8883;
-  opts.client_id = TEST_DEVICE;
+  opts.device_id = TEST_DEVICE;
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
@@ -459,7 +459,7 @@ static void init_rejects_missing_device_id(void** state)
   (void)state;
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB;
+  opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
   /* client_id deliberately left NULL. */
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
@@ -490,9 +490,9 @@ static void oversized_hub_address_is_rejected_at_the_operation(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = long_host;
+  opts.iothub_hostname = long_host;
   opts.port = 8883;
-  opts.client_id = TEST_DEVICE;
+  opts.device_id = TEST_DEVICE;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -525,9 +525,9 @@ static void oversized_device_id_is_rejected_at_the_operation(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB;
+  opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -557,7 +557,7 @@ static void failed_init_leaves_client_unusable(void** state)
   (void)state;
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB;
+  opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -690,7 +690,7 @@ static void deinitializing_one_client_leaves_the_other_working(void** state)
 /* The hub address and device id are read from the connection per operation, so a
  * client created before a DPS (re)assignment addresses the CURRENT hub -- caching
  * them at init() would keep aiming the REST calls at the previous one. The
- * connection re-points opts.host / opts.client_id at its own provisioned buffers
+ * connection re-points opts.iothub_hostname / opts.device_id at its own provisioned buffers
  * when an assignment lands; do the same here.
  *
  * Asserted once per operation, because each builds its own URL. */
@@ -707,8 +707,8 @@ static void sas_uri_requests_follow_a_hub_reassignment(void** state)
   assert_string_equal(
       g_http.last_url, "https://" TEST_HUB "/devices/" TEST_DEVICE "/files?api-version=2021-04-12");
 
-  fx->conn.opts.host = "otherhub.azure-devices.net";
-  fx->conn.opts.client_id = "dev2";
+  fx->conn.opts.iothub_hostname = "otherhub.azure-devices.net";
+  fx->conn.opts.device_id = "dev2";
 
   memset(&r, 0, sizeof(r));
   assert_int_equal(
@@ -733,8 +733,8 @@ static void notifications_follow_a_hub_reassignment(void** state)
       g_http.last_url,
       "https://" TEST_HUB "/devices/" TEST_DEVICE "/files/notifications?api-version=2021-04-12");
 
-  fx->conn.opts.host = "otherhub.azure-devices.net";
-  fx->conn.opts.client_id = "dev2";
+  fx->conn.opts.iothub_hostname = "otherhub.azure-devices.net";
+  fx->conn.opts.device_id = "dev2";
 
   memset(&r, 0, sizeof(r));
   assert_int_equal(
@@ -763,7 +763,7 @@ static void requests_fail_while_the_hub_address_is_unavailable(void** state)
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
 
-  fx->conn.opts.host = NULL;
+  fx->conn.opts.iothub_hostname = NULL;
 
   rec r;
   memset(&r, 0, sizeof(r));
@@ -781,7 +781,7 @@ static void requests_fail_while_the_hub_address_is_unavailable(void** state)
 }
 
 /* An empty host is as unusable as a missing one, and reaches the check by a
- * different route -- opts.host pointing at a zero-length buffer rather than at
+ * different route -- opts.iothub_hostname pointing at a zero-length buffer rather than at
  * nothing. */
 static void requests_fail_while_the_hub_address_is_empty(void** state)
 {
@@ -789,7 +789,7 @@ static void requests_fail_while_the_hub_address_is_empty(void** state)
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
 
-  fx->conn.opts.host = "";
+  fx->conn.opts.iothub_hostname = "";
 
   rec r;
   memset(&r, 0, sizeof(r));
@@ -806,7 +806,7 @@ static void requests_fail_while_the_device_id_is_unavailable(void** state)
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
 
-  fx->conn.opts.client_id = NULL;
+  fx->conn.opts.device_id = NULL;
 
   rec r;
   memset(&r, 0, sizeof(r));
@@ -828,7 +828,7 @@ static void requests_fail_while_the_device_id_is_empty(void** state)
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
 
-  fx->conn.opts.client_id = "";
+  fx->conn.opts.device_id = "";
 
   rec r;
   memset(&r, 0, sizeof(r));
@@ -849,15 +849,15 @@ static void requests_resume_when_the_endpoint_returns(void** state)
   g_http.resp_status = 200;
   g_http.resp_body = k_sas_json;
 
-  fx->conn.opts.host = NULL;
+  fx->conn.opts.iothub_hostname = NULL;
   rec r;
   memset(&r, 0, sizeof(r));
   assert_int_equal(
       az_iot_mqttv3_file_upload_client_get_sas_uri(&fx->fu, "b", on_sas, &r),
       AZ_IOT_ERR_NOT_CONNECTED);
 
-  fx->conn.opts.host = "otherhub.azure-devices.net";
-  fx->conn.opts.client_id = "dev2";
+  fx->conn.opts.iothub_hostname = "otherhub.azure-devices.net";
+  fx->conn.opts.device_id = "dev2";
 
   memset(&r, 0, sizeof(r));
   assert_int_equal(
@@ -929,9 +929,9 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = TEST_HUB;
+  opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
-  opts.client_id = TEST_DEVICE;
+  opts.device_id = TEST_DEVICE;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -1627,9 +1627,9 @@ static void max_length_endpoint_still_builds_a_url(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = long_host;
+  opts.iothub_hostname = long_host;
   opts.port = 8883;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));

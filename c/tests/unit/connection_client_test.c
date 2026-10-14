@@ -69,9 +69,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
   assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
@@ -109,9 +109,9 @@ static int setup_with_reconnect(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.reconnection_policy.initial_delay_ms = 20;
   opts.reconnection_policy.max_delay_ms = 20;
   opts.reconnection_policy.max_attempts = 2;
@@ -223,9 +223,9 @@ static az_iot_mqtt_client* null_factory_create(void* ctx)
 static void init_bare_client(az_iot_connection_client* client)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
 }
 
@@ -632,9 +632,9 @@ static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
   opts.twin_push.push_reported = push_reported;
@@ -1416,7 +1416,7 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   (void)state;
 
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
@@ -1574,8 +1574,8 @@ static void drive_dps_csr_assignment(
     const char* assigned)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
@@ -1654,7 +1654,7 @@ static void dps_a_successful_get_csr_without_a_csr_is_released(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &prov.base;
   opts.csr_payload_buffer = az_span_create(csr_buf, (int32_t)sizeof(csr_buf));
   az_iot_connection_client client;
@@ -1811,7 +1811,7 @@ static void open_rejects_operational_cert_without_release_or_store(void** state)
     prov.base.vtable = vtables[i];
     uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     az_iot_connection_client_options opts = { 0 };
-    opts.client_id = "ut-device";
+    opts.device_id = "ut-device";
     opts.dps.id_scope = "0ne00000000";
     opts.dps.registration_id = "ut-device";
     opts.dps.request_operational_certificate = true;
@@ -1840,8 +1840,8 @@ static void dps_csr_flow_sends_csr_and_stores_issued_chain(void** state)
   az_iot_connection_client client;
   uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
@@ -1958,9 +1958,9 @@ static int setup_csr(void** state)
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &g_csr_prov.base;
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
@@ -2055,7 +2055,7 @@ static void open_rejects_operational_cert_without_payload_buffer(void** state)
 
   az_iot_connection_client client;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
@@ -2468,9 +2468,9 @@ static void hub_mqtt_v5_without_v5_factory_is_not_supported(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
 
   az_iot_connection_client c;
@@ -2590,9 +2590,9 @@ static int setup_mqtt_v5_with_reconnect(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.reconnection_policy.initial_delay_ms = 20;
   opts.reconnection_policy.max_delay_ms = 20;
@@ -3200,9 +3200,9 @@ static az_iot_mqtt_factory* tls_client_init(
   }
   else
   {
-    opts.host = "broker.example";
+    opts.iothub_hostname = "broker.example";
   }
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = prov ? &prov->base : NULL;
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -3272,7 +3272,7 @@ static void a_dps_session_rejects_operational_cert_without_release_or_store(void
     prov.base.vtable = vtables[i];
     uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
     az_iot_connection_client_options opts = { 0 };
-    opts.client_id = "ut-device";
+    opts.device_id = "ut-device";
     opts.dps.id_scope = "0ne00000000";
     opts.dps.registration_id = "ut-device";
     opts.dps.request_operational_certificate = true;

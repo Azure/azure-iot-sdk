@@ -47,7 +47,7 @@ static const char k_assigned_body[]
 static az_iot_connection_client_options base_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.reconnection_policy.initial_delay_ms = RECONNECT_MS;
   opts.reconnection_policy.max_delay_ms = RECONNECT_MS;
   opts.reconnection_policy.jitter_pct = 0;
@@ -82,14 +82,14 @@ static int setup_opts(
 static int setup_v3(void** state)
 {
   az_iot_connection_client_options opts = base_options();
-  opts.host = HUB_HOST;
+  opts.iothub_hostname = HUB_HOST;
   return setup_opts(state, &opts, AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static int setup_v5(void** state)
 {
   az_iot_connection_client_options opts = base_options();
-  opts.host = HUB_HOST;
+  opts.iothub_hostname = HUB_HOST;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   return setup_opts(state, &opts, AZ_IOT_MQTT_VERSION_5);
 }

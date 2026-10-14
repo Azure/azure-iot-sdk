@@ -165,9 +165,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -253,8 +253,8 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   /* A direct connection declares its generation up front, so the pin can be
    * answered at init rather than deferred to connect. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
@@ -295,8 +295,8 @@ static void the_topic_is_built_from_the_client_id(void** state)
   (void)state;
   /* No DPS registration id configured, so the topic is built from client_id. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "fallback-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "fallback-device";
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -323,7 +323,7 @@ static void without_any_device_id_the_connect_attempt_fails(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   /* Neither client_id nor a DPS registration id: there is no topic to build.
    * Init only records the requirement, so this now surfaces when the
    * connection tries to bind rather than at init. */
@@ -353,8 +353,8 @@ static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void*
   huge[sizeof(huge) - 1] = '\0';
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = huge;
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = huge;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -889,8 +889,8 @@ static void a_client_for_a_different_identity_registers_alongside(void** state)
    * dispatch_allows_distinct_identities_to_coexist, where the table is
    * directly in view. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "other-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "other-device";
   az_iot_connection_client other_conn;
   assert_int_equal(az_iot_test_connection_client_init(&other_conn, &opts), AZ_IOT_OK);
 
