@@ -66,12 +66,18 @@ nunit-*.xml
 
 /dotnet/.vs
 
-# Ignore any device credentials generated when running the samples
+# Ignore any device credentials generated when running the samples. SetupSampleDevice's SampleConstants saves these
+# at the samples root.
 /dotnet/samples/deviceId.txt
+/dotnet/samples/x509DeviceId.txt
 /dotnet/samples/iothubhostname.txt
 /dotnet/samples/idscope.txt
+/dotnet/samples/connectionprofile.txt
 /dotnet/samples/certificate.cer
 /dotnet/samples/certificate.pfx
+/dotnet/samples/symmetricKeyDeviceId.txt
+/dotnet/samples/symmetricKey.txt
+/dotnet/samples/symmetricKeyDevicePrivateKey.pem
 dotnet/iothub only samples/certificate.pfx
 dotnet/iothub only samples/certificate.cer
 dotnet/iothub only samples/deviceId.txt
