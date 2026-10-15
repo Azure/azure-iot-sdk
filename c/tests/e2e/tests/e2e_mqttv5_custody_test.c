@@ -290,9 +290,12 @@ static int group_setup(void** state)
     return -1;
   }
   e2e_install_log_sink();
+  /* Only the URI path is printed: its query may carry the token PIN (pin-value). */
+  const char* query = strchr(g_fx.config.key_uri, '?');
   printf(
-      "[e2e] registration '%s': key stays in the token (%s via '%s')\n",
+      "[e2e] registration '%s': key stays in the token (%.*s via '%s')\n",
       g_fx.config.reg_id,
+      (int)(query != NULL ? (size_t)(query - g_fx.config.key_uri) : strlen(g_fx.config.key_uri)),
       g_fx.config.key_uri,
       g_fx.config.engine_id);
 
