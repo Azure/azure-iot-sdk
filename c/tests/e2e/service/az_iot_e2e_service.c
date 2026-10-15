@@ -1008,7 +1008,12 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       sizeof(resp),
       NULL,
       NULL);
-  return ok && ((status >= 200 && status < 300) || (allow_404 && status == 404));
+  bool done = ok && ((status >= 200 && status < 300) || (allow_404 && status == 404));
+  if (!done)
+  {
+    (void)fprintf(stderr, "[e2e] DPS service %s %s: HTTP %d %s\n", method, path, status, resp);
+  }
+  return done;
 }
 
 bool az_iot_e2e_dps_tpm_enrollment_create(
@@ -1043,16 +1048,28 @@ bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
 
 bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)
 {
+  /* IOTHUB_REGISTRY_CONNECTION_STRING (a policy with RegistryWrite) when set,
+   * else the hub connection string the service was created with. */
+  e2e_conn_info info = svc->hub_info;
+  char cs[512];
+  if (env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs))
+      && !e2e_conn_info_parse(cs, &info))
+  {
+    (void)fprintf(stderr, "[e2e] IOTHUB_REGISTRY_CONNECTION_STRING is malformed\n");
+    return false;
+  }
   char sas[512];
   char path[256];
   int n = snprintf(path, sizeof(path), "/devices/%s?api-version=%s", device_id, E2E_API_VERSION);
-  if (!build_hub_sas(svc, sas, sizeof(sas)) || n <= 0 || (size_t)n >= sizeof(path))
+  if (n <= 0 || (size_t)n >= sizeof(path)
+      || !e2e_sas_token_create(
+          info.host, info.key_name, info.key, true, sas_expiry(), sas, sizeof(sas)))
   {
     return false;
   }
   int status = 0;
   bool ok = https_request(
-      svc->hub_info.host,
+      info.host,
       "DELETE",
       path,
       sas,
@@ -1067,5 +1084,10 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       0,
       NULL,
       NULL);
-  return ok && ((status >= 200 && status < 300) || status == 404);
+  bool done = ok && ((status >= 200 && status < 300) || status == 404);
+  if (!done)
+  {
+    (void)fprintf(stderr, "[e2e] hub DELETE /devices/%s: HTTP %d\n", device_id, status);
+  }
+  return done;
 }
