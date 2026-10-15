@@ -270,3 +270,104 @@ jobs:
 
           ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_connection `
             --verbose --no-tests=error --timeout 900
+
+  transport:
+    name: transport / linux
+    needs: adr-namespace
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install ninja and tinyproxy
+        run: sudo apt-get update && sudo apt-get install -y ninja-build tinyproxy
+
+      # An HTTP CONNECT proxy on loopback, run as the runner user so its log is readable; the
+      # proxy tests assert the CONNECT lines for the DPS and hub hosts appear in that log.
+      - name: Start the proxy
+        run: |
+          sudo systemctl stop tinyproxy || true
+          conf="$RUNNER_TEMP/tinyproxy.conf"
+          log="$RUNNER_TEMP/tinyproxy.log"
+          cat > "$conf" <<EOF
+          Port 3128
+          Listen 127.0.0.1
+          Timeout 600
+          LogFile "$log"
+          LogLevel Info
+          PidFile "$RUNNER_TEMP/tinyproxy.pid"
+          MaxClients 50
+          Allow 127.0.0.1
+          ConnectPort 443
+          ConnectPort 8883
+          EOF
+          tinyproxy -c "$conf"
+          for _ in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/3128)
+          {
+            echo "AZ_IOT_PROXY_HOST=127.0.0.1"
+            echo "AZ_IOT_PROXY_PORT=3128"
+            echo "AZ_IOT_E2E_PROXY_LOG=$log"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_transport
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tr-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_transport `
+            --verbose --no-tests=error --timeout 900
+
+      - name: Proxy log
+        if: always()
+        run: cat "$RUNNER_TEMP/tinyproxy.log" || true
