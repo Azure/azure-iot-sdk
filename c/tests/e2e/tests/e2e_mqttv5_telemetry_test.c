@@ -163,12 +163,13 @@ static int group_setup(void** state)
     return -1;
   }
   const char* assigned = az_iot_connection_client_get_device_id(&g_fx.dev.conn);
-  if (assigned == NULL || strlen(assigned) >= sizeof(g_fx.device_id))
+  const size_t assigned_len = assigned != NULL ? strlen(assigned) : 0;
+  if (assigned == NULL || assigned_len >= sizeof(g_fx.device_id))
   {
     fprintf(stderr, "[e2e] no usable hub device id\n");
     return -1;
   }
-  strcpy(g_fx.device_id, assigned);
+  memcpy(g_fx.device_id, assigned, assigned_len + 1);
 
   az_iot_hub_profile profile;
   if (az_iot_connection_client_get_hub_profile(&g_fx.dev.conn, &profile) != AZ_IOT_OK
