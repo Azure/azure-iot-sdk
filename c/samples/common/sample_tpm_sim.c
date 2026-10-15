@@ -12,6 +12,7 @@
  */
 
 #include "sample_tpm_sim.h"
+#include "sample_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -314,9 +315,15 @@ static EVP_PKEY* key_load_or_create(const char* dir, const char* file)
   EVP_PKEY* pkey = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)SIM_RSA_BITS);
   if (pkey != NULL && dir != NULL)
   {
-    BIO* out = BIO_new_file(path, "wb");
+    /* Owner-only: the files hold the device's private keys. */
+    FILE* f = sample_fopen_private(path);
+    BIO* out = f != NULL ? BIO_new_fp(f, BIO_CLOSE) : NULL;
+    if (out == NULL && f != NULL)
+    {
+      (void)fclose(f);
+    }
     bool ok = out != NULL && PEM_write_bio_PrivateKey(out, pkey, NULL, NULL, 0, NULL, NULL) == 1;
-    BIO_free(out);
+    ok = BIO_free(out) == 1 && ok;
     if (!ok)
     {
       EVP_PKEY_free(pkey);

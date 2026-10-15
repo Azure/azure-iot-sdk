@@ -570,7 +570,8 @@ if(OPENSSL_FOUND)
     # The samples' simulated TPM, against vectors from swtpm and tpm2-tools.
     if(TARGET az_iot_crypto_openssl)
         az_iot_add_cmocka_test(az_iot_tests_sample_tpm_sim
-            unit/sample_tpm_sim_test.c ${_sample_common}/sample_tpm_sim.c)
+            unit/sample_tpm_sim_test.c ${_sample_common}/sample_tpm_sim.c
+            ${_sample_common}/sample_utils.c)
         target_include_directories(az_iot_tests_sample_tpm_sim PRIVATE ${_sample_common})
         target_link_libraries(az_iot_tests_sample_tpm_sim PRIVATE
             az_iot_crypto_openssl OpenSSL::Crypto)

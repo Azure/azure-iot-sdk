@@ -10,6 +10,10 @@
  * inner AES wrapper) and computed the expected HMAC. The EK and SRK below are
  * test keys generated for these vectors. */
 
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -19,7 +23,13 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include "azure/iot/az_iot_dps_tpm_client.h"
 #include "azure/iot/az_iot_sas_token.h"
@@ -314,6 +324,54 @@ static void the_client_signs_with_the_imported_key(void** state)
   sample_tpm_sim_destroy(sim);
 }
 
+#ifndef _WIN32
+/** @brief Mode bits of @p dir/@p file; fails the test when it is missing. */
+static mode_t file_mode(const char* dir, const char* file)
+{
+  char path[512];
+  int n = snprintf(path, sizeof(path), "%s/%s", dir, file);
+  assert_true(n > 0 && (size_t)n < sizeof(path));
+  struct stat st;
+  assert_int_equal(stat(path, &st), 0);
+  return st.st_mode & 0777;
+}
+
+static void state_files_are_owner_only_and_reload(void** state)
+{
+  (void)state;
+  char dir[] = "/tmp/az_iot_tpm_sim_XXXXXX";
+  assert_non_null(mkdtemp(dir));
+  mode_t old_mask = umask(022);
+  sample_tpm_sim* sim = sample_tpm_sim_create(dir);
+  (void)umask(old_mask);
+  assert_non_null(sim);
+  assert_int_equal(file_mode(dir, "ek.pem"), 0600);
+  assert_int_equal(file_mode(dir, "srk.pem"), 0600);
+
+  const uint8_t* ek;
+  size_t ek_len;
+  sample_tpm_sim_ek_public(sim, &ek, &ek_len);
+  uint8_t first[512];
+  assert_true(ek_len <= sizeof(first));
+  memcpy(first, ek, ek_len);
+  sample_tpm_sim_destroy(sim);
+
+  /* A second start loads the same keys. */
+  sim = sample_tpm_sim_create(dir);
+  assert_non_null(sim);
+  sample_tpm_sim_ek_public(sim, &ek, &ek_len);
+  assert_memory_equal(first, ek, ek_len);
+  sample_tpm_sim_destroy(sim);
+
+  char path[512];
+  (void)snprintf(path, sizeof(path), "%s/ek.pem", dir);
+  (void)unlink(path);
+  (void)snprintf(path, sizeof(path), "%s/srk.pem", dir);
+  (void)unlink(path);
+  (void)rmdir(dir);
+}
+#endif
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -322,6 +380,9 @@ int main(void)
     cmocka_unit_test(another_tpm_cannot_import_the_key),
     cmocka_unit_test(public_areas_are_rsa2048_ek_and_srk),
     cmocka_unit_test(the_client_signs_with_the_imported_key),
+#ifndef _WIN32
+    cmocka_unit_test(state_files_are_owner_only_and_reload),
+#endif
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
