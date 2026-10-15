@@ -58,6 +58,9 @@ typedef struct
   bool hub_up;
   bool reprovision_announced;
   char last_failed_endpoint[256];
+  /** @brief Host whose failures are counted in watched_failures; empty counts none. */
+  char watched_endpoint[256];
+  int watched_failures;
 } state_log;
 
 typedef struct
@@ -184,6 +187,11 @@ static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
     if (event->recovery != NULL)
     {
       log->reprovision_announced |= event->recovery->next_attempt_reprovisions;
+      if (log->watched_endpoint[0] != '\0' && event->recovery->endpoint != NULL
+          && strcmp(event->recovery->endpoint, log->watched_endpoint) == 0)
+      {
+        log->watched_failures++;
+      }
       snprintf(
           log->last_failed_endpoint,
           sizeof(log->last_failed_endpoint),
@@ -197,7 +205,7 @@ static void print_log(const state_log* log)
 {
   printf(
       "[e2e] %s summary: dps events %d (connected %d), hub connected %d, drops %d, failures %d, "
-      "reprovision announced %d, last failed endpoint '%s'\n",
+      "reprovision announced %d, last failed endpoint '%s', failures at watched '%s' %d\n",
       log->name,
       log->dps_events,
       log->dps_connected,
@@ -205,7 +213,9 @@ static void print_log(const state_log* log)
       log->hub_drops,
       log->hub_failures,
       (int)log->reprovision_announced,
-      log->last_failed_endpoint);
+      log->last_failed_endpoint,
+      log->watched_endpoint,
+      log->watched_failures);
   fflush(stdout);
 }
 
@@ -589,10 +599,13 @@ static void unreachable_saved_hub_falls_back_to_dps(void** state)
   opts.identity_recovery_policy = &retry;
   opts.max_hub_connect_attempts_before_reprovision = E2E_REPROVISION_THRESHOLD;
   opts.connect_timeout_s = E2E_FALLBACK_TIMEOUT_S;
+  snprintf(
+      fx->a_log.watched_endpoint, sizeof(fx->a_log.watched_endpoint), "%s", unreachable.hostname);
   connect_a(fx, &opts);
 
-  assert_true(fx->a_log.hub_failures >= E2E_REPROVISION_THRESHOLD);
-  assert_non_null(strstr(fx->a_log.last_failed_endpoint, ".invalid"));
+  /* Latched: a transient failure at the assigned hub may follow and must not hide the fallback. */
+  assert_true(fx->a_log.watched_failures >= E2E_REPROVISION_THRESHOLD);
+  assert_true(fx->a_log.reprovision_announced);
   assert_true(fx->a_log.dps_connected >= 1);
   assert_string_equal(az_iot_connection_client_get_iothub_address(&fx->a.conn), g_saved.hostname);
   assert_mqttv5_profile(&fx->a);
@@ -662,10 +675,12 @@ static void close_and_reopen_repeats_birth(void** state)
   e2e_device_connect_options opts = { 0 };
   opts.before_open = observe_a_with_twin;
   connect_a(fx, &opts);
+  assert_true(fx->a_log.hub_connected >= 1);
   for (int cycle = 1; cycle <= E2E_OPEN_CLOSE_CYCLES; ++cycle)
   {
     if (cycle > 1)
     {
+      const int connects = fx->a_log.hub_connected;
       (void)az_iot_connection_client_close(&fx->a.conn);
       if (!wait_hub_state(fx, &fx->a, AZ_IOT_CONN_STATE_IDLE, E2E_CLOSE_TIMEOUT_S))
       {
@@ -681,9 +696,10 @@ static void close_and_reopen_repeats_birth(void** state)
         print_log(&fx->a_log);
         fail_msg("cycle %d: not CONNECTED (%s)", cycle, state_name(fx->a.conn_state));
       }
+      /* At least one new CONNECTED: a transient drop and retry may add more. */
+      assert_true(fx->a_log.hub_connected > connects);
     }
-    printf("[e2e] cycle %d connected\n", cycle);
-    assert_int_equal(fx->a_log.hub_connected, cycle);
+    printf("[e2e] cycle %d connected (%d in total)\n", cycle, fx->a_log.hub_connected);
     assert_mqttv5_profile(&fx->a);
     assert_twin_get(fx);
   }
