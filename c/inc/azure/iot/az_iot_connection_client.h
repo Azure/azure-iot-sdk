@@ -638,7 +638,7 @@ extern "C"
     /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
      * selects the service's path per session: AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH
      * ("/$iothub/websocket") for DPS and an mqttv3 hub,
-     * AZ_IOT_MQTT_MQTTV5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
      * here is used for every session; set it only for a gateway that terminates
      * WebSockets elsewhere. */
     const char* websocket_path;

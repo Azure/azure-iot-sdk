@@ -132,5 +132,5 @@
 ### Bugs Fixed
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
-  (`AZ_IOT_MQTT_MQTTV5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
+  (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.

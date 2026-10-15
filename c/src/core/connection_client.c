@@ -865,7 +865,7 @@ static void resolve_connect_transport(
    * the adapter default. */
   if (copts->websocket_path == NULL && role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
   {
-    copts->websocket_path = AZ_IOT_MQTT_MQTTV5_WEBSOCKET_PATH;
+    copts->websocket_path = AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH;
   }
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);

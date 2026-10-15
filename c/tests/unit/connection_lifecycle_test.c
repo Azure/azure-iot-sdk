@@ -363,7 +363,7 @@ static void an_mqttv5_hub_gets_the_mqttv5_websocket_path(void** state)
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   az_iot_mock_call c;
   connect_call_for_version(&opts, AZ_IOT_MQTT_VERSION_5, &c);
-  assert_string_equal(c.connect.websocket_path, AZ_IOT_MQTT_MQTTV5_WEBSOCKET_PATH);
+  assert_string_equal(c.connect.websocket_path, AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH);
 }
 
 /* An explicit path is used on an mqttv5 hub too. */
