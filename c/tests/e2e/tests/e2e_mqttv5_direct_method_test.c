@@ -11,9 +11,9 @@
  * only records each invocation; the test decides when and how to answer it.
  *
  * Every service outcome is printed with its HTTP status and body. Probe rejections are asserted
- * by the codes the mqttv5 hub returns (404/404103 method not found, 403/403801 device busy);
- * insufficient time and service timeouts only by category. An HTTP 400 never counts as a refusal:
- * it means the request itself was invalid.
+ * by the codes the mqttv5 hub returns: 404/404103 method not found, 403/403801 device busy,
+ * 400/400801 insufficient time, 400/400800 service timeout. 400004 (an invalid request) never
+ * counts as a refusal.
  */
 #include <setjmp.h>
 #include <stdarg.h>
@@ -55,13 +55,15 @@
 /* Refusal bound for E2E_INSUFFICIENT_TIMEOUT_S: elapsed is whole seconds, so 7 means < 8 s, which
  * leaves 2 s margin before a plain service timeout at 10 s could pass as a probe rejection. */
 #define E2E_INSUFFICIENT_REFUSAL_MAX_S 7
-/* Service codes for a refused invocation: 0 accepts any non-2xx other than 400. */
-#define E2E_HTTP_ANY 0
-#define E2E_CODE_ANY NULL
+/* Service codes for a refused or timed-out invocation. */
 #define E2E_HTTP_NOT_FOUND 404
 #define E2E_CODE_NOT_FOUND "404103"
 #define E2E_HTTP_BUSY 403
 #define E2E_CODE_BUSY "403801"
+#define E2E_HTTP_INSUFFICIENT_TIME 400
+#define E2E_CODE_INSUFFICIENT_TIME "400801"
+#define E2E_HTTP_TIMEOUT 400
+#define E2E_CODE_TIMEOUT "400800"
 #define E2E_SETTLE_S 5
 #define E2E_PUMP_MS 20
 #define E2E_MARKER_MAX 64
@@ -327,11 +329,8 @@ static bool http_ok(const service_call* c)
   return c->rc == 1 && c->http_status >= 200 && c->http_status < 300;
 }
 
-/** @brief The service rejected the request itself (HTTP 400, e.g. 400004 bad timeouts). */
-static bool request_invalid(const service_call* c)
-{
-  return c->http_status == 400 || strstr(c->body, "400004") != NULL;
-}
+/** @brief The service rejected the request itself (400004, e.g. bad timeouts). */
+static bool request_invalid(const service_call* c) { return strstr(c->body, "400004") != NULL; }
 
 /** @brief The device answered: HTTP 2xx carrying @p device_status. */
 static void assert_answered(const service_call* c, int device_status)
@@ -348,27 +347,26 @@ static void assert_answered(const service_call* c, int device_status)
   }
 }
 
-/** @brief The service refused the call within @p max_elapsed_s: HTTP @p http (any non-2xx
- *         but 400 for E2E_HTTP_ANY) with @p code in the body (unchecked for E2E_CODE_ANY). */
+/** @brief The service refused the call within @p max_elapsed_s: HTTP @p http with @p code in the
+ *         body. */
 static void assert_refused(const service_call* c, int http, const char* code, long max_elapsed_s)
 {
   if (!http_final(c) || http_ok(c) || request_invalid(c))
   {
     fail_msg(
-        "'%s': expected a non-2xx, non-400 HTTP refusal; got rc=%d http=%d body=%s",
+        "'%s': expected a non-2xx refusal of a valid request; got rc=%d http=%d body=%s",
         c->method,
         c->rc,
         c->http_status,
         c->body);
   }
-  if ((http != E2E_HTTP_ANY && c->http_status != http)
-      || (code != E2E_CODE_ANY && strstr(c->body, code) == NULL))
+  if (c->http_status != http || strstr(c->body, code) == NULL)
   {
     fail_msg(
         "'%s': expected HTTP %d with errorCode %s; got http=%d body=%s",
         c->method,
         http,
-        code ? code : "(any)",
+        code,
         c->http_status,
         c->body);
   }
@@ -577,7 +575,7 @@ static void invoke_expect_refused(
 }
 
 /** @brief Invokes @p method with a short timeout and leaves it unanswered until the service
- *         reports a non-2xx, non-400 timeout. */
+ *         reports its timeout (400/400800). */
 static void invoke_unanswered(fixture* fx, const char* method, service_call* c)
 {
   char marker[E2E_MARKER_MAX];
@@ -588,12 +586,15 @@ static void invoke_unanswered(fixture* fx, const char* method, service_call* c)
   call_start(fx, c, method, payload, E2E_SHORT_TIMEOUT_S);
   expect_invocations(fx, c, 1, 1);
   wait_done(fx, c, 1, E2E_SHORT_TIMEOUT_S + E2E_TIMEOUT_SLACK_S);
-  if (!http_final(c) || http_ok(c) || request_invalid(c) || c->elapsed_s < E2E_SHORT_TIMEOUT_S - 1)
+  if (!http_final(c) || c->http_status != E2E_HTTP_TIMEOUT
+      || strstr(c->body, E2E_CODE_TIMEOUT) == NULL || c->elapsed_s < E2E_SHORT_TIMEOUT_S - 1)
   {
     fail_msg(
-        "'%s': expected a non-2xx, non-400 timeout after ~%ds; got rc=%d http=%d after %lds "
+        "'%s': expected HTTP %d with errorCode %s after ~%ds; got rc=%d http=%d after %lds "
         "body=%s",
         method,
+        E2E_HTTP_TIMEOUT,
+        E2E_CODE_TIMEOUT,
         E2E_SHORT_TIMEOUT_S,
         c->rc,
         c->http_status,
@@ -728,13 +729,12 @@ static void insufficient_time_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
   declare(fx, "slow", E2E_SLOW_METHOD_MIN_S);
-  /* The hub's code for this rejection is not yet known: any non-2xx, non-400, read from the log. */
   invoke_expect_refused(
       fx,
       "slow",
       E2E_INSUFFICIENT_TIMEOUT_S,
-      E2E_HTTP_ANY,
-      E2E_CODE_ANY,
+      E2E_HTTP_INSUFFICIENT_TIME,
+      E2E_CODE_INSUFFICIENT_TIME,
       E2E_INSUFFICIENT_REFUSAL_MAX_S);
 }
 
