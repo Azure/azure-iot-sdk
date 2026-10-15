@@ -1563,6 +1563,9 @@ static const char k_dps_assigned_with_chain[]
 
 /* The factory drive_dps_csr_assignment() registered last. */
 static az_iot_mqtt_factory* g_dps_drive_factory;
+/* Optional state observer drive_dps_csr_assignment() registers before open(). */
+static az_iot_connection_state_callback g_dps_drive_observer;
+static void* g_dps_drive_observer_ctx;
 
 /* Open a DPS client with CSR enrollment over @p prov, answer its registration
  * with @p assigned, and drive the flow to completion. */
@@ -1590,6 +1593,13 @@ static void drive_dps_csr_assignment(
   assert_int_equal(
       az_iot_connection_client_set_operational_cert_callback(client, on_dps_op_cert, prov),
       AZ_IOT_OK);
+  if (g_dps_drive_observer != NULL)
+  {
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(
+            client, g_dps_drive_observer, g_dps_drive_observer_ctx),
+        AZ_IOT_OK);
+  }
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
@@ -1615,6 +1625,259 @@ static void drive_dps_csr_assignment(
   {
     (void)az_iot_connection_client_do_work(client, 0);
   }
+}
+
+/* An assignment the client will reject is not adopted, so its issued chain is
+ * not stored: the provider keeps the certificate that goes with the assignment
+ * the application already holds. */
+static void a_rejected_assignment_does_not_store_its_issued_chain(void** state)
+{
+  (void)state;
+  static const char k_unknown_profile_with_chain[]
+      = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+        "\"connectionProfile\":\"mqttV9-quantum\","
+        "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_unknown_profile_with_chain);
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(g_dps_op_cert_count, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
+/* Changes a profile pin while an assignment is pending. */
+typedef struct pin_change_ctx
+{
+  az_iot_connection_client* client;
+  bool pin_on_connecting; /* require mqttv5 when DPS first connects */
+  bool pin_on_teardown; /* require mqttv5 at DPS DISCONNECTING */
+  bool release_on_teardown; /* release the pin at DPS DISCONNECTING */
+  az_iot_result pin_result;
+  bool done_connecting;
+  bool done_teardown;
+} pin_change_ctx;
+
+static void change_pin(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return;
+  }
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTING && ctx->pin_on_connecting
+      && !ctx->done_connecting)
+  {
+    ctx->done_connecting = true;
+    ctx->pin_result
+        = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  }
+  if (event->state == AZ_IOT_CONN_STATE_DISCONNECTING && !ctx->done_teardown)
+  {
+    ctx->done_teardown = true;
+    if (ctx->pin_on_teardown)
+    {
+      ctx->pin_result = az_iot_connection_client__require_profile(
+          ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+    }
+    if (ctx->release_on_teardown)
+    {
+      az_iot_connection_client__release_profile(ctx->client);
+    }
+  }
+}
+
+/* Once the chain is stored, the other generation cannot be required before the
+ * assignment is adopted, so the stored chain and the adopted assignment match. */
+static void a_stored_chain_blocks_the_other_generation_until_adoption(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  ctx.pin_on_teardown = true;
+  g_dps_drive_observer = change_pin;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_teardown);
+  assert_int_equal(ctx.pin_result, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_int_equal(prov.store_calls, 1);
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&client), "myhub.azure-devices.net");
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
+/* A chain withheld for an assignment that was to be rejected is not adopted
+ * even if the pin that caused the rejection is released before adoption. */
+static void a_withheld_chain_is_not_adopted_after_the_pin_is_released(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  ctx.pin_on_connecting = true;
+  ctx.release_on_teardown = true;
+  g_dps_drive_observer = change_pin;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_connecting);
+  assert_int_equal(ctx.pin_result, AZ_IOT_OK);
+  assert_true(ctx.done_teardown);
+  assert_int_equal(prov.store_calls, 0);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_FAULTED);
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
+/* Requires mqttv5 from the operational-certificate callback. */
+static void require_v5_from_op_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
+{
+  (void)issued;
+  (void)store_result;
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  ctx->done_teardown = true;
+  ctx->pin_result
+      = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+}
+
+/* Installs require_v5_from_op_cert() once DPS starts connecting. */
+static void install_op_cert_pin(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTING
+      && !ctx->done_connecting)
+  {
+    ctx->done_connecting = true;
+    (void)az_iot_connection_client_set_operational_cert_callback(
+        ctx->client, require_v5_from_op_cert, ctx);
+  }
+}
+
+/* The operational-certificate callback runs after the chain is stored, so it
+ * cannot require the other generation either. */
+static void the_op_cert_callback_cannot_require_the_other_generation(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  g_dps_drive_observer = install_op_cert_pin;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_teardown);
+  assert_int_equal(ctx.pin_result, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  assert_int_equal(prov.store_calls, 1);
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&client), "myhub.azure-devices.net");
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
+/* Caches a hub as a previous assignment would, then close() + open() at the
+ * provisioning session's IDLE announcement. */
+static void reopen_at_dps_idle(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return;
+  }
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTING && !ctx->done_connecting)
+  {
+    ctx->done_connecting = true;
+    ctx->client->opts.iothub_hostname = "oldhub.azure-devices.net";
+  }
+  if (event->state == AZ_IOT_CONN_STATE_IDLE && !ctx->done_teardown)
+  {
+    ctx->done_teardown = true;
+    (void)az_iot_connection_client_close(ctx->client);
+    ctx->pin_result = az_iot_connection_client_open(ctx->client);
+  }
+}
+
+/* A close() + open() after the chain is stored and before its assignment is
+ * adopted registers again rather than connecting to the cached hub with the
+ * new certificate. */
+static void a_reopen_before_adoption_registers_again(void** state)
+{
+  (void)state;
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  pin_change_ctx ctx = { 0 };
+  ctx.client = &client;
+  g_dps_drive_observer = reopen_at_dps_idle;
+  g_dps_drive_observer_ctx = &ctx;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_true(ctx.done_teardown);
+  assert_int_equal(ctx.pin_result, AZ_IOT_OK);
+  assert_int_equal(prov.store_calls, 1);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(
+      az_iot_mock_mqtt_factory_last_client(g_dps_drive_factory), AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_non_null(strstr(connect->username, "/registrations/"));
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
+}
+
+/* With CSR enrollment, an assignment without a device id withholds its chain
+ * and faults with the validation error, not a profile mismatch. */
+static void a_withheld_chain_without_a_device_id_faults_as_invalid(void** state)
+{
+  (void)state;
+  static const char k_no_device_id_with_chain[]
+      = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"\","
+        "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  fake_csr_provider prov = { 0 };
+  prov.base.vtable = &k_fake_csr_vtable;
+  az_iot_connection_client client;
+  uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
+  az_iot_test_state_log log = { 0 };
+  g_dps_drive_observer = az_iot_test_on_state;
+  g_dps_drive_observer_ctx = &log;
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_no_device_id_with_chain);
+  g_dps_drive_observer = NULL;
+
+  assert_int_equal(prov.store_calls, 0);
+  assert_int_equal(az_iot_test_reason_for(&log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(az_iot_connection_client_get_iothub_address(&client));
+  az_iot_connection_client_deinit(&client);
+  az_iot_mock_mqtt_factory_destroy(g_dps_drive_factory);
 }
 
 /* A failed store must not hide the chain from the app: the callback still fires,
@@ -3686,6 +3949,12 @@ int main(void)
         hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
+    cmocka_unit_test(a_rejected_assignment_does_not_store_its_issued_chain),
+    cmocka_unit_test(a_stored_chain_blocks_the_other_generation_until_adoption),
+    cmocka_unit_test(a_withheld_chain_is_not_adopted_after_the_pin_is_released),
+    cmocka_unit_test(the_op_cert_callback_cannot_require_the_other_generation),
+    cmocka_unit_test(a_reopen_before_adoption_registers_again),
+    cmocka_unit_test(a_withheld_chain_without_a_device_id_faults_as_invalid),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
