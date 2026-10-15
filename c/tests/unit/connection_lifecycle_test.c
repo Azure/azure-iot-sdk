@@ -187,13 +187,14 @@ static void open_connects_to_the_configured_endpoint(void** state)
 /* Open a throwaway client with the given options and hand back the CONNECT the
  * adapter recorded. The record is copied out by value before deinit(), which
  * frees the mock the call history lives in. */
-static void connect_call_for(
+static void connect_call_for_version(
     const az_iot_connection_client_options* opts,
+    az_iot_mqtt_version version,
     az_iot_mock_call* out_connect)
 {
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, opts), AZ_IOT_OK);
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(version);
   assert_non_null(f);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
@@ -206,6 +207,13 @@ static void connect_call_for(
 
   az_iot_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
+}
+
+static void connect_call_for(
+    const az_iot_connection_client_options* opts,
+    az_iot_mock_call* out_connect)
+{
+  connect_call_for_version(opts, AZ_IOT_MQTT_VERSION_3_1_1, out_connect);
 }
 
 static void keep_alive_defaults_when_unset(void** state)
@@ -333,6 +341,42 @@ static void the_websocket_path_reaches_the_adapter(void** state)
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_string_equal(c.connect.websocket_path, "/mqtt");
+}
+
+/* NULL leaves the adapter default (/$iothub/websocket) on an mqttv3 hub. */
+static void an_mqttv3_hub_keeps_the_default_websocket_path(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.websocket_path, "");
+}
+
+/* The mqttv5 hub refuses /$iothub/websocket; NULL selects its own path. */
+static void an_mqttv5_hub_gets_the_mqttv5_websocket_path(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for_version(&opts, AZ_IOT_MQTT_VERSION_5, &c);
+  assert_string_equal(c.connect.websocket_path, AZ_IOT_MQTT_MQTTV5_WEBSOCKET_PATH);
+}
+
+/* An explicit path is used on an mqttv5 hub too. */
+static void an_explicit_websocket_path_wins_on_an_mqttv5_hub(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.websocket_path = "/gateway/ws";
+  az_iot_mock_call c;
+  connect_call_for_version(&opts, AZ_IOT_MQTT_VERSION_5, &c);
+  assert_string_equal(c.connect.websocket_path, "/gateway/ws");
 }
 
 /* Stock options retry. A zeroed struct does not -- that is the caller's
@@ -1450,6 +1494,9 @@ int main(void)
     cmocka_unit_test(an_explicit_port_survives_the_transport_default),
     cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
+    cmocka_unit_test(an_mqttv3_hub_keeps_the_default_websocket_path),
+    cmocka_unit_test(an_mqttv5_hub_gets_the_mqttv5_websocket_path),
+    cmocka_unit_test(an_explicit_websocket_path_wins_on_an_mqttv5_hub),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
     cmocka_unit_test(the_default_options_enable_reconnection),
     cmocka_unit_test(the_default_options_retry_a_refused_connack),

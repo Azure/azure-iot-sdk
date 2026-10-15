@@ -218,7 +218,7 @@ reach DPS first.
 | Option | Effect |
 | --- | --- |
 | `transport` | `TCP` (default) or `WEBSOCKET`. WebSockets carries MQTT inside a WebSocket on 443, for a network that passes only HTTP(S) ports. |
-| `websocket_path` | Defaults to `/$iothub/websocket`, which is what IoT Hub and DPS expect. |
+| `websocket_path` | Defaults to `/$iothub/websocket` (DPS, mqttv3 hub) and `/mqtt` (mqttv5 hub). A value set here is used for every session. |
 | `proxy` | Host, port and optional Basic credentials of an HTTP proxy. The connection is made with HTTP `CONNECT`, for both transports. |
 | `port` | `0` derives the port from the transport: 8883 for TCP, 443 for WebSockets. An explicit value always wins. |
 
