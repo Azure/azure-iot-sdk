@@ -138,7 +138,12 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
 - [`e2e_mqttv5_twin_test.c`](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) — desired properties
   patched through the service REST API. Without `twin_push.push_desired`, no change arrives while
   connected and a GET delivers it as a snapshot; with it, the snapshot is pushed on connect and each
-  change arrives as a patch. One connection per test, on one device. `ci-c-e2e-mqttv5`.
+  change arrives as a patch. Reported patches are acked with the version the REST twin shows; a
+  null member deletes; a stale `if_match`, non-JSON and a 40 KiB patch are refused without losing
+  the session. GET returns both sections, or the selected ones, omitting a payload whose version
+  `if_not_match` names. `twin_push.push_reported` pushes the reported section on connect; a desired
+  change made offline, or before a late handler is set, arrives as a snapshot. One connection per
+  test, on one device. `ci-c-e2e-mqttv5`.
 - [`e2e_mqttv5_connection_test.c`](../../tests/e2e/tests/e2e_mqttv5_connection_test.c) — DPS
   reports the `mqttV5` profile; the saved hub (`iothub_hostname`, `device_id`, `connection_profile`
   with the `dps` fields) connects without DPS and its telemetry reaches the events endpoint; an

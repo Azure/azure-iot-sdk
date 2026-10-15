@@ -45,8 +45,10 @@
 /* Reported changes reach the REST twin eventually. */
 #define E2E_PROPAGATION_TIMEOUT_S 60
 #define E2E_CONNECT_TIMEOUT_S 60
-/* The mqttv3 reported limit is 32 KiB; this is above it. */
+/* The mqttv3 reported limit is 32 KiB; this is above it. Built from 1 KiB values: a single
+ * value over the per-value limit is refused as PAYLOAD_INVALID instead. */
 #define E2E_BIG_PATCH_LEN (40u * 1024u)
+#define E2E_BIG_VALUE_LEN 1000u
 #define E2E_ENCODE_MAX (48u * 1024u + AZ_IOT_MQTTV5_TWIN_ENCODE_OVERHEAD)
 /* Copies of GET sections kept for assertions and diagnostics. */
 #define E2E_SECTION_MAX 8192
@@ -1029,12 +1031,23 @@ static void oversized_reported_patch_is_refused(void** state)
   char marker[64];
   const char* name = "e2e_big";
   make_marker(marker, sizeof(marker), "big");
-  const int head = snprintf(g_big, sizeof(g_big), "{\"%s\":\"%s", name, marker);
-  assert_true(head > 0);
-  memset(g_big + head, 'x', E2E_BIG_PATCH_LEN - (size_t)head - 2u);
-  memcpy(g_big + E2E_BIG_PATCH_LEN - 2u, "\"}", 3);
+  /* {"e2e_big":{"m":"<marker>","v00":"xx..",...}}, each value E2E_BIG_VALUE_LEN bytes. */
+  int len = snprintf(g_big, sizeof(g_big), "{\"%s\":{\"m\":\"%s\"", name, marker);
+  assert_true(len > 0);
+  for (unsigned i = 0; (size_t)len + E2E_BIG_VALUE_LEN + 16u < E2E_BIG_PATCH_LEN; ++i)
+  {
+    const int n = snprintf(g_big + len, sizeof(g_big) - (size_t)len, ",\"v%03u\":\"", i);
+    assert_true(n > 0);
+    len += n;
+    memset(g_big + len, 'x', E2E_BIG_VALUE_LEN);
+    len += (int)E2E_BIG_VALUE_LEN;
+    g_big[len++] = '"';
+  }
+  memcpy(g_big + len, "}}", 3);
+  len += 2;
+  assert_true((size_t)len > 32u * 1024u && (size_t)len <= E2E_BIG_PATCH_LEN);
 
-  const patch_record* p = device_patch(fx, NULL, g_big, E2E_BIG_PATCH_LEN);
+  const patch_record* p = device_patch(fx, NULL, g_big, (size_t)len);
   const bool acked = p->submit == AZ_IOT_OK && p->done && p->status == AZ_IOT_OK;
   const char* outcome = p->submit != AZ_IOT_OK ? "submission failed"
       : !p->done                               ? "no ack before the wait ended"
