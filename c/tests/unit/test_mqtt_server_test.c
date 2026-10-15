@@ -239,6 +239,12 @@ static void publish_v5_refuses_a_packet_that_does_not_fit(void** state)
   az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 4, NULL);
   assert_int_equal(p.len, 0);
 
+  /* A length whose sum with the header would wrap is refused, not copied. */
+  static const uint8_t body[1] = { 0 };
+  az_iot_test_mqtt_packet huge
+      = az_iot_test_mqtt_publish_v5("tp", body, SIZE_MAX - 8u, NULL, 0, NULL);
+  assert_int_equal(huge.len, 0);
+
   /* And a missing topic is not a packet at all. */
   az_iot_test_mqtt_packet none = az_iot_test_mqtt_publish_v5(NULL, NULL, 0, NULL, 0, NULL);
   assert_int_equal(none.len, 0);

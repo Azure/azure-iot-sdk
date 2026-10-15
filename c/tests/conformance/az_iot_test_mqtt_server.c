@@ -245,18 +245,39 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
 
   /* Size it before writing any of it: a packet that does not fit must come back
    * empty rather than truncated, because a truncated one still looks like a
-   * packet to whatever injects it. */
+   * packet to whatever injects it. Every term is bounded by the buffer before
+   * it is added, so the sums cannot wrap. */
+  const size_t max = sizeof(p.bytes);
+  size_t topic_len = strlen(topic);
+  if (topic_len > max || payload_len > max)
+  {
+    return p;
+  }
   size_t props_len = 0;
   if (content_type != NULL)
   {
-    props_len += 1u + 2u + lenstr_len(content_type);
+    size_t ct_len = lenstr_len(content_type);
+    if (ct_len > max)
+    {
+      return p;
+    }
+    props_len += 1u + 2u + ct_len;
   }
   for (i = 0; i < user_properties_count; ++i)
   {
-    props_len
-        += 1u + 2u + lenstr_len(user_properties[i].key) + 2u + lenstr_len(user_properties[i].value);
+    size_t key_len = lenstr_len(user_properties[i].key);
+    size_t value_len = lenstr_len(user_properties[i].value);
+    if (key_len > max || value_len > max)
+    {
+      return p;
+    }
+    props_len += 1u + 2u + key_len + 2u + value_len;
+    if (props_len > max)
+    {
+      return p;
+    }
   }
-  size_t remaining = 2u + strlen(topic) + vbi_len(props_len) + props_len + payload_len;
+  size_t remaining = 2u + topic_len + vbi_len(props_len) + props_len + payload_len;
   if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
   {
     return p;
