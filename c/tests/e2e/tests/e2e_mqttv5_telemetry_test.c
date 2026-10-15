@@ -42,11 +42,10 @@
 #define E2E_MAX_PUBLISHES 32
 #define E2E_IN_FLIGHT 8
 #define E2E_APP_PROPERTIES 8
-/* The hub limit is 256 KiB for body plus properties (documented for mqttv3; unconfirmed for
- * mqttv5). Neither Paho nor the SDK caps a publish, so the hub alone decides; this leaves 1 KiB
- * for the properties. */
-#define E2E_PAYLOAD_AT_LIMIT (255 * 1024)
-#define E2E_PAYLOAD_PAST_LIMIT (256 * 1024 + 1024)
+/* The mqttv5 broker caps a message at 1 MB and Event Hubs routing at 1 MB with properties;
+ * neither Paho nor the SDK caps a publish. The at-limit body leaves 8 KiB for properties. */
+#define E2E_PAYLOAD_AT_LIMIT (1024 * 1024 - 8 * 1024)
+#define E2E_PAYLOAD_PAST_LIMIT (1024 * 1024 + 4 * 1024)
 /* Not the SDK default (application/json), so a dropped $.ct cannot pass. */
 #define E2E_CONTENT_TYPE "application/vnd.e2e+json"
 
@@ -631,17 +630,22 @@ static void payload_at_limit_is_accepted(void** state)
   wait_done(fx, record, E2E_ACK_TIMEOUT_S);
   /* Paho copies the payload on send, and the publish has completed or timed out by now. */
   free(payload);
+  size_t routed_size = 0;
+  const bool sized = az_iot_e2e_service_telemetry_body_size(fx->service, marker, &routed_size);
   printf(
-      "[e2e] %d-byte payload: completion %s, routed %s, hub drops %d\n",
+      "[e2e] %d-byte payload: completion %s, routed %s (%u bytes), hub drops %d\n",
       E2E_PAYLOAD_AT_LIMIT,
       record_status(record),
       seen ? "yes" : "no",
+      (unsigned)routed_size,
       fx->hub_drops);
   az_iot_e2e_service_telemetry_dump(fx->service, marker);
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_true(record->done);
   assert_int_equal(record->status, AZ_IOT_OK);
   assert_true(seen);
+  assert_true(sized);
+  assert_int_equal(routed_size, E2E_PAYLOAD_AT_LIMIT);
 }
 
 /** @brief Reopens the hub connection if it settled instead of reconnecting by itself. */
@@ -714,7 +718,15 @@ static void payload_past_limit_is_refused(void** state)
   make_marker(after, sizeof(after), "pa", fx->dev.device_id);
   publish_record* after_record = send_marked(fx, after, NULL, 0);
   assert_delivered(fx, after, after_record);
+  /* assert_delivered() pumped the watcher again: a late oversized delivery must still fail. */
+  seen = az_iot_e2e_service_telemetry_seen(fx->service, marker);
+  if (seen)
+  {
+    printf("[e2e] oversized payload routed late\n");
+    az_iot_e2e_service_telemetry_dump(fx->service, marker);
+  }
   az_iot_e2e_service_telemetry_watch_end(fx->service);
+  assert_false(seen);
 }
 
 int main(void)

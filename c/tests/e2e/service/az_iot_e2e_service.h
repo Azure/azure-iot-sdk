@@ -65,6 +65,12 @@ extern "C"
    * none has arrived. */
   int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char* needle);
 
+  /* Sets @p size to the full body size of the message. Returns false when none has arrived. */
+  bool az_iot_e2e_service_telemetry_body_size(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      size_t* size);
+
   /* Copies property @p name of the message into @p out (NUL-terminated, truncated to fit).
    * @p name names the section: "amqp:<field>" for an AMQP properties field ("amqp:message-id",
    * "amqp:content-type", ...), "app:<key>" for an application property, "annotation:<key>" for a

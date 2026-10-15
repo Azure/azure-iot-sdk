@@ -288,6 +288,20 @@ int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char
   return c != NULL ? (int)c->seq : -1;
 }
 
+bool az_iot_e2e_service_telemetry_body_size(
+    const az_iot_e2e_service* svc,
+    const char* needle,
+    size_t* size)
+{
+  const e2e_amqp_capture* c = find_telemetry(svc, needle);
+  if (c == NULL)
+  {
+    return false;
+  }
+  *size = c->body_size;
+  return true;
+}
+
 bool az_iot_e2e_service_telemetry_property(
     const az_iot_e2e_service* svc,
     const char* needle,

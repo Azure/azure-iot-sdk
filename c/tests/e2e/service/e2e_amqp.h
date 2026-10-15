@@ -33,10 +33,10 @@ extern "C"
 #define E2E_AMQP_CAPTURE_MAX 64
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
 #define E2E_AMQP_CAPTURE_PROPS_MAX 4096
-/* Largest message one partition receiver reassembles: past the hub's 256 KiB device-to-cloud
- * limit plus the properties and annotations the hub adds, so an oversized message the hub
- * accepted is still seen. The link silently drops a larger one. */
-#define E2E_AMQP_RECV_MESSAGE_MAX (320 * 1024)
+/* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
+ * message limit plus the properties and annotations the hub adds, so an oversized message the
+ * hub accepted is still seen. The link silently drops a larger one. */
+#define E2E_AMQP_RECV_MESSAGE_MAX (1280 * 1024)
 
   /** @brief One received telemetry message: a body prefix and every property, as text. */
   typedef struct e2e_amqp_capture
