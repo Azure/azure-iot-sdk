@@ -130,7 +130,10 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
 - [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
   hub's custom topic templates `e2e/{deviceId}/#` and `e2e/shared/#`. Telemetry as a baseline;
   QoS 1 and QoS 0 publishes to those templates reach the events endpoint; a topic no template
-  allows and another device's id are refused without disconnecting. `ci-c-e2e-mqttv5`.
+  allows and another device's id are refused without disconnecting; a `{deviceId}` template formats
+  to the connected id; a topic at exactly 256 bytes or 15 levels is accepted and one past either is
+  refused locally (`AZ_IOT_ERR_INVALID_ARG`); several user properties are accepted (body routed).
+  `ci-c-e2e-mqttv5`.
   `AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING` turns the routed checks into skips when nothing arrives.
 - [`e2e_mqttv5_twin_test.c`](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) — desired properties
   patched through the service REST API. Without `twin_push.push_desired`, no change arrives while

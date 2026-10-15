@@ -572,6 +572,11 @@ native content type and user properties. Both use QoS-1 send completion.
 | | Several messages in flight keep their order | — | e2e | Pending | *e2e_scenarios_test.c* |
 | | A payload at the 256 kb limit is accepted | The hub measures body plus all property names and values. | e2e | Pending | *e2e_scenarios_test.c* |
 | | A payload past the 256 kb limit is rejected | — | e2e | Pending | *e2e_scenarios_test.c* |
+| mqttv5 custom topics, end-to-end | A `{deviceId}` template formats to the connected id and is routed | `format_topic` output equals `e2e/<device id>/fmt/...`; QoS 1 PUBACK success; marker body on the events endpoint. | e2e | Done | [formatted_device_id_template_is_routed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_custom_topic_test.c#L478) |
+| | A topic of exactly `AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN` bytes is accepted | 256 bytes counted over the full topic; QoS 1 PUBACK success, then the routed check. | e2e | Done | [topic_at_max_length_is_accepted](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_custom_topic_test.c#L498) |
+| | A topic of exactly `AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEVELS` levels is accepted | 15 levels counted over the full topic; QoS 1 PUBACK success, then the routed check. | e2e | Done | [topic_at_max_levels_is_accepted](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_custom_topic_test.c#L507) |
+| | A topic one byte or one level past the limit is refused locally | `AZ_IOT_ERR_INVALID_ARG`, no completion, no disconnect; the next publish gets PUBACK success. | e2e | Done | [topic_past_limits_is_rejected_locally](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_custom_topic_test.c#L544) |
+| | Several user properties are accepted | QoS 1 PUBACK success; only the body is checked on the events endpoint, the properties are not read back. | e2e | Done | [user_properties_are_routed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_custom_topic_test.c#L565) |
 
 ## Cloud-to-device messages
 
