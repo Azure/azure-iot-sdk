@@ -232,6 +232,10 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED && (time(NULL) - start) < timeout_s)
   {
     e2e_device_do_work(dev, 50);
+    if (opts != NULL && opts->during_connect != NULL)
+    {
+      opts->during_connect(opts->during_connect_ctx);
+    }
     if (dev->conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;

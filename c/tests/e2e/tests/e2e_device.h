@@ -112,6 +112,9 @@ extern "C"
     int connect_timeout_s;
     /* Copied to the connection options' twin_push (mqttv5 only). */
     bool twin_push_reported;
+    /** @brief Called after each pump while waiting for CONNECTED; optional. */
+    void (*during_connect)(void* ctx);
+    void* during_connect_ctx;
   } e2e_device_connect_options;
 
   /** @brief A hub assignment, as saved after a connect (see e2e_device_get_hub()). */

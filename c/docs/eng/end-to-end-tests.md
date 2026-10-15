@@ -142,8 +142,12 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   null member deletes; a stale `if_match`, non-JSON and a 40 KiB patch are refused without losing
   the session. GET returns both sections, or the selected ones, omitting a payload whose version
   `if_not_match` names. `twin_push.push_reported` pushes the reported section on connect; a desired
-  change made offline, or before a late handler is set, arrives as a snapshot. One connection per
-  test, on one device. `ci-c-e2e-mqttv5`.
+  change made offline, or before a late handler is set, arrives as a snapshot. A second connection
+  with the same identity evicts the session: a GET in flight completes with an error and a desired
+  change made during the outage arrives after the automatic reconnect. A 1 ms request timeout
+  completes a GET `TIMEOUT`; `AZ_IOT_TWIN_MAX_PENDING` GETs are accepted and the next refused; a
+  pushed reported section without a handler is dropped. One connection per test, on one device.
+  `ci-c-e2e-mqttv5`.
 - [`e2e_mqttv5_connection_test.c`](../../tests/e2e/tests/e2e_mqttv5_connection_test.c) — DPS
   reports the `mqttV5` profile; the saved hub (`iothub_hostname`, `device_id`, `connection_profile`
   with the `dps` fields) connects without DPS and its telemetry reaches the events endpoint; an
