@@ -233,11 +233,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/** @brief Runs one do_work() tick of at least SAMPLE_TICK_MS. */
-static void pump(az_iot_connection_client* client)
+/** @brief Sleeps out the rest of a SAMPLE_TICK_MS tick begun at @p start, so the
+ *  do_work() loops cannot spin when there is no session to wait on. */
+static void finish_tick(uint64_t start)
 {
-  uint64_t start = sample_now_ms();
-  (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
   uint64_t spent = sample_now_ms() - start;
   if (spent < SAMPLE_TICK_MS)
   {
@@ -291,7 +290,9 @@ int main(void)
   }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&opts, &config);
+  opts.dps.id_scope = config.id_scope;
+  opts.dps.registration_id = config.reg_id;
+  opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   opts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
@@ -346,7 +347,9 @@ int main(void)
   uint64_t deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
   while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && !ctx.failed && sample_now_ms() < deadline)
   {
-    pump(&client);
+    uint64_t tick = sample_now_ms();
+    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
+    finish_tick(tick);
   }
 
   if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -375,7 +378,9 @@ int main(void)
   deadline = sample_now_ms() + SAMPLE_CLOSE_TIMEOUT_MS;
   while (ctx.hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
   {
-    pump(&client);
+    uint64_t tick = sample_now_ms();
+    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
+    finish_tick(tick);
   }
 
 cleanup:
