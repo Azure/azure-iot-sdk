@@ -38,19 +38,6 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level);
 // Returns 0 on success, non-zero if any required variable is missing.
 int sample_config_load(sample_config* config);
 
-// Applies the DPS options every sample sets the same way: id_scope,
-// registration_id, and the optional global endpoint. Call it instead of
-// assigning those fields by hand, so a sample picks up a new DPS option
-// without being edited.
-//
-// Deliberately does NOT touch certificate_provider or anything else: a sample
-// that needs different auth still says so itself, and this stays the one thing
-// every DPS sample shares.
-struct az_iot_connection_client_options;
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config);
-
 // Releases memory allocated by sample_config_load (Windows only; no-op on Linux).
 void sample_config_release(sample_config* config);
 

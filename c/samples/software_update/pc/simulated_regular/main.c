@@ -305,7 +305,9 @@ static int initialize_connection_client(sample_state* state)
 
   /* Connection client. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state->config);
+  copts.dps.id_scope = state->config.id_scope;
+  copts.dps.registration_id = state->config.reg_id;
+  copts.dps.global_endpoint = state->config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state->certs.base;
   /* Verifies update manifests and hashes downloaded files. */
   copts.crypto = az_iot_crypto_openssl();
