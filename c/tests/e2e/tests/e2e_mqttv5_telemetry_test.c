@@ -485,6 +485,10 @@ static void system_properties_arrive(void** state)
   };
   publish_record* record
       = send_marked(fx, marker, properties, sizeof(properties) / sizeof(properties[0]));
+  /* $.uid is the one property the hub validates: it must equal the authenticated device id or the
+   * whole message is refused. It travels alone so such a refusal fails only its own check, not the
+   * pass-through properties above. The markers only correlate each message on the shared events
+   * endpoint; neither the SDK nor the hub reads them. */
   publish_record* uid_record = send_marked(fx, uid_marker, uid_properties, 1);
 
   const bool seen = wait_seen(fx, marker, E2E_ROUTE_TIMEOUT_S);
