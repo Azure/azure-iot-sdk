@@ -991,7 +991,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
     return false;
   }
   int status = 0;
-  char resp[1024];
+  char resp[1024] = { 0 };
   bool ok = https_request(
       info.host,
       method,
