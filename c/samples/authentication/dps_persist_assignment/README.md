@@ -54,9 +54,8 @@ Built when OpenSSL 3.0+ and the Paho adapter are available (`AZ_IOT_WITH_CERT_PR
 - The record is written to `dps_assignment.txt.tmp`, flushed, and renamed over
   `dps_assignment.txt` (on POSIX the directory is then synced). The file always holds one
   complete record, the previous or the new one; never a partial one.
-- The managed provider replaces `AZ_IOT_OPERATIONAL_CERT` before the assignment callback runs,
-  so the two files are not updated together; see
-  [Persisting the assignment](../../../docs/connecting.md#persisting-the-assignment).
+- The managed provider writes the issued chain to `AZ_IOT_OPERATIONAL_CERT` before the assignment
+  callback runs.
 
 ## Expected output
 
