@@ -170,6 +170,11 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   `$.uid`, `$.ctime`, `$.sub`; custom application properties; eight messages in flight keep their
   order; a 512 KB - 8 KiB body is routed whole and a 1 MiB + 4 KiB body is refused (or the session
   dropped), never routed, and telemetry flows again after. `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_custody_test.c`](../../tests/e2e/tests/e2e_mqttv5_custody_test.c) — the device key
+  inside a SoftHSM2 token (`eng/setup-softhsm.sh`, named by `AZ_IOT_CLIENT_KEY_URI`): DPS and the
+  mqttv5 hub accept it, telemetry reaches the events endpoint, and a reconnect loads the key
+  reference again. Also needs `AZ_IOT_BUILD_E2E_PKCS11`; fails without the token.
+  `ci-c-e2e-mqttv5`.
 
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.

@@ -411,6 +411,7 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
 | SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
+| Storage / custody on an mqttv5 hub ([`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml)) | `e2e_mqttv5_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` + `AZ_IOT_BUILD_E2E_MQTTV5` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
 device key, deletes the on-disk copy and prints the key URI.

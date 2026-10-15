@@ -275,6 +275,14 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
         target_compile_definitions(az_iot_tests_e2e_mqttv5_transport PRIVATE _POSIX_C_SOURCE=200809L)
     endif()
+
+    # mqttv5 key custody: the device key inside a PKCS#11 token (eng/setup-softhsm.sh), as
+    # az_iot_tests_e2e_custody. Needs AZ_IOT_CLIENT_KEY_URI; fails without it.
+    if(AZ_IOT_BUILD_E2E_PKCS11)
+        az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custody tests/e2e_mqttv5_custody_test.c)
+        target_link_libraries(az_iot_tests_e2e_mqttv5_custody PRIVATE
+            az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    endif()
 endif()
 
 endif() # AZ_IOT_WITH_PAHO
