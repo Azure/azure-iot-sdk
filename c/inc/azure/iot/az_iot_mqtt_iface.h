@@ -96,9 +96,14 @@ extern "C"
     AZ_IOT_MQTT_TRANSPORT_WEBSOCKET = 1
   } az_iot_mqtt_transport;
 
-  /* Default WebSocket resource path for Azure IoT Hub and DPS. Used when
+  /* Default WebSocket resource path for DPS and the mqttv3 IoT Hub. Used when
    * `websocket_path` is NULL. */
 #define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
+
+  /* WebSocket resource path of the mqttv5 IoT Hub. The connection client selects
+   * it for an mqttv5 hub session when az_iot_connection_client_options::websocket_path
+   * is NULL. */
+#define AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH "/mqtt"
 
 /* Default broker ports, by transport and by whether the session is TLS. Named
  * rather than spelled out at each use: the same four numbers are needed by the
@@ -232,8 +237,9 @@ extern "C"
      * would be blocked by the firewall the caller was working around. */
     az_iot_mqtt_transport transport;
     /* WebSocket resource path, used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH, which is what Azure IoT Hub
-     * and DPS expect. Must start with '/'. */
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH. The connection client sets
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH for an mqttv5 hub session. Must start
+     * with '/'. */
     const char* websocket_path;
     az_iot_mqtt_proxy_options proxy;
     /* Reason code the adapter puts in the MQTT 5 DISCONNECT packet it sends

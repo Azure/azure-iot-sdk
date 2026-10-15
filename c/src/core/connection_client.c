@@ -845,8 +845,9 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
       : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
 }
 
-/* Apply the caller's transport, WebSocket path and proxy to one connect, and
- * resolve the port: an explicit @p port wins, 0 means "derive from transport".
+/* Apply the caller's transport, WebSocket path and proxy to one connect for
+ * @p role, and resolve the port: an explicit @p port wins, 0 means "derive from
+ * transport".
  *
  * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
  * that needs a proxy or WebSockets to reach the hub needs them to reach DPS
@@ -855,10 +856,17 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
 static void resolve_connect_transport(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role,
     uint16_t port)
 {
   copts->transport = c->opts.transport;
   copts->websocket_path = c->opts.websocket_path;
+  /* The mqttv5 hub serves WebSockets on its own path; DPS and the mqttv3 hub keep
+   * the adapter default. */
+  if (copts->websocket_path == NULL && role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    copts->websocket_path = AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH;
+  }
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
@@ -3568,7 +3576,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, 0);
+  resolve_connect_transport(c, &copts, AZ_IOT_MQTT_ROLE_DPS, 0);
   resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   copts.username = dps_username;
@@ -5060,7 +5068,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.host = c->opts.iothub_hostname;
   copts.client_id = c->opts.device_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_connect_transport(c, &copts, c->session_role, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
   /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
