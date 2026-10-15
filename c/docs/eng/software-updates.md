@@ -102,7 +102,10 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
   opaque capability id; `compatibilityProperties` is 1–5 key/value pairs. The service combines
   them into the device class. Required unless a still-current `agentInfoEtag` is sent; onboarding
   always requires it.
-- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`.
+- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`/absent
+  when nothing is installed. Sent on both routes: an unprovisioned device may already hold an
+  update (applied before registration completed, or preinstalled), and the service uses it to
+  withhold an offer for what is installed. The SDK omits the key when nothing is installed.
 - `agentInfoEtag`, `serviceConfigEtag`: optional; let the service skip unchanged data.
 
 ### Response
@@ -277,8 +280,8 @@ security.
 ### Device Properties on the Wire
 
 Device properties reach the service on **every update check**: manufacturer, model and custom
-properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on the regular route
-(the onboarding route omits it). There is no unsolicited report: status reports are keyed on
+properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on both routes when
+set (omitted when nothing is installed). There is no unsolicited report: status reports are keyed on
 `workflowId`, so a device with no workflow has nothing to report.
 
 #### Device-Properties Model
@@ -947,7 +950,7 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
- * device record and omits installedUpdateId.
+ * device record. Sends installedUpdateId when set, like the regular route.
  *
  * The application chooses the route: it is the only party that knows whether
  * it has a device record, because it persists its provisioning result across
