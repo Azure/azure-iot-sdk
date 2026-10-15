@@ -59,6 +59,8 @@ typedef struct
 typedef struct
 {
   e2e_device dev;
+  /** Hub-assigned device id; DPS may assign one other than the registration id. */
+  char device_id[129];
   az_iot_e2e_service* service;
   az_iot_mqttv5_telemetry_client telemetry;
   bool telemetry_ok;
@@ -160,6 +162,13 @@ static int group_setup(void** state)
   {
     return -1;
   }
+  const char* assigned = az_iot_connection_client_get_device_id(&g_fx.dev.conn);
+  if (assigned == NULL || strlen(assigned) >= sizeof(g_fx.device_id))
+  {
+    fprintf(stderr, "[e2e] no usable hub device id\n");
+    return -1;
+  }
+  strcpy(g_fx.device_id, assigned);
 
   az_iot_hub_profile profile;
   if (az_iot_connection_client_get_hub_profile(&g_fx.dev.conn, &profile) != AZ_IOT_OK
@@ -400,7 +409,7 @@ static void telemetry_is_routed(void** state)
   fixture* fx = (fixture*)*state;
   assert_true(wait_connected(fx));
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "tr", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "tr", fx->device_id);
 
   watch_begin(fx);
   publish_record* record = send_marked(fx, marker, NULL, 0);
@@ -417,7 +426,7 @@ static void content_type_and_correlation_id_are_native(void** state)
   fixture* fx = (fixture*)*state;
   assert_true(wait_connected(fx));
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "cc", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "cc", fx->device_id);
 
   watch_begin(fx);
   const az_iot_telemetry_property properties[] = {
@@ -444,8 +453,8 @@ static void system_properties_arrive(void** state)
   assert_true(wait_connected(fx));
   char marker[E2E_MARKER_MAX];
   char uid_marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "sp", fx->dev.device_id);
-  make_marker(uid_marker, sizeof(uid_marker), "su", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "sp", fx->device_id);
+  make_marker(uid_marker, sizeof(uid_marker), "su", fx->device_id);
 
   char message_id[E2E_MARKER_MAX + 8];
   snprintf(message_id, sizeof(message_id), "mid-%s", marker);
@@ -471,7 +480,7 @@ static void system_properties_arrive(void** state)
   };
   /* The hub requires the user id to be the authenticated device id (mqttv3). */
   const az_iot_telemetry_property uid_properties[] = {
-    { AZ_IOT_MSG_PROP_USER_ID, fx->dev.device_id },
+    { AZ_IOT_MSG_PROP_USER_ID, fx->device_id },
   };
   publish_record* record
       = send_marked(fx, marker, properties, sizeof(properties) / sizeof(properties[0]));
@@ -510,12 +519,12 @@ static void system_properties_arrive(void** state)
   }
   if (!uid_seen || !uid_record->done || uid_record->status != AZ_IOT_OK)
   {
-    printf("[e2e] $.uid='%s' was not delivered\n", fx->dev.device_id);
+    printf("[e2e] $.uid='%s' was not delivered\n", fx->device_id);
     failures++;
   }
   else
   {
-    failures += property_is(fx, uid_marker, "amqp:user-id", fx->dev.device_id) ? 0 : 1;
+    failures += property_is(fx, uid_marker, "amqp:user-id", fx->device_id) ? 0 : 1;
   }
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_int_equal(failures, 0);
@@ -527,7 +536,7 @@ static void application_properties_arrive(void** state)
   fixture* fx = (fixture*)*state;
   assert_true(wait_connected(fx));
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "ap", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "ap", fx->device_id);
 
   static const char* const keys[E2E_APP_PROPERTIES]
       = { "e2e-a", "e2e-b", "e2e-c", "e2e-d", "e2e-e", "e2e-f", "e2e-g", "e2e-h" };
@@ -569,7 +578,7 @@ static void messages_in_flight_keep_order(void** state)
   watch_begin(fx);
   for (size_t i = 0; i < E2E_IN_FLIGHT; ++i)
   {
-    make_marker(markers[i], sizeof(markers[i]), "or", fx->dev.device_id);
+    make_marker(markers[i], sizeof(markers[i]), "or", fx->device_id);
     records[i] = send_marked(fx, markers[i], NULL, 0);
   }
   for (size_t i = 0; i < E2E_IN_FLIGHT; ++i)
@@ -622,7 +631,7 @@ static void payload_at_limit_is_accepted(void** state)
   fixture* fx = (fixture*)*state;
   assert_true(wait_connected(fx));
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "al", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "al", fx->device_id);
   uint8_t* payload = make_large_payload(marker, E2E_PAYLOAD_AT_LIMIT);
 
   watch_begin(fx);
@@ -677,7 +686,7 @@ static void payload_past_limit_is_refused(void** state)
   assert_true(wait_connected(fx));
   const int drops = fx->hub_drops;
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "pl", fx->dev.device_id);
+  make_marker(marker, sizeof(marker), "pl", fx->device_id);
   uint8_t* payload = make_large_payload(marker, E2E_PAYLOAD_PAST_LIMIT);
 
   watch_begin(fx);
@@ -722,7 +731,7 @@ static void payload_past_limit_is_refused(void** state)
   ensure_connected(fx);
   assert_false(az_iot_e2e_service_telemetry_needle_seen(fx->service, marker));
   char after[E2E_MARKER_MAX];
-  make_marker(after, sizeof(after), "pa", fx->dev.device_id);
+  make_marker(after, sizeof(after), "pa", fx->device_id);
   publish_record* after_record = send_marked(fx, after, NULL, 0);
   assert_delivered(fx, after, after_record);
   /* assert_delivered() pumped the watcher again: a late oversized delivery must still fail. */

@@ -34,7 +34,7 @@ extern "C"
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
 #define E2E_AMQP_CAPTURE_PROPS_MAX 4096
 #define E2E_AMQP_WATCHED_MAX 4
-#define E2E_AMQP_WATCHED_NEEDLE_MAX 128
+#define E2E_AMQP_WATCHED_NEEDLE_MAX 192
 /* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
  * message limit plus the properties and annotations the hub adds, so an oversized message the
  * hub accepted is still seen. The link silently drops a larger one. */
