@@ -453,14 +453,37 @@ static void throttling_and_server_errors_keep_the_request(void** state)
   az_iot_dps_tpm_request req;
   az_iot_dps_tpm_next next;
   assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  uint16_t status = 0;
+  int32_t code = -1;
   assert_int_equal(respond(&c, 429, "", 7, &next), AZ_IOT_OK);
   assert_false(next.assigned);
   assert_int_equal(next.retry_after_seconds, 7);
+  az_iot_dps_tpm_client_get_error(&c, &status, &code);
+  assert_int_equal(status, 429);
+  assert_int_equal(code, 0);
+  /* The body's error code is reported, and the request is still retried. */
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(respond(&c, 429, "{\"errorCode\":429001}", 0, &next), AZ_IOT_OK);
+  az_iot_dps_tpm_client_get_error(&c, &status, &code);
+  assert_int_equal(code, 429001);
   assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
   assert_string_equal(req.method, "PUT");
   assert_non_null(req.authorization);
   assert_int_equal(respond(&c, 503, "oops", 0, &next), AZ_IOT_OK);
   assert_int_equal(next.retry_after_seconds, AZ_IOT_DPS_TPM_DEFAULT_RETRY_AFTER_SECONDS);
+  az_iot_dps_tpm_client_get_error(&c, &status, &code);
+  assert_int_equal(status, 503);
+  assert_int_equal(code, 0);
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(respond(&c, 500, "{\"errorCode\":500001}", 0, &next), AZ_IOT_OK);
+  az_iot_dps_tpm_client_get_error(&c, &status, &code);
+  assert_int_equal(code, 500001);
+  /* A truncated body is not trusted for the code. */
+  assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
+  assert_int_equal(respond(&c, 503, "{\"errorCode\":503001", 0, &next), AZ_IOT_OK);
+  assert_int_equal(next.retry_after_seconds, AZ_IOT_DPS_TPM_DEFAULT_RETRY_AFTER_SECONDS);
+  az_iot_dps_tpm_client_get_error(&c, &status, &code);
+  assert_int_equal(code, 0);
   assert_int_equal(az_iot_dps_tpm_client_get_request(&c, NOW, buf, sizeof(buf), &req), AZ_IOT_OK);
   assert_string_equal(req.method, "PUT");
   assert_int_equal(t.imports, 1);

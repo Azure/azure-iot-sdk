@@ -942,14 +942,15 @@ AZ_NODISCARD az_iot_result az_iot_dps_tpm_client_handle_response(
   uint32_t wait
       = retry_after_seconds != 0 ? retry_after_seconds : AZ_IOT_DPS_TPM_DEFAULT_RETRY_AFTER_SECONDS;
 
+  dps_tpm_fields f;
+  bool parsed = read_fields(body, &f);
   if (http_status == DPS_TPM_HTTP_TOO_MANY_REQUESTS || (http_status >= 500u && http_status <= 599u))
   {
+    /* Retried whatever the body holds; its error code is only kept for diagnostics. */
+    client->_internal.error_code = parsed ? f.error_code : 0;
     out->retry_after_seconds = wait;
     return AZ_IOT_OK;
   }
-
-  dps_tpm_fields f;
-  bool parsed = read_fields(body, &f);
   client->_internal.error_code = f.error_code;
 
   if (http_status == DPS_TPM_HTTP_UNAUTHORIZED)
