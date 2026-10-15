@@ -158,6 +158,12 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
   to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
   (tinyproxy on the runner).
+- [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
+  methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
+  exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
+  busy and too-short-timeout calls are refused at the probe without running the handler; an
+  unanswered call times out and a late answer is not sent; concurrent calls get their own results.
+  One connection for the suite. `ci-c-e2e-mqttv5`.
 
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
