@@ -10,9 +10,10 @@
  * request handles, so several invocations can be in flight at once (Linux only). The handler
  * only records each invocation; the test decides when and how to answer it.
  *
- * Every service outcome is printed with its HTTP status and body: the codes the mqttv5 hub
- * returns for probe rejections and timeouts are asserted by category (2xx carrying the device
- * status, non-2xx otherwise) and read from the log.
+ * Every service outcome is printed with its HTTP status and body. Probe rejections are asserted
+ * by the codes the mqttv5 hub returns (404/404103 method not found, 403/403801 device busy);
+ * insufficient time and service timeouts only by category. An HTTP 400 never counts as a refusal:
+ * it means the request itself was invalid.
  */
 #include <setjmp.h>
 #include <stdarg.h>
@@ -33,7 +34,8 @@
 #include "e2e_device.h"
 #include "e2e_log.h"
 
-/* responseTimeoutInSeconds / connectTimeoutInSeconds of an ordinary invocation. */
+/* responseTimeoutInSeconds of an ordinary invocation, and the cap on connectTimeoutInSeconds,
+ * which the service refuses (400004) when it exceeds responseTimeoutInSeconds. */
 #define E2E_RESPONSE_TIMEOUT_S 30
 #define E2E_CONNECT_TIMEOUT_S 30
 /* Local bound on any one invocation completing. */
@@ -53,6 +55,13 @@
 /* Refusal bound for E2E_INSUFFICIENT_TIMEOUT_S: elapsed is whole seconds, so 7 means < 8 s, which
  * leaves 2 s margin before a plain service timeout at 10 s could pass as a probe rejection. */
 #define E2E_INSUFFICIENT_REFUSAL_MAX_S 7
+/* Service codes for a refused invocation: 0 accepts any non-2xx other than 400. */
+#define E2E_HTTP_ANY 0
+#define E2E_CODE_ANY NULL
+#define E2E_HTTP_NOT_FOUND 404
+#define E2E_CODE_NOT_FOUND "404103"
+#define E2E_HTTP_BUSY 403
+#define E2E_CODE_BUSY "403801"
 #define E2E_SETTLE_S 5
 #define E2E_PUMP_MS 20
 #define E2E_MARKER_MAX 64
@@ -180,6 +189,8 @@ static void call_start(
     const char* json_payload,
     int response_timeout_s)
 {
+  const int connect_timeout_s
+      = response_timeout_s < E2E_CONNECT_TIMEOUT_S ? response_timeout_s : E2E_CONNECT_TIMEOUT_S;
   memset(c, 0, sizeof(*c));
   snprintf(c->method, sizeof(c->method), "%s", method);
   c->started = time(NULL);
@@ -187,15 +198,10 @@ static void call_start(
       "[e2e] invoke '%s' (response %ds, connect %ds): %s\n",
       method,
       response_timeout_s,
-      E2E_CONNECT_TIMEOUT_S,
+      connect_timeout_s,
       json_payload ? json_payload : "(no payload)");
   c->handle = az_iot_e2e_service_method_invoke_start(
-      fx->service,
-      fx->dev.device_id,
-      method,
-      json_payload,
-      response_timeout_s,
-      E2E_CONNECT_TIMEOUT_S);
+      fx->service, fx->dev.device_id, method, json_payload, response_timeout_s, connect_timeout_s);
   if (c->handle < 0)
   {
     const char* err = az_iot_e2e_service_last_error(fx->service);
@@ -321,6 +327,12 @@ static bool http_ok(const service_call* c)
   return c->rc == 1 && c->http_status >= 200 && c->http_status < 300;
 }
 
+/** @brief The service rejected the request itself (HTTP 400, e.g. 400004 bad timeouts). */
+static bool request_invalid(const service_call* c)
+{
+  return c->http_status == 400 || strstr(c->body, "400004") != NULL;
+}
+
 /** @brief The device answered: HTTP 2xx carrying @p device_status. */
 static void assert_answered(const service_call* c, int device_status)
 {
@@ -336,15 +348,27 @@ static void assert_answered(const service_call* c, int device_status)
   }
 }
 
-/** @brief The service refused the call (non-2xx) within @p max_elapsed_s. */
-static void assert_refused(const service_call* c, long max_elapsed_s)
+/** @brief The service refused the call within @p max_elapsed_s: HTTP @p http (any non-2xx
+ *         but 400 for E2E_HTTP_ANY) with @p code in the body (unchecked for E2E_CODE_ANY). */
+static void assert_refused(const service_call* c, int http, const char* code, long max_elapsed_s)
 {
-  if (!http_final(c) || http_ok(c))
+  if (!http_final(c) || http_ok(c) || request_invalid(c))
   {
     fail_msg(
-        "'%s': expected a non-2xx HTTP refusal; got rc=%d http=%d body=%s",
+        "'%s': expected a non-2xx, non-400 HTTP refusal; got rc=%d http=%d body=%s",
         c->method,
         c->rc,
+        c->http_status,
+        c->body);
+  }
+  if ((http != E2E_HTTP_ANY && c->http_status != http)
+      || (code != E2E_CODE_ANY && strstr(c->body, code) == NULL))
+  {
+    fail_msg(
+        "'%s': expected HTTP %d with errorCode %s; got http=%d body=%s",
+        c->method,
+        http,
+        code ? code : "(any)",
         c->http_status,
         c->body);
   }
@@ -525,12 +549,14 @@ static void invoke_and_answer(fixture* fx, const char* method, int status)
   assert_non_null(strstr(c.body, marker));
 }
 
-/** @brief Invokes @p method; expects a refusal within @p max_refusal_s and no handler run within
- *         E2E_QUIET_S. */
+/** @brief Invokes @p method; expects the refusal assert_refused() describes and no handler run
+ *         within E2E_QUIET_S. */
 static void invoke_expect_refused(
     fixture* fx,
     const char* method,
     int response_timeout_s,
+    int http,
+    const char* code,
     long max_refusal_s)
 {
   char marker[E2E_MARKER_MAX];
@@ -542,7 +568,7 @@ static void invoke_expect_refused(
   service_call c;
   call_start(fx, &c, method, payload, response_timeout_s);
   wait_done(fx, &c, 1, E2E_CALL_DEADLINE_S);
-  assert_refused(&c, max_refusal_s);
+  assert_refused(&c, http, code, max_refusal_s);
   pump_for(fx, E2E_QUIET_S);
   if (fx->calls_used != before)
   {
@@ -551,7 +577,7 @@ static void invoke_expect_refused(
 }
 
 /** @brief Invokes @p method with a short timeout and leaves it unanswered until the service
- *         reports a non-2xx timeout. */
+ *         reports a non-2xx, non-400 timeout. */
 static void invoke_unanswered(fixture* fx, const char* method, service_call* c)
 {
   char marker[E2E_MARKER_MAX];
@@ -562,10 +588,11 @@ static void invoke_unanswered(fixture* fx, const char* method, service_call* c)
   call_start(fx, c, method, payload, E2E_SHORT_TIMEOUT_S);
   expect_invocations(fx, c, 1, 1);
   wait_done(fx, c, 1, E2E_SHORT_TIMEOUT_S + E2E_TIMEOUT_SLACK_S);
-  if (!http_final(c) || http_ok(c) || c->elapsed_s < E2E_SHORT_TIMEOUT_S - 1)
+  if (!http_final(c) || http_ok(c) || request_invalid(c) || c->elapsed_s < E2E_SHORT_TIMEOUT_S - 1)
   {
     fail_msg(
-        "'%s': expected a non-2xx timeout after ~%ds; got rc=%d http=%d after %lds body=%s",
+        "'%s': expected a non-2xx, non-400 timeout after ~%ds; got rc=%d http=%d after %lds "
+        "body=%s",
         method,
         E2E_SHORT_TIMEOUT_S,
         c->rc,
@@ -646,14 +673,26 @@ static void method_with_no_payload(void** state)
 static void undeclared_method_is_rejected_at_probe(void** state)
 {
   fixture* fx = (fixture*)*state;
-  invoke_expect_refused(fx, "dmUndeclared", E2E_RESPONSE_TIMEOUT_S, E2E_REFUSAL_MAX_S);
+  invoke_expect_refused(
+      fx,
+      "dmUndeclared",
+      E2E_RESPONSE_TIMEOUT_S,
+      E2E_HTTP_NOT_FOUND,
+      E2E_CODE_NOT_FOUND,
+      E2E_REFUSAL_MAX_S);
 }
 
 static void method_name_match_is_case_sensitive(void** state)
 {
   fixture* fx = (fixture*)*state;
   declare(fx, "echo", 0);
-  invoke_expect_refused(fx, "Echo", E2E_RESPONSE_TIMEOUT_S, E2E_REFUSAL_MAX_S);
+  invoke_expect_refused(
+      fx,
+      "Echo",
+      E2E_RESPONSE_TIMEOUT_S,
+      E2E_HTTP_NOT_FOUND,
+      E2E_CODE_NOT_FOUND,
+      E2E_REFUSAL_MAX_S);
 }
 
 static void unregistered_method_is_rejected_again(void** state)
@@ -664,7 +703,13 @@ static void unregistered_method_is_rejected_again(void** state)
 
   assert_int_equal(
       az_iot_mqttv5_direct_method_client_unregister_method(&fx->dm, "echo"), AZ_IOT_OK);
-  invoke_expect_refused(fx, "echo", E2E_RESPONSE_TIMEOUT_S, E2E_REFUSAL_MAX_S);
+  invoke_expect_refused(
+      fx,
+      "echo",
+      E2E_RESPONSE_TIMEOUT_S,
+      E2E_HTTP_NOT_FOUND,
+      E2E_CODE_NOT_FOUND,
+      E2E_REFUSAL_MAX_S);
   assert_int_equal(fx->calls_used, 1);
 }
 
@@ -673,7 +718,8 @@ static void probe_handler_busy_is_reported(void** state)
   fixture* fx = (fixture*)*state;
   declare(fx, "echo", 0);
   fx->probe_answer = AZ_IOT_MQTTV5_DM_PROBE_REJECT_DEVICE_BUSY;
-  invoke_expect_refused(fx, "echo", E2E_RESPONSE_TIMEOUT_S, E2E_REFUSAL_MAX_S);
+  invoke_expect_refused(
+      fx, "echo", E2E_RESPONSE_TIMEOUT_S, E2E_HTTP_BUSY, E2E_CODE_BUSY, E2E_REFUSAL_MAX_S);
   /* The refusal came from the probe handler, not from a probe that never arrived. */
   assert_true(fx->probes >= 1);
 }
@@ -682,7 +728,14 @@ static void insufficient_time_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
   declare(fx, "slow", E2E_SLOW_METHOD_MIN_S);
-  invoke_expect_refused(fx, "slow", E2E_INSUFFICIENT_TIMEOUT_S, E2E_INSUFFICIENT_REFUSAL_MAX_S);
+  /* The hub's code for this rejection is not yet known: any non-2xx, non-400, read from the log. */
+  invoke_expect_refused(
+      fx,
+      "slow",
+      E2E_INSUFFICIENT_TIMEOUT_S,
+      E2E_HTTP_ANY,
+      E2E_CODE_ANY,
+      E2E_INSUFFICIENT_REFUSAL_MAX_S);
 }
 
 static void unanswered_method_times_out_service_side(void** state)
