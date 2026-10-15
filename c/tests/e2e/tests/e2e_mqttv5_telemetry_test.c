@@ -681,15 +681,19 @@ static void payload_past_limit_is_refused(void** state)
   uint8_t* payload = make_large_payload(marker, E2E_PAYLOAD_PAST_LIMIT);
 
   watch_begin(fx);
+  /* Latched on arrival, so an oversized delivery evicted from the capture ring still counts. */
+  assert_true(az_iot_e2e_service_telemetry_watch_needle(fx->service, marker));
   publish_record* record = send_message(fx, payload, E2E_PAYLOAD_PAST_LIMIT, NULL, 0);
   wait_done(fx, record, E2E_ACK_TIMEOUT_S);
   bool seen = wait_seen(fx, marker, E2E_NOT_ROUTED_WINDOW_S);
+  bool latched = az_iot_e2e_service_telemetry_needle_seen(fx->service, marker);
   free(payload);
   printf(
-      "[e2e] %d-byte payload: completion %s, routed %s, hub drops %d, state %d\n",
+      "[e2e] %d-byte payload: completion %s, routed %s (latched %s), hub drops %d, state %d\n",
       E2E_PAYLOAD_PAST_LIMIT,
       record_status(record),
       seen ? "yes" : "no",
+      latched ? "yes" : "no",
       fx->hub_drops - drops,
       (int)fx->dev.conn_state);
   if (seen)
@@ -713,21 +717,25 @@ static void payload_past_limit_is_refused(void** state)
     fail_msg("expected a refusal or a disconnect, got %s", record_status(record));
   }
   assert_false(seen);
+  assert_false(latched);
 
   ensure_connected(fx);
+  assert_false(az_iot_e2e_service_telemetry_needle_seen(fx->service, marker));
   char after[E2E_MARKER_MAX];
   make_marker(after, sizeof(after), "pa", fx->dev.device_id);
   publish_record* after_record = send_marked(fx, after, NULL, 0);
   assert_delivered(fx, after, after_record);
   /* assert_delivered() pumped the watcher again: a late oversized delivery must still fail. */
   seen = az_iot_e2e_service_telemetry_seen(fx->service, marker);
-  if (seen)
+  latched = az_iot_e2e_service_telemetry_needle_seen(fx->service, marker);
+  if (seen || latched)
   {
-    printf("[e2e] oversized payload routed late\n");
+    printf("[e2e] oversized payload routed late (in capture ring: %s)\n", seen ? "yes" : "no");
     az_iot_e2e_service_telemetry_dump(fx->service, marker);
   }
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_false(seen);
+  assert_false(latched);
 }
 
 int main(void)

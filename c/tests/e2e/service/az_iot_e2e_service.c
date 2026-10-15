@@ -277,6 +277,26 @@ bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char
   return svc->telemetry != NULL && e2e_amqp_telemetry_seen(svc->telemetry, needle);
 }
 
+bool az_iot_e2e_service_telemetry_watch_needle(az_iot_e2e_service* svc, const char* needle)
+{
+  if (svc->telemetry == NULL)
+  {
+    set_error(svc, "telemetry: not watching");
+    return false;
+  }
+  if (!e2e_amqp_telemetry_watch_needle(svc->telemetry, needle))
+  {
+    set_error(svc, "telemetry: watched needle table full, or needle empty or too long");
+    return false;
+  }
+  return true;
+}
+
+bool az_iot_e2e_service_telemetry_needle_seen(const az_iot_e2e_service* svc, const char* needle)
+{
+  return svc->telemetry != NULL && e2e_amqp_telemetry_watched_seen(svc->telemetry, needle);
+}
+
 static const e2e_amqp_capture* find_telemetry(const az_iot_e2e_service* svc, const char* needle)
 {
   return svc->telemetry != NULL ? e2e_amqp_telemetry_find(svc->telemetry, needle) : NULL;

@@ -33,6 +33,8 @@ extern "C"
 #define E2E_AMQP_CAPTURE_MAX 64
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
 #define E2E_AMQP_CAPTURE_PROPS_MAX 4096
+#define E2E_AMQP_WATCHED_MAX 4
+#define E2E_AMQP_WATCHED_NEEDLE_MAX 128
 /* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
  * message limit plus the properties and annotations the hub adds, so an oversized message the
  * hub accepted is still seen. The link silently drops a larger one. */
@@ -76,6 +78,11 @@ extern "C"
     int captured_next; /* ring slot the next message is written to */
     uint32_t received_count; /* messages captured since begin */
 
+    /** @brief Needles matched against every full body on arrival; a match latches until end. */
+    char watched[E2E_AMQP_WATCHED_MAX][E2E_AMQP_WATCHED_NEEDLE_MAX];
+    bool watched_seen[E2E_AMQP_WATCHED_MAX];
+    int watched_count;
+
     /* Backing storage referenced by the az_amqp objects above. */
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     uint8_t outgoing_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -115,6 +122,14 @@ extern "C"
 
   /* Returns true if any captured telemetry body contains @p needle. */
   bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle);
+
+  /** @brief Registers @p needle to be latched by e2e_amqp_telemetry_watched_seen().
+   * @return false when the table is full or @p needle is empty or too long. */
+  bool e2e_amqp_telemetry_watch_needle(e2e_amqp_telemetry* t, const char* needle);
+
+  /** @brief True once any body (full, not only the captured prefix) received since @p needle was
+   * registered has contained it, regardless of later ring eviction. */
+  bool e2e_amqp_telemetry_watched_seen(const e2e_amqp_telemetry* t, const char* needle);
 
   /** @brief The earliest captured message whose body contains @p needle, or NULL. */
   const e2e_amqp_capture* e2e_amqp_telemetry_find(const e2e_amqp_telemetry* t, const char* needle);

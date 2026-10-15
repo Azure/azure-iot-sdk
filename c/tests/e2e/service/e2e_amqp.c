@@ -460,6 +460,24 @@ static void capture_map(e2e_amqp_capture* c, az_span encoded, const char* prefix
   }
 }
 
+/** @brief True if the @p size bytes at @p data contain the NUL-terminated @p needle. */
+static bool bytes_contain(const uint8_t* data, size_t size, const char* needle)
+{
+  const size_t n = strlen(needle);
+  if (n == 0 || n > size)
+  {
+    return false;
+  }
+  for (size_t i = 0; i + n <= size; i++)
+  {
+    if (data[i] == (uint8_t)needle[0] && memcmp(data + i, needle, n) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void on_message_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -470,8 +488,18 @@ static void on_message_received(
 
   az_amqp_message_body_kind body_kind;
   az_span body;
-  if (az_result_succeeded(az_amqp_message_get_body(message, &body_kind, &body))
-      && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA)
+  const bool has_body = az_result_succeeded(az_amqp_message_get_body(message, &body_kind, &body));
+  /* Before ring insertion, so a later eviction cannot hide a watched needle. */
+  for (int i = 0; has_body && i < t->watched_count; i++)
+  {
+    if (!t->watched_seen[i]
+        && bytes_contain(az_span_ptr(body), (size_t)az_span_size(body), t->watched[i]))
+    {
+      t->watched_seen[i] = true;
+      printf("[e2e amqp] watched needle '%s' received\n", t->watched[i]);
+    }
+  }
+  if (has_body && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA)
   {
     int n = az_span_size(body);
     if (n > E2E_AMQP_CAPTURE_BODY_MAX - 1)
@@ -765,6 +793,31 @@ bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
 bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle)
 {
   return e2e_amqp_telemetry_find(t, needle) != NULL;
+}
+
+bool e2e_amqp_telemetry_watch_needle(e2e_amqp_telemetry* t, const char* needle)
+{
+  const size_t n = strlen(needle);
+  if (n == 0 || n >= E2E_AMQP_WATCHED_NEEDLE_MAX || t->watched_count >= E2E_AMQP_WATCHED_MAX)
+  {
+    return false;
+  }
+  memcpy(t->watched[t->watched_count], needle, n + 1);
+  t->watched_seen[t->watched_count] = false;
+  t->watched_count++;
+  return true;
+}
+
+bool e2e_amqp_telemetry_watched_seen(const e2e_amqp_telemetry* t, const char* needle)
+{
+  for (int i = 0; i < t->watched_count; i++)
+  {
+    if (t->watched_seen[i] && strcmp(t->watched[i], needle) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 const e2e_amqp_capture* e2e_amqp_telemetry_find(const e2e_amqp_telemetry* t, const char* needle)

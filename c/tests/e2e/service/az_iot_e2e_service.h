@@ -58,6 +58,16 @@ extern "C"
   /* Returns true once a telemetry body containing @p needle has been received. */
   bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char* needle);
 
+  /** @brief Latches every later telemetry body (full body, all partitions) containing @p needle,
+   * independent of the 64-message capture ring. Up to 4 needles of under 128 bytes; cleared by
+   * az_iot_e2e_service_telemetry_watch_begin() and az_iot_e2e_service_telemetry_watch_end().
+   * @return false when not watching, the table is full or @p needle is empty or too long. */
+  bool az_iot_e2e_service_telemetry_watch_needle(az_iot_e2e_service* svc, const char* needle);
+
+  /** @brief True once a body containing the watched @p needle has been received since it was
+   * registered; false when it was not registered or the watcher has ended. */
+  bool az_iot_e2e_service_telemetry_needle_seen(const az_iot_e2e_service* svc, const char* needle);
+
   /* The lookups below read the earliest received message whose body contains @p needle, among
    * the most recent 64; call them before az_iot_e2e_service_telemetry_watch_end(). */
 
