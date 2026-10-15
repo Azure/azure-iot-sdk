@@ -147,7 +147,7 @@ typedef struct
   int submitted;
   int answered;
   int failed;
-  az_iot_result failure;
+  az_iot_result failure; /**< First unexpected status, else the last. */
   az_iot_result refusal;
 } get_race;
 
@@ -1261,6 +1261,12 @@ static void on_request_get(
   r->done = true;
 }
 
+/** @brief True for the statuses a GET may complete with when the session drops. */
+static bool drop_status_expected(az_iot_result status)
+{
+  return status == AZ_IOT_ERR_NOT_CONNECTED || status == AZ_IOT_ERR_TIMEOUT;
+}
+
 static void on_race_get(az_iot_result status, const az_iot_mqttv5_twin_state* twin, void* user_ctx)
 {
   (void)twin;
@@ -1273,7 +1279,11 @@ static void on_race_get(az_iot_result status, const az_iot_mqttv5_twin_state* tw
   else
   {
     r->failed++;
-    r->failure = status;
+    /* Keep the first unexpected status; a later NOT_CONNECTED must not hide it. */
+    if (r->failed == 1 || drop_status_expected(r->failure))
+    {
+      r->failure = status;
+    }
     printf("[e2e] race GET #%d completed %s\n", r->submitted, az_iot_result_to_string(status));
   }
 }
@@ -1381,7 +1391,7 @@ static void request_in_flight_when_session_drops_completes(void** state)
     }
     fx->race.active = false;
     printf(
-        "[e2e] attempt %d: %d GETs submitted, %d answered, %d failed (last %s), refusal %s; "
+        "[e2e] attempt %d: %d GETs submitted, %d answered, %d failed (kept %s), refusal %s; "
         "in flight %d, %lds after the drop\n",
         attempt,
         fx->race.submitted,
@@ -1397,7 +1407,7 @@ static void request_in_flight_when_session_drops_completes(void** state)
     }
     if (fx->race.failed != 0)
     {
-      if (fx->race.failure != AZ_IOT_ERR_NOT_CONNECTED && fx->race.failure != AZ_IOT_ERR_TIMEOUT)
+      if (!drop_status_expected(fx->race.failure))
       {
         fail_msg(
             "a GET at the drop completed %s, not NOT_CONNECTED or TIMEOUT",
