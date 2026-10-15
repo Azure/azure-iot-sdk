@@ -375,29 +375,44 @@ static az_iot_result _azm_user_property_next(
   return AZ_IOT_OK;
 }
 
-/** @brief az_mqtt5_publish_options.user_property_next over an az_iot_mqtt_user_properties. */
+/** @brief Context of _azm_publish_user_property_next(): the properties and their own cursor. */
+typedef struct
+{
+  const az_iot_mqtt_user_properties* properties;
+  size_t cursor; /**< SDK cursor (any size_t); the codec cursor only counts properties. */
+} _azm_publish_user_properties;
+
+/**
+ * @brief az_mqtt5_publish_options.user_property_next over an az_iot_mqtt_user_properties.
+ *
+ * The codec cursor counts properties read and restarts at 0 for each encoding pass, which
+ * restarts the SDK cursor.
+ */
 static az_result _azm_publish_user_property_next(
     void* context,
     int32_t* cursor,
     az_mqtt5_user_property* out)
 {
-  if (*cursor < 0)
+  _azm_publish_user_properties* const ctx = (_azm_publish_user_properties*)context;
+  if (*cursor < 0 || *cursor == INT32_MAX)
   {
     return AZ_ERROR_ARG;
   }
-  size_t c = (size_t)*cursor;
+  if (*cursor == 0)
+  {
+    ctx->cursor = 0;
+  }
   az_iot_mqtt_user_property_view p;
-  az_iot_result const r
-      = az_iot_mqtt_user_properties_next((const az_iot_mqtt_user_properties*)context, &c, &p);
+  az_iot_result const r = az_iot_mqtt_user_properties_next(ctx->properties, &ctx->cursor, &p);
   if (r == AZ_IOT_ERR_NOT_FOUND)
   {
     return AZ_ERROR_ITEM_NOT_FOUND;
   }
-  if (r != AZ_IOT_OK || c > INT32_MAX || p.key_len > UINT16_MAX || p.value_len > UINT16_MAX)
+  if (r != AZ_IOT_OK || p.key_len > UINT16_MAX || p.value_len > UINT16_MAX)
   {
     return AZ_ERROR_ARG;
   }
-  *cursor = (int32_t)c;
+  (*cursor)++;
   out->key = az_span_create((uint8_t*)(uintptr_t)p.key, (int32_t)p.key_len);
   out->value = az_span_create((uint8_t*)(uintptr_t)p.value, (int32_t)p.value_len);
   return AZ_OK;
@@ -986,6 +1001,9 @@ static az_iot_result _azm_publish(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   _AZM(publish_options) publish = _AZM(publish_options_default)();
+#if AZ_IOT_AZ_MQTT_V == 5
+  _azm_publish_user_properties user_properties = { &msg->user_properties, 0 };
+#endif
   publish.topic = az_span_create_from_str((char*)(uintptr_t)msg->topic);
   publish.payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
   publish.qos = (az_mqtt_qos)msg->qos;
@@ -1006,7 +1024,7 @@ static az_iot_result _azm_publish(
   if (msg->user_properties.next != NULL)
   {
     publish.user_property_next = _azm_publish_user_property_next;
-    publish.user_property_context = (void*)(uintptr_t)&msg->user_properties;
+    publish.user_property_context = &user_properties;
   }
   publish.topic_alias = msg->topic_alias;
   publish.message_expiry_interval = msg->message_expiry_seconds;

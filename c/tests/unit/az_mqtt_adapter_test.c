@@ -454,6 +454,74 @@ static void puback_codes_are_classified_v5(void** state)
   az_iot_az_mqtt_factory_destroy(f);
 }
 
+/** @brief Two properties at cursors 0 and 2^31, ending at SIZE_MAX: valid, and past INT32_MAX. */
+static az_iot_result wide_cursor_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source;
+  (void)source_len;
+  size_t const second = (size_t)INT32_MAX + 1u;
+  if (*cursor != 0 && *cursor != second)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  bool const first = *cursor == 0;
+  out->key = first ? "k1" : "k2";
+  out->value = first ? "v1" : "v2";
+  out->key_len = 2;
+  out->value_len = 2;
+  *cursor = first ? second : SIZE_MAX;
+  return AZ_IOT_OK;
+}
+
+/* The view's cursor is a size_t: a value past INT32_MAX must not fail the publish. */
+static void publish_accepts_a_user_property_cursor_past_int32_max(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
+  assert_non_null(f);
+  uint16_t port = 0;
+  test_sock listener = listen_loopback(&port);
+  puback_recorder r = { 0 };
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+  c->iface->set_inbound_cb(c, record_puback, &r);
+  az_iot_mqtt_connect_options o = valid_connect();
+  o.host = "127.0.0.1";
+  o.port = port;
+  o.clean_start = true;
+  assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
+  test_sock conn = handshake(c, listener, &r);
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "t";
+  msg.payload = (const uint8_t*)"x";
+  msg.payload_len = 1;
+  msg.qos = AZ_IOT_MQTT_QOS_0;
+  msg.user_properties.next = wide_cursor_next;
+  assert_int_equal(c->iface->publish(c, &msg, NULL), AZ_IOT_OK);
+  uint8_t packet[128];
+  size_t const len = read_packet(c, conn, packet, sizeof(packet));
+  static const uint8_t expected[] = {
+    0x30, 23,   0x00, 0x01, 't', 18, // PUBLISH QoS 0, topic "t", properties length
+    0x26, 0x00, 0x02, 'k',  '1', 0x00, 0x02, 'v', '1', // User Property
+    0x26, 0x00, 0x02, 'k',  '2', 0x00, 0x02, 'v', '2', // User Property
+    'x',
+  };
+  assert_int_equal(len, sizeof(expected));
+  assert_memory_equal(packet, expected, sizeof(expected));
+
+  (void)c->iface->disconnect(c);
+  c->iface->set_inbound_cb(c, NULL, NULL);
+  c->iface->destroy(c);
+  test_closesock(conn);
+  test_closesock(listener);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Vendored az_mqtt codec: User Properties without an array                   */
 /* ------------------------------------------------------------------------- */
@@ -783,6 +851,7 @@ int main(void)
     cmocka_unit_test(a_connect_the_encoder_refuses_fails_the_attempt),
     cmocka_unit_test(puback_codes_are_classified_v3),
     cmocka_unit_test(puback_codes_are_classified_v5),
+    cmocka_unit_test(publish_accepts_a_user_property_cursor_past_int32_max),
   };
   int const failed = cmocka_run_group_tests(tests, NULL, NULL);
 #if defined(_WIN32)
