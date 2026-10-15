@@ -69,8 +69,9 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # The custody e2e suite runs DPS issuance and hub traffic with a device key that
 # lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
-# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
-option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
+# AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
+option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.

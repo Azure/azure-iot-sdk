@@ -38,6 +38,8 @@ on:
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
       - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
+      - 'c/eng/setup-softhsm.sh'
+      - 'c/eng/setup-pkcs11-provider.sh'
       - '.github/workflows/ci-c-e2e-mqttv5.yml'
       - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
@@ -503,3 +505,98 @@ jobs:
       - name: Proxy log
         if: always()
         run: cat "$RUNNER_TEMP/tinyproxy.log" || true
+
+  custody:
+    name: custody / linux
+    needs: adr-namespace
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # softhsm2 + opensc hold the device key in a token; meson and pkg-config build the OpenSSL
+      # pkcs11 provider (c/eng/setup-pkcs11-provider.sh). Same as ci-c-e2e.yml.
+      - name: Install ninja, SoftHSM2 and the provider build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build softhsm2 opensc meson pkg-config
+
+      - name: Build
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custody
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-cu-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      # The device key moves into a SoftHSM2 token and the file copy is deleted, as in the custody
+      # step of ci-c-e2e.yml; the suite reaches the key only through AZ_IOT_CLIENT_KEY_URI.
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: DEBUG
+          # OpenSSL handshake errors; a custody failure is otherwise only "TCP/TLS connect failure".
+          AZ_IOT_PAHO_TRACE: error
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          # eval the provider exports so setup-softhsm.sh names pkcs11.so in the OpenSSL configuration.
+          $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY"'
+          if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
+          foreach ($line in $exports) {
+            if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
+              [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
+            }
+          }
+          Remove-Item Env:AZ_IOT_CLIENT_KEY
+          if (Test-Path $key) { throw "the device key file is still on disk" }
+          if (-not $env:AZ_IOT_CLIENT_KEY_URI) { throw "setup-softhsm.sh exported no AZ_IOT_CLIENT_KEY_URI" }
+
+          Write-Host "--- OPENSSL_CONF = $env:OPENSSL_CONF"
+          Get-Content $env:OPENSSL_CONF | Write-Host
+          # The provider must be active from the configuration alone, not loaded at run time.
+          $providers = & openssl list -providers 2>&1 | Out-String
+          Write-Host "--- providers active from configuration:`n$providers"
+          if ($LASTEXITCODE -ne 0) { throw "openssl list -providers failed ($LASTEXITCODE)" }
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
+            throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
+          }
+
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_custody `
+            --verbose --no-tests=error --timeout 900
+          if ($LASTEXITCODE -ne 0) { throw "mqttv5 custody e2e failed ($LASTEXITCODE)" }
