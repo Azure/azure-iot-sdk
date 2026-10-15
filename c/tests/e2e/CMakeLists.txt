@@ -240,6 +240,12 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         tests/e2e_mqttv5_twin_test.c tests/e2e_device.c)
     target_link_libraries(az_iot_tests_e2e_mqttv5_twin PRIVATE
         az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 connection lifecycle: DPS profile, saved hub with DPS fallback, reopen, eviction.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_connection
+        tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
 endif()
 
 endif() # AZ_IOT_WITH_PAHO
