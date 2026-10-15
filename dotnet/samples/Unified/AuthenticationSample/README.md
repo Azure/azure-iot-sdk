@@ -40,10 +40,4 @@ This approach can only be used if the boot authentication type is ```X509BootAut
 
 This approach will use the boot x509 certificates to authenticate with IoT Hub.
 
-This approach optionally allows you to use issued client certificates + the device's local x509 private key to authenticate rather than the symmetric key if you provisioned the device with a certificate signing request.
-
-### IssuedCertificateOperationalAuthenticationProvider
-
-This approach can be used regardless of boot authentication type as long as the provisioning includes a certificate signing request.
-
-This approach uses the issued client certificates + the device's local x509 private key to authenticate with IoT Hub rather than the boot credentials. 
+This approach optionally allows you to use issued client certificates + the device's local x509 private key to authenticate rather than the boot x509 certificates if you provisioned the device with a certificate signing request.

@@ -17,7 +17,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// Creates an operational provider that presents issued certificates paired with the CSR private key.
         /// A certificate must be issued by DPS or restored in the connection context before connecting to IoT Hub.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
-        /// Equivalent to <see cref="IssuedCertificateOperationalAuthenticationProvider"/>.
         /// </summary>
         public X509OperationalAuthenticationProvider(
             AsymmetricAlgorithm issuedCertificatePrivateKey,
@@ -36,7 +35,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication.Operational
         /// The callback receives a Base64-encoded chain, device certificate first, and returns a certificate with
         /// its private key. It runs from <see cref="GetCredentialsAsync"/> once per issued chain; failures are surfaced to the caller.
         /// This provider cannot authenticate with DPS and never falls back to boot credentials.
-        /// Equivalent to <see cref="IssuedCertificateOperationalAuthenticationProvider"/>.
         /// </summary>
         public X509OperationalAuthenticationProvider(
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,

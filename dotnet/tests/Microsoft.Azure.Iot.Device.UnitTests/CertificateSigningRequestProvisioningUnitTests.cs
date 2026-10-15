@@ -280,7 +280,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task IssuedCertificateOperationalProviderRejectsMissingCertificates()
+        public async Task IssuedCertificateOnlyX509OperationalProviderRejectsMissingCertificates()
         {
             using RSA operationalKey = RSA.Create(2048);
             X509OperationalAuthenticationProvider authentication = new(operationalKey);
@@ -603,13 +603,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task IssuedCertificateProviderPresentsOnlyIssuedCertificates()
+        public async Task X509OperationalProviderWithoutClientCertificatePresentsOnlyIssuedCertificates()
         {
             using RSA operationalKey = RSA.Create(2048);
             using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
             string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
 
-            IssuedCertificateOperationalAuthenticationProvider authentication = new(operationalKey);
+            X509OperationalAuthenticationProvider authentication = new(operationalKey);
             Assert.Same(operationalKey, authentication.IssuedCertificatePrivateKey);
             await Assert.ThrowsAsync<AuthenticationException>(() => authentication.GetCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken));
             await Assert.ThrowsAsync<AuthenticationException>(() => authentication.GetCredentialsAsync(AssignedHub, DeviceId, Array.Empty<string>(), TestContext.Current.CancellationToken));
@@ -623,7 +623,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task IssuedCertificateProviderInvokesItsCallbackOncePerIssuedChain()
+        public async Task X509OperationalProviderWithoutClientCertificateInvokesItsCallbackOncePerIssuedChain()
         {
             using RSA operationalKey = RSA.Create(2048);
             using X509Certificate2 issuedCertificate = CreateIssuedCertificate(operationalKey);
@@ -631,7 +631,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             string[] issuedChain = new[] { Convert.ToBase64String(issuedCertificate.RawData) };
             int callbackCount = 0;
 
-            IssuedCertificateOperationalAuthenticationProvider authentication = new(_ =>
+            X509OperationalAuthenticationProvider authentication = new(_ =>
             {
                 callbackCount++;
                 return Task.FromResult(issuedCertificateWithKey);
@@ -646,7 +646,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task ProvisioningWithAnIssuedCertificateProviderConnectsToTheHubWithTheIssuedCertificate()
+        public async Task ProvisioningWithAnIssuedCertificateOnlyX509ProviderConnectsToTheHubWithTheIssuedCertificate()
         {
             using RSA operationalKey = RSA.Create(2048);
             string csrBase64 = CreateCertificateSigningRequest(operationalKey);
@@ -669,7 +669,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
 
             using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
-            IssuedCertificateOperationalAuthenticationProvider authentication = new(operationalKey);
+            X509OperationalAuthenticationProvider authentication = new(operationalKey);
 
             ProvisioningSettings provisioningSettings = new(IdScope)
             {

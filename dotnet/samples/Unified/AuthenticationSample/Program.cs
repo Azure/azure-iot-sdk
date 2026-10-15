@@ -60,8 +60,9 @@ internal class Program
         AsymmetricAlgorithm privateKey = SampleConstants.LoadSymmetricKeyDevicePrivateKey();
 
         // This approach relies on creating new X509Certificate2 objects from the device's private key and the newly issued client certificates.
-        // The IssuedCertificateOperationalAuthenticationProvider class offers another constructor which allows for custom handling of this process.
-        OperationalAuthenticationProvider operationalAuthenticationProvider = new IssuedCertificateOperationalAuthenticationProvider(privateKey);
+        // The symmetric key is only used with IoT Hub if no client certificate has been issued to this device.
+        // The SymmetricKeyOperationalAuthenticationProvider class offers another constructor which allows for custom handling of this process.
+        OperationalAuthenticationProvider operationalAuthenticationProvider = new SymmetricKeyOperationalAuthenticationProvider(SampleConstants.LoadSymmetricKey(), privateKey);
 
         // Ask DPS to sign a certificate while provisioning. The device connects to IoT Hub with that DPS-issued certificate.
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope())
@@ -145,8 +146,9 @@ internal class Program
         AsymmetricAlgorithm privateKey = SampleConstants.LoadX509PrivateKey();
 
         // This approach relies on creating new X509Certificate2 objects from the device's private key and the newly issued client certificates.
-        // The IssuedCertificateOperationalAuthenticationProvider class offers another constructor which allows for custom handling of this process.
-        OperationalAuthenticationProvider operationalAuthenticationProvider = new IssuedCertificateOperationalAuthenticationProvider(privateKey);
+        // The boot certificate is only used with IoT Hub if no client certificate has been issued to this device.
+        // The X509OperationalAuthenticationProvider class offers another constructor which allows for custom handling of this process.
+        OperationalAuthenticationProvider operationalAuthenticationProvider = new X509OperationalAuthenticationProvider(SampleConstants.LoadX509BootCertificate(), privateKey);
 
         // Ask DPS to sign a certificate while provisioning. The device connects to IoT Hub with that DPS-issued certificate.
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope())

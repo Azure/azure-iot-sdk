@@ -36,7 +36,6 @@ cannot accidentally be supplied for the wrong endpoint.
 | --- | --- | --- |
 | X.509 | `X509BootAuthenticationProvider` | `X509OperationalAuthenticationProvider` |
 | Symmetric key | `SymmetricKeyBootAuthenticationProvider` | `SymmetricKeyOperationalAuthenticationProvider` |
-| Issued X.509 only | — | `IssuedCertificateOperationalAuthenticationProvider` |
 
 ```csharp
 // X.509 boot + X.509 operational using existing certificates.
@@ -55,26 +54,26 @@ Each key is Base64-encoded and must match the corresponding DPS enrollment or Hu
 device identity. A standard symmetric-key DPS enrollment assigns the same device
 key to Hub, so pass that key to both providers in that configuration.
 
-For X.509 operational authentication with a certificate issued during provisioning:
+For X.509 operational authentication with a certificate issued during provisioning, pass the
+CSR private key to the operational provider along with its usual credential:
 
 ```csharp
 var boot = new SymmetricKeyBootAuthenticationProvider(registrationId, idScope, bootKey);
-var operational = new IssuedCertificateOperationalAuthenticationProvider(csrPrivateKey);
+var operational = new SymmetricKeyOperationalAuthenticationProvider(operationalKey, csrPrivateKey);
 provisioningSettings.CertificateSigningRequest = new(csrPrivateKey, base64Csr);
 ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
     provisioningSettings, boot, operational, cancellationToken: cancellationToken);
 ```
 
-The boot provider can instead be an `X509BootAuthenticationProvider` holding the boot
-certificate. `IssuedCertificateOperationalAuthenticationProvider` only ever presents issued
-certificates; it accepts either the CSR private key or an asynchronous callback that returns
-the issued certificate with its private key, and turns each issued chain into a certificate
-inside `GetCredentialsAsync`. Issued-certificate-only providers fail if no certificate is
-available; they never fall back to a boot certificate or SAS token. To present an existing
-operational certificate until one is issued, pass that certificate along with the CSR private
-key or callback to `X509OperationalAuthenticationProvider` instead. Likewise, to authenticate
-with a symmetric key until a certificate is issued, pass the key along with the CSR private key
-or callback to `SymmetricKeyOperationalAuthenticationProvider`.
+Once a certificate is issued to the device (by DPS or Hub), `SymmetricKeyOperationalAuthenticationProvider`
+and `X509OperationalAuthenticationProvider` present it instead of the symmetric key or existing
+operational certificate. Both accept either the CSR private key or an asynchronous callback that
+returns the issued certificate with its private key, and turn each issued chain into a certificate
+inside `GetCredentialsAsync`. With an X.509 boot provider, use
+`new X509OperationalAuthenticationProvider(operationalCertificate, csrPrivateKey)` instead.
+`X509OperationalAuthenticationProvider` can also be created with only the CSR private key or
+callback; it then fails if no certificate has been issued and never falls back to a boot
+certificate or SAS token.
 
 Only the operational provider receives certificates issued by DPS or Hub.
 `ConnectionContext.OperationalAuthenticationProvider` is used on every Hub
