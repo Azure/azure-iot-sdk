@@ -24,6 +24,11 @@ internal class Program
             cts.Cancel();
             eventArgs.Cancel = true;
         };
+
+        await X509BootAndX509Operational(cts.Token);
+        await SymmetricKeyBootAndSymmetricKeyOperational(cts.Token);
+        await SymmetricKeyBootAndIssuedCertificatesOperational(cts.Token);
+        await X509BootAndIssuedCertificatesOperational(cts.Token);
     }
 
     // Device uses x509 boot certificate to both provision via DPS and to connect to IoT Hub after provisioning
@@ -33,11 +38,18 @@ internal class Program
         OperationalAuthenticationProvider operationalAuthenticationProvider = new X509OperationalAuthenticationProvider(SampleConstants.LoadX509BootCertificate());
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
         ConnectionClient client = new();
-        await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken);
+        await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, forceProvisioning:true, cancellationToken: cancellationToken);
 
         Console.WriteLine("Device successfully provisioned using boot certificate and connected to IoT Hub using boot certificate");
+
+        await client.DisconnectAsync(cancellationToken);
     }
 
+    // Device uses symmetric key authentication to provision via DPS and uses newly issued certificates generated during provisioning to connect to IoT Hub.
+    // It then asks IoT Hub to sign a new certificate, and disconnects and reconnects to IoT Hub using the certificate that IoT Hub issued.
+    // 
+    // Typically, a device only needs to send a certificate signing request to IoT Hub when the current certificates are nearing expiration, but this sample
+    // does it immediately after provisioning for demonstration purposes
     public static async Task SymmetricKeyBootAndIssuedCertificatesOperational(CancellationToken cancellationToken)
     {
         BootAuthenticationProvider bootAuthenticationProvider = new SymmetricKeyBootAuthenticationProvider(SampleConstants.LoadSymmetricKeyDeviceId(), SampleConstants.LoadIdScope(), SampleConstants.LoadSymmetricKey());
@@ -58,7 +70,7 @@ internal class Program
         };
 
         using ConnectionClient client = new();
-        ConnectionContext connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken);
+        ConnectionContext connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, forceProvisioning: true, cancellationToken: cancellationToken);
 
         Console.WriteLine("Device successfully provisioned using boot certificate and connected to IoT Hub using certificates issued by DPS");
         Console.WriteLine($"DPS issued certificate thumbprint: {GetLeafThumbprint(connectionContext.IssuedClientCertificates)}");
@@ -94,13 +106,35 @@ internal class Program
 
         // Disconnecting keeps the connection context, so this reconnects directly to the same IoT Hub (without provisioning again) using the
         // certificate that IoT Hub issued.
-        connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken);
+        connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, forceProvisioning: true, cancellationToken: cancellationToken);
 
         await client.DisconnectAsync(cancellationToken);
     }
 
+    // Device uses symmetric key authentication to provision via DPS and uses the same symmetric key to authenticate with IoT Hub.
+    public static async Task SymmetricKeyBootAndSymmetricKeyOperational(CancellationToken cancellationToken)
+    {
+        BootAuthenticationProvider bootAuthenticationProvider = new SymmetricKeyBootAuthenticationProvider(SampleConstants.LoadSymmetricKeyDeviceId(), SampleConstants.LoadIdScope(), SampleConstants.LoadSymmetricKey());
+
+        OperationalAuthenticationProvider operationalAuthenticationProvider = new SymmetricKeyOperationalAuthenticationProvider(SampleConstants.LoadSymmetricKey());
+
+        // Ask DPS to sign a certificate while provisioning. The device connects to IoT Hub with that DPS-issued certificate.
+        ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
+
+        using ConnectionClient client = new();
+        ConnectionContext connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, forceProvisioning: true, cancellationToken: cancellationToken);
+
+        Console.WriteLine("Device successfully provisioned using boot symmetric key and connected to IoT Hub using the same symmetric key");
+
+        await client.DisconnectAsync(cancellationToken);
+        Console.WriteLine("Device disconnected from IoT Hub");
+    }
+
     // Device uses x509 boot certificate to provision via DPS and uses newly issued certificates generated during provisioning to connect to IoT Hub.
     // It then asks IoT Hub to sign a new certificate, and disconnects and reconnects to IoT Hub using the certificate that IoT Hub issued.
+    // 
+    // Typically, a device only needs to send a certificate signing request to IoT Hub when the current certificates are nearing expiration, but this sample
+    // does it immediately after provisioning for demonstration purposes
     public static async Task X509BootAndIssuedCertificatesOperational(CancellationToken cancellationToken)
     {
         BootAuthenticationProvider bootAuthenticationProvider = new X509BootAuthenticationProvider(SampleConstants.LoadX509BootCertificate());
@@ -121,7 +155,7 @@ internal class Program
         };
 
         using ConnectionClient client = new();
-        ConnectionContext connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken);
+        ConnectionContext connectionContext = await client.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, forceProvisioning: true, cancellationToken: cancellationToken);
 
         Console.WriteLine("Device successfully provisioned using boot certificate and connected to IoT Hub using certificates issued by DPS");
         Console.WriteLine($"DPS issued certificate thumbprint: {GetLeafThumbprint(connectionContext.IssuedClientCertificates)}");
