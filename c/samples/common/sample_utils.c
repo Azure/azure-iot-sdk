@@ -136,23 +136,6 @@ void sample_config_release(sample_config* config)
   memset(config, 0, sizeof(*config));
 }
 
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config)
-{
-  if (options == NULL || config == NULL)
-  {
-    return;
-  }
-  options->dps.id_scope = config->id_scope;
-  options->dps.registration_id = config->reg_id;
-  /* Left NULL when unset, which is what selects the SDK's global endpoint. */
-  if (config->dps_global_endpoint != NULL)
-  {
-    options->dps.global_endpoint = config->dps_global_endpoint;
-  }
-}
-
 az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
 {
   /* Static: the sink writes through this state for the life of the process. */
