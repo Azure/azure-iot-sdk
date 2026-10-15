@@ -42,9 +42,10 @@
 #define E2E_MAX_PUBLISHES 32
 #define E2E_IN_FLIGHT 8
 #define E2E_APP_PROPERTIES 8
-/* The mqttv5 broker caps a message at 1 MB and Event Hubs routing at 1 MB with properties;
- * neither Paho nor the SDK caps a publish. The at-limit body leaves 8 KiB for properties. */
-#define E2E_PAYLOAD_AT_LIMIT (1024 * 1024 - 8 * 1024)
+/* Observed on the mqttv5 hub: 257 KiB is routed; 1 MiB - 8 KiB drops the session. The documented
+ * broker limit is 512 KB; the accepted body stays under it with 8 KiB for properties. Neither
+ * Paho nor the SDK caps a publish. */
+#define E2E_PAYLOAD_AT_LIMIT (512 * 1000 - 8 * 1024)
 #define E2E_PAYLOAD_PAST_LIMIT (1024 * 1024 + 4 * 1024)
 /* Not the SDK default (application/json), so a dropped $.ct cannot pass. */
 #define E2E_CONTENT_TYPE "application/vnd.e2e+json"
