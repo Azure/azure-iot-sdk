@@ -204,8 +204,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateAuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(1, mockDps.RegistrationCount);
@@ -218,8 +217,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateAuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Same(connectionContext, reconnectedContext);
