@@ -150,6 +150,10 @@
   MQTT adapters, including your own, must implement and read the view: see
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
   patched for it (`deps/az_mqtt/VENDORED.md`).
+- Software updates: a `FAILED` or `CANCELED` workflow offered again under the same `workflowId` is
+  retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
+  offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
+  restart; the persisted format moves to version 2, so version-1 records are ignored.
 
 ### Bugs Fixed
 

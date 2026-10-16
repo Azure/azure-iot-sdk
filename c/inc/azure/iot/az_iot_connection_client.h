@@ -836,7 +836,9 @@ extern "C"
      * both roles. NULL uses the C library's time(); set it on a platform
      * without one. A time of 0, or one so large the token expiry would
      * overflow, fails the attempt with AZ_IOT_ERR_BUSY: open() returns it; a
-     * reconnect attempt is retried under reconnection_policy.
+     * reconnect attempt is retried under reconnection_policy. The software
+     * updates client also reads it to keep a failed workflow's retry wait
+     * across restarts.
      */
     struct
     {
