@@ -83,6 +83,17 @@ extern "C"
       uint64_t* rng_state,
       uint64_t unix_now_s);
 
+  /**
+   * @brief Set the Unix deadline of the scheduled retry, a second past due_ms.
+   *
+   * @param[in] unix_now_s Unix seconds read at @p mono_at_ms; 0 when unknown (no deadline).
+   * @param[in] mono_at_ms az_iot_time_mono_ms() when @p unix_now_s was read.
+   */
+  void az_iot_retry_state__set_unix_deadline(
+      az_iot_retry_state* state,
+      uint64_t unix_now_s,
+      uint64_t mono_at_ms);
+
   /** @brief Milliseconds until the scheduled retry; 0 when none or due. Does not consume it. */
   uint32_t az_iot_retry_state__remaining_ms(const az_iot_retry_state* state);
 

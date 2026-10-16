@@ -67,6 +67,7 @@ extern "C"
       uint64_t due_ms; /**< Monotonic ms the retry may run at; 0 = none scheduled. */
       uint32_t attempt; /**< Failures counted since the last reset. */
       uint64_t due_unix_s; /**< due_ms in Unix seconds; 0 = unknown. */
+      bool due_unix_aligned; /**< due_unix_s was set from the same instant as due_ms. */
     } _internal;
   } az_iot_retry_state;
 
