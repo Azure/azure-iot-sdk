@@ -107,12 +107,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// client certificate is issued to this device.
         /// </param>
         /// <param name="handleCertificateSigningCompleteAsync">
-        /// Invoked when a client certificate chain is issued to this device, either by the device provisioning service
-        /// during provisioning or by IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
+        /// Invoked before connecting to IoT Hub with a new client certificate chain issued by the device provisioning
+        /// service or IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
         /// returns the certificate, with its private key, to present to IoT Hub, so it can apply custom logic such as
         /// persisting the certificate or pairing it with an HSM-backed key. It is invoked once per issued chain.
-        /// If it throws during provisioning, provisioning fails; if it throws for a certificate signing request sent to
-        /// IoT Hub, that certificate signing operation fails.
+        /// If it throws, the connection attempt fails.
         /// </param>
         /// <param name="certificateChain">
         /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
@@ -174,19 +173,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         private readonly IssuedCertificateHandler _issuedCertificateHandler;
 
-        public override Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates)
-        {
-            return _issuedCertificateHandler.HandleAsync(issuedClientCertificates);
-        }
-
-        public override AuthenticationCredentials GetOperationalAuthenticationCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
             if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
             {
                 return CreateCredentials(ClientCertificate);
             }
 
-            return CreateCredentials(_issuedCertificateHandler.GetCertificate(issuedClientCertificates) ?? ClientCertificate);
+            X509Certificate2 certificate = await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates).ConfigureAwait(false);
+            return CreateCredentials(certificate);
         }
 
         private Task<X509Certificate2> PresentOriginalCertificateAsync(IReadOnlyList<string> issuedClientCertificates)

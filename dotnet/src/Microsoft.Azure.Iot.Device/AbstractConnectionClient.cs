@@ -457,14 +457,6 @@ namespace Microsoft.Azure.Iot.Device
                 ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
-            // Let the provider prepare any certificates DPS issued (for example by invoking its certificate signing complete
-            // callback) before they are passed to it on every connection to IoT hub, so the provider decides whether to
-            // present them (operational certificates) or its own (boot certificates).
-            if (provisioningResult.IssuedClientCertificateChain is { Count: > 0 } issuedClientCertificates)
-            {
-                await authentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates);
-            }
-
             await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
 
             return CurrentConnectionContext;
@@ -578,24 +570,10 @@ namespace Microsoft.Azure.Iot.Device
             AuthenticationProvider authentication = connectionContext.AuthenticationProvider;
             IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
 
-            // Normally a no-op since providers are notified when certificates are issued, but covers a provider that was
-            // swapped into the connection context afterwards.
-            if (issuedClientCertificates is { Count: > 0 })
-            {
-                try
-                {
-                    await authentication.HandleClientCertificatesIssuedAsync(issuedClientCertificates).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Trace.TraceError("Authentication provider failed to handle the issued client certificates; connecting with its fallback credentials. {0}", ex);
-                }
-            }
-
-            AuthenticationCredentials hubCredentials = authentication.GetOperationalAuthenticationCredentials(
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
                 connectPacketToEdit.HostName,
                 connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates);
+                issuedClientCertificates).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt

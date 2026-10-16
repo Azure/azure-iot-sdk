@@ -170,24 +170,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
                         // The authentication provider receives these on the next connection attempt to IoT hub.
-                        //TODO need a fault-injection like unit test that ensures that the client presents these new certificates upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
                         if (CurrentConnectionContext != null)
                         {
                             CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
-
-                            if (response.Certificates is { Count: > 0 })
-                            {
-                                try
-                                {
-                                    await CurrentConnectionContext.AuthenticationProvider.HandleClientCertificatesIssuedAsync(response.Certificates);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Trace.TraceError("Authentication provider failed to handle the client certificates issued by IoT hub. {0}", ex);
-                                    pendingCertificateSigningOperation.SetFailed(ex);
-                                    return;
-                                }
-                            }
                         }
 
                         pendingCertificateSigningOperation.SetCompleted(response);

@@ -21,7 +21,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// entry is a Base64-encoded certificate; the first is the issued device certificate, followed by any
         /// intermediates. Null if no client certificate has been issued to this device.
         /// </param>
-        public abstract AuthenticationCredentials GetOperationalAuthenticationCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
+        /// <remarks>
+        /// Called before every connection attempt to IoT Hub. Providers should prepare any issued certificates here
+        /// before returning the credentials to present. If preparation fails, the connection attempt fails.
+        /// </remarks>
+        public abstract Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
@@ -31,12 +35,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public abstract AuthenticationCredentials GetBootAuthenticationCredentials();
 
         public abstract string GetRegistrationId();
-
-        /// <summary>
-        /// Called (asynchronously) when a client certificate chain is issued to this device, and before each connection
-        /// attempt to IoT Hub, so providers can prepare the certificate to present. Must be idempotent per chain.
-        /// </summary>
-        public virtual Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates) => Task.CompletedTask;
 
         /// <summary>
         /// An optional callback for custom validation of the server (remote) certificate during the TLS handshake.

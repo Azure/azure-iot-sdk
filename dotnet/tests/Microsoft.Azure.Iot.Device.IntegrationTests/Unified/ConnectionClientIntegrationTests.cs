@@ -123,7 +123,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.NotNull(connectionContext.IssuedClientCertificates);
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-                AuthenticationCredentials hubCredentials = authentication.GetOperationalAuthenticationCredentials(
+                AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
                     connectionContext.IssuedClientCertificates);

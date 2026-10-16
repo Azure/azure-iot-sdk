@@ -65,12 +65,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="idScope">The device provisioning service Id scope.</param>
         /// <param name="symmetricKey">The Base64-encoded symmetric key used to authenticate with the device provisioning service.</param>
         /// <param name="handleCertificateSigningCompleteAsync">
-        /// Invoked when a client certificate chain is issued to this device, either by the device provisioning service
-        /// during provisioning or by IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
+        /// Invoked before connecting to IoT Hub with a new client certificate chain issued by the device provisioning
+        /// service or IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
         /// returns the certificate, with its private key, to present to IoT Hub, so it can apply custom logic such as
         /// persisting the certificate or pairing it with an HSM-backed key. It is invoked once per issued chain.
-        /// If it throws during provisioning, provisioning fails; if it throws for a certificate signing request sent to
-        /// IoT Hub, that certificate signing operation fails.
+        /// If it throws, the connection attempt fails.
         /// </param>
         /// <param name="remoteCertificateValidationCallback">
         /// An optional callback used to perform custom validation of the server (remote) certificate during the TLS handshake.
@@ -108,21 +107,16 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>> HandleCertificateSigningCompleteAsync { get; }
 
-        public override Task HandleClientCertificatesIssuedAsync(IReadOnlyList<string> issuedClientCertificates)
-        {
-            return _issuedCertificateHandler.HandleAsync(issuedClientCertificates);
-        }
-
-        public override AuthenticationCredentials GetOperationalAuthenticationCredentials(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
         {
             X509Certificate2? issuedCertificate = issuedClientCertificates == null || issuedClientCertificates.Count == 0
                 ? null
-                : _issuedCertificateHandler.GetCertificate(issuedClientCertificates);
+                : await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates).ConfigureAwait(false);
 
             if (issuedCertificate == null)
             {
                 Trace.TraceInformation("No issued client certificate is available for this device yet, so it will authenticate with IoT Hub using its symmetric key.");
-                return base.GetOperationalAuthenticationCredentials(hostName, deviceId, issuedClientCertificates);
+                return await base.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, issuedClientCertificates).ConfigureAwait(false);
             }
 
             return new AuthenticationCredentials()
