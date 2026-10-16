@@ -104,6 +104,10 @@ extern "C"
    * e2e_http_poll; exposed for tests. */
   void e2e_http_parse_headers(e2e_http_request* r);
 
+  /* True once the parsed headers and the bytes received make a complete response:
+   * a 204 or 304 at the end of its headers, otherwise Content-Length bytes of body. */
+  bool e2e_http_response_complete(const e2e_http_request* r);
+
   /* Advance the request state machine a little without blocking on the device.
    * Returns 0 while pending, 1 when the response is complete, -1 on error. */
   int e2e_http_poll(e2e_http_request* r);

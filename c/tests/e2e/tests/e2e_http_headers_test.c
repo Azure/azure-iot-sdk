@@ -70,6 +70,31 @@ static void test_unusable_retry_after_is_zero(void** state)
   }
 }
 
+static void test_no_body_statuses_complete_at_the_headers(void** state)
+{
+  (void)state;
+  /* 204 and 304 have no body: complete without Content-Length or a close. */
+  e2e_http_request* r = parse("HTTP/1.1 204 No Content\r\nx-ms-request-id: 1\r\n\r\n");
+  assert_true(e2e_http_response_complete(r));
+  free(r);
+  r = parse("HTTP/1.1 304 Not Modified\r\n\r\n");
+  assert_true(e2e_http_response_complete(r));
+  free(r);
+  /* Other statuses wait for Content-Length bytes, or for the close when it is absent. */
+  r = parse("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n{}");
+  assert_false(e2e_http_response_complete(r));
+  free(r);
+  r = parse("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+  assert_true(e2e_http_response_complete(r));
+  free(r);
+  r = parse("HTTP/1.1 200 OK\r\n\r\n{}");
+  assert_false(e2e_http_response_complete(r));
+  free(r);
+  r = parse("HTTP/1.1 204 No Content\r\n");
+  assert_false(e2e_http_response_complete(r));
+  free(r);
+}
+
 static void test_incomplete_headers_are_not_parsed(void** state)
 {
   (void)state;
@@ -84,6 +109,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_last_header_is_parsed),
     cmocka_unit_test(test_unusable_retry_after_is_zero),
+    cmocka_unit_test(test_no_body_statuses_complete_at_the_headers),
     cmocka_unit_test(test_incomplete_headers_are_not_parsed),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

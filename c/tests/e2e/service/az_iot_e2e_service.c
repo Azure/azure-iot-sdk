@@ -1068,6 +1068,7 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
     return false;
   }
   int status = 0;
+  char resp[512] = { 0 };
   bool ok = https_request(
       info.host,
       "DELETE",
@@ -1076,18 +1077,18 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       NULL,
       NULL,
       NULL,
-      "If-Match: *",
+      "If-Match: \"*\"",
       NULL,
       0,
       &status,
-      NULL,
-      0,
+      resp,
+      sizeof(resp),
       NULL,
       NULL);
   bool done = ok && ((status >= 200 && status < 300) || status == 404);
   if (!done)
   {
-    (void)fprintf(stderr, "[e2e] hub DELETE /devices/%s: HTTP %d\n", device_id, status);
+    (void)fprintf(stderr, "[e2e] hub DELETE /devices/%s: HTTP %d %s\n", device_id, status, resp);
   }
   return done;
 }

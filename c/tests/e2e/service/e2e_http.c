@@ -400,8 +400,7 @@ int e2e_http_poll(e2e_http_request* r)
       {
         r->response_len += (int)got;
         e2e_http_parse_headers(r);
-        if (r->headers_done && r->content_length >= 0
-            && (r->response_len - r->body_start) >= r->content_length)
+        if (e2e_http_response_complete(r))
         {
           r->phase = E2E_HTTP_PHASE_DONE;
           return 1;
@@ -432,6 +431,20 @@ int e2e_http_poll(e2e_http_request* r)
     default:
       return -1;
   }
+}
+
+bool e2e_http_response_complete(const e2e_http_request* r)
+{
+  if (!r->headers_done)
+  {
+    return false;
+  }
+  /* 204 and 304 carry no body (RFC 9110), whatever the headers say. */
+  if (r->http_status == 204 || r->http_status == 304)
+  {
+    return true;
+  }
+  return r->content_length >= 0 && (r->response_len - r->body_start) >= r->content_length;
 }
 
 int e2e_http_status(const e2e_http_request* r) { return r->http_status; }
