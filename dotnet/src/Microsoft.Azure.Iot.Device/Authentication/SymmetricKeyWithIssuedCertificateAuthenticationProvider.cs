@@ -44,14 +44,18 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// An optional callback used to select which client certificate to present during the TLS handshake with IoT Hub.
         /// When null, the issued certificate is presented.
         /// </param>
+        /// <param name="iotHubSasTokenTimeToLive">The lifetime of IoT Hub SAS tokens used before a certificate is issued. Must be positive. Defaults to one hour.</param>
+        /// <param name="dpsSasTokenTimeToLive">The lifetime of device provisioning service SAS tokens. Must be positive. Defaults to one hour.</param>
         public SymmetricKeyWithIssuedCertificateAuthenticationProvider(
             string registrationId,
             string idScope,
             byte[] symmetricKey,
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
-            : base(registrationId, idScope, symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback)
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
+            TimeSpan? iotHubSasTokenTimeToLive = null,
+            TimeSpan? dpsSasTokenTimeToLive = null)
+            : base(registrationId, idScope, symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
         {
             IssuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
             HandleCertificateSigningCompleteAsync = IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
@@ -79,14 +83,18 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// An optional callback used to select which client certificate to present during the TLS handshake with IoT Hub.
         /// When null, the certificate returned by <paramref name="handleCertificateSigningCompleteAsync"/> is presented.
         /// </param>
+        /// <param name="iotHubSasTokenTimeToLive">The lifetime of IoT Hub SAS tokens used before a certificate is issued. Must be positive. Defaults to one hour.</param>
+        /// <param name="dpsSasTokenTimeToLive">The lifetime of device provisioning service SAS tokens. Must be positive. Defaults to one hour.</param>
         public SymmetricKeyWithIssuedCertificateAuthenticationProvider(
             string registrationId,
             string idScope,
             byte[] symmetricKey,
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
-            : base(registrationId, idScope, symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback)
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
+            TimeSpan? iotHubSasTokenTimeToLive = null,
+            TimeSpan? dpsSasTokenTimeToLive = null)
+            : base(registrationId, idScope, symmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
         {
             HandleCertificateSigningCompleteAsync = handleCertificateSigningCompleteAsync
                 ?? throw new ArgumentNullException(nameof(handleCertificateSigningCompleteAsync));

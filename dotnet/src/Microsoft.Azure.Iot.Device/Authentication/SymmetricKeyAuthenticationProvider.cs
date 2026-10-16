@@ -12,6 +12,10 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     public class SymmetricKeyAuthenticationProvider : AuthenticationProvider
     {
         private readonly byte[] _symmetricKey;
+
+        private readonly TimeSpan _iotHubSasTokenTimeToLive;
+
+        private readonly TimeSpan _dpsSasTokenTimeToLive;
         
         private string _registrationId;
 
@@ -25,15 +29,31 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="symmetricKey">The raw symmetric key bytes, not a Base64-encoded string.</param>
         /// <param name="remoteCertificateValidationCallback">An optional callback for validating the server certificate.</param>
         /// <param name="localCertificateSelectionCallback">An optional callback for selecting the client certificate.</param>
+        /// <param name="iotHubSasTokenTimeToLive">The lifetime of IoT Hub SAS tokens. Must be positive. Defaults to one hour.</param>
+        /// <param name="dpsSasTokenTimeToLive">The lifetime of device provisioning service SAS tokens. Must be positive. Defaults to one hour.</param>
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
             byte[] symmetricKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) //TODO primary + secondary keys?
+            LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
+            TimeSpan? iotHubSasTokenTimeToLive = null,
+            TimeSpan? dpsSasTokenTimeToLive = null)
             : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
             ArgumentNullException.ThrowIfNull(symmetricKey);
+            _iotHubSasTokenTimeToLive = iotHubSasTokenTimeToLive ?? TimeSpan.FromHours(1);
+            _dpsSasTokenTimeToLive = dpsSasTokenTimeToLive ?? TimeSpan.FromMinutes(10);
+            if (_iotHubSasTokenTimeToLive <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(iotHubSasTokenTimeToLive), "SAS token lifetime must be positive.");
+            }
+
+            if (_dpsSasTokenTimeToLive <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(dpsSasTokenTimeToLive), "SAS token lifetime must be positive.");
+            }
+
             _idScope = idScope;
             _registrationId = registrationId;
             // Note that the device will use the same symmetric key when deriving SAS tokens to authenticate with IoT Hub and with DPS
@@ -44,19 +64,19 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         {
             // Note that hostname + device id may change over time, so cannot just take them in constructor.
             // Device-scoped token: no key name (skn) since the key is the device's own key
-            string sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(hostName, "/devices/", deviceId), TimeSpan.FromHours(1)); //TODO configurable timespan
+            string sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(hostName, "/devices/", deviceId), _iotHubSasTokenTimeToLive);
             return Task.FromResult(CreateCredentials(sasToken));
         }
 
         public override AuthenticationCredentials GetBootAuthenticationCredentials()
         {
-            string sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), TimeSpan.FromHours(1)); //TODO configurable timespan
+            string sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), _dpsSasTokenTimeToLive);
             return CreateCredentials(sasToken);
         }
 
         private AuthenticationCredentials CreateCredentials(string sasToken)
         {
-            return new AuthenticationCredentials() //TODO want to re-use the same instance to persist certificate signing results 
+            return new AuthenticationCredentials()
             {
                 Password = Encoding.UTF8.GetBytes(sasToken),
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
