@@ -215,9 +215,10 @@ extern "C"
    * allocated and needs no heap.
    */
   /* Bound on a request/response body. A compliant update-check response fits
-   * every transport the service offers; this is sized for that. */
+   * every transport the service offers; this is sized for that. See
+   * _az_IOT_SU_CHANNEL_BODY_SIZE for how it follows the property storage. */
 #ifndef AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE
-#define AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE 2048
+#define AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE _az_IOT_SU_CHANNEL_BODY_SIZE
 #endif
 
 /** @brief Compatibility properties the channel sends; the service's limit. */
