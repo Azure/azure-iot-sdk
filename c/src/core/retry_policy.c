@@ -242,16 +242,16 @@ void az_iot_retry_state__restore(
   uint64_t now_ms = az_iot_time_mono_ms();
   state->_internal.attempt = rd_u32le(in);
   state->_internal.due_ms = (wait_ms == 0u) ? 0u : now_ms + wait_ms;
-  if (keep_deadline)
+  /* A kept deadline never matches due_ms exactly: the Unix time has no
+   * fraction, and an unknown time restarts the whole saved wait. */
+  az_iot_retry_state__set_unix_deadline(state, unix_now_s, now_ms);
+  if (keep_deadline
+      || (due_unix != 0u && state->_internal.due_unix_s != 0u
+          && due_unix < state->_internal.due_unix_s))
   {
+    /* The earlier one, so a capped deadline cannot creep later on each restart. */
     state->_internal.due_unix_s = due_unix;
-    /* With the time unknown, due_ms restarts the whole saved wait and no longer
-     * matches the kept deadline. */
-    state->_internal.due_unix_aligned = unix_now_s != 0u;
-  }
-  else
-  {
-    az_iot_retry_state__set_unix_deadline(state, unix_now_s, now_ms);
+    state->_internal.due_unix_aligned = false;
   }
 }
 
