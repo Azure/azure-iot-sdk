@@ -326,8 +326,9 @@ extern "C"
   bool az_iot_e2e_dps_enrollment_delete(const char* registration_id);
 
   /* Deletes a device identity from the hub; a missing one counts as deleted.
-   * Signs with IOTHUB_REGISTRY_CONNECTION_STRING when set (a policy with
-   * RegistryWrite), else with the service's hub connection string. */
+   * Signs with the policy of IOTHUB_REGISTRY_CONNECTION_STRING when set (one with
+   * RegistryWrite), else with that of the service's hub connection string; the
+   * request goes to the service's hub host either way. */
   bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id);
 
 #ifdef __cplusplus

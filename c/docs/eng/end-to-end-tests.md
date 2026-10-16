@@ -129,7 +129,7 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
 requests and on main; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING` (a DPS policy with
 EnrollmentWrite and RegistrationStatusWrite), `IOTHUB_CONNECTION_STRING`,
 `IOTHUB_EVENTHUB_CONNECTION_STRING`; optional `IOTHUB_REGISTRY_CONNECTION_STRING` (RegistryWrite,
-used for the device delete instead of `IOTHUB_CONNECTION_STRING`) and `AZ_IOT_TRUSTED_CA`):
+its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host) and `AZ_IOT_TRUSTED_CA`):
 
 - [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software
   (`samples/common/sample_tpm_sim.c`) gets a new individual enrollment through the DPS service

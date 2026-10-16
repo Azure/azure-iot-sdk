@@ -1048,15 +1048,22 @@ bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
 
 bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)
 {
-  /* IOTHUB_REGISTRY_CONNECTION_STRING (a policy with RegistryWrite) when set,
-   * else the hub connection string the service was created with. */
+  /* The policy of IOTHUB_REGISTRY_CONNECTION_STRING (RegistryWrite) when set, else
+   * that of the service's hub connection string. The request always goes to the
+   * service's host: a hub with a separate device hostname refuses service
+   * operations on it. */
   e2e_conn_info info = svc->hub_info;
   char cs[512];
-  if (env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs))
-      && !e2e_conn_info_parse(cs, &info))
+  if (env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs)))
   {
-    (void)fprintf(stderr, "[e2e] IOTHUB_REGISTRY_CONNECTION_STRING is malformed\n");
-    return false;
+    e2e_conn_info registry;
+    if (!e2e_conn_info_parse(cs, &registry))
+    {
+      (void)fprintf(stderr, "[e2e] IOTHUB_REGISTRY_CONNECTION_STRING is malformed\n");
+      return false;
+    }
+    memcpy(info.key_name, registry.key_name, sizeof(info.key_name));
+    memcpy(info.key, registry.key, sizeof(info.key));
   }
   char sas[512];
   char path[256];
