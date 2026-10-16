@@ -124,6 +124,17 @@ extern "C"
       uint64_t unix_now_s,
       uint32_t max_wait_ms);
 
+  /**
+   * @brief As az_iot_retry_state__restore(), with @p unix_now_s read at monotonic
+   * @p mono_at_ms; the restored wait is measured from that instant.
+   */
+  void az_iot_retry_state__restore_at(
+      az_iot_retry_state* state,
+      const uint8_t* in,
+      uint64_t unix_now_s,
+      uint32_t max_wait_ms,
+      uint64_t mono_at_ms);
+
   /** @brief Hold the scheduled retry until at least @p not_before_ms (az_iot_time_mono_ms()). */
   void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms);
 
