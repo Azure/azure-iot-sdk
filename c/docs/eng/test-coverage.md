@@ -1050,7 +1050,7 @@ The fallback rows, on all routes, are numeric `400000`, `409000`, `429000`, capt
 `500001`, `503000`, unknown `FUTURE_CODE` with `400002` or `503000`, and bodyless 503.
 Fetches additionally exercise numeric `400004` corrective resend. Numeric values come
 from the SDK's existing DPS constants/captured fixtures, **not HTTP status multiplication**.
-The untyped shared `409000` is `PROCEED` on a fetch and `FATAL` on a report; no 409
+The untyped shared `409000` is `PROCEED` on a fetch and `FATAL` on a report; a 409
 never means the report was recorded.
 
 | Suite | Evidence beyond classification |
