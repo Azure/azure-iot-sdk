@@ -996,6 +996,57 @@ static void a_capped_deadline_does_not_creep_across_restarts(void** state)
   }
 }
 
+/* restore_at() measures both deadlines from the instant the Unix time was
+ * read: a pause before the restore cannot shorten a later restored wait. */
+static void a_pause_before_restoring_does_not_shorten_the_wait(void** state)
+{
+  (void)state;
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE] = { 1, 0, 0, 0, 60, 0, 0, 0 };
+  uint64_t read_at = az_iot_time_mono_ms() - 10000u; /* Unix time read 10 s ago */
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore_at(&r, rec, 1800000000u, 86400000u, read_at);
+  assert_int_equal(r._internal.due_ms, read_at + 60000u);
+  assert_int_equal(r._internal.due_unix_s, 1800000000u + 60u + 1u);
+  assert_true(r._internal.due_unix_aligned);
+
+  /* Saved now (10 s after the Unix read) and restored at T+10: 51 s left, no
+   * less than the 50 s the monotonic clock still holds. */
+  az_iot_retry_state__save(&r, rec);
+  az_iot_retry_state__restore(&r, rec, 1800000000u + 10u, 86400000u);
+  uint32_t left = az_iot_retry_state__remaining_ms(&r);
+  assert_true(left > 50000u && left <= 51000u);
+}
+
+/* Deferrals that are not whole seconds drop the Unix deadline instead of
+ * rounding each one up, so many small ones cannot inflate a restored wait. */
+static void fractional_deferrals_do_not_inflate_the_deadline(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  az_iot_retry_state__set_unix_deadline(&s, 1800000000u, s._internal.due_ms - 60000u);
+  for (int i = 0; i < 1000; ++i)
+  {
+    az_iot_retry_state__defer(&s, s._internal.due_ms + 1u);
+  }
+  assert_int_equal(s._internal.due_unix_s, 0u);
+
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 1800000000u, 86400000u);
+  assert_true(az_iot_retry_state__remaining_ms(&r) <= 61000u);
+
+  /* A whole-second deferral still moves an aligned deadline. */
+  az_iot_retry_state w = { 0 };
+  assert_true(az_iot_retry_state__schedule(&w, &p, &rng));
+  az_iot_retry_state__set_unix_deadline(&w, 1800000000u, w._internal.due_ms - 60000u);
+  az_iot_retry_state__defer(&w, w._internal.due_ms + 2000u);
+  assert_int_equal(w._internal.due_unix_s, 1800000000u + 61u + 2u);
+}
+
 static void the_monotonic_clock_never_goes_backwards(void** state)
 {
   (void)state;
@@ -1042,6 +1093,8 @@ int main(void)
     cmocka_unit_test(a_deferred_retry_restored_without_time_keeps_its_wait),
     cmocka_unit_test(a_deferred_retry_restored_with_time_keeps_its_wait),
     cmocka_unit_test(a_capped_deadline_does_not_creep_across_restarts),
+    cmocka_unit_test(a_pause_before_restoring_does_not_shorten_the_wait),
+    cmocka_unit_test(fractional_deferrals_do_not_inflate_the_deadline),
     cmocka_unit_test(jitter_is_deterministic_for_a_seed),
     cmocka_unit_test(a_zero_rng_state_still_jitters),
     cmocka_unit_test(is_enabled_depends_only_on_the_initial_delay),

@@ -226,6 +226,16 @@ void az_iot_retry_state__restore(
     uint64_t unix_now_s,
     uint32_t max_wait_ms)
 {
+  az_iot_retry_state__restore_at(state, in, unix_now_s, max_wait_ms, az_iot_time_mono_ms());
+}
+
+void az_iot_retry_state__restore_at(
+    az_iot_retry_state* state,
+    const uint8_t* in,
+    uint64_t unix_now_s,
+    uint32_t max_wait_ms,
+    uint64_t mono_at_ms)
+{
   uint64_t wait_ms = (uint64_t)rd_u32le(in + 4u) * 1000u;
   uint64_t due_unix = (uint64_t)rd_u32le(in + 8u) | ((uint64_t)rd_u32le(in + 12u) << 32);
   bool keep_deadline = due_unix != 0u;
@@ -239,12 +249,11 @@ void az_iot_retry_state__restore(
     wait_ms = max_wait_ms;
     keep_deadline = keep_deadline && unix_now_s == 0u;
   }
-  uint64_t now_ms = az_iot_time_mono_ms();
   state->_internal.attempt = rd_u32le(in);
-  state->_internal.due_ms = (wait_ms == 0u) ? 0u : now_ms + wait_ms;
+  state->_internal.due_ms = (wait_ms == 0u) ? 0u : mono_at_ms + wait_ms;
   /* A kept deadline never matches due_ms exactly: the Unix time has no
    * fraction, and an unknown time restarts the whole saved wait. */
-  az_iot_retry_state__set_unix_deadline(state, unix_now_s, now_ms);
+  az_iot_retry_state__set_unix_deadline(state, unix_now_s, mono_at_ms);
   if (keep_deadline
       || (due_unix != 0u && state->_internal.due_unix_s != 0u
           && due_unix < state->_internal.due_unix_s))
@@ -259,11 +268,12 @@ void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms
 {
   if (state->_internal.due_ms < not_before_ms)
   {
-    /* An aligned Unix deadline moves by the same amount, rounded up. Otherwise
-     * it is dropped, and a restore falls back to the saved wait. */
-    uint64_t later_s = (state->_internal.due_ms == 0u)
-        ? 0u
-        : (not_before_ms - state->_internal.due_ms + 999u) / 1000u;
+    /* An aligned Unix deadline moves by whole seconds only: rounding each
+     * fractional deferral up would compound. Otherwise it is dropped, and a
+     * restore falls back to the saved wait. */
+    uint64_t later_ms
+        = (state->_internal.due_ms == 0u) ? 0u : not_before_ms - state->_internal.due_ms;
+    uint64_t later_s = (later_ms % 1000u == 0u) ? later_ms / 1000u : 0u;
     bool keep = later_s != 0u && state->_internal.due_unix_aligned
         && state->_internal.due_unix_s != 0u && state->_internal.due_unix_s <= UINT64_MAX - later_s;
     state->_internal.due_unix_s = keep ? state->_internal.due_unix_s + later_s : 0u;
