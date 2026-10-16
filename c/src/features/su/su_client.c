@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/su_retry_internal.h"
 #include "internal/base64.h"
 #include "internal/crypto.h"
 #include "internal/json_string.h"
@@ -1142,26 +1143,6 @@ static uint32_t held_restore_count(const az_iot_su_client* client)
   return installed ? step + 1u : step;
 }
 
-/** @brief Wait, in seconds, before retrying a workflow after its first failure. */
-#define AZ_IOT_SU_WORKFLOW_RETRY_BASE_S 3600u
-/** @brief Upper bound, in seconds, of the doubling workflow retry wait (before jitter). */
-#define AZ_IOT_SU_WORKFLOW_RETRY_MAX_S 86400u
-/** @brief Jitter added to a workflow retry wait is at most the wait divided by this. */
-#define AZ_IOT_SU_WORKFLOW_RETRY_JITTER_DIV 10u
-/** @brief Longest workflow retry wait, in seconds: the cap plus its largest jitter. */
-#define AZ_IOT_SU_WORKFLOW_RETRY_LIMIT_S \
-  (AZ_IOT_SU_WORKFLOW_RETRY_MAX_S        \
-   + AZ_IOT_SU_WORKFLOW_RETRY_MAX_S / AZ_IOT_SU_WORKFLOW_RETRY_JITTER_DIV)
-/** @brief Unix times before 2024-01-01T00:00:00Z are unknown (an unsynced clock). */
-#define AZ_IOT_SU_UNIX_TIME_FLOOR 1704067200u
-
-/** @brief Current Unix time in seconds; 0 when unknown (unset or before the floor). */
-static uint64_t su_unix_now(const az_iot_su_client* client)
-{
-  uint64_t now = az_iot_time_unix_s(SU_I(client).unix_time_fn, SU_I(client).unix_time_ctx);
-  return now >= AZ_IOT_SU_UNIX_TIME_FLOOR ? now : 0u;
-}
-
 /** @brief Whether the last workflow FAILED or was CANCELED, so an offer of its id is a retry. */
 static bool workflow_retryable(const az_iot_su_client* client)
 {
@@ -1176,82 +1157,6 @@ static bool retry_record_wanted(const az_iot_su_client* client)
   return workflow_retryable(client) && SU_I(client).workflow_retry.failures > 0;
 }
 
-/** @brief Milliseconds before the last workflow may be retried; 0 when it may be now. */
-static uint32_t workflow_retry_remaining_ms(const az_iot_su_client* client)
-{
-  uint64_t now = az_iot_time_mono_ms();
-  uint64_t due = SU_I(client).workflow_retry.due_ms;
-  return due > now ? (uint32_t)(due - now) : 0u;
-}
-
-/**
- * @brief Hold the next attempt until @p wait_ms from now.
- *
- * The Unix deadline adds a second: the clock's fraction is unknown, so a
- * restart at the deadline must not cut the wait short.
- */
-static void set_workflow_retry_wait(az_iot_su_client* client, uint64_t wait_ms)
-{
-  uint64_t unix_now = su_unix_now(client);
-  uint64_t wait_s = (wait_ms + 999u) / 1000u + 1u;
-  SU_I(client).workflow_retry.due_ms = az_iot_time_mono_ms() + wait_ms;
-  SU_I(client).workflow_retry.due_unix_s
-      = (unix_now == 0u || unix_now > UINT64_MAX - wait_s) ? 0u : unix_now + wait_s;
-}
-
-/**
- * @brief Count a FAILED or CANCELED attempt and schedule the next one.
- *
- * The n-th consecutive failure waits min(BASE * 2^(n-1), MAX) seconds plus a
- * uniform jitter of up to a tenth of that; jitter only lengthens the wait.
- */
-static void schedule_workflow_retry(az_iot_su_client* client)
-{
-  if (SU_I(client).workflow_retry.failures < UINT32_MAX)
-  {
-    SU_I(client).workflow_retry.failures++;
-  }
-  uint64_t base_s = AZ_IOT_SU_WORKFLOW_RETRY_BASE_S;
-  for (uint32_t i = 1u;
-       i < SU_I(client).workflow_retry.failures && base_s < AZ_IOT_SU_WORKFLOW_RETRY_MAX_S;
-       ++i)
-  {
-    base_s *= 2u;
-  }
-  if (base_s > AZ_IOT_SU_WORKFLOW_RETRY_MAX_S)
-  {
-    base_s = AZ_IOT_SU_WORKFLOW_RETRY_MAX_S;
-  }
-  uint64_t base_ms = base_s * 1000u;
-
-  uint64_t* rng = &SU_I(client).retry_rng;
-  if (*rng == 0)
-  {
-    /* Seeded as for the transient backoff; odd, as xorshift64 sticks at zero. */
-    *rng = (az_iot_time_mono_ms() ^ (uint64_t)(uintptr_t)client) | 1u;
-  }
-  uint64_t x = *rng;
-  x ^= x << 13;
-  x ^= x >> 7;
-  x ^= x << 17;
-  *rng = x;
-  uint64_t jitter_ms = x % (base_ms / AZ_IOT_SU_WORKFLOW_RETRY_JITTER_DIV + 1u);
-  set_workflow_retry_wait(client, base_ms + jitter_ms);
-  AZ_IOT_LOG_INFOF(
-      AZ_IOT_LOG_COMPONENT_SU,
-      "workflow failed %u time(s) in a row; a retry waits %u s",
-      (unsigned)SU_I(client).workflow_retry.failures,
-      (unsigned)((base_ms + jitter_ms) / 1000u));
-}
-
-/** @brief Forget the retry schedule: the workflow succeeded, or another one was taken. */
-static void reset_workflow_retry(az_iot_su_client* client)
-{
-  SU_I(client).workflow_retry.failures = 0;
-  SU_I(client).workflow_retry.due_ms = 0;
-  SU_I(client).workflow_retry.due_unix_s = 0;
-}
-
 /**
  * @brief Latch a terminal outcome whose report must survive a reboot until accepted.
  *
@@ -1264,11 +1169,21 @@ static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
   {
     if (outcome == AZ_IOT_SU_OUTCOME_FAILED || outcome == AZ_IOT_SU_OUTCOME_CANCELED)
     {
-      schedule_workflow_retry(client);
+      uint64_t wait_ms = az_iot_su__workflow_retry_schedule(
+          &SU_I(client).workflow_retry,
+          &SU_I(client).retry_rng,
+          (uint64_t)(uintptr_t)client,
+          SU_I(client).unix_time_fn,
+          SU_I(client).unix_time_ctx);
+      AZ_IOT_LOG_INFOF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "workflow failed %u time(s) in a row; a retry waits %u s",
+          (unsigned)SU_I(client).workflow_retry.failures,
+          (unsigned)(wait_ms / 1000u));
     }
     else
     {
-      reset_workflow_retry(client);
+      az_iot_su__workflow_retry_reset(&SU_I(client).workflow_retry);
     }
   }
   SU_I(client).active_workflow_running = false;
@@ -1722,7 +1637,7 @@ static void process_update_metadata(
   }
   if (retry)
   {
-    uint32_t wait_ms = workflow_retry_remaining_ms(client);
+    uint32_t wait_ms = az_iot_su__workflow_retry_remaining_ms(&SU_I(client).workflow_retry);
     if (wait_ms > 0)
     {
       AZ_IOT_LOG_DEBUGF(
@@ -1774,7 +1689,7 @@ static void process_update_metadata(
     SU_I(client).terminal_report_in_flight = false;
     clear_checkpoint(client);
     SU_I(client).checkpoint_superseded = SU_I(client).checkpoint_stored;
-    reset_workflow_retry(client);
+    az_iot_su__workflow_retry_reset(&SU_I(client).workflow_retry);
   }
 
   /* Stage the patch into client-owned storage and re-parse so current_request
@@ -2660,14 +2575,13 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
 #define AZ_IOT_SU_PERSIST_URL_RECORD 16u
 /* The retry schedule block before the CRC. */
-#define AZ_IOT_SU_PERSIST_RETRY_BLOCK 16u
 /* Upper bound on the whole trailer + crc, used to size the persist scratch. */
 #define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                             \
   (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                \
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u \
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
    + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
-   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + AZ_IOT_SU_PERSIST_RETRY_BLOCK + 4u)
+   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + AZ_IOT_SU_RETRY_RECORD_SIZE + 4u)
 
 /* The per-instance persist_scratch (AZ_IOT_SU_PERSIST_BLOB_SIZE, in the client
  * struct) must hold the largest serialized blob: header + full request buffer +
@@ -2909,12 +2823,8 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   wr_u32le(&blob[p], (uint32_t)ch_len);
   p += 4u + (uint32_t)ch_len;
 
-  uint64_t due_unix = SU_I(client).workflow_retry.due_unix_s;
-  wr_u32le(&blob[p], SU_I(client).workflow_retry.failures);
-  wr_u32le(&blob[p + 4u], (workflow_retry_remaining_ms(client) + 999u) / 1000u);
-  wr_u32le(&blob[p + 8u], (uint32_t)(due_unix & 0xFFFFFFFFu));
-  wr_u32le(&blob[p + 12u], (uint32_t)(due_unix >> 32));
-  p += AZ_IOT_SU_PERSIST_RETRY_BLOCK;
+  az_iot_su__workflow_retry_write(&SU_I(client).workflow_retry, &blob[p]);
+  p += AZ_IOT_SU_RETRY_RECORD_SIZE;
 
   wr_u32le(&blob[p], su_crc32(blob, p));
   if (!persist_write(client, blob, (size_t)p + 4u))
@@ -3031,40 +2941,6 @@ static void restore_step_results(
   }
 }
 
-/**
- * @brief Restore the retry schedule from a record's retry block.
- *
- * The wait left is taken from the Unix deadline when it and the current Unix
- * time are both known, else it is the wait left when the record was written.
- */
-static void restore_workflow_retry(az_iot_su_client* client, const uint8_t* block)
-{
-  uint64_t remaining_s = rd_u32le(block + 4u);
-  uint64_t due_unix = (uint64_t)rd_u32le(block + 8u) | ((uint64_t)rd_u32le(block + 12u) << 32);
-  uint64_t now_unix = su_unix_now(client);
-  if (due_unix < AZ_IOT_SU_UNIX_TIME_FLOOR)
-  {
-    due_unix = 0;
-  }
-  bool keep_deadline = due_unix != 0;
-  if (due_unix != 0 && now_unix != 0)
-  {
-    remaining_s = due_unix > now_unix ? due_unix - now_unix : 0u;
-  }
-  if (remaining_s > AZ_IOT_SU_WORKFLOW_RETRY_LIMIT_S)
-  {
-    remaining_s = AZ_IOT_SU_WORKFLOW_RETRY_LIMIT_S;
-    keep_deadline = keep_deadline && now_unix == 0;
-  }
-  SU_I(client).workflow_retry.failures = rd_u32le(block);
-  set_workflow_retry_wait(client, remaining_s * 1000u);
-  /* Kept as stored, so restarts do not move it. */
-  if (keep_deadline)
-  {
-    SU_I(client).workflow_retry.due_unix_s = due_unix;
-  }
-}
-
 /** @brief Hand persisted channel state back to the channel; best effort. */
 static void restore_channel_state(az_iot_su_client* client, const uint8_t* src, uint32_t len)
 {
@@ -3159,7 +3035,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     return AZ_IOT_OK;
   }
   uint32_t retry_at = end;
-  end += AZ_IOT_SU_PERSIST_RETRY_BLOCK;
+  end += AZ_IOT_SU_RETRY_RECORD_SIZE;
   if ((size_t)end + 4u != blen)
   {
     return AZ_IOT_OK; /* the CRC must be the last four bytes */
@@ -3204,7 +3080,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     set_active_workflow(client, az_span_create(&blob[wf_at], (int32_t)wf_id_len), AZ_SPAN_EMPTY, 0);
     SU_I(client).active_workflow_running = false;
     SU_I(client).pending_outcome = (az_iot_su_outcome)outcome;
-    restore_workflow_retry(client, &blob[retry_at]);
+    az_iot_su__workflow_retry_read(
+        &SU_I(client).workflow_retry,
+        &blob[retry_at],
+        SU_I(client).unix_time_fn,
+        SU_I(client).unix_time_ctx);
     SU_I(client).report_owed = !retry_record;
     SU_I(client).terminal_report_in_flight = false;
     SU_I(client).checkpoint_stored = true;
@@ -3313,7 +3193,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
    * recognized as a duplicate and does NOT restart the resumed workflow. */
   set_active_workflow(client, req->workflow.id, AZ_SPAN_EMPTY, 0);
   SU_I(client).active_workflow_running = true;
-  restore_workflow_retry(client, &blob[retry_at]);
+  az_iot_su__workflow_retry_read(
+      &SU_I(client).workflow_retry,
+      &blob[retry_at],
+      SU_I(client).unix_time_fn,
+      SU_I(client).unix_time_ctx);
   set_su_state(client, (az_iot_su_state)state);
   return AZ_IOT_OK;
 }

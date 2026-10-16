@@ -1429,6 +1429,7 @@ src/features/su/
 ├── su_channel_dps.c             software updates channel over the DPS session
 ├── su_protocol.c                request/response codec
 ├── su_report.c                  structured result for the channel
+├── su_retry.c                   failed-workflow retry schedule and its persisted form
 ├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
 └── internal/                    internal headers
 adapters/su/{crypto_mbedtls,crypto_openssl,esp32}/
