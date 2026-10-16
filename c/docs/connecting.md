@@ -310,7 +310,9 @@ Most X.509 samples read the device's private key from a PEM file, so they run an
 stand-in signer, and the SAS-only samples use none. A key in a file
 can be copied, and the device's identity with it. In production, keep each device's X.509 private
 key in hardware -- an HSM, a TPM or a secure element -- which signs with it but never releases it.
-The certificate can stay a file: it is public.
+The certificate can stay a file: it is public. A password-protected PEM key is not a substitute: the
+device must keep the password where it can read it, next to the key, so a copy of the device's
+storage still yields the key.
 
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
