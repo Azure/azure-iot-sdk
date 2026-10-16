@@ -21,6 +21,7 @@ add_library(az_iot_core
     core/certificate_provider_pem.c
     core/crypto.c
     core/sas_token.c
+    core/dps_tpm_client.c
     features/su/su_client.c
     features/su/su_device_properties.c
     features/su/su_root_keys_microsoft.c

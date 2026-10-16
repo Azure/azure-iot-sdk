@@ -20,6 +20,7 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 | SAS keys to DPS and to the hub | [`dps_sas_key`](dps_sas_key/README.md) | none |
 | SAS key to DPS, DPS-issued certificate to the hub | [`dps_sas_key_issued_cert`](dps_sas_key_issued_cert/README.md) | managed (OpenSSL), no bootstrap certificate |
 | SAS tokens from the application, e.g. a TPM, HSM or token service | [`user_provided_sas_token`](user_provided_sas_token/README.md) | none |
+| DPS TPM attestation over HTTPS, then hub SAS tokens signed by the TPM (simulated) | [`dps_tpm`](dps_tpm/README.md) | none |
 
 ## Choosing how each role authenticates
 
@@ -48,7 +49,7 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | X.509 | X.509 | Supported | `unified/`, `mqttv5/` samples |
 | X.509 | SAS | Not provisioned by DPS | Expressible; no sample |
 | SAS | SAS, mqttv5 | Not supported by the service yet | Designed for; the token request carries the hub generation. Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED` |
-| TPM attestation | any | Not available over MQTT | Out of scope. A TPM can hold the X.509 key (`hsm_pkcs11`) or sign SAS tokens (`user_provided_sas_token`) |
+| TPM attestation | SAS signed by the TPM, mqttv3 | Supported over HTTPS and AMQP, not MQTT; the sample uses HTTPS | `dps_tpm` |
 
 ## Which non-extractable key route applies
 

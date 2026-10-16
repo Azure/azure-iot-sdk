@@ -296,6 +296,41 @@ extern "C"
       size_t resp_buf_size,
       size_t* out_resp_len);
 
+  /* As az_iot_e2e_https_request(), anonymous TLS, with an Authorization header
+   * (@p authorization NULL: none), for device requests authenticated by SAS.
+   * @p out_retry_after (optional) receives Retry-After in seconds, 0 when absent. */
+  bool az_iot_e2e_https_request_auth(
+      const char* host,
+      const char* method,
+      const char* path,
+      const char* authorization,
+      const char* content_type,
+      const void* body,
+      size_t body_len,
+      int* out_status,
+      char* resp_buf,
+      size_t resp_buf_size,
+      size_t* out_resp_len,
+      unsigned* out_retry_after);
+
+  /* ---- DPS service (IOT_DPS_CONNECTION_STRING) ------------------------------- */
+
+  /* Creates or replaces an individual enrollment with TPM attestation for
+   * @p endorsement_key_base64 (base64 TPM2B_PUBLIC). Returns true on a 2xx. */
+  bool az_iot_e2e_dps_tpm_enrollment_create(
+      const char* registration_id,
+      const char* endorsement_key_base64);
+
+  /* Deletes the registration record and the individual enrollment; a missing one
+   * counts as deleted. */
+  bool az_iot_e2e_dps_enrollment_delete(const char* registration_id);
+
+  /* Deletes a device identity from the hub; a missing one counts as deleted.
+   * Signs with the policy of IOTHUB_REGISTRY_CONNECTION_STRING when set (one with
+   * RegistryWrite), else with that of the service's hub connection string; the
+   * request goes to the service's hub host either way. */
+  bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id);
+
 #ifdef __cplusplus
 }
 #endif

@@ -806,10 +806,11 @@ static char* read_file_alloc(const char* path)
   return buf;
 }
 
-bool az_iot_e2e_https_request(
+static bool https_request(
     const char* host,
     const char* method,
     const char* path,
+    const char* authorization,
     const char* client_cert_path,
     const char* client_key_path,
     const char* content_type,
@@ -819,7 +820,8 @@ bool az_iot_e2e_https_request(
     int* out_status,
     char* resp_buf,
     size_t resp_buf_size,
-    size_t* out_resp_len)
+    size_t* out_resp_len,
+    unsigned* out_retry_after)
 {
   char* cert_pem = (client_cert_path != NULL) ? read_file_alloc(client_cert_path) : NULL;
   char* key_pem = (client_key_path != NULL) ? read_file_alloc(client_key_path) : NULL;
@@ -844,7 +846,7 @@ bool az_iot_e2e_https_request(
       host,
       method,
       path,
-      NULL /* no Authorization */,
+      authorization,
       content_type,
       extra_header,
       body,
@@ -866,6 +868,10 @@ bool az_iot_e2e_https_request(
       if (out_status != NULL)
       {
         *out_status = e2e_http_status(r);
+      }
+      if (out_retry_after != NULL)
+      {
+        *out_retry_after = e2e_http_retry_after(r);
       }
       int b_len = 0;
       const uint8_t* b = e2e_http_body(r, &b_len);
@@ -895,4 +901,201 @@ bool az_iot_e2e_https_request(
   free(cert_pem);
   free(key_pem);
   return ok;
+}
+
+bool az_iot_e2e_https_request(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* client_cert_path,
+    const char* client_key_path,
+    const char* content_type,
+    const char* extra_header,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len)
+{
+  return https_request(
+      host,
+      method,
+      path,
+      NULL,
+      client_cert_path,
+      client_key_path,
+      content_type,
+      extra_header,
+      body,
+      body_len,
+      out_status,
+      resp_buf,
+      resp_buf_size,
+      out_resp_len,
+      NULL);
+}
+
+bool az_iot_e2e_https_request_auth(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* authorization,
+    const char* content_type,
+    const void* body,
+    size_t body_len,
+    int* out_status,
+    char* resp_buf,
+    size_t resp_buf_size,
+    size_t* out_resp_len,
+    unsigned* out_retry_after)
+{
+  return https_request(
+      host,
+      method,
+      path,
+      authorization,
+      NULL,
+      NULL,
+      content_type,
+      NULL,
+      body,
+      body_len,
+      out_status,
+      resp_buf,
+      resp_buf_size,
+      out_resp_len,
+      out_retry_after);
+}
+
+/* ---- DPS service: individual enrollments -------------------------------------- */
+
+#define E2E_DPS_API_VERSION "2021-10-01"
+
+/** @brief The DPS service host and a SAS token from IOT_DPS_CONNECTION_STRING. */
+static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
+{
+  char cs[512];
+  return env_copy("IOT_DPS_CONNECTION_STRING", cs, sizeof(cs)) && e2e_conn_info_parse(cs, info)
+      && e2e_sas_token_create(
+             info->host, info->key_name, info->key, true, sas_expiry(), sas, sas_size);
+}
+
+/** @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404). */
+static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
+{
+  e2e_conn_info info;
+  char sas[512];
+  if (!dps_service_auth(&info, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  int status = 0;
+  char resp[1024] = { 0 };
+  bool ok = https_request(
+      info.host,
+      method,
+      path,
+      sas,
+      NULL,
+      NULL,
+      body != NULL ? "application/json" : NULL,
+      strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
+      body,
+      body != NULL ? strlen(body) : 0,
+      &status,
+      resp,
+      sizeof(resp),
+      NULL,
+      NULL);
+  bool done = ok && ((status >= 200 && status < 300) || (allow_404 && status == 404));
+  if (!done)
+  {
+    (void)fprintf(stderr, "[e2e] DPS service %s %s: HTTP %d %s\n", method, path, status, resp);
+  }
+  return done;
+}
+
+bool az_iot_e2e_dps_tpm_enrollment_create(
+    const char* registration_id,
+    const char* endorsement_key_base64)
+{
+  char path[256];
+  char body[2048];
+  int n = snprintf(
+      path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  int m = snprintf(
+      body,
+      sizeof(body),
+      "{\"registrationId\":\"%s\",\"attestation\":{\"type\":\"tpm\",\"tpm\":"
+      "{\"endorsementKey\":\"%s\"}}}",
+      registration_id,
+      endorsement_key_base64);
+  return n > 0 && (size_t)n < sizeof(path) && m > 0 && (size_t)m < sizeof(body)
+      && dps_service_call("PUT", path, body, false);
+}
+
+bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+{
+  char path[256];
+  int n = snprintf(
+      path, sizeof(path), "/registrations/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  bool ok = n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
+  n = snprintf(
+      path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true) && ok;
+}
+
+bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)
+{
+  /* The policy of IOTHUB_REGISTRY_CONNECTION_STRING (RegistryWrite) when set, else
+   * that of the service's hub connection string. The request always goes to the
+   * service's host: a hub with a separate device hostname refuses service
+   * operations on it. */
+  e2e_conn_info info = svc->hub_info;
+  char cs[512];
+  if (env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs)))
+  {
+    e2e_conn_info registry;
+    if (!e2e_conn_info_parse(cs, &registry))
+    {
+      (void)fprintf(stderr, "[e2e] IOTHUB_REGISTRY_CONNECTION_STRING is malformed\n");
+      return false;
+    }
+    memcpy(info.key_name, registry.key_name, sizeof(info.key_name));
+    memcpy(info.key, registry.key, sizeof(info.key));
+  }
+  char sas[512];
+  char path[256];
+  int n = snprintf(path, sizeof(path), "/devices/%s?api-version=%s", device_id, E2E_API_VERSION);
+  if (n <= 0 || (size_t)n >= sizeof(path)
+      || !e2e_sas_token_create(
+          info.host, info.key_name, info.key, true, sas_expiry(), sas, sizeof(sas)))
+  {
+    return false;
+  }
+  int status = 0;
+  char resp[512] = { 0 };
+  bool ok = https_request(
+      info.host,
+      "DELETE",
+      path,
+      sas,
+      NULL,
+      NULL,
+      NULL,
+      "If-Match: \"*\"",
+      NULL,
+      0,
+      &status,
+      resp,
+      sizeof(resp),
+      NULL,
+      NULL);
+  bool done = ok && ((status >= 200 && status < 300) || status == 404);
+  if (!done)
+  {
+    (void)fprintf(stderr, "[e2e] hub DELETE /devices/%s: HTTP %d %s\n", device_id, status, resp);
+  }
+  return done;
 }

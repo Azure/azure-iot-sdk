@@ -75,6 +75,13 @@ az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
     tests/e2e_notify_time_test.c service/e2e_notify_time.c)
 target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
 
+# Response header parsing of the e2e HTTPS client (status, Content-Length,
+# Retry-After). Pure parsing; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_http_headers tests/e2e_http_headers_test.c)
+target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------
@@ -144,6 +151,25 @@ if(AZ_IOT_BUILD_E2E_CSR)
         az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
         az_iot_certificate_provider_managed)
 endif()
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_tpm
+#
+# DPS TPM attestation with a TPM simulated in software (samples/common): an
+# individual enrollment for a new EK (DPS service API), registration over
+# HTTPS, then the assigned mqttv3 hub with TPM-signed SAS tokens. Needs
+# IOT_DPS_CONNECTION_STRING to create the enrollment.
+# ---------------------------------------------------------------------------
+set(_e2e_sample_common ${PROJECT_SOURCE_DIR}/samples/common)
+az_iot_add_cmocka_test(az_iot_tests_e2e_tpm
+    tests/e2e_tpm_test.c
+    ${_e2e_sample_common}/sample_tpm_sim.c
+    ${_e2e_sample_common}/sample_dps_tpm.c
+    ${_e2e_sample_common}/sample_utils.c)
+target_include_directories(az_iot_tests_e2e_tpm PRIVATE ${_e2e_sample_common} service)
+target_link_libraries(az_iot_tests_e2e_tpm PRIVATE
+    az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
+    OpenSSL::Crypto)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload

@@ -125,6 +125,17 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
 
+**TPM suite** (built with every e2e build and run by `ci-c-e2e` on Linux and Windows, on pull
+requests and on main; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING` (a DPS policy with
+EnrollmentWrite and RegistrationStatusWrite), `IOTHUB_CONNECTION_STRING`,
+`IOTHUB_EVENTHUB_CONNECTION_STRING`; optional `IOTHUB_REGISTRY_CONNECTION_STRING` (RegistryWrite,
+its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host) and `AZ_IOT_TRUSTED_CA`):
+
+- [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software
+  (`samples/common/sample_tpm_sim.c`) gets a new individual enrollment through the DPS service
+  API, registers over HTTPS, connects to the assigned mqttv3 hub with TPM-signed SAS tokens and
+  sends telemetry. The enrollment, registration and device are deleted. `ci-c-e2e`.
+
 **mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
 
 - [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
@@ -278,8 +289,11 @@ long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DP
 X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
 secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
-(`service` policy only), and `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
-key). Devices the runs register stay in the shared hub; they are removed manually. The hub
+(`service` policy only), `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
+key), and, for the TPM suite, `E2E_SHARED_DPS_CS` (DPS policy with EnrollmentWrite and
+RegistrationStatusWrite) and `E2E_SHARED_IOTHUB_REGISTRY_CS` (hub policy with RegistryWrite).
+The TPM suite deletes its enrollment and device; other devices the runs register stay in the
+shared hub and are removed manually. The hub
 needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
 Pull requests from forks get no secrets and fail.
