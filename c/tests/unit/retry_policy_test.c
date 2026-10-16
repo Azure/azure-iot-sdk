@@ -831,6 +831,55 @@ static void a_saved_state_restores_its_wait(void** state)
   assert_int_equal(r._internal.due_unix_s, 1800000000u + 60u + 1u);
 }
 
+/* A consumed retry has no deadline left: saving it and restoring within the
+ * spare second schedules nothing. */
+static void a_consumed_retry_restores_as_nothing_scheduled(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 1, .max_delay_ms = 1 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  uint64_t t0 = az_iot_time_mono_ms();
+  while (az_iot_time_mono_ms() < t0 + 2u)
+  {
+  }
+  assert_true(az_iot_retry_state__due(&s));
+  assert_int_equal(s._internal.due_unix_s, 0u);
+
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 1800000000u, 86400000u);
+  assert_false(az_iot_retry_state__pending(&r));
+  assert_int_equal(az_iot_retry_state__remaining_ms(&r), 0u);
+  assert_int_equal(az_iot_retry_state__attempts(&r), 1);
+}
+
+/* defer() moves the Unix deadline with the monotonic one, so a restore keeps
+ * the deferred wait. */
+static void a_deferred_retry_restores_its_deferred_wait(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  az_iot_retry_state__defer(&s, s._internal.due_ms + 60000u);
+  assert_int_equal(s._internal.due_unix_s, 1800000000u + 60u + 1u + 60u);
+
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 1800000000u, 86400000u);
+  assert_true(az_iot_retry_state__remaining_ms(&r) > 120000u);
+
+  /* Deferring a state with nothing scheduled sets no deadline. */
+  az_iot_retry_state idle = { 0 };
+  az_iot_retry_state__defer(&idle, az_iot_time_mono_ms() + 1000u);
+  assert_int_equal(idle._internal.due_unix_s, 0u);
+}
+
 static void the_monotonic_clock_never_goes_backwards(void** state)
 {
   (void)state;
@@ -870,6 +919,8 @@ int main(void)
     cmocka_unit_test(additive_jitter_never_shortens_the_delay),
     cmocka_unit_test(schedule_until_sets_a_conservative_unix_deadline),
     cmocka_unit_test(a_saved_state_restores_its_wait),
+    cmocka_unit_test(a_consumed_retry_restores_as_nothing_scheduled),
+    cmocka_unit_test(a_deferred_retry_restores_its_deferred_wait),
     cmocka_unit_test(jitter_is_deterministic_for_a_seed),
     cmocka_unit_test(a_zero_rng_state_still_jitters),
     cmocka_unit_test(is_enabled_depends_only_on_the_initial_delay),
