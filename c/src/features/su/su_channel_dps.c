@@ -346,15 +346,10 @@ static az_iot_su_error_action handle_failure(
       c->service_config_etag[0] = '\0';
       break;
 
-    case AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG:
-      c->service_config_etag[0] = '\0';
-      break;
-
     case AZ_IOT_SU_ERROR_ACTION_NONE:
     case AZ_IOT_SU_ERROR_ACTION_PROCEED:
     case AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER:
     case AZ_IOT_SU_ERROR_ACTION_RETRY:
-    case AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED:
     case AZ_IOT_SU_ERROR_ACTION_FATAL:
     default:
       /* Nothing cached to invalidate; the caller decides whether to retry. */
