@@ -40,7 +40,10 @@ extern "C"
     const char* trusted_ca_pem_path; /* may be NULL                          */
     const char* client_cert_pem_path; /* required                             */
     const char* client_key_pem_path; /* required                             */
-    const char* client_key_password; /* may be NULL; copied verbatim         */
+    /* May be NULL; copied verbatim. Protects the key file at rest only: the
+     * password is stored on the device too, so it is not production key
+     * protection. */
+    const char* client_key_password;
   } az_iot_certificate_provider_pem_options;
 
   /* Returns an options struct with all fields defaulted (every path NULL). Set at
