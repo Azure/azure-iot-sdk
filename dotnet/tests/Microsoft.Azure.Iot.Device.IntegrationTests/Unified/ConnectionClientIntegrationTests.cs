@@ -103,7 +103,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            SymmetricKeyWithIssuedCertificateAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, deviceKey, privateKey);
+            SymmetricKeyAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, deviceKey, privateKey);
             ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope)
             {
                 CertificateSigningRequest = new(privateKey, csrBase64),

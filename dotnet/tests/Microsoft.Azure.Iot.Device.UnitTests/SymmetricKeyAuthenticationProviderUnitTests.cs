@@ -4,7 +4,9 @@
 using Microsoft.Azure.Iot.Device.Authentication;
 using System.Globalization;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Xunit;
 
@@ -40,10 +42,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 0 => new SymmetricKeyAuthenticationProvider(
                     registrationId, idScope, key,
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
-                1 => new SymmetricKeyWithIssuedCertificateAuthenticationProvider(
+                1 => new SymmetricKeyAuthenticationProvider(
                     registrationId, idScope, key, privateKey,
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
-                2 => new SymmetricKeyWithIssuedCertificateAuthenticationProvider(
+                2 => new SymmetricKeyAuthenticationProvider(
                     registrationId, idScope, key, _ => throw new InvalidOperationException("No certificate has been issued."),
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
                 _ => throw new ArgumentOutOfRangeException(nameof(providerKind)),
@@ -51,7 +53,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             var bootCredentials = authentication.GetBootAuthenticationCredentials();
             Assert.Null(bootCredentials.ClientCertificate);
-            AssertSasToken(bootCredentials.Password, key, $"{idScope}/registrations/{registrationId}", "registration", dpsTimeToLive ?? TimeSpan.FromHours(1));
+            AssertSasToken(bootCredentials.Password, key, $"{idScope}/registrations/{registrationId}", "registration", dpsTimeToLive ?? TimeSpan.FromMinutes(10));
 
             var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, null);
             Assert.Null(operationalCredentials.ClientCertificate);
@@ -64,6 +66,75 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
                 () => new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", null!));
             Assert.Equal("symmetricKey", exception.ParamName);
+        }
+
+        [Fact]
+        public void NullIssuedCertificateKeyIsRejected()
+        {
+            ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
+                () => new SymmetricKeyAuthenticationProvider(
+                    "registration-id", "0ne00000000", new byte[] { 1 },
+                    issuedCertificatePrivateKey: null!));
+            Assert.Equal("issuedCertificatePrivateKey", exception.ParamName);
+        }
+
+        [Fact]
+        public void NullIssuedCertificateCallbackIsRejected()
+        {
+            ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
+                () => new SymmetricKeyAuthenticationProvider(
+                    "registration-id", "0ne00000000", new byte[] { 1 },
+                    handleCertificateSigningCompleteAsync: null!));
+            Assert.Equal("handleCertificateSigningCompleteAsync", exception.ParamName);
+        }
+
+        [Fact]
+        public async Task BasicConstructorKeepsUsingSasTokensWhenCertificatesAreIssued()
+        {
+            byte[] key = new byte[] { 0x00, 0xFF, 0x80, 0x01 };
+            SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key);
+
+            var credentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" });
+
+            Assert.Null(authentication.IssuedCertificatePrivateKey);
+            Assert.Null(authentication.HandleCertificateSigningCompleteAsync);
+            Assert.Null(credentials.ClientCertificate);
+            AssertSasToken(credentials.Password, key, "some-hub.azure-devices.net/devices/device-id", null, TimeSpan.FromHours(1));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task IssuedCertificateCredentialsPreserveTlsCallbacksAndDpsAuthentication(bool useCallback)
+        {
+            using RSA privateKey = RSA.Create(2048);
+            CertificateRequest request = new("CN=registration-id", privateKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using X509Certificate2 certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            string[] issuedChain = new[] { Convert.ToBase64String(certificate.RawData) };
+            byte[] key = new byte[] { 0x00, 0xFF, 0x80, 0x01 };
+            RemoteCertificateValidationCallback remoteValidation = (_, _, _, _) => true;
+            LocalCertificateSelectionCallback localSelection = (_, _, _, _, _) => certificate;
+            SymmetricKeyAuthenticationProvider authentication = useCallback
+                ? new("registration-id", "0ne00000000", key, _ => Task.FromResult(certificate), remoteValidation, localSelection)
+                : new("registration-id", "0ne00000000", key, privateKey, remoteValidation, localSelection);
+
+            Assert.Same(useCallback ? null : privateKey, authentication.IssuedCertificatePrivateKey);
+            Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
+            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", issuedChain);
+            Assert.NotNull(operationalCredentials.ClientCertificate);
+            Assert.Equal(certificate.Thumbprint, operationalCredentials.ClientCertificate.Thumbprint);
+            Assert.True(operationalCredentials.ClientCertificate.HasPrivateKey);
+            Assert.Empty(operationalCredentials.Password);
+            Assert.Same(remoteValidation, operationalCredentials.RemoteCertificateValidationCallback);
+            Assert.Same(localSelection, operationalCredentials.LocalCertificateSelectionCallback);
+
+            var bootCredentials = authentication.GetBootAuthenticationCredentials();
+            Assert.Null(bootCredentials.ClientCertificate);
+            AssertSasToken(bootCredentials.Password, key, "0ne00000000/registrations/registration-id", "registration", TimeSpan.FromMinutes(10));
+            Assert.Same(remoteValidation, bootCredentials.RemoteCertificateValidationCallback);
+            Assert.Same(localSelection, bootCredentials.LocalCertificateSelectionCallback);
         }
 
         [Theory]
