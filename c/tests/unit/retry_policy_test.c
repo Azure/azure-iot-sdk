@@ -880,6 +880,68 @@ static void a_deferred_retry_restores_its_deferred_wait(void** state)
   assert_int_equal(idle._internal.due_unix_s, 0u);
 }
 
+/* The Unix deadline is measured from when the Unix time was read: a pause
+ * before scheduling lengthens it rather than pulling it in. */
+static void a_pause_before_scheduling_does_not_shorten_the_deadline(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  /* Unix time read 2 s before the 60 s wait was scheduled. */
+  az_iot_retry_state__set_unix_deadline(&s, 1800000000u, s._internal.due_ms - 62000u);
+  assert_int_equal(s._internal.due_unix_s, 1800000000u + 62u + 1u);
+  assert_true(s._internal.due_unix_aligned);
+
+  az_iot_retry_state__set_unix_deadline(&s, 0u, s._internal.due_ms);
+  assert_int_equal(s._internal.due_unix_s, 0u);
+  assert_false(s._internal.due_unix_aligned);
+}
+
+/* A far-future saved deadline saturates to the cap instead of wrapping. */
+static void a_far_saved_deadline_restores_the_capped_wait(void** state)
+{
+  (void)state;
+  uint64_t now = 1800000000u;
+  uint64_t due = now + ((uint64_t)1u << 61);
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE] = { 1, 0, 0, 0, 10, 0, 0, 0 };
+  for (int i = 0; i < 8; ++i)
+  {
+    rec[8 + i] = (uint8_t)((due >> (8 * i)) & 0xFFu);
+  }
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, now, 60000u);
+  assert_true(az_iot_retry_state__pending(&r));
+  uint32_t left = az_iot_retry_state__remaining_ms(&r);
+  assert_true(left > 59000u && left <= 60000u);
+  assert_int_equal(r._internal.due_unix_s, now + 60u + 1u);
+}
+
+/* After a restore with the time unknown, defer() drops the kept deadline, so a
+ * later restore with a known time keeps the whole deferred wait. */
+static void a_deferred_retry_restored_without_time_keeps_its_wait(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 0u, 86400000u);
+  assert_int_equal(r._internal.due_unix_s, 1800000000u + 60u + 1u);
+  assert_false(r._internal.due_unix_aligned);
+  az_iot_retry_state__defer(&r, r._internal.due_ms + 60000u);
+  assert_int_equal(r._internal.due_unix_s, 0u);
+
+  az_iot_retry_state__save(&r, rec);
+  az_iot_retry_state__restore(&r, rec, 1800000000u + 120u, 86400000u);
+  assert_true(az_iot_retry_state__remaining_ms(&r) > 119000u);
+}
+
 static void the_monotonic_clock_never_goes_backwards(void** state)
 {
   (void)state;
@@ -921,6 +983,9 @@ int main(void)
     cmocka_unit_test(a_saved_state_restores_its_wait),
     cmocka_unit_test(a_consumed_retry_restores_as_nothing_scheduled),
     cmocka_unit_test(a_deferred_retry_restores_its_deferred_wait),
+    cmocka_unit_test(a_pause_before_scheduling_does_not_shorten_the_deadline),
+    cmocka_unit_test(a_far_saved_deadline_restores_the_capped_wait),
+    cmocka_unit_test(a_deferred_retry_restored_without_time_keeps_its_wait),
     cmocka_unit_test(jitter_is_deterministic_for_a_seed),
     cmocka_unit_test(a_zero_rng_state_still_jitters),
     cmocka_unit_test(is_enabled_depends_only_on_the_initial_delay),
