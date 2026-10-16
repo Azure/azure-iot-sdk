@@ -4209,6 +4209,38 @@ static fixture* resume_with_unix_time(const fixture* source, void** fresh_state,
   return fresh;
 }
 
+/* The Unix deadline covers the clock's unknown fraction: a restart one second
+ * before it still waits, one at it runs, and a restore keeps it unchanged. */
+static void the_unix_retry_deadline_never_shortens_the_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t unix_now = 1800000000u;
+  fx->su._internal.unix_time_fn = test_unix_time;
+  fx->su._internal.unix_time_ctx = &unix_now;
+  open_to_connected(fx);
+  fail_signed_patch(fx);
+  uint64_t left_ms = retry_wait_left_ms(fx);
+  uint64_t due_unix = fx->su._internal.workflow_retry.due_unix_s;
+  assert_true(due_unix >= unix_now + (left_ms + 999u) / 1000u + 1u);
+
+  uint64_t reboot_at = due_unix - 1u;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_with_unix_time(fx, &fresh_state, &reboot_at);
+  assert_int_equal(fresh->su._internal.workflow_retry.due_unix_s, due_unix);
+  inject_patch(fresh, signed_patch());
+  assert_int_equal(fresh->retry_wait_count, 1);
+  assert_true(fresh->last_retry_wait_ms > 0u && fresh->last_retry_wait_ms <= 1000u);
+  assert_int_equal(count_ops(&fresh->log, OP_DOWNLOAD), 0);
+  assert_int_equal(teardown(&fresh_state), 0);
+
+  reboot_at = due_unix;
+  fresh = resume_with_unix_time(fx, &fresh_state, &reboot_at);
+  inject_patch(fresh, signed_patch());
+  assert_int_equal(fresh->retry_wait_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* The wait survives a restart: from the Unix deadline when the time is known,
  * else the whole wait left when the record was written. */
 static void the_retry_wait_survives_a_reboot(void** state)
@@ -7908,6 +7940,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_failed_retry_record_write_waits_for_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(the_retry_wait_survives_a_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_unix_retry_deadline_never_shortens_the_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_reboot_during_a_retry_keeps_the_failure_count, setup, teardown),
     cmocka_unit_test_setup_teardown(the_retry_record_round_trips_through_the_blob, setup, teardown),

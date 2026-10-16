@@ -1184,11 +1184,16 @@ static uint32_t workflow_retry_remaining_ms(const az_iot_su_client* client)
   return due > now ? (uint32_t)(due - now) : 0u;
 }
 
-/** @brief Hold the next attempt until @p wait_ms from now. */
+/**
+ * @brief Hold the next attempt until @p wait_ms from now.
+ *
+ * The Unix deadline adds a second: the clock's fraction is unknown, so a
+ * restart at the deadline must not cut the wait short.
+ */
 static void set_workflow_retry_wait(az_iot_su_client* client, uint64_t wait_ms)
 {
   uint64_t unix_now = su_unix_now(client);
-  uint64_t wait_s = (wait_ms + 999u) / 1000u;
+  uint64_t wait_s = (wait_ms + 999u) / 1000u + 1u;
   SU_I(client).workflow_retry.due_ms = az_iot_time_mono_ms() + wait_ms;
   SU_I(client).workflow_retry.due_unix_s
       = (unix_now == 0u || unix_now > UINT64_MAX - wait_s) ? 0u : unix_now + wait_s;
@@ -3041,6 +3046,7 @@ static void restore_workflow_retry(az_iot_su_client* client, const uint8_t* bloc
   {
     due_unix = 0;
   }
+  bool keep_deadline = due_unix != 0;
   if (due_unix != 0 && now_unix != 0)
   {
     remaining_s = due_unix > now_unix ? due_unix - now_unix : 0u;
@@ -3048,10 +3054,12 @@ static void restore_workflow_retry(az_iot_su_client* client, const uint8_t* bloc
   if (remaining_s > AZ_IOT_SU_WORKFLOW_RETRY_LIMIT_S)
   {
     remaining_s = AZ_IOT_SU_WORKFLOW_RETRY_LIMIT_S;
+    keep_deadline = keep_deadline && now_unix == 0;
   }
   SU_I(client).workflow_retry.failures = rd_u32le(block);
   set_workflow_retry_wait(client, remaining_s * 1000u);
-  if (due_unix != 0 && now_unix == 0)
+  /* Kept as stored, so restarts do not move it. */
+  if (keep_deadline)
   {
     SU_I(client).workflow_retry.due_unix_s = due_unix;
   }
