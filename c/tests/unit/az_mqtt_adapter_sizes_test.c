@@ -45,7 +45,8 @@ typedef socklen_t test_socklen;
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 /* Payload, topic and user property value each over the send size; together under the receive
- * size. Strings are copied out of the packet, so the topic and value also cover their buffer. */
+ * size. The topic is copied out of the packet, so it also covers its buffer; user properties are
+ * read in place. */
 #define PAYLOAD_LEN 2000
 #define TOPIC_LEN 1500
 #define VALUE_LEN 1500
@@ -92,11 +93,19 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     assert_true(m->payload_len <= sizeof(r->payload));
     memcpy(r->payload, m->payload, m->payload_len);
     r->payload_len = m->payload_len;
-    r->properties = m->user_properties_count;
-    if (m->user_properties_count == 1)
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view p;
+    r->properties = 0;
+    while (az_iot_mqtt_user_properties_next(&m->user_properties, &cursor, &p) == AZ_IOT_OK)
     {
-      copy_text(r->key, sizeof(r->key), m->user_properties[0].key);
-      copy_text(r->value, sizeof(r->value), m->user_properties[0].value);
+      if (r->properties++ == 0)
+      {
+        assert_true(p.key_len < sizeof(r->key) && p.value_len < sizeof(r->value));
+        memcpy(r->key, p.key, p.key_len);
+        r->key[p.key_len] = '\0';
+        memcpy(r->value, p.value, p.value_len);
+        r->value[p.value_len] = '\0';
+      }
     }
   }
 }

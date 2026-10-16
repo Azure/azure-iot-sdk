@@ -20,7 +20,7 @@ set(AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE "" CACHE STRING
 set(AZ_IOT_AZ_MQTT_INFLIGHT_MAX "" CACHE STRING
     "az_mqtt adapter: requests in flight at once, 1-32767; MQTT 5: also the Receive Maximum advertised (empty: footprint's)")
 set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "" CACHE STRING
-    "az_mqtt adapter: MQTT 5 user properties per packet (empty: footprint's)")
+    "az_mqtt adapter: MQTT 5 user properties on CONNECT (empty: footprint's)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
     "az_mqtt adapter: header with size definitions, as written in a quoted #include (empty: none)")
 

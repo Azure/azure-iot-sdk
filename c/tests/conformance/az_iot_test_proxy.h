@@ -272,8 +272,9 @@ extern "C"
 #define AZ_IOT_TEST_PROXY_PKT_DISCONNECT 14
 #define AZ_IOT_TEST_PROXY_PKT_AUTH 15
 
-/* Injected packets are hand-built acknowledgements, not payloads. */
-#define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 64
+/* Injected packets are hand-built: acknowledgements, and PUBLISHes carrying
+ * many User Properties. */
+#define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 512
 #define AZ_IOT_TEST_PROXY_RULES_MAX 8
 
   typedef enum az_iot_test_proxy_action

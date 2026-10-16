@@ -5,6 +5,91 @@
 /* SPDX-License-Identifier: MIT */
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include <string.h>
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
+    const az_iot_mqtt_user_properties* props,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  if (props == NULL || cursor == NULL || out == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (props->next == NULL)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  size_t const before = *cursor;
+  az_iot_result r = props->next(props->source, props->source_len, cursor, out);
+  if (r == AZ_IOT_OK && (out->key == NULL || out->value == NULL || *cursor <= before))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
+  return r;
+}
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_find(
+    const az_iot_mqtt_user_properties* props,
+    const char* key,
+    az_iot_mqtt_user_property_view* out)
+{
+  if (props == NULL || key == NULL || out == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t const key_len = strlen(key);
+  size_t cursor = 0;
+  az_iot_mqtt_user_property_view p;
+  az_iot_result r;
+  while ((r = az_iot_mqtt_user_properties_next(props, &cursor, &p)) == AZ_IOT_OK)
+  {
+    if (p.key_len == key_len && memcmp(p.key, key, key_len) == 0)
+    {
+      *out = p;
+      return AZ_IOT_OK;
+    }
+  }
+  return r;
+}
+
+/** @brief az_iot_mqtt_user_properties_next_fn over an az_iot_mqtt_user_property array. */
+static az_iot_result array_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  const az_iot_mqtt_user_property* array = (const az_iot_mqtt_user_property*)source;
+  while (*cursor < source_len)
+  {
+    const az_iot_mqtt_user_property* p = &array[(*cursor)++];
+    if (p->key != NULL)
+    {
+      out->key = p->key;
+      out->key_len = strlen(p->key);
+      out->value = p->value != NULL ? p->value : "";
+      out->value_len = p->value != NULL ? strlen(p->value) : 0;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+az_iot_mqtt_user_properties az_iot_mqtt_user_properties_from_array(
+    const az_iot_mqtt_user_property* array,
+    size_t count)
+{
+  az_iot_mqtt_user_properties props = { 0 };
+  if (array != NULL && count > 0)
+  {
+    props.next = array_next;
+    props.source = array;
+    props.source_len = count;
+  }
+  return props;
+}
+
 const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 {
   switch (v)

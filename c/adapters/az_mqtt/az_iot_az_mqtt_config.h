@@ -77,8 +77,8 @@
 #define AZ_IOT_AZ_MQTT_INFLIGHT_MAX 64
 #endif
 
-/** @brief MQTT 5 user properties per packet, each direction. A larger outgoing count is refused;
- * received ones beyond it are dropped. */
+/** @brief MQTT 5 user properties on CONNECT. A larger count is refused. PUBLISH user properties,
+ * either direction, are not limited by it. */
 #ifndef AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
 #define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 16
 #endif

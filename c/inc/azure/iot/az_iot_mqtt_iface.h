@@ -33,13 +33,109 @@ extern "C"
     AZ_IOT_MQTT_QOS_2 = 2
   } az_iot_mqtt_qos;
 
-  /* MQTT v5 User Property (key-value pair). Carried on PUBLISH and CONNECT.
-   * Ignored by v3.1.1 adapters. */
+  /* MQTT v5 User Property (key-value pair), NUL-terminated. Used in arrays: CONNECT, custom
+   * topic messages, and az_iot_mqtt_user_properties_from_array(). Ignored by v3.1.1 adapters. */
   typedef struct az_iot_mqtt_user_property
   {
     const char* key;
     const char* value;
   } az_iot_mqtt_user_property;
+
+  /**
+   * @brief One MQTT v5 User Property read from an #az_iot_mqtt_user_properties.
+   *
+   * UTF-8, NOT NUL-terminated: use the lengths. Neither pointer is NULL; either length may be 0.
+   */
+  typedef struct az_iot_mqtt_user_property_view
+  {
+    const char* key;
+    size_t key_len;
+    const char* value;
+    size_t value_len;
+  } az_iot_mqtt_user_property_view;
+
+  /**
+   * @brief Reads the User Property at @p *cursor from @p source and advances @p *cursor.
+   *
+   * Implemented by whoever owns the properties (an adapter, or the SDK for outbound messages).
+   * Restarting from cursor 0 must yield the same sequence. A property returned must increase
+   * @p *cursor. Called only through az_iot_mqtt_user_properties_next(), which validates the
+   * arguments and reports a property returned without increasing it as AZ_IOT_ERR_PROTOCOL.
+   *
+   * @retval AZ_IOT_OK            @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND No more properties.
+   * @retval AZ_IOT_ERR_PROTOCOL  @p source is malformed at @p *cursor; stop iterating.
+   */
+  typedef az_iot_result (*az_iot_mqtt_user_properties_next_fn)(
+      const void* source,
+      size_t source_len,
+      size_t* cursor,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief Read-only view of the MQTT v5 User Properties of one PUBLISH.
+   *
+   * Nothing is copied and there is no limit on the number of properties. Read it with
+   * az_iot_mqtt_user_properties_next() or az_iot_mqtt_user_properties_find().
+   *
+   * Zero-initialized: no properties. Inbound (AZ_IOT_MQTT_EVT_MESSAGE): valid only during the
+   * event callback. Outbound (publish()): valid only during the call.
+   */
+  typedef struct az_iot_mqtt_user_properties
+  {
+    az_iot_mqtt_user_properties_next_fn next; /**< NULL: no properties. */
+    const void* source; /**< Passed to @p next; owned by the producer. */
+    size_t source_len; /**< Passed to @p next. */
+  } az_iot_mqtt_user_properties;
+
+  /**
+   * @brief Reads the next User Property.
+   *
+   * @param[in] props      Properties to read.
+   * @param[in,out] cursor Start at 0; opaque afterwards.
+   * @param[out] out       The property, on AZ_IOT_OK.
+   *
+   * @retval AZ_IOT_OK               @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND    No more properties.
+   * @retval AZ_IOT_ERR_PROTOCOL     Malformed properties; stop iterating.
+   * @retval AZ_IOT_ERR_INVALID_ARG  A NULL argument.
+   */
+  AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
+      const az_iot_mqtt_user_properties* props,
+      size_t* cursor,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief Finds the first User Property whose key equals @p key, byte for byte.
+   *
+   * @param[in] props Properties to search.
+   * @param[in] key   NUL-terminated key.
+   * @param[out] out  The property, on AZ_IOT_OK.
+   *
+   * @retval AZ_IOT_OK               @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND    No such property.
+   * @retval AZ_IOT_ERR_PROTOCOL     Malformed properties before a match.
+   * @retval AZ_IOT_ERR_INVALID_ARG  A NULL argument.
+   */
+  AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_find(
+      const az_iot_mqtt_user_properties* props,
+      const char* key,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief View over an array of NUL-terminated pairs.
+   *
+   * An entry with a NULL key is skipped; a NULL value reads as empty. The array must outlive the
+   * view.
+   *
+   * @param[in] array May be NULL: no properties, whatever @p count.
+   * @param[in] count Entries in @p array.
+   *
+   * @return The view; no properties when @p array is NULL or @p count is 0.
+   */
+  az_iot_mqtt_user_properties az_iot_mqtt_user_properties_from_array(
+      const az_iot_mqtt_user_property* array,
+      size_t count);
 
   typedef struct az_iot_mqtt_message
   {
@@ -49,8 +145,7 @@ extern "C"
     az_iot_mqtt_qos qos;
     bool retain;
     /* MQTTv5-only fields; ignored by v3.1.1 adapters. */
-    const az_iot_mqtt_user_property* user_properties; /* typed array */
-    size_t user_properties_count; /* number of entries */
+    az_iot_mqtt_user_properties user_properties; /* view; see its lifetime */
     uint16_t topic_alias; /* 0 = none */
     uint32_t message_expiry_seconds; /* 0 = none */
     const char* content_type;

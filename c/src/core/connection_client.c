@@ -4758,8 +4758,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   msg.payload = body;
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_0;
-  msg.user_properties = &type_prop;
-  msg.user_properties_count = 1;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   msg.correlation_data = c->presence.nonce;
   msg.correlation_data_len = PRESENCE_NONCE_LEN;
 
@@ -4806,23 +4805,16 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
 
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, PRESENCE_TYPE_KEY, &type)
+      != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, PRESENCE_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
-    /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
-    return strncmp(up->value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
-        && (up->value[n] == '\0' || up->value[n] == ':');
+    return false;
   }
-  return false;
+  size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
+  /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
+  return type.value_len >= n && memcmp(type.value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
+      && (type.value_len == n || type.value[n] == ':');
 }
 
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */

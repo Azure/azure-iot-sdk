@@ -208,8 +208,7 @@ static void open_v5(fixture* test)
   message.topic = "ih/ut-device/dev/presence";
   message.correlation_data = nonce;
   message.correlation_data_len = sizeof(nonce);
-  message.user_properties = &type;
-  message.user_properties_count = 1;
+  message.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
   az_iot_mqtt_event ack = { 0 };
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   ack.message = &message;
@@ -455,20 +454,17 @@ static void every_system_property_reaches_the_wire(void** state)
   assert_int_equal(publish->user_properties_count, 7);
 }
 
-/* Overflow still drops, because the array is fixed -- but it must say so, and
- * name what went missing. A silent drop here is the same defect this file just
- * fixed, one cause further along. */
-static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
+/* There is no cap: 30 application properties, more than the former fixed array
+ * of 16 held, all travel in order after the two the client adds, and nothing
+ * is logged. */
+static void every_property_is_sent_with_no_cap(void** state)
 {
   fixture* test = (fixture*)*state;
   connect_and_init(test);
 
-  /* Two slots are already spent on type and content-type, so the last two of
-   * these cannot fit whatever the cap is set to. */
   enum
   {
-    k_carried = AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES - 2,
-    k_offered = k_carried + 2,
+    k_offered = 30
   };
   char keys[k_offered][16];
   az_iot_telemetry_property properties[k_offered];
@@ -490,22 +486,18 @@ static void properties_past_the_cap_are_dropped_with_a_warning(void** state)
   az_iot_log_set_global_sink(NULL);
 
   assert_int_equal(result, AZ_IOT_OK);
-
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
-  assert_int_equal(publish->user_properties_count, AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES);
-
-  char last_carried[16];
-  char first_dropped[16];
-  snprintf(last_carried, sizeof(last_carried), "k%d", k_carried - 1);
-  snprintf(first_dropped, sizeof(first_dropped), "k%d", k_carried);
-  assert_string_equal(az_iot_mock_call_user_property(publish, last_carried), "v");
-  assert_null(az_iot_mock_call_user_property(publish, first_dropped));
-
-  /* Naming the first casualty is what makes the warning actionable, and warning
-   * once rather than per property is what keeps it readable. */
-  assert_int_equal(log.count, 1);
-  assert_int_equal(log.last_level, AZ_IOT_LOG_LEVEL_WARN);
-  assert_non_null(strstr(log.last, first_dropped));
+  assert_int_equal(publish->user_properties_end, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(publish->user_properties_offered, k_offered + 2);
+  assert_int_equal(publish->user_properties_count, k_offered + 2);
+  assert_string_equal(publish->user_properties[0].key, "type");
+  assert_string_equal(publish->user_properties[1].key, "content-type");
+  for (int i = 0; i < k_offered; ++i)
+  {
+    assert_string_equal(publish->user_properties[2 + i].key, keys[i]);
+    assert_string_equal(publish->user_properties[2 + i].value, "v");
+  }
+  assert_int_equal(log.count, 0);
 }
 
 /* The fix for D-11 narrowed a prefix test to an exact one. Anything that widens
@@ -583,46 +575,55 @@ static void a_repeated_content_type_resolves_to_the_first(void** state)
   assert_int_equal(publish->user_properties_count, 2);
 }
 
-/* The other side of the cap: a message that exactly fills it loses nothing and
- * must not warn. An off-by-one in the bound shows up here and nowhere else. */
-static void filling_the_cap_exactly_carries_everything_and_says_nothing(void** state)
+/* Filtering a long list: $.ct, $.cid and empty or NULL keys are skipped
+ * wherever they appear, and every other property keeps its place. */
+static void filtering_keeps_order_past_the_former_cap(void** state)
 {
   fixture* test = (fixture*)*state;
   connect_and_init(test);
 
-  /* Two of the slots are the type and content-type the client adds. */
   enum
   {
-    k_carried = AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES - 2
+    k_offered = 24
   };
-  char keys[k_carried][16];
-  az_iot_telemetry_property properties[k_carried];
-  for (int i = 0; i < k_carried; ++i)
+  char keys[k_offered][16];
+  az_iot_telemetry_property properties[k_offered];
+  for (int i = 0; i < k_offered; ++i)
   {
     snprintf(keys[i], sizeof(keys[i]), "k%d", i);
     properties[i].key = keys[i];
-    properties[i].value = "v";
+    properties[i].value = (i % 2 == 0) ? "v" : NULL;
   }
+  properties[3].key = AZ_IOT_MSG_PROP_CONTENT_TYPE;
+  properties[3].value = "text/plain";
+  properties[10].key = AZ_IOT_MSG_PROP_CORRELATION_ID;
+  properties[10].value = "cid";
+  properties[17].key = "";
+  properties[20].key = NULL;
   az_iot_telemetry_message message = {
     .properties = properties,
     .properties_count = ARRAY_SIZE(properties),
   };
 
-  log_capture log;
-  install_capture(&log, AZ_IOT_LOG_LEVEL_WARN);
-  az_iot_result result
-      = az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL);
-  az_iot_log_set_global_sink(NULL);
-
-  assert_int_equal(result, AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, ignore_send, NULL),
+      AZ_IOT_OK);
   const az_iot_mock_call* publish = az_iot_mock_mqtt_client_call_at(test->mock, 0);
-  assert_int_equal(publish->user_properties_count, AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES);
-
-  char last_carried[16];
-  snprintf(last_carried, sizeof(last_carried), "k%d", k_carried - 1);
-  assert_string_equal(az_iot_mock_call_user_property(publish, "k0"), "v");
-  assert_string_equal(az_iot_mock_call_user_property(publish, last_carried), "v");
-  assert_int_equal(log.count, 0);
+  assert_int_equal(publish->user_properties_end, AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(publish->user_properties_offered, 2 + k_offered - 4);
+  assert_string_equal(publish->content_type, "text/plain");
+  assert_int_equal(publish->correlation_data_len, 3);
+  size_t slot = 2;
+  for (int i = 0; i < k_offered; ++i)
+  {
+    if (i == 3 || i == 10 || i == 17 || i == 20)
+    {
+      continue;
+    }
+    assert_string_equal(publish->user_properties[slot].key, keys[i]);
+    assert_string_equal(publish->user_properties[slot].value, (i % 2 == 0) ? "v" : "");
+    slot++;
+  }
 }
 
 /* The v5 path carries values as-is. MQTTv3 has to percent-encode the same
@@ -918,13 +919,11 @@ int main(void)
         a_failed_puback_reaches_the_callback_unchanged, setup, teardown),
     cmocka_unit_test_setup_teardown(metadata_uses_native_v5_fields, setup, teardown),
     cmocka_unit_test_setup_teardown(every_system_property_reaches_the_wire, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        properties_past_the_cap_are_dropped_with_a_warning, setup, teardown),
+    cmocka_unit_test_setup_teardown(every_property_is_sent_with_no_cap, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unknown_system_property_still_travels, setup, teardown),
     cmocka_unit_test_setup_teardown(content_type_is_matched_case_sensitively, setup, teardown),
     cmocka_unit_test_setup_teardown(a_repeated_content_type_resolves_to_the_first, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        filling_the_cap_exactly_carries_everything_and_says_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(filtering_keeps_order_past_the_former_cap, setup, teardown),
     cmocka_unit_test_setup_teardown(values_are_not_encoded_on_the_v5_path, setup, teardown),
     cmocka_unit_test_setup_teardown(content_type_defaults_to_json, setup, teardown),
     cmocka_unit_test_setup_teardown(

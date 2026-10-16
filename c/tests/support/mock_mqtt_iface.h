@@ -48,11 +48,10 @@ extern "C"
 /* Covers an mqttv3 C2D topic whose property bag overruns the SDK's decode
  * buffers, which tests must be able to inject without the mock truncating it. */
 #define AZ_IOT_MOCK_TOPIC_MAX 1024
-/* Must be at least the largest number any feature client can send on one
- * PUBLISH (telemetry forwards up to AZ_IOT_TELEMETRY_MAX_USER_PROPS = 16),
- * otherwise the mock silently truncates and a test asserting on the tail
- * stops checking anything. */
-#define AZ_IOT_MOCK_MAX_USER_PROPS 20
+/* User Properties recorded per PUBLISH. Feature clients have no limit, so a
+ * call also records how many were offered (user_properties_offered): a test
+ * sending more than this asserts on that count. */
+#define AZ_IOT_MOCK_MAX_USER_PROPS 40
 #define AZ_IOT_MOCK_PAYLOAD_MAX 4096
 #define AZ_IOT_MOCK_HISTORY_MAX 64
 
@@ -80,6 +79,8 @@ extern "C"
       char value[128];
     } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
     size_t user_properties_count;
+    size_t user_properties_offered; /* every property the view yielded */
+    az_iot_result user_properties_end; /* what ended the iteration: AZ_IOT_ERR_NOT_FOUND */
     char content_type[64]; /* PUBLISH Content Type, "" if none */
     uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */

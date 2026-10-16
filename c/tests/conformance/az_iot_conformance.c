@@ -272,10 +272,15 @@ typedef struct conf_recorder
    * callback, so an assertion made after process_loop() returned would be
    * reading freed memory -- and would pass just often enough to be useless.
    *
-   * `prop_null_*` count the entries the adapter exposed with a NULL key or
-   * value, which is the thing a test has to be able to assert did NOT happen:
-   * a zero-length property is legal and must arrive as "", never as NULL. */
+   * `prop_counts` counts every property the view yields; the first
+   * CONF_PROPS_MAX are kept, and the last one too. `prop_null_*` count entries
+   * with a NULL key or value, which must not happen: a zero-length property is
+   * legal and must arrive as "", never as NULL. `prop_ends` is what ended the
+   * iteration: AZ_IOT_ERR_NOT_FOUND, never an error. */
   size_t prop_counts[CONF_EVENTS_MAX];
+  char prop_last_keys[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
+  char prop_last_values[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
+  az_iot_result prop_ends[CONF_EVENTS_MAX];
   char prop_keys[CONF_EVENTS_MAX][CONF_PROPS_MAX][CONF_PROP_STR_MAX];
   char prop_values[CONF_EVENTS_MAX][CONF_PROPS_MAX][CONF_PROP_STR_MAX];
   size_t prop_null_keys[CONF_EVENTS_MAX];
@@ -299,31 +304,41 @@ static void conf_copy_str(char* dst, size_t cap, const char* src)
   dst[n] = '\0';
 }
 
+/* As conf_copy_str, for a string that is not NUL-terminated. */
+static void conf_copy_n(char* dst, size_t cap, const char* src, size_t n)
+{
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 static void conf_record_v5_properties(conf_recorder* r, size_t i, const az_iot_mqtt_message* msg)
 {
-  for (size_t p = 0; p < msg->user_properties_count; ++p)
+  size_t cursor = 0;
+  az_iot_mqtt_user_property_view up;
+  while ((r->prop_ends[i] = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
+         == AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[p];
-    if (up->key == NULL)
+    if (up.key == NULL)
     {
       r->prop_null_keys[i]++;
+      continue;
     }
-    if (up->value == NULL)
+    if (up.value == NULL)
     {
       r->prop_null_values[i]++;
-    }
-    if (r->prop_counts[i] >= CONF_PROPS_MAX)
-    {
       continue;
     }
     size_t slot = r->prop_counts[i]++;
-    if (up->key)
+    conf_copy_n(r->prop_last_keys[i], CONF_PROP_STR_MAX, up.key, up.key_len);
+    conf_copy_n(r->prop_last_values[i], CONF_PROP_STR_MAX, up.value, up.value_len);
+    if (slot < CONF_PROPS_MAX)
     {
-      conf_copy_str(r->prop_keys[i][slot], CONF_PROP_STR_MAX, up->key);
-    }
-    if (up->value)
-    {
-      conf_copy_str(r->prop_values[i][slot], CONF_PROP_STR_MAX, up->value);
+      conf_copy_n(r->prop_keys[i][slot], CONF_PROP_STR_MAX, up.key, up.key_len);
+      conf_copy_n(r->prop_values[i][slot], CONF_PROP_STR_MAX, up.value, up.value_len);
     }
   }
   if (msg->content_type)
@@ -2622,8 +2637,8 @@ static void v5_message_properties_survive_a_roundtrip(void** state)
   msg.payload = body;
   msg.payload_len = sizeof(body);
   msg.qos = AZ_IOT_MQTT_QOS_1;
-  msg.user_properties = sent;
-  msg.user_properties_count = sizeof(sent) / sizeof(sent[0]);
+  msg.user_properties
+      = az_iot_mqtt_user_properties_from_array(sent, sizeof(sent) / sizeof(sent[0]));
   msg.content_type = "application/json";
   msg.correlation_data = correlation;
   msg.correlation_data_len = sizeof(correlation);
@@ -2741,6 +2756,121 @@ static void v5_properties_from_the_server_are_surfaced_intact(void** state)
   az_iot_test_proxy_stop(proxy);
 }
 
+/* 24 User Properties: more than any fixed array an adapter used to hold. */
+#define CONF_MANY_PROPS 24
+static const az_iot_mqtt_user_property k_many_props[CONF_MANY_PROPS] = {
+  { "p00", "v00" }, { "p01", "v01" }, { "p02", "v02" }, { "p03", "v03" }, { "p04", "v04" },
+  { "p05", "v05" }, { "p06", "v06" }, { "p07", "v07" }, { "p08", "v08" }, { "p09", "v09" },
+  { "p10", "v10" }, { "p11", "v11" }, { "p12", "v12" }, { "p13", "v13" }, { "p14", "v14" },
+  { "p15", "v15" }, { "p16", "v16" }, { "p17", "v17" }, { "p18", "v18" }, { "p19", "v19" },
+  { "p20", "v20" }, { "p21", "v21" }, { "p22", "v22" }, { "p23", "v23" },
+};
+
+static void assert_many_props(const conf_recorder* rec, int i)
+{
+  assert_int_equal(rec->prop_ends[i], AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(rec->prop_counts[i], CONF_MANY_PROPS);
+  assert_int_equal(rec->prop_null_keys[i], 0);
+  assert_int_equal(rec->prop_null_values[i], 0);
+  for (size_t p = 0; p < CONF_PROPS_MAX; ++p)
+  {
+    assert_string_equal(rec->prop_keys[i][p], k_many_props[p].key);
+    assert_string_equal(rec->prop_values[i][p], k_many_props[p].value);
+  }
+  assert_string_equal(rec->prop_last_keys[i], k_many_props[CONF_MANY_PROPS - 1].key);
+  assert_string_equal(rec->prop_last_values[i], k_many_props[CONF_MANY_PROPS - 1].value);
+}
+
+/* Outbound and back: every property is sent and every one is surfaced, in
+ * order. An adapter with a fixed array refuses the publish or drops the tail. */
+static void v5_many_properties_survive_a_roundtrip(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5many");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_client(c, &rec, cid);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
+
+  static const uint8_t body[] = { 'm' };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(k_many_props, CONF_MANY_PROPS);
+
+  uint16_t pub_pid = 0;
+  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  int i = recorded_message_on(&rec, topic);
+  assert_true(i >= 0);
+  assert_many_props(&rec, i);
+
+  uint16_t unsub_pid = 0;
+  assert_int_equal(c->iface->unsubscribe(c, topic, &unsub_pid), AZ_IOT_OK);
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
+/* Inbound from the server: all 24 are surfaced, none silently dropped. */
+static void v5_many_properties_from_the_server_are_all_surfaced(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  az_iot_test_mqtt_user_property props[CONF_MANY_PROPS];
+  for (size_t p = 0; p < CONF_MANY_PROPS; ++p)
+  {
+    props[p].key = k_many_props[p].key;
+    props[p].value = k_many_props[p].value;
+  }
+  static const char* const inject_topic = "az/m";
+  static const uint8_t body[] = { 'i' };
+  az_iot_test_mqtt_packet publish
+      = az_iot_test_mqtt_publish_v5(inject_topic, body, sizeof(body), props, CONF_MANY_PROPS, NULL);
+  assert_true(publish.len > 0);
+
+  az_iot_test_proxy_rule push = { 0 };
+  push.dir = AZ_IOT_TEST_PROXY_C2B;
+  push.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
+  inject_packet(&push, AZ_IOT_TEST_PROXY_B2C, &publish);
+  push.echo_packet_id = 0;
+  push.packet_id_offset = 0;
+  int push_id = az_iot_test_proxy_add_rule(proxy, &push);
+  assert_true(push_id >= 0);
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5manyin");
+  char topic[128];
+  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
+
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  connect_via_proxy(c, &rec, cid, proxy_port);
+
+  uint16_t sub_pid = 0;
+  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
+  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
+
+  int i = recorded_message_on(&rec, inject_topic);
+  assert_true(i >= 0);
+  assert_many_props(&rec, i);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
 /* The session-present bit of the CONNACK must reach the application.
  *
  * It is the only thing that tells a client whether the broker still holds its
@@ -2823,8 +2953,8 @@ static void v3_1_1_publish_ignores_the_v5_only_fields(void** state)
   msg.payload = body;
   msg.payload_len = sizeof(body);
   msg.qos = AZ_IOT_MQTT_QOS_1;
-  msg.user_properties = sent;
-  msg.user_properties_count = sizeof(sent) / sizeof(sent[0]);
+  msg.user_properties
+      = az_iot_mqtt_user_properties_from_array(sent, sizeof(sent) / sizeof(sent[0]));
   msg.content_type = "application/json";
   msg.correlation_data = correlation;
   msg.correlation_data_len = sizeof(correlation);
@@ -4089,6 +4219,8 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_refused_publish_is_reported),
             cmocka_unit_test(v5_message_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_properties_from_the_server_are_surfaced_intact),
+            cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
+            cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
             cmocka_unit_test(v5_session_present_from_connack_is_reported) };
     failed = cmocka_run_group_tests(v5_tests, NULL, NULL);
   }

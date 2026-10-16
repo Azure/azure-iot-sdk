@@ -187,26 +187,27 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* MQTTv5 carries properties as MQTT v5 user properties, not in the topic, so
-     * the topic stays the fixed ih/<id>/srv/telemetry and nothing is
-     * URL-encoded -- the reserved characters MQTTv3 has to escape travel here
-     * byte for byte. Two properties are added for you: type=telemetry:1, and
-     * content-type, which takes $.ct when the message sets it and
-     * application/json when it does not.
+    /* Properties are one array of name/value pairs; the name decides the kind.
      *
-     * $.ct is the one system property with a native v5 field, so it does not
-     * also travel under its own name. Every other one -- $.ce, $.mid, $.cid,
-     * $.uid, $.ctime, $.sub -- is carried verbatim, the same names the MQTTv3
-     * client percent-encodes into its topic, so a message means the same thing
-     * on either generation.
+     * System properties use the AZ_IOT_MSG_PROP_* names (az_iot_message.h):
+     * $.ct travels as the MQTT v5 Content Type, $.cid as Correlation Data, and
+     * the others ($.mid, $.ce, $.uid, ...) as user properties under the same
+     * names MQTTv3 uses, so a message means the same on either hub.
      *
-     * The budget is AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES counting the two
-     * added above. Properties past it are dropped, because the buffer is fixed,
-     * but the send warns once naming the first one lost. */
+     * Any other name is an application property, sent as a user property byte
+     * for byte (nothing is URL-encoded on mqttv5). The client also adds
+     * type=telemetry:1 and content-type. There is no limit on the count.
+     *
+     * Receiving: an mqttv5 hub sends no cloud-to-device messages, so the
+     * application gets no inbound properties; see unified/c2d_receiver for
+     * mqttv3. */
     static const uint8_t payload[] = "{\"temp\":23}";
     az_iot_telemetry_property props[] = {
+      /* System properties. */
       { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
       { AZ_IOT_MSG_PROP_MESSAGE_ID, "sample-1" },
+      { AZ_IOT_MSG_PROP_CORRELATION_ID, "sample-corr-1" },
+      /* Application property. */
       { "unit", "deg C" },
     };
     az_iot_telemetry_message msg = { 0 };

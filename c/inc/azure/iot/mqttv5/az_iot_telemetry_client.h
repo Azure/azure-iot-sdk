@@ -15,20 +15,6 @@ extern "C"
 {
 #endif
 
-/* How many MQTT v5 user properties one telemetry message can carry, counting
- * the two the client adds itself: `type` and `content-type`. Properties past it
- * are dropped, and the send warns once naming the first one lost.
- *
- * Override it at compile time (for example
- * -DAZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES=32) **on the whole build**. It
- * sizes a buffer inside the send path rather than any struct the application
- * declares, so setting it for the application alone changes nothing -- the SDK
- * keeps the value it was compiled with, and the extra properties are still
- * dropped. */
-#ifndef AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES
-#define AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES 16
-#endif
-
   typedef struct az_iot_mqttv5_telemetry_client
   {
     struct
@@ -58,7 +44,10 @@ extern "C"
    *
    * The #AZ_IOT_MSG_PROP_CONTENT_TYPE and #AZ_IOT_MSG_PROP_CORRELATION_ID properties travel as
    * the native MQTT v5 Content Type and Correlation Data (UTF-8 text, at most 65535 bytes); the
-   * hub reads the correlation id only from there. No Message Expiry Interval is sent: the hub
+   * hub reads the correlation id only from there. Every other property with a non-empty key
+   * travels, in order, as an MQTT v5 User Property, after the `type` and `content-type` ones the
+   * client adds; a NULL value is sent empty. There is no limit on their number other than what the
+   * MQTT adapter can send in one packet. No Message Expiry Interval is sent: the hub
    * routes telemetry on arrival and does not carry it.
    *
    * @param callback Required. Called once, only if this returns AZ_IOT_OK: with the broker's

@@ -133,6 +133,17 @@
   `connection_profile` is now declared, so a feature client for the other hub generation fails
   with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
   generation. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
+- Breaking: mqttv5 user properties are no longer copied into fixed arrays or capped.
+  `az_iot_mqtt_message.user_properties` is now an `az_iot_mqtt_user_properties` view, read with
+  `az_iot_mqtt_user_properties_next()` / `_find()` (`az_iot_mqtt_user_property_view`: UTF-8 with
+  lengths, not NUL-terminated); `user_properties_count` is removed, and
+  `az_iot_mqtt_user_properties_from_array()` wraps an array. Inbound, every property reaches the
+  SDK; the az_mqtt adapter dropped those past `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` (4 or 16), which
+  now limits CONNECT user properties only. mqttv5 telemetry sends every application property;
+  `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` (16, extras dropped with a warning) is removed.
+  MQTT adapters, including your own, must implement and read the view: see
+  [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
+  patched for it (`deps/az_mqtt/VENDORED.md`).
 
 ### Bugs Fixed
 
