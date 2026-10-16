@@ -351,22 +351,7 @@ jobs:
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
 
       - name: Run the PKCS#11 custody e2e (Linux)
-        # Runs on the nightly schedule and on demand, NOT on pull requests.
-        #
-        # The suite itself is finished and the mechanism is pinned by the
-        # unit-level custody suite, which drives the same adapter code against a
-        # real SoftHSM2 token and feeds the result to
-        # SSL_CTX_use_PrivateKey_file -- verbatim what Paho does. What is not
-        # settled is the handshake against a live hub with a token-held key: it
-        # currently ends in "TCP/TLS connect failure" with no OpenSSL reason
-        # reaching the log, and diagnosing that needs the provisioned hub in
-        # front of it rather than another blind push. Gating pull requests on an
-        # unfinished bring-up would only teach people to ignore a red check.
-        #
-        # This is the same phasing the coverage gate used: measure and publish
-        # first, block later. Move it back onto pull_request once a nightly run
-        # is green.
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: runner.os == 'Linux'
         shell: pwsh
         # The "Storage / custody" scenario of docs/eng/certificate-management.md:
         # the SAME device provisions through DPS and talks to the hub, but with
@@ -387,16 +372,8 @@ jobs:
           # eval the provider script rather than merely running it, so
           # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
           # "module = .../pkcs11.so" into the configuration it generates. The
-          # coverage job in ci-c.yml has always eval'd it; this one did not.
-          #
-          # This is hygiene, NOT the cause of the nightly failure. Without the
-          # eval the configuration names the provider by section only, but
-          # OPENSSL_MODULES still reaches the test process -- the loop below
-          # parses the provider script's own export line -- so the provider
-          # resolves either way. Measured: a configuration generated with
-          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
-          # at run time. Naming the module makes the configuration independent of
-          # that variable instead of relying on it.
+          # coverage job in ci-c.yml does the same. Naming the module makes the
+          # configuration independent of OPENSSL_MODULES at run time.
           $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
           if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
           foreach ($line in $exports) {
