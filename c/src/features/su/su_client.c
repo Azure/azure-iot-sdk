@@ -3213,7 +3213,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     SU_I(client).checkpoint_terminal = !retry_record;
     SU_I(client).checkpoint_retry = retry_record;
     SU_I(client).checkpoint_superseded = false;
-    SU_I(client).device_properties_report_pending = true;
+    /* A retry record's report is settled: re-sending it could replay a rejected one. */
+    SU_I(client).device_properties_report_pending = !retry_record;
     SU_I(client).report_paced = false;
     restore_channel_state(client, &blob[ch_at], ch_len);
     set_su_state(client, AZ_IOT_SU_STATE_IDLE);

@@ -4299,11 +4299,13 @@ static void the_retry_record_round_trips_through_the_blob(void** state)
   assert_int_equal(
       fresh->su._internal.workflow_retry.due_unix_s, fx->su._internal.workflow_retry.due_unix_s);
   assert_retry_wait(fresh, (uint64_t)left_s * 1000u - 1000u);
+  assert_false(fresh->su._internal.device_properties_report_pending);
 
-  /* Nothing is rewritten while it waits. */
+  /* Nothing is rewritten or re-reported while it waits. */
   int writes = fresh->log.persist_calls;
   open_to_connected(fresh);
   pump(fresh, 3);
+  assert_int_equal(fresh->chan.report_count, 0);
   inject_patch(fresh, signed_patch());
   inject_patch(fresh, signed_patch());
   assert_int_equal(fresh->log.persist_calls, writes);
