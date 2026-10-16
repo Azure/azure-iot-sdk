@@ -181,6 +181,8 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private event Action? UnrecoverablyFaulted;
 
+        private event Action<Exception>? CallerProvisioningFailed;
+
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
         private TaskCompletionSource<ProvisioningServiceResponse>? _startProvisioningRequestStatusSource;
@@ -264,47 +266,65 @@ namespace Microsoft.Azure.Iot.Device
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device connected to.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        public Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            return ProvisionAndConnectAsync(provisioningSettings, authentication, forceProvisioning, isAutomaticReprovisioning: false, cancellationToken);
+        }
 
-            if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
+        private async Task<ConnectionContext> ProvisionAndConnectAsync(
+            ProvisioningSettings provisioningSettings,
+            X509AuthenticationProvider authentication,
+            bool forceProvisioning,
+            bool isAutomaticReprovisioning,
+            CancellationToken cancellationToken)
+        {
+            try
             {
-                throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+                if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
+                {
+                    throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
+                }
+
+                // Remember what this device was asked to provision with before attempting either path, so that a connection
+                // established directly from a cached assignment -- not only one established after provisioning -- can still
+                // be recovered by re-provisioning if it later faults on this device's identity.
+                _lastProvisioningSettings = provisioningSettings;
+                _lastProvisioningAuthentication = authentication;
+
+                // Unless the caller insists on provisioning, try the IoT hub assignment this client already holds first. A
+                // cached context comes either from a previous provisioning run in this process or from one the application
+                // restored into this client at construction. The connection layer retries the direct connection under the
+                // configured retry policy, so it only fails once that policy is exhausted or the hub rejects this device's
+                // identity -- exactly the cases in which the cached assignment is no good and this device must ask Device
+                // Provisioning Service for a fresh one.
+                ConnectionContext? cachedConnectionContext = CurrentConnectionContext;
+                if (!forceProvisioning && cachedConnectionContext != null)
+                {
+                    try
+                    {
+                        await ConnectToHubAsync(cachedConnectionContext, cancellationToken);
+                        return cachedConnectionContext;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        // The caller cancelled, so this is not a failure of the cached assignment to fall back from.
+                        throw;
+                    }
+                    catch (DeviceException e)
+                    {
+                        Trace.TraceWarning("Could not connect directly to the cached IoT hub assignment; provisioning for a fresh one. {0}", e);
+                    }
+                }
+
+                return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
             }
-
-            // Remember what this device was asked to provision with before attempting either path, so that a connection
-            // established directly from a cached assignment -- not only one established after provisioning -- can still
-            // be recovered by re-provisioning if it later faults on this device's identity.
-            _lastProvisioningSettings = provisioningSettings;
-            _lastProvisioningAuthentication = authentication;
-
-            // Unless the caller insists on provisioning, try the IoT hub assignment this client already holds first. A
-            // cached context comes either from a previous provisioning run in this process or from one the application
-            // restored into this client at construction. The connection layer retries the direct connection under the
-            // configured retry policy, so it only fails once that policy is exhausted or the hub rejects this device's
-            // identity -- exactly the cases in which the cached assignment is no good and this device must ask Device
-            // Provisioning Service for a fresh one.
-            ConnectionContext? cachedConnectionContext = CurrentConnectionContext;
-            if (!forceProvisioning && cachedConnectionContext != null)
+            catch (Exception e) when (!isAutomaticReprovisioning)
             {
-                try
-                {
-                    await ConnectToHubAsync(cachedConnectionContext, cancellationToken);
-                    return cachedConnectionContext;
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    // The caller cancelled, so this is not a failure of the cached assignment to fall back from.
-                    throw;
-                }
-                catch (DeviceException e)
-                {
-                    Trace.TraceWarning("Could not connect directly to the cached IoT hub assignment; provisioning for a fresh one. {0}", e);
-                }
+                CallerProvisioningFailed?.Invoke(e);
+                throw;
             }
-
-            return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
         }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
@@ -812,7 +832,12 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
                     // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
+                    await ProvisionAndConnectAsync(
+                        provisioningSettings,
+                        provisioningAuthentication,
+                        forceProvisioning: true,
+                        isAutomaticReprovisioning: true,
+                        cancellationToken);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
                     return;
@@ -1468,6 +1493,7 @@ namespace Microsoft.Azure.Iot.Device
             // Counts the connection events that release the latch, so that an event which fires after an attempt started
             // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
             int connectionEventCount = 0;
+            Exception? callerProvisioningFailure = null;
 
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
@@ -1477,6 +1503,13 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
+            Action<Exception> HandleCallerProvisioningFailed = exception =>
+            {
+                Interlocked.CompareExchange(ref callerProvisioningFailure, exception, null);
+                Interlocked.Increment(ref connectionEventCount);
+                ReleaseLatch();
+            };
+            CallerProvisioningFailed += HandleCallerProvisioningFailed;
             Action HandleUnrecoverableFault = () =>
             {
                 // Stop waiting for a connection that is never coming back
@@ -1512,6 +1545,7 @@ namespace Microsoft.Azure.Iot.Device
                             // The device became present again (or this client faulted) after this attempt started, so
                             // that release must not be waited for again. Re-evaluate straight away.
                             ThrowIfUnrecoverablyFaulted();
+                            ThrowIfCallerProvisioningFailed();
                             continue;
                         }
 
@@ -1540,13 +1574,24 @@ namespace Microsoft.Azure.Iot.Device
                         }
 
                         ThrowIfUnrecoverablyFaulted();
+                        ThrowIfCallerProvisioningFailed();
                     }
                 }
             }
             finally
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
+                CallerProvisioningFailed -= HandleCallerProvisioningFailed;
                 UnrecoverablyFaulted -= HandleUnrecoverableFault;
+            }
+
+            void ThrowIfCallerProvisioningFailed()
+            {
+                Exception? exception = Volatile.Read(ref callerProvisioningFailure);
+                if (exception != null)
+                {
+                    throw new OperationCanceledException("Operation canceled because the caller's connection attempt failed or was canceled.", exception);
+                }
             }
         }
     }
