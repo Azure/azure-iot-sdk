@@ -14,6 +14,7 @@ using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
