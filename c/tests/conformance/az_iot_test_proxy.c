@@ -380,9 +380,16 @@ static proxy_sock proxy_accept_timeout(proxy_sock listen_sock, unsigned timeout_
   return accept(listen_sock, NULL, NULL);
 }
 
-/* Dial host:port (both as strings), returning a connected socket or
- * PROXY_INVALID_SOCK. Shared by the passthrough upstream and by CONNECT mode,
- * which dials whatever authority the client named. */
+/**
+ * @brief Dial host:port (both as strings).
+ *
+ * Tries every resolved address in order, so a name such as "localhost" that
+ * resolves to ::1 first still reaches a broker listening only on 127.0.0.1.
+ * Shared by the passthrough upstream and by CONNECT mode, which dials whatever
+ * authority the client named.
+ *
+ * @return A connected socket, or PROXY_INVALID_SOCK if no address connects.
+ */
 static proxy_sock proxy_dial(const char* host, const char* port)
 {
   struct addrinfo hints;
@@ -396,19 +403,22 @@ static proxy_sock proxy_dial(const char* host, const char* port)
     return PROXY_INVALID_SOCK;
   }
 
-  proxy_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if (s == PROXY_INVALID_SOCK)
+  proxy_sock s = PROXY_INVALID_SOCK;
+  for (const struct addrinfo* ai = res; ai != NULL; ai = ai->ai_next)
   {
-    freeaddrinfo(res);
-    return PROXY_INVALID_SOCK;
-  }
-  int rc = connect(s, res->ai_addr, (int)res->ai_addrlen);
-  freeaddrinfo(res);
-  if (rc != 0)
-  {
+    s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (s == PROXY_INVALID_SOCK)
+    {
+      continue;
+    }
+    if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) == 0)
+    {
+      break;
+    }
     proxy_closesock(s);
-    return PROXY_INVALID_SOCK;
+    s = PROXY_INVALID_SOCK;
   }
+  freeaddrinfo(res);
   return s;
 }
 
