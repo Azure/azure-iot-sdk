@@ -184,7 +184,8 @@ Sample: [`samples/authentication/dps_persist_assignment`](../samples/authenticat
 | `initial_delay_ms` | 1000 | First delay. `0` disables automatic reconnect. |
 | `max_delay_ms` | 60000 | Cap on the exponential backoff. |
 | `max_attempts` | 0 | Automatic retries after a failure before `FAULTED`; the count resets on success. `0` retries forever. |
-| `jitter_pct` | 20 | Random variation, ± percent. |
+| `jitter_pct` | 20 | Random variation, percent. |
+| `jitter_mode` | `AZ_IOT_RETRY_JITTER_SYMMETRIC` | `_SYMMETRIC`: ± `jitter_pct`. `_ADDITIVE`: + 0..`jitter_pct`, never shorter than the backoff. |
 
 `az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()` and `_get_fixed_interval_retry_policy()`
 build the common shapes.
