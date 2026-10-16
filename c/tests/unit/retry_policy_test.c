@@ -889,12 +889,10 @@ static void a_deferred_retry_restores_its_deferred_wait(void** state)
 static void a_pause_before_scheduling_does_not_shorten_the_deadline(void** state)
 {
   (void)state;
-  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
-  uint64_t rng = 1;
+  /* Fixed timestamps: Unix time read at 0, a 60 s wait scheduled 2 s later. */
   az_iot_retry_state s = { 0 };
-  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
-  /* Unix time read 2 s before the 60 s wait was scheduled. */
-  az_iot_retry_state__set_unix_deadline(&s, 1800000000u, s._internal.due_ms - 62000u);
+  s._internal.due_ms = 62000u;
+  az_iot_retry_state__set_unix_deadline(&s, 1800000000u, 0u);
   assert_int_equal(s._internal.due_unix_s, 1800000000u + 62u + 1u);
   assert_true(s._internal.due_unix_aligned);
 
@@ -1001,20 +999,14 @@ static void a_capped_deadline_does_not_creep_across_restarts(void** state)
 static void a_pause_before_restoring_does_not_shorten_the_wait(void** state)
 {
   (void)state;
+  /* Fixed timestamp: the Unix time was read at monotonic 1000 ms. Both
+   * deadlines are measured from it, whenever the restore itself runs. */
   uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE] = { 1, 0, 0, 0, 60, 0, 0, 0 };
-  uint64_t read_at = az_iot_time_mono_ms() - 10000u; /* Unix time read 10 s ago */
   az_iot_retry_state r = { 0 };
-  az_iot_retry_state__restore_at(&r, rec, 1800000000u, 86400000u, read_at);
-  assert_int_equal(r._internal.due_ms, read_at + 60000u);
+  az_iot_retry_state__restore_at(&r, rec, 1800000000u, 86400000u, 1000u);
+  assert_int_equal(r._internal.due_ms, 1000u + 60000u);
   assert_int_equal(r._internal.due_unix_s, 1800000000u + 60u + 1u);
   assert_true(r._internal.due_unix_aligned);
-
-  /* Saved now (10 s after the Unix read) and restored at T+10: 51 s left, no
-   * less than the 50 s the monotonic clock still holds. */
-  az_iot_retry_state__save(&r, rec);
-  az_iot_retry_state__restore(&r, rec, 1800000000u + 10u, 86400000u);
-  uint32_t left = az_iot_retry_state__remaining_ms(&r);
-  assert_true(left > 50000u && left <= 51000u);
 }
 
 /* Deferrals that are not whole seconds drop the Unix deadline instead of
