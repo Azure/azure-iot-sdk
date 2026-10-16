@@ -11,20 +11,29 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 {
     public class SymmetricKeyAuthenticationProvider : AuthenticationProvider
     {
-        private string _symmetricKey; //TODO byte[]
+        private readonly byte[] _symmetricKey;
         
         private string _registrationId;
 
         private string _idScope;
 
+        /// <summary>
+        /// Creates a provider that authenticates with a symmetric key.
+        /// </summary>
+        /// <param name="registrationId">The registration Id to provision as.</param>
+        /// <param name="idScope">The device provisioning service Id scope.</param>
+        /// <param name="symmetricKey">The raw symmetric key bytes, not a Base64-encoded string.</param>
+        /// <param name="remoteCertificateValidationCallback">An optional callback for validating the server certificate.</param>
+        /// <param name="localCertificateSelectionCallback">An optional callback for selecting the client certificate.</param>
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
-            string symmetricKey,
+            byte[] symmetricKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) //TODO primary + secondary keys?
             : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
-        { 
+        {
+            ArgumentNullException.ThrowIfNull(symmetricKey);
             _idScope = idScope;
             _registrationId = registrationId;
             // Note that the device will use the same symmetric key when deriving SAS tokens to authenticate with IoT Hub and with DPS
@@ -60,7 +69,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return _registrationId;
         }
 
-        private static string BuildSasToken(string keyName, string key, string target, TimeSpan timeToLive)
+        private static string BuildSasToken(string keyName, byte[] key, string target, TimeSpan timeToLive)
         {
             string expiresOn = BuildExpiresOn(timeToLive);
             string audience = WebUtility.UrlEncode(target);
@@ -104,9 +113,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Convert.ToString(seconds, CultureInfo.InvariantCulture);
         }
 
-        private static string HMACSign(string requestString, string key)
+        private static string HMACSign(string requestString, byte[] key)
         {
-            using var hmac = new HMACSHA256(Convert.FromBase64String(key));
+            using var hmac = new HMACSHA256(key);
             return Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(requestString)));
         }
     }

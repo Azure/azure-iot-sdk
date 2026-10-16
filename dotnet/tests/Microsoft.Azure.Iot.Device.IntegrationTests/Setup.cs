@@ -156,9 +156,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string registrationId = Guid.NewGuid().ToString();
-            string symmetricKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            byte[] symmetricKey = RandomNumberGenerator.GetBytes(32);
 
-            Attestation attestation = new SymmetricKeyAttestation(symmetricKey, symmetricKey);
+            string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
+            Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 

@@ -99,7 +99,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             string registrationId = $"sas-csr-{Guid.NewGuid()}";
             using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
-            string deviceKey = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(registrationId)));
+            byte[] deviceKey = hmac.ComputeHash(Encoding.UTF8.GetBytes(registrationId));
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 

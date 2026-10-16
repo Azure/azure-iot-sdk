@@ -32,7 +32,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <param name="registrationId">The registration Id to provision as.</param>
         /// <param name="idScope">The device provisioning service Id scope.</param>
-        /// <param name="symmetricKey">The Base64-encoded symmetric key used to authenticate with the device provisioning service.</param>
+        /// <param name="symmetricKey">The raw symmetric key bytes used to authenticate with the device provisioning service.</param>
         /// <param name="issuedCertificatePrivateKey">
         /// The private key that this device's certificate signing requests (during provisioning and with IoT Hub) are generated with.
         /// </param>
@@ -47,7 +47,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public SymmetricKeyWithIssuedCertificateAuthenticationProvider(
             string registrationId,
             string idScope,
-            string symmetricKey,
+            byte[] symmetricKey,
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)
@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <param name="registrationId">The registration Id to provision as.</param>
         /// <param name="idScope">The device provisioning service Id scope.</param>
-        /// <param name="symmetricKey">The Base64-encoded symmetric key used to authenticate with the device provisioning service.</param>
+        /// <param name="symmetricKey">The raw symmetric key bytes used to authenticate with the device provisioning service.</param>
         /// <param name="handleCertificateSigningCompleteAsync">
         /// Invoked before connecting to IoT Hub with a new client certificate chain issued by the device provisioning
         /// service or IoT Hub. It receives the issued chain (Base64-encoded, device certificate first) and
@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public SymmetricKeyWithIssuedCertificateAuthenticationProvider(
             string registrationId,
             string idScope,
-            string symmetricKey,
+            byte[] symmetricKey,
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null)

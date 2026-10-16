@@ -30,7 +30,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private const string RegistrationId = "someRegistrationId";
         private const string DeviceId = "someDeviceId";
         private const string AssignedHub = "some-hub.azure-devices.net";
-        private static readonly string SymmetricKey = Convert.ToBase64String(Encoding.UTF8.GetBytes("some-symmetric-key-for-unit-tests"));
+        private static readonly byte[] SymmetricKey = Encoding.UTF8.GetBytes("some-symmetric-key-for-unit-tests");
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
 
