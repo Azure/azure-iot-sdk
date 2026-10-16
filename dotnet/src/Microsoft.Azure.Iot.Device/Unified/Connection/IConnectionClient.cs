@@ -14,6 +14,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <returns>Null if this connection client has not been connected yet. Otherwise, it returns the current connection context.</returns>
         ConnectionContext? GetCurrentConnectionContext();
 
+        /// <summary>
+        /// Whether this client has selected a connection endpoint. This remains true while it is automatically
+        /// reconnecting and becomes false after an explicit disconnect.
+        /// </summary>
+        bool IsConnectionTargetSet => true;
+
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
         Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);

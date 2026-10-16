@@ -116,6 +116,8 @@ namespace Microsoft.Azure.Iot.Device
             private set => _currentEndpoint = value;
         }
 
+        public bool IsConnectionTargetSet => CurrentEndpoint != ConnectionEndpoint.None;
+
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
 
