@@ -570,6 +570,43 @@ static const char* proxy_find_header(const char* head, const char* name)
   return NULL;
 }
 
+/**
+ * @brief Whether @p host is in the RFC 6761 ".invalid" TLD (case-insensitive,
+ * optional trailing dot).
+ *
+ * Such names are refused without a lookup: the outcome is fixed by the RFC, and
+ * getaddrinfo() can still block for a full resolver timeout on search-domain
+ * expansions, delaying the 502 past a test's step timeout.
+ */
+static int proxy_host_is_invalid_tld(const char* host)
+{
+  static const char k_tld[] = ".invalid";
+  const size_t tld_len = sizeof(k_tld) - 1;
+  size_t len = strlen(host);
+  if (len > 0 && host[len - 1] == '.')
+  {
+    --len;
+  }
+  if (len < tld_len)
+  {
+    return 0;
+  }
+  const char* tail = host + len - tld_len;
+  for (size_t i = 0; i < tld_len; ++i)
+  {
+    char ch = tail[i];
+    if (ch >= 'A' && ch <= 'Z')
+    {
+      ch = (char)(ch - 'A' + 'a');
+    }
+    if (ch != k_tld[i])
+    {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 /* Perform the CONNECT exchange. On success returns a connected upstream socket
  * and the tunnel is open; on any refusal the client has been answered and the
  * caller closes it. */
@@ -671,7 +708,8 @@ static proxy_sock proxy_http_connect_accept(struct az_iot_test_proxy* m, proxy_s
   memcpy(host, target, host_len);
   host[host_len] = '\0';
 
-  proxy_sock upstream = proxy_dial(host, colon + 1);
+  proxy_sock upstream
+      = proxy_host_is_invalid_tld(host) ? PROXY_INVALID_SOCK : proxy_dial(host, colon + 1);
   if (upstream == PROXY_INVALID_SOCK)
   {
     static const char k_502[] = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
