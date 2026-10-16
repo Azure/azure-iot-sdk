@@ -295,6 +295,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             _underlyingClient.Dispose();
             _isDisposed = true;
+            GC.SuppressFinalize(this);
         }
 
         public bool IsConnected() => _underlyingClient.IsConnected;

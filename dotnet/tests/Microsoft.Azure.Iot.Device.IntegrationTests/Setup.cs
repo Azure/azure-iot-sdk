@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
+                if (keyAndValue[0].Equals("HostName", StringComparison.Ordinal))
                 {
                     return keyAndValue[1];
                 }

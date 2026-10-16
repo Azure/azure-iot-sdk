@@ -5,3 +5,27 @@ root = true
 [*.cs]
 
 file_header_template = Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.\nSee LICENSE file in the project root for full license information.
+
+# Code analysis (see Directory.Build.props). Rules below are lowered to suggestions: shown in the IDE,
+# not enforced by the build.
+
+# Performance or style only.
+dotnet_diagnostic.CA1510.severity = suggestion
+dotnet_diagnostic.CA1805.severity = suggestion
+dotnet_diagnostic.CA1822.severity = suggestion
+dotnet_diagnostic.CA1852.severity = suggestion
+dotnet_diagnostic.CA1859.severity = suggestion
+dotnet_diagnostic.CA1863.severity = suggestion
+
+# Fixing these changes the public API (names, fields, parameter names, IDisposable) or the
+# exception types callers observe; each needs its own change.
+dotnet_diagnostic.CA1001.severity = suggestion
+dotnet_diagnostic.CA1051.severity = suggestion
+dotnet_diagnostic.CA1710.severity = suggestion
+dotnet_diagnostic.CA1711.severity = suggestion
+dotnet_diagnostic.CA1725.severity = suggestion
+dotnet_diagnostic.CA2201.severity = suggestion
+
+[tests/**.cs]
+# Underscores in test names are the naming convention.
+dotnet_diagnostic.CA1707.severity = none

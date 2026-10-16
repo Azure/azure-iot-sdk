@@ -11,10 +11,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     public class MockMqttClient : IMqttClient
     {
         //IMqtt client interface callbacks that will be used by the connection client
-        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
-        public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
-        public event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync;
-        public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
+        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync = null!;
+        public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync = null!;
+        public event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync = null!;
+        public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync = null!;
 
 
         // Mock-specific callbacks that are used by unit tests to control how the MQTT client should respond to connects/publishes/subscribes. By default, this mock just returns a basic "OK" response on all operations
@@ -23,7 +23,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public event Func<MqttPublish, Task<MqttPublishAck>>? OnPublishAttempt;
         public event Func<MqttSubscribe, Task<MqttSubscribeAck>>? OnSubscribeAttempt;
         public event Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribeAttempt;
-        public event Func<MqttPublish, Task>? OnPublishAcknowledged;
 
 
         // The list of publishes/subscribes/unsubscribes as they were "sent on the wire" after any necessary reconnection
@@ -117,7 +116,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public void Dispose()
         {
-
+            GC.SuppressFinalize(this);
         }
 
         public bool IsConnected() => _isConnected;
@@ -127,7 +126,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             if (_isMQTTv5)
             {
                 // Respond to birth message by simulating birth ack message
-                if (publish.Topic.StartsWith("ih") && publish.Topic.EndsWith("srv/presence")) // A bit of an assumption, but I don't expect tests to use this topic suffix elsewhere
+                if (publish.Topic.StartsWith("ih", StringComparison.Ordinal) && publish.Topic.EndsWith("srv/presence", StringComparison.Ordinal)) // A bit of an assumption, but I don't expect tests to use this topic suffix elsewhere
                 {
                     string deviceId = publish.Topic.Split("/")[1];
                     var simulatedBirthAck = new MqttPublish()

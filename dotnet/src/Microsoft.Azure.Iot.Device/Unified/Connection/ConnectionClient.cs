@@ -127,7 +127,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
 
-            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
+            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
 
             MqttPublish certificateSigningRequestPublish = new()
             {
@@ -143,7 +143,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
-            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
+            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic, StringComparison.Ordinal))
             {
                 try
                 {
@@ -161,13 +161,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         return;
                     }
 
-                    if (status.Equals("202"))
+                    if (status.Equals("202", StringComparison.Ordinal))
                     {
                         CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
                         pendingCertificateSigningOperation.SetAccepted(accepted);
                         return;
                     }
-                    else if (status.Equals("200"))
+                    else if (status.Equals("200", StringComparison.Ordinal))
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
                         if (HandleCertificateSigningCompleteAsync != null)

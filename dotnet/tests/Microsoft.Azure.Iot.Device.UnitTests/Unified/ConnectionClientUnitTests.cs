@@ -121,7 +121,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
             {
-                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString))
+                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
                     retryCount++;
@@ -177,7 +177,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnUnsubscribeAttempt += async (unsubscribe) =>
             {
-                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
+                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
                     retryCount++;
