@@ -4,13 +4,16 @@
 
 /* SPDX-License-Identifier: MIT */
 /* End-to-end: az_iot_mqttv5_twin_client on an mqttv5 hub: desired delivery with and without
- * options.twin_push.push_desired, reported patches, GET with options, and push_reported.
+ * options.twin_push.push_desired, reported patches, GET with options, push_reported, and requests
+ * across session drops, request timeouts and the pending limit.
  *
  * Each test opens its own connection: the push mode is read from the birth, so it is fixed per
  * connection. The service side patches desired properties and reads the twin back over REST
  * (az_iot_e2e_service.h). The tests run in order on one device: the pull test leaves desired
  * state for the push test's snapshot on connect. Reported properties use a fixed set of
  * e2e_<tag> keys whose values carry the per-run marker, so the twin does not grow across runs.
+ * An unplanned drop is forced by a second connection with the same identity, which evicts the
+ * device's session, and is closed at once so the device reconnects.
  */
 #include <setjmp.h>
 #include <stdarg.h>
@@ -56,6 +59,17 @@
 /* A REST twin body is at most E2E_HTTP_RESPONSE_MAX (32 KiB). */
 #define E2E_TWIN_JSON_MAX (32u * 1024u + 1u)
 #define E2E_LOG_BODY_MAX 2048
+/* Long enough that a closed evicting connection is gone, and a service change lands, before the
+ * device reconnects. */
+#define E2E_RECONNECT_INTERVAL_MS 15000u
+#define E2E_EVICT_TIMEOUT_S 60
+/* Evictions tried until one catches a GET in flight. */
+#define E2E_DROP_ATTEMPTS 3
+/* GETs kept outstanding during an eviction: the drop is missed only if all are answered at once. */
+#define E2E_RACE_DEPTH 4
+/* Smallest timeout az_iot_mqttv5_twin_client_set_request_timeout() takes; 0 is the default. */
+#define E2E_MIN_REQUEST_TIMEOUT_MS 1u
+#define E2E_EXPIRY_WAIT_S 5
 
 /** @brief Desired deliveries carrying the marker being waited for. */
 typedef struct
@@ -111,7 +125,31 @@ typedef struct
   bool reported_handler;
   /* Marker the reported handler matches; may be NULL. */
   const char* reported_marker;
+  /* Reconnect after an unplanned drop (E2E_RECONNECT_INTERVAL_MS). */
+  bool reconnect;
 } connect_mode;
+
+/** @brief Completion of one request whose content is not kept. */
+typedef struct
+{
+  az_iot_result submit;
+  bool done;
+  az_iot_result status;
+} request_record;
+
+/** @brief E2E_RACE_DEPTH GETs kept in flight back to back until the session drops. */
+typedef struct
+{
+  bool active;
+  int in_flight;
+  bool stopped;
+  int drops_at_start;
+  int submitted;
+  int answered;
+  int failed;
+  az_iot_result failure; /**< First unexpected status, else the last. */
+  az_iot_result refusal;
+} get_race;
 
 typedef struct
 {
@@ -129,6 +167,11 @@ typedef struct
   /* Hub transitions out of CONNECTED. */
   int hub_drops;
   bool hub_connected;
+  /* Second connection with the same identity; see evict(). */
+  e2e_device evictor;
+  bool evictor_active;
+  get_race race;
+  request_record requests[AZ_IOT_TWIN_MAX_PENDING + 1];
 } fixture;
 
 static fixture g_fx;
@@ -265,6 +308,10 @@ static void pump(fixture* fx)
   {
     e2e_device_do_work(&fx->dev, E2E_PUMP_MS);
   }
+  if (fx->evictor_active)
+  {
+    e2e_device_do_work(&fx->evictor, E2E_PUMP_MS);
+  }
   if (fx->twin_ok)
   {
     (void)az_iot_mqttv5_twin_client_do_work(&fx->twin);
@@ -325,11 +372,18 @@ static int open_device(fixture* fx, const connect_mode* mode)
       "%s",
       mode->reported_marker ? mode->reported_marker : "");
 
+  const az_iot_retry_policy retry
+      = az_iot_connection_client_get_fixed_interval_retry_policy(E2E_RECONNECT_INTERVAL_MS, 0);
   e2e_device_connect_options opts = { 0 };
   opts.twin_push_desired = mode->push_desired;
   opts.twin_push_reported = mode->push_reported;
   opts.before_open = attach_twin;
   opts.before_open_ctx = fx;
+  if (mode->reconnect)
+  {
+    opts.reconnection_policy = &retry;
+    opts.identity_recovery_policy = &retry;
+  }
   if (e2e_device_connect_with(&fx->dev, &opts) != 0)
   {
     return -1;
@@ -349,6 +403,11 @@ static int open_device(fixture* fx, const connect_mode* mode)
 /** @brief Close the device connection; the service client stays. */
 static void close_device(fixture* fx)
 {
+  if (fx->evictor_active)
+  {
+    fx->evictor_active = false;
+    e2e_device_disconnect(&fx->evictor);
+  }
   if (fx->twin_ok)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
@@ -404,6 +463,21 @@ static int setup_pull(void** state) { return setup_with(state, false); }
 
 static int setup_push(void** state) { return setup_with(state, true); }
 
+static int setup_pull_reconnect(void** state)
+{
+  connect_mode mode = { 0 };
+  mode.reconnect = true;
+  return setup_mode(state, &mode);
+}
+
+static int setup_push_reconnect(void** state)
+{
+  connect_mode mode = { 0 };
+  mode.push_desired = true;
+  mode.reconnect = true;
+  return setup_mode(state, &mode);
+}
+
 static int setup_push_no_desired_handler(void** state)
 {
   connect_mode mode = { 0 };
@@ -428,15 +502,21 @@ static int teardown(void** state)
   return 0;
 }
 
-/** @brief Drive the service's in-flight REST request; fails the test unless it answers 200. */
-static void service_finish(fixture* fx, const char* what, char* resp, size_t cap)
+/**
+ * @brief Drive the service's in-flight REST request; fails the test unless it answers 200.
+ * @param pump_device Also pump the device; false keeps an evicted device from reconnecting.
+ */
+static void service_wait(fixture* fx, const char* what, char* resp, size_t cap, bool pump_device)
 {
   int status = 0;
   int rc = 0;
   resp[0] = '\0';
   for (time_t start = time(NULL); rc == 0 && (time(NULL) - start) < E2E_REQUEST_TIMEOUT_S;)
   {
-    pump(fx);
+    if (pump_device)
+    {
+      pump(fx);
+    }
     rc = az_iot_e2e_service_request_poll(fx->service, &status, resp, cap);
   }
   if (rc != 1 || status != 200)
@@ -453,8 +533,13 @@ static void service_finish(fixture* fx, const char* what, char* resp, size_t cap
   }
 }
 
+static void service_finish(fixture* fx, const char* what, char* resp, size_t cap)
+{
+  service_wait(fx, what, resp, cap, true);
+}
+
 /* Sets desired property @p name to a new marker, kept in fx->desired.marker and g_last_marker. */
-static void service_patch_desired(fixture* fx, const char* name)
+static void service_patch_desired_ex(fixture* fx, const char* name, bool pump_device)
 {
   make_marker(fx->desired.marker, sizeof(fx->desired.marker), name);
   fx->desired.matches = 0;
@@ -463,8 +548,13 @@ static void service_patch_desired(fixture* fx, const char* name)
 
   assert_true(az_iot_e2e_service_twin_patch_desired_begin(fx->service, g_device_id, json));
   char resp[1024];
-  service_finish(fx, "desired patch", resp, sizeof(resp));
+  service_wait(fx, "desired patch", resp, sizeof(resp), pump_device);
   snprintf(g_last_marker, sizeof(g_last_marker), "%s", fx->desired.marker);
+}
+
+static void service_patch_desired(fixture* fx, const char* name)
+{
+  service_patch_desired_ex(fx, name, true);
 }
 
 /** @brief Read the twin over REST into g_twin_json. */
@@ -1160,6 +1250,335 @@ static void late_desired_handler_gets_snapshot(void** state)
   assert_int_equal(fx->desired.deliveries, deliveries);
 }
 
+static void on_request_get(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)twin;
+  request_record* r = (request_record*)user_ctx;
+  r->status = status;
+  r->done = true;
+}
+
+/** @brief True for the statuses a GET may complete with when the session drops. */
+static bool drop_status_expected(az_iot_result status)
+{
+  return status == AZ_IOT_ERR_NOT_CONNECTED || status == AZ_IOT_ERR_TIMEOUT;
+}
+
+static void on_race_get(az_iot_result status, const az_iot_mqttv5_twin_state* twin, void* user_ctx)
+{
+  (void)twin;
+  get_race* r = (get_race*)user_ctx;
+  r->in_flight--;
+  if (status == AZ_IOT_OK)
+  {
+    r->answered++;
+  }
+  else
+  {
+    r->failed++;
+    /* Keep the first unexpected status; a later NOT_CONNECTED must not hide it. */
+    if (r->failed == 1 || drop_status_expected(r->failure))
+    {
+      r->failure = status;
+    }
+    printf("[e2e] race GET #%d completed %s\n", r->submitted, az_iot_result_to_string(status));
+  }
+}
+
+/** @brief Keep E2E_RACE_DEPTH GETs in flight until the session drops or a submission is refused. */
+static void race_tick(fixture* fx)
+{
+  get_race* r = &fx->race;
+  while (r->active && !r->stopped && r->in_flight < E2E_RACE_DEPTH
+         && fx->hub_drops == r->drops_at_start)
+  {
+    const az_iot_result rc = az_iot_mqttv5_twin_client_get(&fx->twin, on_race_get, r);
+    if (rc != AZ_IOT_OK)
+    {
+      r->stopped = true;
+      r->refusal = rc;
+      printf("[e2e] race GET #%d refused: %s\n", r->submitted + 1, az_iot_result_to_string(rc));
+      return;
+    }
+    r->submitted++;
+    r->in_flight++;
+  }
+}
+
+/** @brief during_connect hook of the evicting connection: the device is pumped meanwhile. */
+static void evictor_connecting(void* ctx)
+{
+  fixture* fx = (fixture*)ctx;
+  pump(fx);
+  race_tick(fx);
+}
+
+/**
+ * @brief Force an unplanned drop: a second connection with the same identity, direct to the
+ * device's hub and without retries, evicts the device's session and is closed at once.
+ * The device must use connect_mode.reconnect, so it does not take the session back first.
+ */
+static void evict(fixture* fx)
+{
+  e2e_device_hub hub;
+  assert_int_equal(e2e_device_get_hub(&fx->dev, &hub), 0);
+  const az_iot_retry_policy no_retry = az_iot_connection_client_get_disabled_retry_policy();
+  e2e_device_connect_options opts = { 0 };
+  opts.saved_hub = &hub;
+  opts.reconnection_policy = &no_retry;
+  opts.during_connect = evictor_connecting;
+  opts.during_connect_ctx = fx;
+  const int drops = fx->hub_drops;
+  memset(&fx->evictor, 0, sizeof(fx->evictor));
+  const time_t start = time(NULL);
+  const int rc = e2e_device_connect_with(&fx->evictor, &opts);
+  /* Set after the connect: the hook pumps the device, and must not pump the evictor too. */
+  fx->evictor_active = true;
+  printf(
+      "[e2e] evicting connection: rc %d after %lds (state %d); device drops %d -> %d\n",
+      rc,
+      (long)(time(NULL) - start),
+      (int)fx->evictor.conn_state,
+      drops,
+      fx->hub_drops);
+  if (rc != 0)
+  {
+    fail_msg("the evicting connection did not reach CONNECTED");
+  }
+  for (time_t t0 = time(NULL); fx->hub_drops == drops && (time(NULL) - t0) < E2E_EVICT_TIMEOUT_S;)
+  {
+    pump(fx);
+    race_tick(fx);
+  }
+  const bool evicted = fx->hub_drops != drops;
+  /* Closed at once, before the device's retry evicts it in turn. */
+  fx->evictor_active = false;
+  e2e_device_disconnect(&fx->evictor);
+  printf(
+      "[e2e] device %s after %lds (state %d)\n",
+      evicted ? "evicted" : "NOT evicted",
+      (long)(time(NULL) - start),
+      (int)fx->dev.conn_state);
+  if (!evicted)
+  {
+    fail_msg("the device was not disconnected within %ds", E2E_EVICT_TIMEOUT_S);
+  }
+}
+
+/* A GET in flight when the session drops completes with an error instead of waiting for an answer
+ * that died with the session; after the automatic reconnect a new GET succeeds. E2E_RACE_DEPTH GETs
+ * are kept in flight during the eviction, each answer replaced at once, so the drop finds one
+ * unanswered unless all answers are drained together with the drop; hence the retries. */
+static void request_in_flight_when_session_drops_completes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  pump_for(fx, E2E_SETTLE_S);
+  bool caught = false;
+  for (int attempt = 1; attempt <= E2E_DROP_ATTEMPTS && !caught; ++attempt)
+  {
+    assert_true(wait_connected(fx));
+    memset(&fx->race, 0, sizeof(fx->race));
+    fx->race.active = true;
+    fx->race.drops_at_start = fx->hub_drops;
+    evict(fx);
+    const time_t dropped = time(NULL);
+    while (fx->race.in_flight > 0 && (time(NULL) - dropped) < E2E_DEVICE_REQUEST_WAIT_S)
+    {
+      pump(fx);
+    }
+    fx->race.active = false;
+    printf(
+        "[e2e] attempt %d: %d GETs submitted, %d answered, %d failed (kept %s), refusal %s; "
+        "in flight %d, %lds after the drop\n",
+        attempt,
+        fx->race.submitted,
+        fx->race.answered,
+        fx->race.failed,
+        fx->race.failed ? az_iot_result_to_string(fx->race.failure) : "-",
+        fx->race.stopped ? az_iot_result_to_string(fx->race.refusal) : "-",
+        fx->race.in_flight,
+        (long)(time(NULL) - dropped));
+    if (fx->race.in_flight > 0)
+    {
+      fail_msg("a GET in flight at the drop never completed (%ds)", E2E_DEVICE_REQUEST_WAIT_S);
+    }
+    if (fx->race.failed != 0)
+    {
+      if (!drop_status_expected(fx->race.failure))
+      {
+        fail_msg(
+            "a GET at the drop completed %s, not NOT_CONNECTED or TIMEOUT",
+            az_iot_result_to_string(fx->race.failure));
+      }
+      caught = true;
+    }
+  }
+  if (!caught)
+  {
+    /* Not an SDK failure: every drop arrived after all answers, so nothing was tested. */
+    fail_msg(
+        "precondition not met: no eviction in %d had a GET in flight at the drop",
+        E2E_DROP_ATTEMPTS);
+  }
+  if (!wait_connected(fx))
+  {
+    fail_msg(
+        "no automatic reconnect within %ds (state %d)",
+        E2E_CONNECT_TIMEOUT_S,
+        (int)fx->dev.conn_state);
+  }
+  device_get(fx, NULL);
+}
+
+/* Push mode: a desired change made while the device is evicted and waiting to reconnect reaches
+ * the handler after the automatic reconnect, at the service's desired version. */
+static void desired_change_during_outage_is_fetched_on_reconnect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  pump_for(fx, E2E_SETTLE_S);
+  evict(fx);
+  /* The device is not pumped until wait_connected(), so it cannot reconnect before the patch. */
+  service_patch_desired_ex(fx, "e2eOutage", false);
+  printf("[e2e] desired patched with the device in state %d\n", (int)fx->dev.conn_state);
+  if (fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    fail_msg("the device reconnected before the desired patch was applied");
+  }
+  if (!wait_connected(fx))
+  {
+    fail_msg(
+        "no automatic reconnect within %ds (state %d)",
+        E2E_CONNECT_TIMEOUT_S,
+        (int)fx->dev.conn_state);
+  }
+  if (!wait_match(fx, E2E_DELIVERY_TIMEOUT_S))
+  {
+    fail_msg(
+        "'%s' not delivered after the reconnect (%d deliveries, last v%llu)",
+        fx->desired.marker,
+        fx->desired.deliveries,
+        (unsigned long long)fx->desired.version);
+  }
+  printf(
+      "[e2e] outage change delivered as a %s v%llu\n",
+      fx->desired.match_kind == AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT ? "snapshot" : "patch",
+      (unsigned long long)fx->desired.match_version);
+  assert_int_equal(fx->desired.match_version, service_version(fx, "desired"));
+}
+
+/* With the smallest timeout a GET completes AZ_IOT_ERR_TIMEOUT, and the client stays usable.
+ * Deterministic: only the twin client is pumped until it completes, so the answer cannot be
+ * dispatched first; it is dropped as stale once the connection is pumped again. */
+static void request_timeout_completes_unanswered_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  pump_for(fx, E2E_SETTLE_S);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, E2E_MIN_REQUEST_TIMEOUT_MS),
+      AZ_IOT_OK);
+  request_record* r = &fx->requests[0];
+  r->submit = az_iot_mqttv5_twin_client_get(&fx->twin, on_request_get, r);
+  for (time_t start = time(NULL);
+       r->submit == AZ_IOT_OK && !r->done && (time(NULL) - start) < E2E_EXPIRY_WAIT_S;)
+  {
+    (void)az_iot_mqttv5_twin_client_do_work(&fx->twin);
+  }
+  printf(
+      "[e2e] GET with a %ums timeout: submit=%s done=%d status=%s\n",
+      (unsigned)E2E_MIN_REQUEST_TIMEOUT_MS,
+      az_iot_result_to_string(r->submit),
+      (int)r->done,
+      r->done ? az_iot_result_to_string(r->status) : "-");
+  assert_int_equal(r->submit, AZ_IOT_OK);
+  assert_true(r->done);
+  assert_int_equal(r->status, AZ_IOT_ERR_TIMEOUT);
+
+  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 0), AZ_IOT_OK);
+  pump_for(fx, E2E_SETTLE_S);
+  device_get(fx, NULL);
+  assert_int_equal(fx->hub_drops, 0);
+}
+
+/* AZ_IOT_TWIN_MAX_PENDING GETs are accepted back to back; the next is refused with
+ * AZ_IOT_ERR_NOT_SUPPORTED; every accepted one is then answered. */
+static void pending_request_limit_is_enforced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  pump_for(fx, E2E_SETTLE_S);
+  for (size_t i = 0; i <= AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    fx->requests[i].submit
+        = az_iot_mqttv5_twin_client_get(&fx->twin, on_request_get, &fx->requests[i]);
+  }
+  for (size_t i = 0; i <= AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    printf("[e2e] GET %zu submit=%s\n", i, az_iot_result_to_string(fx->requests[i].submit));
+  }
+  for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    assert_int_equal(fx->requests[i].submit, AZ_IOT_OK);
+  }
+  assert_int_equal(fx->requests[AZ_IOT_TWIN_MAX_PENDING].submit, AZ_IOT_ERR_NOT_SUPPORTED);
+
+  size_t done = 0;
+  for (time_t start = time(NULL);
+       done < AZ_IOT_TWIN_MAX_PENDING && (time(NULL) - start) < E2E_DEVICE_REQUEST_WAIT_S;)
+  {
+    pump(fx);
+    done = 0;
+    for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+    {
+      done += fx->requests[i].done ? 1u : 0u;
+    }
+  }
+  bool all_ok = done == AZ_IOT_TWIN_MAX_PENDING;
+  for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    const request_record* r = &fx->requests[i];
+    printf(
+        "[e2e] GET %zu: done=%d status=%s\n",
+        i,
+        (int)r->done,
+        r->done ? az_iot_result_to_string(r->status) : "-");
+    all_ok = all_ok && r->status == AZ_IOT_OK;
+  }
+  assert_false(fx->requests[AZ_IOT_TWIN_MAX_PENDING].done);
+  if (!all_ok)
+  {
+    fail_msg("%zu of %d GETs completed, not all AZ_IOT_OK", done, AZ_IOT_TWIN_MAX_PENDING);
+  }
+  device_get(fx, NULL);
+}
+
+/* With push_reported and no reported handler, the pushed section is dropped: the session stays
+ * up and GET and reported patches work. */
+static void pushed_reported_without_handler_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char name[96];
+  char marker[64];
+  (void)device_report_marker(fx, "nohandler", &name, &marker);
+
+  connect_mode mode = { 0 };
+  mode.push_reported = true;
+  close_device(fx);
+  assert_int_equal(open_device(fx, &mode), 0);
+  pump_for(fx, E2E_NO_PUSH_WINDOW_S);
+  printf(
+      "[e2e] push_reported without a handler: state %d, drops %d\n",
+      (int)fx->dev.conn_state,
+      fx->hub_drops);
+  assert_int_equal(fx->hub_drops, 0);
+  assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
+
+  device_get(fx, NULL);
+  assert_true(contains(fx->get.reported, fx->get.reported_len, marker));
+  (void)device_report_marker(fx, "nohandler", &name, &marker);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1179,6 +1598,15 @@ int main(void)
         desired_missed_offline_is_picked_up_on_reconnect, setup_pull, teardown),
     cmocka_unit_test_setup_teardown(
         late_desired_handler_gets_snapshot, setup_push_no_desired_handler, teardown),
+    cmocka_unit_test_setup_teardown(
+        request_in_flight_when_session_drops_completes, setup_pull_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        desired_change_during_outage_is_fetched_on_reconnect, setup_push_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        request_timeout_completes_unanswered_request, setup_pull, teardown),
+    cmocka_unit_test_setup_teardown(pending_request_limit_is_enforced, setup_pull, teardown),
+    cmocka_unit_test_setup_teardown(
+        pushed_reported_without_handler_is_dropped, setup_pull, teardown),
   };
   return cmocka_run_group_tests_name("e2e_mqttv5_twin", tests, NULL, NULL);
 }
