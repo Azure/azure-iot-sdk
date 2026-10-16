@@ -23,7 +23,6 @@
  */
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 
 #include <azure/core/az_base64.h>
 #include <azure/core/az_json.h>
@@ -1159,21 +1158,7 @@ static uint32_t held_restore_count(const az_iot_su_client* client)
 /** @brief Current Unix time in seconds; 0 when unknown (unset or before the floor). */
 static uint64_t su_unix_now(const az_iot_su_client* client)
 {
-  uint64_t now = 0;
-  if (SU_I(client).unix_time_fn != NULL)
-  {
-    now = SU_I(client).unix_time_fn(SU_I(client).unix_time_ctx);
-  }
-  else
-  {
-    time_t t = time(NULL);
-    /* (time_t)-1 is failure; compared explicitly as time_t may be unsigned. */
-    if (t == (time_t)-1)
-    {
-      return 0u;
-    }
-    now = t > 0 ? (uint64_t)t : 0u;
-  }
+  uint64_t now = az_iot_time_unix_s(SU_I(client).unix_time_fn, SU_I(client).unix_time_ctx);
   return now >= AZ_IOT_SU_UNIX_TIME_FLOOR ? now : 0u;
 }
 
