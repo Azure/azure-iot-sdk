@@ -2,14 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 using DirectMethodsClientSample;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using SetupSampleDevice;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 internal class Program
 {
@@ -29,8 +28,7 @@ internal class Program
 
         string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
-        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509AuthenticationProvider authentication = SampleConstants.LoadX509AuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
@@ -80,7 +78,7 @@ internal class Program
         directMethodClient.DirectMethodInvokedAsync += HandleDirectMethodAsync;
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, cancellationToken: cts.Token);
+        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now waiting for direct method invocations with direct method name '{MethodName}'...");
 
         try

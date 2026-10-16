@@ -1,4 +1,5 @@
 ﻿using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
@@ -32,7 +33,7 @@ internal class Program
         string deviceId = File.ReadAllText("../../../../deviceId.txt");
         string hostName = File.ReadAllText("../../../../hostname.txt");
 
-        X509OperationalAuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(Pcks12CertificatePath, Pcks12CertificatePassword));
+        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(Pcks12CertificatePath, Pcks12CertificatePassword));
 
         // Remove this to eliminate all SDK + MQTT level logs
         Trace.Listeners.Add(new ConsoleTraceListener());
@@ -47,7 +48,7 @@ internal class Program
         {
             DeviceId = deviceId,
             IotHubHostName = hostName,
-            OperationalAuthenticationProvider = authentication,
+            AuthenticationProvider = authentication,
             IsMQTTv5Hub = true,
         };
 

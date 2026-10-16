@@ -6,7 +6,6 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
@@ -36,7 +35,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
             return new ConnectionContext()
             {
-                OperationalAuthenticationProvider = new X509OperationalAuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
                 ConnectionProfile = IotHubConnectionType.Mqttv3,

@@ -113,6 +113,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="request">The certificates to have IoT hub sign.</param>
         /// <param name="cancellationToken">The cancellation token</param>
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
+        /// <exception cref="NotSupportedException">The client is not connected to IoT hub.</exception>
+        /// <exception cref="InvalidOperationException">
+        /// The connection's <see cref="Authentication.AuthenticationProvider.HasCertificateSigningHandler"/> is false,
+        /// so it has no private key or callback to turn the issued certificates into an <see cref="X509Certificate2"/>.
+        /// </exception>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -121,6 +126,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (CurrentConnectionContext == null || CurrentEndpoint != ConnectionEndpoint.IotHub)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
+            if (!CurrentConnectionContext.AuthenticationProvider.HasCertificateSigningHandler)
+            {
+                throw new InvalidOperationException(
+                    $"Sending a certificate signing request requires the connection's authentication provider to be " +
+                    "configured with the certificate signing request's private key or a callback that converts issued certificates into an X509Certificate2.");
             }
 
             CertificateSigningOperation operation = new();
@@ -170,7 +182,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     else if (status.Equals("200"))
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                        // The authentication provider receives these via GetCredentialsAsync on the next connection attempt to IoT hub.
+                        // The authentication provider receives these via GetIotHubCredentialsAsync on the next connection attempt to IoT hub.
                         //TODO need a fault-injection like unit test that ensures that the client presents these new certificates upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
                         if (CurrentConnectionContext != null)
                         {
@@ -182,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                                 // fails this operation rather than the next connection attempt.
                                 try
                                 {
-                                    await CurrentConnectionContext.OperationalAuthenticationProvider.GetCredentialsAsync(
+                                    await CurrentConnectionContext.AuthenticationProvider.GetIotHubCredentialsAsync(
                                         CurrentConnectionContext.IotHubHostName,
                                         CurrentConnectionContext.DeviceId,
                                         response.Certificates);

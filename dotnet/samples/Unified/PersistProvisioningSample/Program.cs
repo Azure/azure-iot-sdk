@@ -1,8 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using SetupSampleDevice;
@@ -25,8 +24,7 @@ internal class Program
         // The device should always have access to its provisioning credentials
         string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
-        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509AuthenticationProvider authentication = SampleConstants.LoadX509AuthenticationProvider();
         ProvisioningSettings provisioningSettings = new(idScope);
 
         ConnectionClient connectionClient;
@@ -38,7 +36,7 @@ internal class Program
             // If this sample has been run before, it will load the persisted provisioning result
             persistedProvisioningResult = new()
             {
-                OperationalAuthenticationProvider = operationalAuthentication,
+                AuthenticationProvider = authentication,
                 DeviceId = SampleConstants.LoadX509DeviceId(),
                 IotHubHostName = provisionedHostName,
                 ConnectionProfile = SampleConstants.LoadConnectionProfile(),
@@ -56,7 +54,7 @@ internal class Program
         // were loaded, or those credentials failed to open a connection to IoT Hub, then this call will fall back to provisioning the device
         // again
         Console.WriteLine("Establishing connection with IoT Hub credentials, but provisioning if they are not present or no longer work...");
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, forceProvisioning: false, cancellationToken: cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, forceProvisioning: false, cancellationToken: cts.Token);
         Console.WriteLine("Connected to IoT Hub.");
 
         // Persist the newest provisioning result so that the next time you run the sample, it connects directly to IoT Hub without provisioning

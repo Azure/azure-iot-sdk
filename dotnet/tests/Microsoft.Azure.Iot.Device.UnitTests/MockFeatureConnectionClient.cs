@@ -2,7 +2,6 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -88,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 #pragma warning disable SYSLIB0026 // Mock certificate; no need to load a real one.
             return new ConnectionContext()
             {
-                OperationalAuthenticationProvider = new X509OperationalAuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = deviceId,
                 IotHubHostName = iotHubHostName,
                 ConnectionProfile = connectionProfile,

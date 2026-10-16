@@ -2,11 +2,10 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Provisioning;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System.Security.Cryptography;
@@ -43,19 +42,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            X509BootAuthenticationProvider bootAuthenticationProvider = new(deviceCertificate);
-            X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(privateKey);
+            X509AuthenticationProvider authenticationProvider = new(deviceCertificate, privateKey);
 
             CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60)));
             using ConnectionClient connectionClient = new(new ConnectionClientOptions { ConnectionRetryPolicy = retryPolicy });
 
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
-            {
-                CertificateSigningRequest = new(privateKey, csrBase64),
-            };
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
+            ProvisioningCertificateSigningRequest provisioningCertificateSigningRequest = new(csrBase64);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authenticationProvider, provisioningCertificateSigningRequest, cancellationToken: TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);
@@ -94,8 +90,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 connectionContext,
                 hubCsrResponse.Certificates,
                 provisioningSettings,
-                bootAuthenticationProvider,
-                operationalAuthenticationProvider,
+                authenticationProvider,
+                provisioningCertificateSigningRequest,
                 retryPolicy,
                 cts.Token);
 
@@ -119,12 +115,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            SymmetricKeyBootAuthenticationProvider bootAuthentication = new(registrationId, Setup.DpsIdScope, deviceKey);
-            X509OperationalAuthenticationProvider operationalAuthentication = new(privateKey);
-            ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope)
-            {
-                CertificateSigningRequest = new(privateKey, csrBase64),
-            };
+            SymmetricKeyAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, deviceKey, privateKey);
+            ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope);
+            ProvisioningCertificateSigningRequest provisioningCertificateSigningRequest = new(csrBase64);
 
             CountingRetryPolicy retryPolicy = new(new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60)));
             ConnectionClient connectionClient = new(new ConnectionClientOptions { ConnectionRetryPolicy = retryPolicy });
@@ -134,14 +127,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 // Reaching the hub at all proves it accepted the issued certificate: once DPS issues one, the provider
                 // no longer offers the hub a SAS token.
                 connectionContext = await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
-                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, cancellationToken: TestContext.Current.CancellationToken),
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, provisioningCertificateSigningRequest, cancellationToken: TestContext.Current.CancellationToken),
                     TestContext.Current.CancellationToken);
 
                 Assert.Equal(registrationId, connectionContext.DeviceId);
                 Assert.NotNull(connectionContext.IssuedClientCertificates);
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-                AuthenticationCredentials hubCredentials = await operationalAuthentication.GetCredentialsAsync(
+                AuthenticationCredentials hubCredentials = await authentication.GetIotHubCredentialsAsync(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
                     connectionContext.IssuedClientCertificates,
@@ -153,7 +146,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Empty(hubCredentials.Password);
 
                 // DPS is still authenticated with a SAS token derived from the symmetric key.
-                AuthenticationCredentials dpsCredentials = await bootAuthentication.GetCredentialsAsync(TestContext.Current.CancellationToken);
+                AuthenticationCredentials dpsCredentials = await authentication.GetProvisioningCredentialsAsync(TestContext.Current.CancellationToken);
                 Assert.Null(dpsCredentials.ClientCertificate);
                 Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
 
@@ -163,8 +156,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     connectionContext,
                     connectionContext.IssuedClientCertificates,
                     provisioningSettings,
-                    bootAuthentication,
-                    operationalAuthentication,
+                    authentication,
+                    provisioningCertificateSigningRequest,
                     retryPolicy,
                     TestContext.Current.CancellationToken);
             }
@@ -198,8 +191,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             ConnectionContext connectionContext,
             IReadOnlyList<string> expectedIssuedCertificates,
             ProvisioningSettings provisioningSettings,
-            BootAuthenticationProvider bootAuthenticationProvider,
-            OperationalAuthenticationProvider operationalAuthenticationProvider,
+            AuthenticationProvider authenticationProvider,
+            ProvisioningCertificateSigningRequest certificateSigningRequest,
             CountingRetryPolicy retryPolicy,
             CancellationToken cancellationToken)
         {
@@ -214,8 +207,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // rejection is not hidden.
             ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
                 provisioningSettings,
-                bootAuthenticationProvider,
-                operationalAuthenticationProvider,
+                authenticationProvider,
+                certificateSigningRequest,
                 cancellationToken: cancellationToken);
 
             // Provisioning always builds a new context, so getting the cached instance back proves the device reached the
@@ -223,7 +216,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.Same(connectionContext, reconnectedContext);
             Assert.Equal(expectedIssuedCertificates, reconnectedContext.IssuedClientCertificates);
 
-            AuthenticationCredentials hubCredentials = await operationalAuthenticationProvider.GetCredentialsAsync(
+            AuthenticationCredentials hubCredentials = await authenticationProvider.GetIotHubCredentialsAsync(
                 reconnectedContext.IotHubHostName,
                 reconnectedContext.DeviceId,
                 reconnectedContext.IssuedClientCertificates,

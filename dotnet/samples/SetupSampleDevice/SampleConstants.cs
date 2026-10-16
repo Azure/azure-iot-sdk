@@ -2,8 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -269,24 +268,14 @@ namespace SetupSampleDevice
                 ?? throw new InvalidOperationException("The sample device certificate has no RSA or ECDsa private key.");
         }
 
-        public static X509BootAuthenticationProvider LoadX509BootAuthenticationProvider()
+        public static X509AuthenticationProvider LoadX509AuthenticationProvider()
         {
             return new(LoadX509BootCertificate());
         }
 
-        public static X509OperationalAuthenticationProvider LoadX509OperationalAuthenticationProvider()
-        {
-            return new(LoadX509BootCertificate());
-        }
-
-        public static SymmetricKeyBootAuthenticationProvider LoadSymmetricKeyBootAuthenticationProvider()
+        public static SymmetricKeyAuthenticationProvider LoadSymmetricKeyAuthenticationProvider()
         {
             return new(LoadSymmetricKeyDeviceId(), LoadIdScope(), LoadSymmetricKey());
-        }
-
-        public static SymmetricKeyOperationalAuthenticationProvider LoadSymmetricKeyOperationalAuthenticationProvider()
-        {
-            return new(LoadSymmetricKey());
         }
     }
 }

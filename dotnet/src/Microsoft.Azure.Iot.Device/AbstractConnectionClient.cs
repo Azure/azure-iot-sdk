@@ -18,8 +18,6 @@ using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 
 namespace Microsoft.Azure.Iot.Device
 {
@@ -123,8 +121,8 @@ namespace Microsoft.Azure.Iot.Device
         // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
         // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
         private ProvisioningSettings? _lastProvisioningSettings;
-        private BootAuthenticationProvider? _lastProvisioningAuthentication;
-        private OperationalAuthenticationProvider? _lastOperationalAuthentication;
+        private ProvisioningCertificateSigningRequest? _lastCertificateSigningRequest;
+        private AuthenticationProvider? _lastAuthentication;
 
         // Set while a re-provisioning attempt started by an identity fault is in flight. Only one such attempt may run
         // at a time because each one takes over this client's single connection.
@@ -246,27 +244,75 @@ namespace Microsoft.Azure.Iot.Device
         /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
-        /// <param name="bootAuthenticationProvider">The authentication provider used only for Device Provisioning Service.</param>
-        /// <param name="operationalAuthenticationProvider">The authentication provider used only for IoT Hub, including issued certificates.</param>
+        /// <param name="authenticationProvider">The authentication provider used with both Device Provisioning Service and IoT Hub.</param>
         /// <param name="forceProvisioning">
         /// When <c>true</c>, skip trying to connect directly to any cached IoT hub assignment and provision through
         /// Device Provisioning Service immediately.
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device connected to.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider bootAuthenticationProvider, OperationalAuthenticationProvider operationalAuthenticationProvider, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        public Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authenticationProvider, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        {
+            return ProvisionAndConnectCoreAsync(provisioningSettings, authenticationProvider, certificateSigningRequest: null, forceProvisioning, cancellationToken);
+        }
+
+        /// <summary>
+        /// Connect this device to IoT hub, provisioning it through Device Provisioning Service first if it cannot
+        /// connect directly to an IoT hub assignment it already holds, and asking Device Provisioning Service to issue a
+        /// client certificate for this device whenever it provisions.
+        /// </summary>
+        /// <remarks>
+        /// Behaves like <see cref="ProvisionAndConnectAsync(ProvisioningSettings, AuthenticationProvider, bool, CancellationToken)"/>,
+        /// except that every registration, including automatic re-provisioning, sends
+        /// <paramref name="certificateSigningRequest"/>. The client certificate chain Device Provisioning Service issues is
+        /// presented to IoT Hub by <paramref name="authenticationProvider"/>, which must have been created with the
+        /// private key or callback that turns the issued chain into a certificate.
+        /// </remarks>
+        /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
+        /// <param name="authenticationProvider">
+        /// The authentication provider used with both Device Provisioning Service and IoT Hub. Its
+        /// <see cref="AuthenticationProvider.HasCertificateSigningHandler"/> must be <c>true</c>.
+        /// </param>
+        /// <param name="certificateSigningRequest">
+        /// The certificate signing request to send to Device Provisioning Service. It must be generated with the private
+        /// key that <paramref name="authenticationProvider"/> pairs issued certificates with.
+        /// </param>
+        /// <param name="forceProvisioning">
+        /// When <c>true</c>, skip trying to connect directly to any cached IoT hub assignment and provision through
+        /// Device Provisioning Service immediately.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The connection context for the IoT hub this device connected to.</returns>
+        /// <exception cref="ArgumentException">
+        /// <paramref name="authenticationProvider"/> was created without a private key or certificate signing complete
+        /// callback, so it could not use the certificate issued for <paramref name="certificateSigningRequest"/>.
+        /// </exception>
+        public Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authenticationProvider, ProvisioningCertificateSigningRequest certificateSigningRequest, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(authenticationProvider);
+            ArgumentNullException.ThrowIfNull(certificateSigningRequest);
+            if (!authenticationProvider.HasCertificateSigningHandler)
+            {
+                throw new ArgumentException(
+                    "A certificate signing request can only be sent with an authentication provider that was created with the request's private key or a callback that converts issued certificates into an X509Certificate2.",
+                    nameof(authenticationProvider));
+            }
+
+            return ProvisionAndConnectCoreAsync(provisioningSettings, authenticationProvider, certificateSigningRequest, forceProvisioning, cancellationToken);
+        }
+
+        private async Task<ConnectionContext> ProvisionAndConnectCoreAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authenticationProvider, ProvisioningCertificateSigningRequest? certificateSigningRequest, bool forceProvisioning, CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             ArgumentNullException.ThrowIfNull(provisioningSettings);
-            ArgumentNullException.ThrowIfNull(bootAuthenticationProvider);
-            ArgumentNullException.ThrowIfNull(operationalAuthenticationProvider);
+            ArgumentNullException.ThrowIfNull(authenticationProvider);
 
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
             // be recovered by re-provisioning if it later faults on this device's identity.
             _lastProvisioningSettings = provisioningSettings;
-            _lastProvisioningAuthentication = bootAuthenticationProvider;
-            _lastOperationalAuthentication = operationalAuthenticationProvider;
+            _lastCertificateSigningRequest = certificateSigningRequest;
+            _lastAuthentication = authenticationProvider;
 
             // Unless the caller insists on provisioning, try the IoT hub assignment this client already holds first. A
             // cached context comes either from a previous provisioning run in this process or from one the application
@@ -277,7 +323,7 @@ namespace Microsoft.Azure.Iot.Device
             ConnectionContext? cachedConnectionContext = CurrentConnectionContext;
             if (!forceProvisioning && cachedConnectionContext != null)
             {
-                cachedConnectionContext.OperationalAuthenticationProvider = operationalAuthenticationProvider;
+                cachedConnectionContext.AuthenticationProvider = authenticationProvider;
                 try
                 {
                     await ConnectToHubAsync(cachedConnectionContext, cancellationToken);
@@ -294,7 +340,7 @@ namespace Microsoft.Azure.Iot.Device
                 }
             }
 
-            return await ProvisionThenConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken);
+            return await ProvisionThenConnectAsync(provisioningSettings, certificateSigningRequest, authenticationProvider, cancellationToken);
         }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
@@ -393,13 +439,13 @@ namespace Microsoft.Azure.Iot.Device
         /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
         /// </summary>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields.</param>
-        /// <param name="bootAuthenticationProvider">The authentication provider used for Device Provisioning Service.</param>
-        /// <param name="operationalAuthenticationProvider">The authentication provider used for IoT Hub.</param>
+        /// <param name="certificateSigningRequest">The certificate signing request to send to Device Provisioning Service, if any.</param>
+        /// <param name="authenticationProvider">The authentication provider used for Device Provisioning Service and IoT Hub.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device was assigned and connected to.</returns>
-        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider bootAuthenticationProvider, OperationalAuthenticationProvider operationalAuthenticationProvider, CancellationToken cancellationToken)
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, ProvisioningCertificateSigningRequest? certificateSigningRequest, AuthenticationProvider authenticationProvider, CancellationToken cancellationToken)
         {
-            var provisioningResult = await ProvisionAsync(provisioningSettings, bootAuthenticationProvider, cancellationToken);
+            var provisioningResult = await ProvisionAsync(provisioningSettings, certificateSigningRequest, authenticationProvider, cancellationToken);
 
             if (provisioningResult.Status != ProvisioningRegistrationStatus.Assigned)
             {
@@ -467,16 +513,15 @@ namespace Microsoft.Azure.Iot.Device
                 DeviceId = provisioningResult.DeviceId!,
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
-                OperationalAuthenticationProvider = operationalAuthenticationProvider,
+                AuthenticationProvider = authenticationProvider,
                 ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
 
-            // Issued certificates belong to the operational provider, never the boot provider. Resolve the credentials
-            // up front so that a provider that cannot use the issued certificates fails provisioning rather than having
-            // every connect attempt retried.
+            // Issued certificates are only ever presented to IoT Hub. Resolve the credentials up front so that a provider
+            // that cannot use the issued certificates fails provisioning rather than having every connect attempt retried.
             if (CurrentConnectionContext.IssuedClientCertificates is { Count: > 0 })
             {
-                await operationalAuthenticationProvider.GetCredentialsAsync(
+                await authenticationProvider.GetIotHubCredentialsAsync(
                     CurrentConnectionContext.IotHubHostName,
                     CurrentConnectionContext.DeviceId,
                     CurrentConnectionContext.IssuedClientCertificates,
@@ -591,12 +636,12 @@ namespace Microsoft.Azure.Iot.Device
 
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
-            // connect with the operational certificate DPS issued rather than its boot credentials.
+            // connect with the certificate DPS issued rather than the credentials it provisioned with.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            OperationalAuthenticationProvider hubAuthentication = connectionContext.OperationalAuthenticationProvider;
+            AuthenticationProvider hubAuthentication = connectionContext.AuthenticationProvider;
 
-            // The operational provider turns the latest issued certificates (if any) into the certificate to present.
-            AuthenticationCredentials hubCredentials = await hubAuthentication.GetCredentialsAsync(
+            // The provider turns the latest issued certificates (if any) into the certificate to present.
+            AuthenticationCredentials hubCredentials = await hubAuthentication.GetIotHubCredentialsAsync(
                 connectPacketToEdit.HostName,
                 connectionContext.DeviceId,
                 connectionContext.IssuedClientCertificates).ConfigureAwait(false);
@@ -704,7 +749,7 @@ namespace Microsoft.Azure.Iot.Device
         /// own. A device connected with credentials the application supplied directly cannot, since there is no
         /// registration for this client to renew.
         /// </summary>
-        private bool CanReprovision => _lastProvisioningSettings != null && _lastProvisioningAuthentication != null && _lastOperationalAuthentication != null;
+        private bool CanReprovision => _lastProvisioningSettings != null && _lastAuthentication != null;
 
         /// <summary>
         /// Start provisioning this device again in response to a standing re-provision demand (an identity fault or the
@@ -728,10 +773,10 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             ProvisioningSettings? provisioningSettings = _lastProvisioningSettings;
-            BootAuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
-            OperationalAuthenticationProvider? operationalAuthentication = CurrentConnectionContext?.OperationalAuthenticationProvider ?? _lastOperationalAuthentication;
+            ProvisioningCertificateSigningRequest? certificateSigningRequest = _lastCertificateSigningRequest;
+            AuthenticationProvider? authentication = CurrentConnectionContext?.AuthenticationProvider ?? _lastAuthentication;
 
-            if (provisioningSettings == null || provisioningAuthentication == null || operationalAuthentication == null)
+            if (provisioningSettings == null || authentication == null)
             {
                 // This device was connected with credentials that the application supplied directly, so there is no
                 // registration for this client to renew. Only the application can recover from here.
@@ -760,7 +805,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
 
-                    await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, operationalAuthentication, reprovisioningCancellation.Token);
+                    await ReprovisionWithRetryAsync(provisioningSettings, certificateSigningRequest, authentication, reprovisioningCancellation.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -801,15 +846,22 @@ namespace Microsoft.Azure.Iot.Device
         /// or when the retry policy is exhausted (which it never is under the default indefinite policy).
         /// </remarks>
         /// <param name="provisioningSettings">The settings of the provisioning run to repeat.</param>
-        /// <param name="provisioningAuthentication">The authentication of the provisioning run to repeat.</param>
-        /// <param name="operationalAuthentication">The authentication to use for the newly assigned IoT Hub.</param>
+        /// <param name="certificateSigningRequest">The certificate signing request of the provisioning run to repeat, if any.</param>
+        /// <param name="authentication">The authentication to provision with and to use for the newly assigned IoT Hub.</param>
         /// <param name="cancellationToken">Cancels the whole retry loop when this client is disconnected or disposed.</param>
         private async Task ReprovisionWithRetryAsync(
             ProvisioningSettings provisioningSettings,
-            BootAuthenticationProvider provisioningAuthentication,
-            OperationalAuthenticationProvider operationalAuthentication,
+            ProvisioningCertificateSigningRequest? certificateSigningRequest,
+            AuthenticationProvider authentication,
             CancellationToken cancellationToken)
         {
+            // The certificate signing request is only sent alongside a provider that can present the certificate issued for it.
+            if (certificateSigningRequest != null && !authentication.HasCertificateSigningHandler)
+            {
+                Trace.TraceWarning("Re-provisioning without the certificate signing request because the current authentication provider cannot present issued certificates.");
+                certificateSigningRequest = null;
+            }
+
             uint attempt = 0;
 
             while (true)
@@ -824,7 +876,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
                     // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, operationalAuthentication, forceProvisioning: true, cancellationToken);
+                    await ProvisionAndConnectCoreAsync(provisioningSettings, authentication, certificateSigningRequest, forceProvisioning: true, cancellationToken);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
                     return;
@@ -987,10 +1039,11 @@ namespace Microsoft.Azure.Iot.Device
         /// <see cref="HandleConnectedToDpsAsync"/>, which is the provisioning counterpart of the device presence flow.
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields.</param>
+        /// <param name="certificateSigningRequest">The certificate signing request to send to Device Provisioning Service, if any.</param>
         /// <param name="authentication">The authentication to use when connecting to Device Provisioning Service.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The terminal registration result reported by Device Provisioning Service.</returns>
-        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, BootAuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, ProvisioningCertificateSigningRequest? certificateSigningRequest, AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -998,14 +1051,15 @@ namespace Microsoft.Azure.Iot.Device
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
-                ClientCertificateSigningRequest = provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest,
+                ClientCertificateSigningRequest = certificateSigningRequest?.Base64CertificateSigningRequest,
                 Payload = provisioningSettings.ProvisioningPayload,
             };
 
             // Remember what this device provisioned with so that a connection that later faults on this device's
             // identity can be recovered from by provisioning again.
             _lastProvisioningSettings = provisioningSettings;
-            _lastProvisioningAuthentication = authentication;
+            _lastCertificateSigningRequest = certificateSigningRequest;
+            _lastAuthentication = authentication;
 
             // From here on, every connection this client establishes targets DPS, so every connection (including the ones
             // the connection layer re-establishes on its own) runs the provisioning flow.
@@ -1273,7 +1327,7 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         private async Task<MqttConnect> CreateProvisioningConnectPacketAsync(
-            BootAuthenticationProvider authentication,
+            AuthenticationProvider authentication,
             string idScope,
             string globalDeviceEndpoint,
             CancellationToken cancellationToken)
@@ -1303,7 +1357,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return ApplyAuthentication(await authentication.GetCredentialsAsync(cancellationToken).ConfigureAwait(false), mqttConnect);
+            return ApplyAuthentication(await authentication.GetProvisioningCredentialsAsync(cancellationToken).ConfigureAwait(false), mqttConnect);
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)

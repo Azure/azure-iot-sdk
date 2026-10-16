@@ -2,8 +2,6 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -40,21 +38,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private static readonly TimeSpan s_negativeTestTimeout = TimeSpan.FromSeconds(2);
 
         [Theory]
-        [InlineData(false, false)]
-        [InlineData(true, false)]
-        [InlineData(true, true)]
-        public async Task IdentityFaultReprovisionsAndConnectsToNewlyAssignedHub(bool symmetricBoot, bool symmetricOperational)
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task IdentityFaultReprovisionsAndConnectsToNewlyAssignedHub(bool symmetricKey)
         {
-            string bootKey = Convert.ToBase64String(Encoding.UTF8.GetBytes("boot-key-for-unit-tests"));
-            string operationalKey = Convert.ToBase64String(Encoding.UTF8.GetBytes("operational-key-for-unit-tests"));
-            RemoteCertificateValidationCallback bootValidation = (_, _, _, _) => true;
-            RemoteCertificateValidationCallback operationalValidation = (_, _, _, _) => false;
-            BootAuthenticationProvider bootAuthentication = symmetricBoot
-                ? new SymmetricKeyBootAuthenticationProvider(RegistrationId, IdScope, bootKey, bootValidation)
-                : CreateBootAuthenticationProvider(bootValidation);
-            OperationalAuthenticationProvider operationalAuthentication = symmetricOperational
-                ? new SymmetricKeyOperationalAuthenticationProvider(operationalKey, operationalValidation)
-                : CreateOperationalAuthenticationProvider(operationalValidation);
+            string deviceKey = Convert.ToBase64String(Encoding.UTF8.GetBytes("device-key-for-unit-tests"));
+            RemoteCertificateValidationCallback validation = (_, _, _, _) => true;
+            AuthenticationProvider authentication = symmetricKey
+                ? new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, deviceKey, validation)
+                : CreateX509AuthenticationProvider(validation);
 
             using MockConnectionMqttClient mockMqttClient = new();
             MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
@@ -82,8 +74,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                bootAuthentication,
-                operationalAuthentication,
+                authentication,
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
@@ -99,7 +90,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
             Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
-            Assert.Same(operationalAuthentication, connectionClient.GetCurrentConnectionContext()!.OperationalAuthenticationProvider);
+            Assert.Same(authentication, connectionClient.GetCurrentConnectionContext()!.AuthenticationProvider);
 
             lock (connectedHostNames)
             {
@@ -109,23 +100,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
                 foreach (var attempt in authenticationAttempts)
                 {
-                    bool isBoot = attempt.HostName == GlobalDeviceEndpoint;
-                    Assert.Same(isBoot ? bootValidation : operationalValidation, attempt.Validation);
-                    if (isBoot ? symmetricBoot : symmetricOperational)
+                    bool isProvisioning = attempt.HostName == GlobalDeviceEndpoint;
+                    Assert.Same(validation, attempt.Validation);
+                    if (symmetricKey)
                     {
                         Assert.Null(attempt.Certificate);
                         Assert.NotNull(attempt.Password);
                         AssertSasToken(
                             attempt.Password,
-                            isBoot ? bootKey : operationalKey,
-                            isBoot ? $"{IdScope}/registrations/{RegistrationId}" : $"{attempt.HostName}/devices/{DeviceId}",
-                            isBoot);
+                            deviceKey,
+                            isProvisioning ? $"{IdScope}/registrations/{RegistrationId}" : $"{attempt.HostName}/devices/{DeviceId}",
+                            isProvisioning);
                     }
                     else
                     {
-                        X509Certificate2 expectedCertificate = isBoot
-                            ? Assert.IsType<X509BootAuthenticationProvider>(bootAuthentication).ClientCertificate
-                            : Assert.IsType<X509OperationalAuthenticationProvider>(operationalAuthentication).ClientCertificate;
+                        X509Certificate2 expectedCertificate = Assert.IsType<X509AuthenticationProvider>(authentication).ClientCertificate;
                         Assert.Same(expectedCertificate, attempt.Certificate);
                         Assert.True(attempt.Password == null || attempt.Password.Length == 0);
                     }
@@ -154,8 +143,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(1, mockDps.RegistrationCount);
@@ -188,7 +176,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 async () => await connectionClient.ConnectToHubAsync(
                     new ConnectionContext()
                     {
-                        OperationalAuthenticationProvider = CreateOperationalAuthenticationProvider(),
+                        AuthenticationProvider = CreateX509AuthenticationProvider(),
                         DeviceId = DeviceId,
                         IotHubHostName = FirstAssignedHub,
                         ConnectionProfile = IotHubConnectionType.Mqttv3,
@@ -224,8 +212,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // The device provisions and connects to the first assigned hub.
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
@@ -254,8 +241,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(1, mockDps.RegistrationCount);
@@ -268,8 +254,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Same(connectionContext, reconnectedContext);
@@ -315,8 +300,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
@@ -351,8 +335,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             int connectAttemptsBeforeFault = mockMqttClient.ConnectAttemptCount;
@@ -375,8 +358,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -420,8 +402,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -478,8 +459,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
@@ -511,8 +491,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
@@ -544,8 +523,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
@@ -579,8 +557,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
@@ -615,8 +592,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // The hub rejects this device's identity mid-session, but this client recovers on its own by
@@ -643,7 +619,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await connectionClient.ConnectToHubAsync(
                 new ConnectionContext()
                 {
-                    OperationalAuthenticationProvider = CreateOperationalAuthenticationProvider(),
+                    AuthenticationProvider = CreateX509AuthenticationProvider(),
                     DeviceId = DeviceId,
                     IotHubHostName = FirstAssignedHub,
                     ConnectionProfile = IotHubConnectionType.Mqttv3,
@@ -680,8 +656,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 () => connectionClient.ProvisionAndConnectAsync(
                     CreateProvisioningSettings(),
-                    CreateBootAuthenticationProvider(),
-                    CreateOperationalAuthenticationProvider(),
+                    CreateX509AuthenticationProvider(),
                     cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
@@ -832,8 +807,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // Watch the device presence flow that the reconnection runs. This is attached before the publish is started,
@@ -951,8 +925,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // A feature client, such as the telemetry client, sends this while the connection is gone, so the operation
@@ -1021,8 +994,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // The hub rejects this device's identity, so this client starts re-provisioning. The first re-provisioning
@@ -1094,8 +1066,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(1, mockDps.RegistrationCount);
@@ -1157,8 +1128,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // The hub stops answering mid-session for a benign, retryable reason, so the connection layer reconnects
@@ -1200,8 +1170,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
@@ -1254,8 +1223,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
@@ -1281,11 +1249,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 hubConnect = connect;
                 return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
             };
-            X509OperationalAuthenticationProvider operationalAuthentication = CreateOperationalAuthenticationProvider();
+            X509AuthenticationProvider authentication = CreateX509AuthenticationProvider();
 
             ConnectionContext seededConnectionContext = new()
             {
-                OperationalAuthenticationProvider = CreateOperationalAuthenticationProvider(),
+                AuthenticationProvider = CreateX509AuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
                 ConnectionProfile = IotHubConnectionType.Mqttv3,
@@ -1297,8 +1265,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                operationalAuthentication,
+                authentication,
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // The seeded assignment connected, so this device connected directly without provisioning.
@@ -1306,12 +1273,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
             Assert.Equal(0, mockDps.RegistrationCount);
             Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
-            Assert.Same(operationalAuthentication, connectionContext.OperationalAuthenticationProvider);
+            Assert.Same(authentication, connectionContext.AuthenticationProvider);
             Assert.NotNull(hubConnect);
-            Assert.Same(operationalAuthentication.ClientCertificate, hubConnect.ClientCertificate);
+            Assert.Same(authentication.ClientCertificate, hubConnect.ClientCertificate);
         }
 
-        private static void AssertSasToken(byte[] password, string key, string resource, bool isBoot)
+        private static void AssertSasToken(byte[] password, string key, string resource, bool isProvisioning)
         {
             string token = Encoding.UTF8.GetString(password);
             Assert.StartsWith("SharedAccessSignature ", token);
@@ -1324,7 +1291,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using HMACSHA256 hmac = new(Convert.FromBase64String(key));
             string signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{fields["sr"]}\n{fields["se"]}")));
             Assert.Equal(signature, WebUtility.UrlDecode(fields["sig"]));
-            if (isBoot)
+            if (isProvisioning)
             {
                 Assert.Equal("registration", fields["skn"]);
             }
@@ -1351,7 +1318,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext seededConnectionContext = new()
             {
-                OperationalAuthenticationProvider = CreateOperationalAuthenticationProvider(),
+                AuthenticationProvider = CreateX509AuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
                 ConnectionProfile = IotHubConnectionType.Mqttv3,
@@ -1363,8 +1330,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             // The seeded assignment could not connect, so this device provisioned for a fresh one and connected to it.
@@ -1385,7 +1351,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext seededConnectionContext = new()
             {
-                OperationalAuthenticationProvider = CreateOperationalAuthenticationProvider(),
+                AuthenticationProvider = CreateX509AuthenticationProvider(),
                 DeviceId = DeviceId,
                 IotHubHostName = FirstAssignedHub,
                 ConnectionProfile = IotHubConnectionType.Mqttv3,
@@ -1397,8 +1363,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
                 CreateProvisioningSettings(),
-                CreateBootAuthenticationProvider(),
-                CreateOperationalAuthenticationProvider(),
+                CreateX509AuthenticationProvider(),
                 forceProvisioning: true,
                 cancellationToken: TestContext.Current.CancellationToken);
 
@@ -1418,14 +1383,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
         }
 
-        private static X509OperationalAuthenticationProvider CreateOperationalAuthenticationProvider(RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null)
+        private static X509AuthenticationProvider CreateX509AuthenticationProvider(RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null)
         {
-            return new X509OperationalAuthenticationProvider(CreateClientCertificate(), remoteCertificateValidationCallback: remoteCertificateValidationCallback);
-        }
-
-        private static X509BootAuthenticationProvider CreateBootAuthenticationProvider(RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null)
-        {
-            return new X509BootAuthenticationProvider(CreateClientCertificate(), remoteCertificateValidationCallback: remoteCertificateValidationCallback);
+            return new X509AuthenticationProvider(CreateClientCertificate(), remoteCertificateValidationCallback: remoteCertificateValidationCallback);
         }
 
         private static X509Certificate2 CreateClientCertificate()

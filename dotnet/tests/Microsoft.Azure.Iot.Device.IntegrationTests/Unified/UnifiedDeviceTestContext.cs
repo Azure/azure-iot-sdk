@@ -2,7 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Devices.Provisioning.Service;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 
@@ -15,10 +15,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         public required ConnectionContext ConnectionContext { get; set; }
 
         /// <summary>
-        /// The boot authentication this device provisioned with, for example an
-        /// <see cref="X509BootAuthenticationProvider"/> or a <see cref="SymmetricKeyBootAuthenticationProvider"/>.
+        /// The authentication this device provisioned and connected with, for example an
+        /// <see cref="X509AuthenticationProvider"/> or a <see cref="SymmetricKeyAuthenticationProvider"/>.
         /// </summary>
-        public required BootAuthenticationProvider BootAuthenticationProvider { get; set; }
+        public required AuthenticationProvider AuthenticationProvider { get; set; }
 
         public string? PrivateKeyPem { get; set; }
 

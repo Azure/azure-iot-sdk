@@ -3,8 +3,6 @@
 
 using CaptureProxy;
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
@@ -80,8 +78,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // The same key signs the DPS SAS token and, after provisioning, the IoT hub SAS token
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
 
-            Assert.IsType<SymmetricKeyBootAuthenticationProvider>(testDeviceContext.BootAuthenticationProvider);
-            Assert.IsType<SymmetricKeyOperationalAuthenticationProvider>(testDeviceContext.ConnectionContext.OperationalAuthenticationProvider);
+            Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
+            Assert.Same(testDeviceContext.AuthenticationProvider, testDeviceContext.ConnectionContext.AuthenticationProvider);
             Assert.False(string.IsNullOrEmpty(testDeviceContext.ConnectionContext.IotHubHostName));
             Assert.Equal(testDeviceContext.RegistrationId, testDeviceContext.ConnectionContext.DeviceId);
             Assert.Equal(

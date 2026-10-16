@@ -1,8 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -26,15 +25,14 @@ internal class Program
 
         string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
-        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509AuthenticationProvider authentication = SampleConstants.LoadX509AuthenticationProvider();
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
         ProvisioningSettings provisioningSettings = new(idScope);
-        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication, cancellationToken: cts.Token);
+        var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
         Console.WriteLine("Press 'Ctrl+C' to end the sample");
 

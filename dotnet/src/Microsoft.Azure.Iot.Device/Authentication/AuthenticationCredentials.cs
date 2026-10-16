@@ -1,16 +1,13 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
     /// <summary>
-    /// Protocol-agnostic authentication material produced by a <see cref="BootAuthenticationProvider"/> or
-    /// <see cref="OperationalAuthenticationProvider"/>.
+    /// Protocol-agnostic authentication material produced by an <see cref="AuthenticationProvider"/>.
     /// Each transport (MQTT, HTTP, ...) maps these values onto its own connection options.
     /// </summary>
     public class AuthenticationCredentials

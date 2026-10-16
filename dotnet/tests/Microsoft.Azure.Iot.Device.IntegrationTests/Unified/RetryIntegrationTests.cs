@@ -113,8 +113,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             using ConnectionClient reconnectingClient = new(options, cachedConnectionContext);
             await reconnectingClient.ProvisionAndConnectAsync(
                 new ProvisioningSettings(Setup.DpsIdScope),
-                device.BootAuthenticationProvider,
-                cachedConnectionContext.OperationalAuthenticationProvider,
+                cachedConnectionContext.AuthenticationProvider,
                 cancellationToken: cancellationToken);
 
             // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the

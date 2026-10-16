@@ -3,6 +3,7 @@
 
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Devices.Provisioning.Service;
@@ -12,8 +13,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
@@ -80,21 +80,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509BootAuthenticationProvider bootAuthenticationProvider = new(pfx);
-            X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(pfx);
+            X509AuthenticationProvider authenticationProvider = new(pfx);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                BootAuthenticationProvider = bootAuthenticationProvider,
+                AuthenticationProvider = authenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }
@@ -129,19 +128,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509BootAuthenticationProvider bootAuthenticationProvider = new(pfx);
-
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            X509OperationalAuthenticationProvider operationalAuthenticationProvider = new(privateKey);
+            X509AuthenticationProvider authenticationProvider = new(pfx, privateKey);
 
             ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
-            {
-                CertificateSigningRequest = new(privateKey, csrBase64)
-            };
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
+            ProvisioningCertificateSigningRequest certificateSigningRequest = new(csrBase64);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authenticationProvider, certificateSigningRequest, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
@@ -149,7 +144,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
-                BootAuthenticationProvider = bootAuthenticationProvider,
+                AuthenticationProvider = authenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }
@@ -165,21 +160,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            SymmetricKeyBootAuthenticationProvider bootAuthenticationProvider = new(registrationId, DpsIdScope, symmetricKey);
-            SymmetricKeyOperationalAuthenticationProvider operationalAuthenticationProvider = new(symmetricKey);
+            SymmetricKeyAuthenticationProvider authenticationProvider = new(registrationId, DpsIdScope, symmetricKey);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthenticationProvider, operationalAuthenticationProvider, cancellationToken: cancellationToken),
+                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
 
             return new UnifiedDeviceTestContext()
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                BootAuthenticationProvider = bootAuthenticationProvider,
+                AuthenticationProvider = authenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
         }

@@ -21,74 +21,70 @@ Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Servic
  - A single ```ConnectionClient``` instance handles all provisioning + connection logic
  - Separate "feature clients" (such as ```TelemetryClient```) use that ```ConnectionClient``` to perform twin/direct methods/telemetry operations
 
-## Boot and operational authentication
+## Authentication
 
-`ProvisionAndConnectAsync` requires two explicitly supplied authentication providers:
-the **boot** provider authenticates with Device Provisioning Service (DPS), and the
-**operational** provider authenticates with IoT Hub. The providers can use different
-credentials and TLS callbacks. The roles have separate abstract base classes:
-`BootAuthenticationProvider` exposes DPS authentication and registration Id lookup,
-while `OperationalAuthenticationProvider` exposes Hub authentication and issued-certificate
-handling. `ProvisionAndConnectAsync` accepts these role-specific types, so a provider
-cannot accidentally be supplied for the wrong endpoint.
+`ProvisionAndConnectAsync` takes a single `AuthenticationProvider` that authenticates the
+device with both Device Provisioning Service (DPS) and IoT Hub. The abstract
+`AuthenticationProvider` class exposes the registration Id, DPS credentials
+(`GetProvisioningCredentialsAsync`), IoT Hub credentials (`GetIotHubCredentialsAsync`) and a
+`HasCertificateSigningHandler` flag that reports whether the provider was given a way to turn
+certificates issued by DPS or IoT Hub into an `X509Certificate2`. Derive from it to build a
+custom provider.
 
-| Credential | Boot provider (DPS) | Operational provider (IoT Hub) |
+| Credential | Provider | Constructors |
 | --- | --- | --- |
-| X.509 | `X509BootAuthenticationProvider` | `X509OperationalAuthenticationProvider` |
-| Symmetric key | `SymmetricKeyBootAuthenticationProvider` | `SymmetricKeyOperationalAuthenticationProvider` |
+| X.509 | `X509AuthenticationProvider` | `(certificate, chain?)`, `(certificate, privateKey)`, `(certificate, callback)` |
+| Symmetric key | `SymmetricKeyAuthenticationProvider` | `(registrationId, idScope, key)`, `(registrationId, idScope, key, privateKey)`, `(registrationId, idScope, key, callback)` |
+
+Every constructor also accepts optional remote and local TLS certificate validation callbacks.
+The `privateKey` and `callback` constructors set `HasCertificateSigningHandler` to `true`: the
+private key is attached to the issued leaf certificate, while the callback receives the issued
+Base64 certificate chain and must return an `X509Certificate2` with its private key.
 
 ```csharp
-// X.509 boot + X.509 operational using existing certificates.
-var boot = new X509BootAuthenticationProvider(bootCertificate);
-var operational = new X509OperationalAuthenticationProvider(operationalCertificate);
+var authentication = new X509AuthenticationProvider(deviceCertificate);
 ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
-    provisioningSettings, boot, operational, cancellationToken: cancellationToken);
+    provisioningSettings, authentication, cancellationToken: cancellationToken);
 ```
 
-For symmetric-key boot, use
-`new SymmetricKeyBootAuthenticationProvider(registrationId, idScope, bootKey)`.
-For symmetric-key operational authentication, use
-`new SymmetricKeyOperationalAuthenticationProvider(operationalKey)`; the assigned hub hostname
-and device Id are supplied by the connection client on each connection attempt.
-Each key is Base64-encoded and must match the corresponding DPS enrollment or Hub
-device identity. A standard symmetric-key DPS enrollment assigns the same device
-key to Hub, so pass that key to both providers in that configuration.
+For symmetric keys, use `new SymmetricKeyAuthenticationProvider(registrationId, idScope, deviceKey)`.
+The key is Base64-encoded and is used for both the DPS enrollment and the assigned Hub device
+identity; the hub hostname and device Id are supplied by the connection client on each
+connection attempt.
 
-For X.509 operational authentication with a certificate issued during provisioning, pass the
-CSR private key to the operational provider along with its usual credential:
+To have DPS issue a certificate during provisioning, pass a `ProvisioningCertificateSigningRequest`
+to the `ProvisionAndConnectAsync` overload that takes one. The provider must have been
+constructed with the CSR private key or a conversion callback; otherwise that overload throws
+`ArgumentException`:
 
 ```csharp
-var boot = new SymmetricKeyBootAuthenticationProvider(registrationId, idScope, bootKey);
-var operational = new SymmetricKeyOperationalAuthenticationProvider(operationalKey, csrPrivateKey);
-provisioningSettings.CertificateSigningRequest = new(csrPrivateKey, base64Csr);
+var authentication = new SymmetricKeyAuthenticationProvider(registrationId, idScope, deviceKey, csrPrivateKey);
 ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
-    provisioningSettings, boot, operational, cancellationToken: cancellationToken);
+    provisioningSettings, authentication, new ProvisioningCertificateSigningRequest(base64Csr),
+    cancellationToken: cancellationToken);
 ```
 
-Once a certificate is issued to the device (by DPS or Hub), `SymmetricKeyOperationalAuthenticationProvider`
-and `X509OperationalAuthenticationProvider` present it instead of the symmetric key or existing
-operational certificate. Both accept either the CSR private key or an asynchronous callback that
-returns the issued certificate with its private key, and turn each issued chain into a certificate
-inside `GetCredentialsAsync`. With an X.509 boot provider, use
-`new X509OperationalAuthenticationProvider(operationalCertificate, csrPrivateKey)` instead.
-`X509OperationalAuthenticationProvider` can also be created with only the CSR private key or
-callback; it then fails if no certificate has been issued and never falls back to a boot
-certificate or SAS token.
+Once a certificate is issued (by DPS or Hub), a provider with a certificate signing handler
+presents it to IoT Hub instead of the symmetric key or the original X.509 certificate. DPS
+always receives the original credential. A provider without a handler ignores issued
+certificates, and `SendCertificateSigningRequestAsync` throws `InvalidOperationException` when
+the connection's provider has no handler.
 
-Only the operational provider receives certificates issued by DPS or Hub.
-`ConnectionContext.OperationalAuthenticationProvider` is used on every Hub
-connection, including reconnects and restored assignments. When calling
-`ProvisionAndConnectAsync` with a cached context, the supplied operational provider
-replaces the context's provider. Automatic reprovisioning retains the boot provider
-and uses the current operational provider for the new Hub assignment.
+`ConnectionContext.AuthenticationProvider` is used on every Hub connection, including
+reconnects, restored assignments and automatic reprovisioning. When calling
+`ProvisionAndConnectAsync` with a cached context, the supplied provider replaces the context's
+provider.
 
-**Migration:** replace the former general-purpose provider classes with the
-corresponding boot and operational classes, and derive custom providers from the
-appropriate role-specific abstract base. Supply both providers to `ProvisionAndConnectAsync`, rename
-`ConnectionContext.AuthenticationProvider` to `OperationalAuthenticationProvider`,
-and replace `SymmetricKeyWithIssuedCertificateAuthenticationProvider` with a
-symmetric-key boot provider and an X.509 operational provider. Hub-only connections
-need only the operational provider in their connection context.
+**Migration:** `BootAuthenticationProvider`, `OperationalAuthenticationProvider` and all their
+`X509*`, `SymmetricKey*` and `*CertificateSigningOperationalAuthenticationProvider` subclasses
+were replaced by `AuthenticationProvider`, `X509AuthenticationProvider` and
+`SymmetricKeyAuthenticationProvider`. Pass one provider to `ProvisionAndConnectAsync`, rename
+`ConnectionContext.OperationalAuthenticationProvider` to `AuthenticationProvider`, and replace
+`GetCredentialsAsync` overrides with `GetProvisioningCredentialsAsync` and
+`GetIotHubCredentialsAsync`. DPS and Hub can no longer use different credentials or TLS callbacks,
+and `X509AuthenticationProvider` always requires a client certificate (the former issued-only
+constructors were removed). The CSR requirement is now checked at runtime using
+`HasCertificateSigningHandler` rather than at compile time.
 
 ## MQTTv5 Public Preview Notice
 

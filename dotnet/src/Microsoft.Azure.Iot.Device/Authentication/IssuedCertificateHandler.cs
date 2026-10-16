@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using System.Net.Security;
-using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -11,7 +9,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// <summary>
     /// Turns an issued client certificate chain into the certificate to present to IoT Hub by invoking a certificate
     /// signing complete callback once per distinct issued chain and remembering the certificate it returns.
-    /// Shared by every operational provider that can present issued client certificates.
+    /// Shared by every authentication provider that has a certificate signing handler.
     /// </summary>
     internal sealed class IssuedCertificateHandler
     {
@@ -31,31 +29,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public static Func<IReadOnlyList<string>, Task<X509Certificate2>> CreateDefaultCallback(AsymmetricAlgorithm privateKey)
         {
             return issuedClientCertificates => Task.FromResult(CreateCertificateWithPrivateKey(issuedClientCertificates, privateKey));
-        }
-
-        /// <summary>
-        /// Builds the credentials to present to IoT Hub: the certificate produced from
-        /// <paramref name="issuedClientCertificates"/> if any were issued, otherwise <paramref name="fallbackCertificate"/>.
-        /// </summary>
-        /// <exception cref="AuthenticationException">No certificate was issued and there is no fallback certificate.</exception>
-        public async Task<AuthenticationCredentials> GetCredentialsAsync(
-            IReadOnlyList<string>? issuedClientCertificates,
-            X509Certificate2? fallbackCertificate,
-            RemoteCertificateValidationCallback? remoteCertificateValidationCallback,
-            LocalCertificateSelectionCallback? localCertificateSelectionCallback,
-            CancellationToken cancellationToken)
-        {
-            X509Certificate2? certificate = issuedClientCertificates is { Count: > 0 }
-                ? await GetCertificateAsync(issuedClientCertificates, cancellationToken).ConfigureAwait(false)
-                : fallbackCertificate;
-
-            return new AuthenticationCredentials()
-            {
-                ClientCertificate = certificate
-                    ?? throw new AuthenticationException("No issued client certificate is available for operational authentication."),
-                RemoteCertificateValidationCallback = remoteCertificateValidationCallback,
-                LocalCertificateSelectionCallback = localCertificateSelectionCallback,
-            };
         }
 
         /// <summary>

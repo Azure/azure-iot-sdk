@@ -1,8 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Authentication.Boot;
-using Microsoft.Azure.Iot.Device.Authentication.Operational;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
@@ -16,8 +15,7 @@ internal class Program
     {
         string deviceId = SampleConstants.LoadX509DeviceId();
         string idScope = SampleConstants.LoadIdScope();
-        X509BootAuthenticationProvider bootAuthentication = SampleConstants.LoadX509BootAuthenticationProvider();
-        X509OperationalAuthenticationProvider operationalAuthentication = new(bootAuthentication.ClientCertificate);
+        X509AuthenticationProvider authentication = SampleConstants.LoadX509AuthenticationProvider();
 
         // This MQTT client interface allows users to bring their own MQTT client implementation
         // This SDK includes a single implementation of the MQTT client interface using MQTTnet as the client library
@@ -39,7 +37,7 @@ internal class Program
 
         ProvisioningSettings provisioningSettings = new(idScope);
         Console.WriteLine("Provisioning and connecting to IoT hub using the provided MQTT client");
-        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, bootAuthentication, operationalAuthentication);
+        await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
 
         Console.WriteLine("Shutting down sample...");
