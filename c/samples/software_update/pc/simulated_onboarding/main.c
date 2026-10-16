@@ -537,7 +537,6 @@ int main(void)
     {
       state.su_workflow_completed = 0;
       printf("Deployment workflow complete. Restart the sample to ask again.\n");
-      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
     }
 
     /* A (simulated) reboot was requested. Exit so the operator can "reboot"

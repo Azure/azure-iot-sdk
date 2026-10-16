@@ -531,7 +531,6 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
 
       /* Report the applied update as installed. Without this the next check
        * still sends the previous id, and is offered the same update again. */
