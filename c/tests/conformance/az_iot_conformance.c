@@ -240,6 +240,10 @@ int az_iot_conformance_report_unproven_capability(
 static const unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
 static const unsigned k_step_timeout_seconds = 5;
+/* Budget for a failure that waits on the system resolver. glibc retries a lost
+ * query after 5s, per attempt and per search domain, and Paho's lookup is an
+ * unbounded getaddrinfo() that connect_timeout_seconds does not cover. */
+static const unsigned k_resolver_timeout_ms = 30000;
 
 /* ------------------------------------------------------------------------- */
 /* event recorder used by every test                                         */
@@ -1077,10 +1081,11 @@ static void connect_to_an_unresolvable_host_is_rejected(void** state)
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
 
+  /* The client resolves the name itself, so the wait covers a slow NXDOMAIN. */
   az_iot_result r = c->iface->connect(c, &copts);
   if (r == AZ_IOT_OK)
   {
-    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_resolver_timeout_ms));
   }
   assert_false(saw_connected_ok(&rec));
 
@@ -3982,7 +3987,7 @@ static void a_tunnel_dropped_mid_session_is_reported(void** state)
  * what a filtering proxy does for a destination it does not allow. The client
  * must fail rather than fall back, and must not mistake the refusal for a
  * broker that answered. Driven by naming a host reserved by RFC 6761 as never
- * resolvable, so the fixture's own upstream dial fails and it answers 502. */
+ * resolvable, which the fixture refuses with 502 without a DNS lookup. */
 static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 {
   (void)state;
@@ -3997,10 +4002,12 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 
   az_iot_mqtt_connect_options copts;
   proxied_connect_options(&copts, cid, proxy_port);
-  /* A name that can never resolve, so the proxy's own upstream dial fails and
-   * it answers 502. RFC 6761 reserves ".invalid" for exactly this, which makes
-   * the case deterministic -- unlike aiming at a port assumed to be closed,
-   * which depends on what happens to be listening on the machine. */
+  /* A name that can never resolve, so the proxy answers 502. RFC 6761 reserves
+   * ".invalid" for exactly this, and the fixture refuses it without a lookup,
+   * which makes the case deterministic -- unlike aiming at a port assumed to be
+   * closed (depends on what is listening) or a real lookup (depends on the
+   * resolver: Paho blocks until the proxy replies, so a slow NXDOMAIN outlasts
+   * k_step_timeout_ms). */
   copts.host = "az-iot-conformance.invalid";
 
   /* Either connect() refused it outright, or a failure event must actually have
