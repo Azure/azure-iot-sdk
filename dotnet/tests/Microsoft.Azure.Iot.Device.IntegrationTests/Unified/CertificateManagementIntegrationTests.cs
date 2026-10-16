@@ -15,8 +15,41 @@ using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate()
+        {
+            using RSA privateKey = RSA.Create(2048);
+            await using UnifiedDeviceTestContext device = await CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                cancellationToken: TestContext.Current.CancellationToken,
+                issuedCertificatePrivateKey: privateKey);
+
+            SymmetricKeyAuthenticationProvider authentication = Assert.IsType<SymmetricKeyAuthenticationProvider>(device.AuthenticationProvider);
+            ConnectionContext connectionContext = device.ConnectionContext;
+            Assert.Null(device.IndividualEnrollment);
+            Assert.Equal(device.RegistrationId, connectionContext.DeviceId);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+            Assert.NotNull(connectionContext.IssuedClientCertificates);
+            Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            // A successful Hub connection with an issued certificate must not fall back to a SAS token.
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+                connectionContext.IotHubHostName,
+                connectionContext.DeviceId,
+                connectionContext.IssuedClientCertificates);
+            using X509Certificate2 issuedCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(connectionContext.IssuedClientCertificates[0]));
+            Assert.NotNull(hubCredentials.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
+            Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
+            Assert.Empty(hubCredentials.Password);
+
+            AuthenticationCredentials dpsCredentials = authentication.GetBootAuthenticationCredentials();
+            Assert.Null(dpsCredentials.ClientCertificate);
+            Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
+        }
+
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
