@@ -729,6 +729,108 @@ static void the_fixed_interval_getter_fields(void** state)
 /* ---- az_iot_time_mono_ms ----------------------------------------------------- */
 
 /* The clock never goes backwards and advances. */
+/* Additive jitter only lengthens: every delay is in [base, base + pct], and
+ * every value of that band is reachable. */
+static void additive_jitter_never_shortens_the_delay(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 100,
+                            .max_delay_ms = 100,
+                            .jitter_pct = 10,
+                            .jitter_mode = AZ_IOT_RETRY_JITTER_ADDITIVE };
+  uint64_t rng = 7;
+  bool seen[11] = { false };
+  for (int i = 0; i < 2000; ++i)
+  {
+    uint32_t d = az_iot_retry_policy__delay_ms(&p, 1, &rng);
+    assert_true(d >= 100u && d <= 110u);
+    seen[d - 100u] = true;
+  }
+  for (size_t i = 0; i < sizeof(seen); ++i)
+  {
+    assert_true(seen[i]);
+  }
+
+  /* An hour doubling to a day, as a long retry schedule uses. */
+  az_iot_retry_policy day = { .initial_delay_ms = 3600000u,
+                              .max_delay_ms = 86400000u,
+                              .jitter_pct = 10,
+                              .jitter_mode = AZ_IOT_RETRY_JITTER_ADDITIVE };
+  static const uint32_t base[]
+      = { 3600000u, 7200000u, 14400000u, 28800000u, 57600000u, 86400000u, 86400000u };
+  for (uint32_t a = 1; a <= sizeof(base) / sizeof(base[0]); ++a)
+  {
+    uint32_t d = az_iot_retry_policy__delay_ms(&day, a, &rng);
+    assert_true(d >= base[a - 1] && d <= base[a - 1] + base[a - 1] / 10u);
+  }
+}
+
+/* schedule_until() also sets a Unix deadline a second past the wait; an
+ * unknown time leaves none. remaining_ms() reports without consuming. */
+static void schedule_until_sets_a_conservative_unix_deadline(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  uint32_t left = az_iot_retry_state__remaining_ms(&s);
+  assert_true(left > 59000u && left <= 60000u);
+  assert_int_equal(s._internal.due_unix_s, 1800000000u + 60u + 1u);
+  assert_true(az_iot_retry_state__pending(&s));
+  assert_true(az_iot_retry_state__remaining_ms(&s) <= left);
+
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 0u));
+  assert_int_equal(s._internal.due_unix_s, 0u);
+
+  az_iot_retry_state__reset(&s);
+  assert_int_equal(s._internal.due_unix_s, 0u);
+  assert_int_equal(az_iot_retry_state__remaining_ms(&s), 0u);
+}
+
+/* save()/restore(): the wait comes from the deadline when the time is known
+ * (kept as saved), else from the saved seconds; capped at max_wait_ms. */
+static void a_saved_state_restores_its_wait(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 3600000u, .max_delay_ms = 3600000u };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  assert_true(az_iot_retry_state__schedule_until(&s, &p, &rng, 1800000000u));
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+  uint64_t due_unix = s._internal.due_unix_s;
+  assert_int_equal(due_unix, 1800000000u + 3600u + 1u);
+
+  /* Half an hour later: half an hour (and the spare second) left. */
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 1800000000u + 1800u, 86400000u);
+  assert_int_equal(az_iot_retry_state__attempts(&r), 2);
+  assert_int_equal(r._internal.due_unix_s, due_unix);
+  uint32_t left = az_iot_retry_state__remaining_ms(&r);
+  assert_true(left > 1800000u && left <= 1801000u);
+
+  /* A second before the deadline still waits; at it, nothing is left. */
+  az_iot_retry_state__restore(&r, rec, due_unix - 1u, 86400000u);
+  assert_true(az_iot_retry_state__pending(&r));
+  az_iot_retry_state__restore(&r, rec, due_unix, 86400000u);
+  assert_false(az_iot_retry_state__pending(&r));
+  assert_int_equal(r._internal.due_unix_s, due_unix);
+
+  /* Unknown time: the whole saved wait; the deadline is kept. */
+  az_iot_retry_state__restore(&r, rec, 0u, 86400000u);
+  left = az_iot_retry_state__remaining_ms(&r);
+  assert_true(left > 3590000u && left <= 3600000u);
+  assert_int_equal(r._internal.due_unix_s, due_unix);
+
+  /* Capped: a deadline beyond max_wait_ms is replaced. */
+  az_iot_retry_state__restore(&r, rec, 1800000000u, 60000u);
+  assert_true(az_iot_retry_state__remaining_ms(&r) <= 60000u);
+  assert_int_equal(r._internal.due_unix_s, 1800000000u + 60u + 1u);
+}
+
 static void the_monotonic_clock_never_goes_backwards(void** state)
 {
   (void)state;
@@ -765,6 +867,9 @@ int main(void)
     cmocka_unit_test(a_sub_millisecond_band_applies_no_jitter),
     cmocka_unit_test(a_jittered_zero_is_floored_at_one),
     cmocka_unit_test(every_value_in_the_band_is_reachable),
+    cmocka_unit_test(additive_jitter_never_shortens_the_delay),
+    cmocka_unit_test(schedule_until_sets_a_conservative_unix_deadline),
+    cmocka_unit_test(a_saved_state_restores_its_wait),
     cmocka_unit_test(jitter_is_deterministic_for_a_seed),
     cmocka_unit_test(a_zero_rng_state_still_jitters),
     cmocka_unit_test(is_enabled_depends_only_on_the_initial_delay),
