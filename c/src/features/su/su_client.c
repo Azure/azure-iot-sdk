@@ -1084,7 +1084,7 @@ static void sync_checkpoint(az_iot_su_client* client)
     {
       clear_checkpoint(client);
     }
-    else if (!SU_I(client).checkpoint_retry)
+    else if (!SU_I(client).checkpoint_retry && persist_retry_due(client))
     {
       (void)su_persist(client, SU_RECORD_RETRY);
     }
@@ -1747,6 +1747,11 @@ static void process_update_metadata(
       AZ_IOT_LOG_WARN(
           AZ_IOT_LOG_COMPONENT_SU,
           "failed workflow retry deferred: its terminal report is not yet settled");
+      /* A session lost for good leaves the report owed with no send queued. */
+      if (!SU_I(client).terminal_report_in_flight && !SU_I(client).device_properties_report_pending)
+      {
+        SU_I(client).device_properties_report_pending = true;
+      }
       raise_deferred(client);
       return;
     }

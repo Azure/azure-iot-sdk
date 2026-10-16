@@ -4136,8 +4136,8 @@ static void an_owed_failed_report_defers_its_retry(void** state)
   assert_int_equal(fx->log.persist_len, record_len);
   assert_memory_equal(fx->log.persist_blob, record, record_len);
 
+  /* The due offer re-queues the owed report; no other trigger is needed. */
   int reports = fx->chan.report_count;
-  fx->su._internal.device_properties_report_pending = true;
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, reports + 1);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
@@ -4154,6 +4154,44 @@ static void an_owed_failed_report_defers_its_retry(void** state)
   inject_patch(fx, signed_patch());
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
   assert_attempt_reported(fx, reports, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+}
+
+/* A failed retry-record write is retried on the persistence backoff, not on
+ * the next tick. */
+static void a_failed_retry_record_write_waits_for_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.download_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  for (int i = 0; i < 40 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_FAILED; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_FAILED);
+  assert_true(fx->su._internal.terminal_report_in_flight);
+
+  fx->log.persist_failures = 100;
+  int calls = fx->log.persist_calls;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->log.persist_calls, calls + 1);
+  assert_false(fx->su._internal.checkpoint_retry);
+
+  pump(fx, 5);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->log.persist_calls, calls + 1);
+
+  fx->log.persist_failures = 0;
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  pump(fx, 3);
+  assert_true(fx->su._internal.checkpoint_retry);
+  assert_int_equal(fx->log.persist_calls, calls + 2);
 }
 
 /** @brief Test Unix time source: the seconds @p ctx points at. */
@@ -7867,6 +7905,8 @@ int main(void)
         fetches_and_report_acceptance_keep_the_retry_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_id_resets_the_retry_count, setup, teardown),
     cmocka_unit_test_setup_teardown(an_owed_failed_report_defers_its_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_retry_record_write_waits_for_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(the_retry_wait_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_reboot_during_a_retry_keeps_the_failure_count, setup, teardown),
