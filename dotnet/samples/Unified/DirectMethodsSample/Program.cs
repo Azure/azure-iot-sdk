@@ -2,13 +2,13 @@
 // See LICENSE file in the project root for full license information.
 
 using DirectMethodsClientSample;
-using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using SetupSampleDevice;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 internal class Program
 {

@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Provisioning;
@@ -14,7 +15,6 @@ using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
-    [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
@@ -36,25 +36,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_KEY");
 
             using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, privateKey);
 
-            ConnectionClient connectionClient = new()
-            {
-                HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
-                {
-                    // Convert to PEM and save
-                    string pemChain = CertificateUtilities.ConvertToPem(IssuedCertificates);
-
-                    using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
-
-                    // Export and reimport with Exportable flag
-                    byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-                    return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
-                }
-            };
+            ConnectionClient connectionClient = new();
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
