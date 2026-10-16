@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
@@ -116,7 +116,18 @@ namespace Microsoft.Azure.Iot.Device
             private set => _currentEndpoint = value;
         }
 
-        public bool IsConnectionTargetSet => CurrentEndpoint != ConnectionEndpoint.None;
+        /// <summary>
+        /// Whether this client has selected a connection endpoint, or is automatically re-provisioning to select one.
+        /// </summary>
+        /// <remarks>
+        /// A failed re-provisioning attempt resets <see cref="CurrentEndpoint"/> to <see cref="ConnectionEndpoint.None"/>
+        /// while the retry loop waits out its backoff, but recovery is still active then, so operations must wait for it
+        /// rather than fail. The re-provisioning cancellation source is checked (rather than _isReprovisioning) because
+        /// an explicit disconnect clears it immediately, whereas _isReprovisioning stays set until cleanup finishes.
+        /// </remarks>
+        public bool IsConnectionTargetSet =>
+            CurrentEndpoint != ConnectionEndpoint.None
+            || Volatile.Read(ref _currentReprovisioningCancellation) != null;
 
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;

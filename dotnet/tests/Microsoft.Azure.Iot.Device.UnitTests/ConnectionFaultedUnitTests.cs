@@ -3,11 +3,15 @@
 
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -814,6 +818,102 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>
+        /// After a failed automatic re-provisioning attempt, the provisioning run resets the current endpoint to none
+        /// and the retry loop waits out its backoff while recovery is still active. A feature operation started during
+        /// that backoff must not be rejected as if the client were deliberately disconnected; it must wait for the
+        /// recovery to re-establish the connection and then be sent.
+        /// </summary>
+        [Fact]
+        public async Task FeatureOperationDuringReprovisioningRetryDelayWaitsForRecovery()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                // The first registration succeeds so that this device gets connected to a hub. The first re-provisioning
+                // attempt (registration 2) fails, which sends the retry loop into its backoff, and the attempt after
+                // that (registration 3) succeeds.
+                TerminalRegistrationResultSelector = registrationCount => registrationCount == 2
+                    ? new DeviceRegistrationResult()
+                    {
+                        RegistrationId = RegistrationId,
+                        Status = ProvisioningRegistrationStatus.Failed,
+                    }
+                    : null,
+            };
+
+            string? currentHubHostName = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                currentHubHostName = connect.HostName;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            // Telemetry fails with the not-connected error while no connection is up, like a real MQTT client, and is
+            // sent normally once the connection is re-established.
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            TaskCompletionSource telemetryAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            string? hubTheTelemetryWasSentTo = null;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                if (!mockMqttClient.IsConnected())
+                {
+                    telemetryAttempted.TrySetResult();
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                hubTheTelemetryWasSentTo = currentHubHostName;
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            // Long enough for the telemetry below to be started and parked during the backoff.
+            TimeSpan reprovisioningRetryDelay = TimeSpan.FromSeconds(3);
+            ReprovisioningRetryDelayPolicy retryPolicy = new(reprovisioningRetryDelay);
+
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = retryPolicy,
+            });
+            using TelemetryClient telemetryClient = new(connectionClient);
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client starts re-provisioning. Its first attempt fails,
+            // and the retry loop is now waiting out its backoff.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await retryPolicy.ReprovisioningRetryDelayStarted.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The failed provisioning run left no endpoint selected, but recovery is still active.
+            Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
+            Assert.True(connectionClient.IsConnectionTargetSet);
+
+            Task pendingTelemetry = Task.Run(
+                () => telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") }, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            // The telemetry got past the feature client's guard and reached the connection while it was still down, so
+            // it was started during the backoff rather than after recovery.
+            await telemetryAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.False(pendingTelemetry.IsCompleted, "The telemetry should be waiting for the re-provisioning recovery.");
+
+            // Once the next re-provisioning attempt succeeds, the waiting telemetry is sent to the newly assigned hub.
+            await pendingTelemetry.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(3, mockDps.RegistrationCount);
+            Assert.Equal(SecondAssignedHub, hubTheTelemetryWasSentTo);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
+
+        /// <summary>
         /// A feature client operation issued before this client has ever connected -- so nothing is maintaining or
         /// recovering a connection -- must fail fast with the underlying not-connected error rather than block forever
         /// waiting for a reconnection that is never coming.
@@ -1352,6 +1452,38 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     && currentRetryCount > _maxHubConnectAttemptsBeforeReprovision)
                 {
                     return RetryGuidance.Reprovision;
+                }
+
+                return RetryGuidance.Retry;
+            }
+        }
+
+        /// <summary>
+        /// A retry policy that retries immediately, except that it backs off by a fixed delay between re-provisioning
+        /// attempts and signals when the first such backoff starts.
+        /// </summary>
+        private sealed class ReprovisioningRetryDelayPolicy : IRetryPolicy
+        {
+            private readonly TimeSpan _reprovisioningRetryDelay;
+            private readonly TaskCompletionSource _reprovisioningRetryDelayStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public ReprovisioningRetryDelayPolicy(TimeSpan reprovisioningRetryDelay)
+            {
+                _reprovisioningRetryDelay = reprovisioningRetryDelay;
+            }
+
+            public Task ReprovisioningRetryDelayStarted => _reprovisioningRetryDelayStarted.Task;
+
+            public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
+            {
+                if (connectionEndpoint == ConnectionEndpoint.DeviceProvisioningService)
+                {
+                    retryDelay = _reprovisioningRetryDelay;
+                    _reprovisioningRetryDelayStarted.TrySetResult();
+                }
+                else
+                {
+                    retryDelay = TimeSpan.Zero;
                 }
 
                 return RetryGuidance.Retry;
