@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
@@ -63,7 +64,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Sessions never resume, so every connect's presence flow re-sends the classic topic SUBSCRIBE that the
             // failure case targets.
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
             {
                 Interlocked.Increment(ref connectCount);
                 return new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
