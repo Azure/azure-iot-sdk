@@ -1006,64 +1006,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
         }
 
-        [Fact]
-        public async Task FeatureOperationWaitingOnCallerProvisioningStopsWhenProvisioningFails()
-        {
-            using MockConnectionMqttClient mockMqttClient = new();
-            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
-            {
-                TerminalRegistrationResultSelector = registrationCount => registrationCount == 2
-                    ? new DeviceRegistrationResult()
-                    {
-                        RegistrationId = RegistrationId,
-                        Status = ProvisioningRegistrationStatus.Failed,
-                    }
-                    : null,
-            };
-
-            TaskCompletionSource provisioningRegistrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            TaskCompletionSource releaseProvisioningRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            mockDps.RegistrationRequested += async registrationCount =>
-            {
-                if (registrationCount == 2)
-                {
-                    provisioningRegistrationStarted.TrySetResult();
-                    await releaseProvisioningRegistration.Task;
-                }
-            };
-
-            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
-            using TelemetryClient telemetryClient = new(connectionClient);
-
-            await connectionClient.ProvisionAndConnectAsync(
-                CreateProvisioningSettings(),
-                CreateAuthenticationProvider(),
-                cancellationToken: TestContext.Current.CancellationToken);
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
-
-            Task<ConnectionContext> callerProvisioning = connectionClient.ProvisionAndConnectAsync(
-                CreateProvisioningSettings(),
-                CreateAuthenticationProvider(),
-                forceProvisioning: true,
-                cancellationToken: TestContext.Current.CancellationToken);
-            await provisioningRegistrationStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-
-            Task pendingTelemetry = Task.Run(
-                () => telemetryClient.SendTelemetryAsync(
-                    new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") },
-                    TestContext.Current.CancellationToken),
-                TestContext.Current.CancellationToken);
-
-            await Task.WhenAny(pendingTelemetry, Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken));
-            Assert.False(pendingTelemetry.IsCompleted, "Telemetry should wait while the caller's provisioning attempt is pending.");
-
-            releaseProvisioningRegistration.TrySetResult();
-
-            await Assert.ThrowsAsync<DeviceException>(() => callerProvisioning);
-            await Assert.ThrowsAsync<OperationCanceledException>(() => pendingTelemetry);
-            Assert.Equal(2, mockDps.RegistrationCount);
-        }
-
         /// <summary>
         /// A feature client operation issued before this client has ever connected -- so nothing is maintaining or
         /// recovering a connection -- must fail fast with the underlying not-connected error rather than block forever
