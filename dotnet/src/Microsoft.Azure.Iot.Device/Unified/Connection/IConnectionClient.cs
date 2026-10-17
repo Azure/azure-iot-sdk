@@ -22,6 +22,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
+        Task<MqttPublishAck> PublishAsync(Func<ConnectionContext, MqttPublish> publishFactory, CancellationToken cancellationToken = default)
+        {
+            ConnectionContext? context = GetCurrentConnectionContext();
+            if (context == null)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+
+            return PublishAsync(publishFactory(context), cancellationToken);
+        }
+
         Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);
 
         Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);

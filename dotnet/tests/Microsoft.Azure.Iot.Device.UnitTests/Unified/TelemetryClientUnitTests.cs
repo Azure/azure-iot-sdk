@@ -52,6 +52,28 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task SendTelemetryAsync_UsesNewDeviceIdAfterProvisioning()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+            };
+            connection.OnPublishWithContext = async (publishFactory, cancellationToken) =>
+            {
+                ConnectionContext newAssignment = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, "newDeviceId");
+                connection.CurrentConnectionContext = newAssignment;
+                MqttPublish publish = publishFactory(newAssignment);
+                return await connection.PublishAsync(publish, cancellationToken);
+            };
+            using TelemetryClient telemetryClient = new(connection);
+
+            await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry(), TestContext.Current.CancellationToken);
+
+            MqttPublish publishedMessage = Assert.Single(connection.PublishedMessages);
+            Assert.StartsWith("devices/newDeviceId/messages/events/", publishedMessage.Topic);
+        }
+
+        [Fact]
         public async Task SendTelemetryAsync_Classic_ThrowsWhenMessageTooLarge()
         {
             MockFeatureConnectionClient connection = new()
