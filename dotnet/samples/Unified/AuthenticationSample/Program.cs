@@ -254,7 +254,15 @@ internal class Program
         ConnectionContext renewedConnectionContext = await renewedConnectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
 
         string issuer = ReferenceEquals(renewedConnectionContext.IssuedClientCertificates, iotHubIssuedCertificates) ? "IoT Hub" : "DPS (after re-provisioning)";
-        PrintConnected(renewedConnectionContext, $"the certificate {issuer} issued: {DescribeCertificateChain(renewedConnectionContext.IssuedClientCertificates!)}");
+        if (renewedConnectionContext.IssuedClientCertificates is { Count: > 0 } renewedCertificates)
+        {
+            PrintConnected(renewedConnectionContext, $"the certificate {issuer} issued: {DescribeCertificateChain(renewedCertificates)}");
+        }
+        else
+        {
+            PrintConnected(renewedConnectionContext, fallbackCredential);
+            Console.WriteLine("DPS did not issue a certificate after re-provisioning; connected with the boot credential instead.");
+        }
 
         await renewedConnectionClient.DisconnectAsync(cancellationToken);
     }
