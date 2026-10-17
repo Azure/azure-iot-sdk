@@ -29,7 +29,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task ProvisionAndConnectUsesSeededConnectionContext()
         {
-            MockMqttClient mockMqttClient = new(false);
+            using MockConnectionMqttClient mockMqttClient = new();
             ConnectionContext connectionContext = GetMockConnectionContext(false);
             using ConnectionClient connectionClient = new(new()
             {
@@ -51,7 +51,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(false)]
         public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isSessionResumed)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -63,15 +63,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
+            mockMqttClient.OnConnect = connect =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success });
             };
-            mockMqttClient.OnPublishAttempt += async (publish) =>
+            mockMqttClient.OnPublish = async (publish) =>
             {
                 if (retryCount == 0)
                 {
-                    _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
                     throw new MqttClientNotConnectedException("mock client not connected exception");
                 }
@@ -102,7 +102,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task PublishRetriesWhenPresenceCompletesBeforeFailedAttemptReturns()
         {
-            MockMqttClient mockMqttClient = new(false);
+            using MockConnectionMqttClient mockMqttClient = new();
             using TestConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
@@ -123,7 +123,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             };
 
             int publishAttemptCount = 0;
-            mockMqttClient.OnPublishAttempt += async publish =>
+            mockMqttClient.OnPublish = async publish =>
             {
                 if (Interlocked.Increment(ref publishAttemptCount) == 1)
                 {
@@ -144,7 +144,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await firstPublishAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
                 // Keep this on the same endpoint: the reconnect and presence flow must finish while the original publish is still pending.
-                await mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"))
+                await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"))
                     .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 await reconnectPresenceCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
@@ -165,7 +165,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(false)]
         public async Task ConnectionClientReannouncesBirthBeforeContinuingSubscribe(bool isSessionResumed)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -175,18 +175,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
+            mockMqttClient.OnConnect = connect =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success });
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();
 
-            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+            mockMqttClient.OnSubscribe = async (subscribe) =>
             {
                 if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString))
                 {
-                    _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
                     throw new MqttClientNotConnectedException("mock client not connected exception");
                 }
@@ -221,7 +221,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(false)]
         public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isSessionResumed)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -231,18 +231,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
+            mockMqttClient.OnConnect = connect =>
             {
-                return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success });
             };
 
             string expectedTopicString = Guid.NewGuid().ToString();
 
-            mockMqttClient.OnUnsubscribeAttempt += async (unsubscribe) =>
+            mockMqttClient.OnUnsubscribe = async (unsubscribe) =>
             {
                 if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
                 {
-                    _ = mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"));
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
                     throw new MqttClientNotConnectedException("mock client not connected exception");
                 }
