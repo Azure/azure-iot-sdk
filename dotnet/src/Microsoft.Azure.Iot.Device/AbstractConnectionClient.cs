@@ -554,7 +554,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <summary>
         /// Patch the CONNECT packet that is about to be sent, including on every reconnect attempt.
         /// </summary>
-        private async Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit)
+        private async Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit, CancellationToken cancellationToken)
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {

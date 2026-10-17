@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
             {
                 return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
@@ -113,7 +113,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
             {
                 return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };
@@ -169,7 +169,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnectAttempt += async (connect, cancellationToken) =>
             {
                 return new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success };
             };

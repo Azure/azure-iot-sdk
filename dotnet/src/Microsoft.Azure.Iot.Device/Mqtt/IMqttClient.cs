@@ -9,7 +9,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
 
         event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
 
-        event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync;
+        event Func<MqttConnect, CancellationToken, Task<MqttConnect>> ConnectingAsync;
 
         event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
 

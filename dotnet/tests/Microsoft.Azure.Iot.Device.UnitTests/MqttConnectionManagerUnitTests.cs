@@ -93,7 +93,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 #pragma warning disable CS0067 // Not every event is raised by this fake
             public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
             public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
-            public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+            public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
             public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 #pragma warning restore CS0067
 
