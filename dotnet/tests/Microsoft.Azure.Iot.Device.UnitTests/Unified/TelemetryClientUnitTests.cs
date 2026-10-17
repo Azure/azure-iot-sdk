@@ -6,6 +6,7 @@ using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text;
 using Xunit;
@@ -75,6 +76,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new();
             using TelemetryClient telemetryClient = new(connection);
+
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry(), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
+        public async Task SendTelemetryAsync_ThrowsAfterDisconnect()
+        {
+            MockMqttClient mqttClient = new(false);
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TelemetryClient telemetryClient = new(connection);
+
+            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<NotSupportedException>(
                 async () => await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry(), TestContext.Current.CancellationToken));
