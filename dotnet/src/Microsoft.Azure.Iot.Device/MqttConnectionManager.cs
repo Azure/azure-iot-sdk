@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device
 
         public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
 
-        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
 
         /// <summary>
         /// Raised anytime this layer detects a disconnection.
@@ -178,11 +178,11 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
+        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect);
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
             }
 
             return connect;

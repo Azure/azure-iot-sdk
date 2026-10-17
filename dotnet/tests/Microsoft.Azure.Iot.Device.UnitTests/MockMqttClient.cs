@@ -13,12 +13,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         //IMqtt client interface callbacks that will be used by the connection client
         public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
         public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync;
-        public event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>> ConnectingAsync;
         public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync;
 
 
         // Mock-specific callbacks that are used by unit tests to control how the MQTT client should respond to connects/publishes/subscribes. By default, this mock just returns a basic "OK" response on all operations
-        public event Func<MqttConnect, Task<MqttConnectAck>>? OnConnectAttempt;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnectAck>>? OnConnectAttempt;
         public event Func<MqttDisconnect, Task>? OnDisconnectAttempt;
         public event Func<MqttPublish, Task<MqttPublishAck>>? OnPublishAttempt;
         public event Func<MqttSubscribe, Task<MqttSubscribeAck>>? OnSubscribeAttempt;
@@ -66,12 +66,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync(connect);
+                connect = await ConnectingAsync(connect, cancellationToken);
             }
 
             if (OnConnectAttempt != null)
             {
-                var connack = await OnConnectAttempt.Invoke(connect);
+                var connack = await OnConnectAttempt.Invoke(connect, cancellationToken);
 
                 if (ConnectedAsync != null)
                 {
