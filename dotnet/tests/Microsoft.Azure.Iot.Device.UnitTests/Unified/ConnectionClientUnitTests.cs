@@ -7,6 +7,7 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Retry;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
@@ -96,6 +97,67 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.NotNull(lastTraffic.Publish);
             Assert.StartsWith("devices/", lastTraffic.Publish.Topic);
             Assert.EndsWith("/messages/events/", lastTraffic.Publish.Topic);
+        }
+
+        [Fact]
+        public async Task PublishRetriesWhenPresenceCompletesBeforeFailedAttemptReturns()
+        {
+            MockMqttClient mockMqttClient = new(false);
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource firstPublishAttemptStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseFirstPublishAttempt = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource reconnectPresenceCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int presenceCompletionCount = 0;
+            connectionClient.DevicePresenceFlowCompletedAsync += args =>
+            {
+                Interlocked.Increment(ref presenceCompletionCount);
+                reconnectPresenceCompleted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            int publishAttemptCount = 0;
+            mockMqttClient.OnPublishAttempt += async publish =>
+            {
+                if (Interlocked.Increment(ref publishAttemptCount) == 1)
+                {
+                    firstPublishAttemptStarted.TrySetResult();
+                    await releaseFirstPublishAttempt.Task;
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<MqttPublishAck> pendingPublish = connectionClient.PublishAsync(
+                new MqttPublish() { Topic = "test/topic" },
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                await firstPublishAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                // Keep this on the same endpoint: the reconnect and presence flow must finish while the original publish is still pending.
+                await mockMqttClient.SimulateServerInitiatedDisconnectAsync(new Exception("mock exception"))
+                    .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await reconnectPresenceCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                releaseFirstPublishAttempt.TrySetResult();
+                await pendingPublish.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                Assert.Equal(1, presenceCompletionCount);
+                Assert.Equal(2, publishAttemptCount);
+            }
+            finally
+            {
+                releaseFirstPublishAttempt.TrySetResult();
+            }
         }
 
         [Theory]

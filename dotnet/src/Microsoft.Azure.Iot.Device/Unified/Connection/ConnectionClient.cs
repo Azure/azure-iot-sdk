@@ -86,7 +86,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
-            var suback = await ManagedMqttConnection.SubscribeAsync(mqttSubscribe);
+            var suback = await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, mqttSubscribe);
 
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)
@@ -126,7 +126,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
 
-            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
+            await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
 
             MqttPublish certificateSigningRequestPublish = new()
             {
@@ -135,7 +135,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             };
 
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
 
             return operation;
         }
