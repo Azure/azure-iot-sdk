@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -254,6 +255,54 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // Only the initial provisioning and the successful re-provisioning actually registered; the failed attempt
             // never got past the refused CONNACK.
             Assert.Equal(2, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task EachProvisioningConnectAttemptPresentsFreshBootCredentials()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            List<string> dpsPasswords = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == GlobalDeviceEndpoint)
+                {
+                    lock (dpsPasswords)
+                    {
+                        dpsPasswords.Add(Encoding.UTF8.GetString(connect.Password!));
+
+                        // Refuse the first two attempts with a retryable code so that the connection layer retries.
+                        if (dpsPasswords.Count <= 2)
+                        {
+                            return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.ServerUnavailable });
+                        }
+                    }
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            CountingBootAuthenticationProvider authentication = new();
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                authentication,
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+
+            // Every attempt, including the retries the connection layer made on its own, asked for new boot credentials
+            // rather than replaying the ones minted for the first attempt.
+            Assert.Equal(new[] { "boot-1", "boot-2", "boot-3" }, dpsPasswords);
+            Assert.Equal(3, authentication.BootCredentialRequests);
         }
 
         [Fact]
@@ -1324,6 +1373,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
                 return RetryGuidance.Retry;
             }
+        }
+
+        /// <summary>
+        /// Stands in for a SAS-token provider: each request for boot credentials returns a distinct password, so a test
+        /// can tell whether a connect attempt presented newly minted credentials or replayed earlier ones.
+        /// </summary>
+        private sealed class CountingBootAuthenticationProvider : AuthenticationProvider
+        {
+            private int _bootCredentialRequests;
+
+            public int BootCredentialRequests => Volatile.Read(ref _bootCredentialRequests);
+
+            public override AuthenticationCredentials GetBootAuthenticationCredentials()
+            {
+                int request = Interlocked.Increment(ref _bootCredentialRequests);
+                return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
+            }
+
+            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+            {
+                return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes("operational") });
+            }
+
+            public override string GetRegistrationId() => RegistrationId;
         }
 
         /// <summary>

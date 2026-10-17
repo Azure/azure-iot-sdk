@@ -118,6 +118,9 @@ namespace Microsoft.Azure.Iot.Device
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
 
+        // The authentication to present on every connection to Device Provisioning Service. Only set while provisioning.
+        private AuthenticationProvider? _provisioningAuthentication;
+
         // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
         // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
         private ProvisioningSettings? _lastProvisioningSettings;
@@ -558,8 +561,15 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
-                // The CONNECT sent to DPS is fully formed before the first connect attempt and nothing about it changes
-                // between attempts or between the generation of Hub that the inheriting class uses, so there is nothing to inject here.
+                // The connection layer replays the same CONNECT on every retry, so fetch the boot credentials again for
+                // each attempt. Otherwise a SAS token signed for the first attempt would be presented until it expired
+                // and then on every attempt after that.
+                AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
+                if (provisioningAuthentication != null)
+                {
+                    connectPacketToEdit = ApplyAuthentication(provisioningAuthentication.GetBootAuthenticationCredentials(), connectPacketToEdit);
+                }
+
                 return connectPacketToEdit;
             }
 
@@ -995,6 +1005,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            _provisioningAuthentication = authentication;
+
             MqttConnect connect = CreateProvisioningConnectPacket(
                 authentication,
                 provisioningSettings.IdScope,
@@ -1034,6 +1046,7 @@ namespace Microsoft.Azure.Iot.Device
                 // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
                 CancelCurrentProvisioningFlow();
                 _provisioningRequestPayload = null;
+                _provisioningAuthentication = null;
                 Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
                 CurrentEndpoint = ConnectionEndpoint.None;
 
@@ -1268,8 +1281,8 @@ namespace Microsoft.Azure.Iot.Device
                 ProtocolVersion = MqttProtocolVersion.V311
             };
 
-            // This adds the client certificates or SAS token authentication + any remote/local certificate validation callbacks
-            return ApplyAuthentication(authentication.GetBootAuthenticationCredentials(), mqttConnect);
+            // The client certificate or SAS token is applied by PatchConnectPacketAsync, freshly for each connect attempt
+            return mqttConnect;
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)
