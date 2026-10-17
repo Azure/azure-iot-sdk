@@ -9,7 +9,7 @@ This directory contains all the samples for using the .NET IoT SDK in this repo.
 
 ### How to create a sample device
 
-Most of these samples assume that a sample device is already enrolled with your Device Provisioning Service, but the [SetupSampleDevice](./SetupSampleDevice/) sample allows you to create that sample device, enroll it with DPS, and locally save all the credentials needed to run the other samples in this directory.
+Most of these samples assume that a sample device is already enrolled with your Device Provisioning Service, but the [SetupSampleDevice](./SetupSampleDevice/) sample allows you to create that sample device, enroll it with DPS, and locally save all the credentials needed to run the other samples in this directory. It creates two individual enrollments: one that attests with an X.509 certificate, which most samples use, and one that attests with a symmetric key, which the [AuthenticationSample](./Unified/AuthenticationSample/) uses for its symmetric key scenarios.
 
 Before running this sample, you simply need to enter your service-side DPS + Hub credentials [here](./SetupSampleDevice/Program.cs) like:
 
@@ -35,6 +35,8 @@ By running the above sample, you should see a set of credential files saved at t
 ```bash
 dotnet run --project DirectMethodsSample  --property WarningLevel=0
 ```
+
+To see each way a device can authenticate with DPS and IoT Hub (X.509 certificates, symmetric keys, and certificates issued by DPS and renewed by IoT Hub), see the [AuthenticationSample](./Unified/AuthenticationSample/).
 
 ### Connecting to preview nuget feed
 
