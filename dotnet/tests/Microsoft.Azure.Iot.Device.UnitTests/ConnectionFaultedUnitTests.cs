@@ -834,6 +834,242 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>
+        /// A feature operation that is pending while this device is re-provisioned to a different device ID must be sent
+        /// with the newly assigned device ID in its topic, not the one the device had when the operation was started.
+        /// </summary>
+        [Theory]
+        [InlineData("publish")]
+        [InlineData("subscribe")]
+        [InlineData("unsubscribe")]
+        public async Task PendingOperationIsSentWithDeviceIdAssignedByReprovisioning(string operation)
+        {
+            const string FirstDeviceId = "firstDeviceId";
+            const string SecondDeviceId = "secondDeviceId";
+            string topicTemplate = $"devices/{IConnectionClient.DeviceIdPlaceholder}/messages/devicebound/#";
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                AssignedDeviceIdSelector = registrationCount => registrationCount == 1 ? FirstDeviceId : SecondDeviceId,
+            };
+
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            // The first attempt finds the connection gone, which makes the operation wait while this device is
+            // re-provisioned. Every attempt's topic is recorded as it reaches the wire.
+            TaskCompletionSource operationAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            List<string> sentTopics = new();
+            void RecordAttempt(string topic)
+            {
+                lock (sentTopics)
+                {
+                    sentTopics.Add(topic);
+                    if (sentTopics.Count == 1)
+                    {
+                        operationAttempted.TrySetResult();
+                        throw new MqttClientNotConnectedException("mock client not connected exception");
+                    }
+                }
+            }
+
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                RecordAttempt(publish.Topic);
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                if (!subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic.StartsWith(ProvisioningTopicPrefix)))
+                {
+                    RecordAttempt(Assert.Single(subscribe.TopicFilters).Topic);
+                }
+
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+            };
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                RecordAttempt(Assert.Single(unsubscribe.TopicFilters));
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+
+            MqttPublish publish = new() { Topic = topicTemplate };
+            MqttSubscribe subscribe = new(topicTemplate, MqttQualityOfServiceLevel.AtLeastOnce);
+            MqttUnsubscribe unsubscribe = new(topicTemplate);
+            Task pendingOperation = Task.Run(
+                () => operation switch
+                {
+                    "publish" => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, TestContext.Current.CancellationToken),
+                },
+                TestContext.Current.CancellationToken);
+
+            await operationAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client re-provisions and is assigned a new device ID.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            await pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(SecondDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+            lock (sentTopics)
+            {
+                Assert.Equal(
+                    new[] { $"devices/{FirstDeviceId}/messages/devicebound/#", $"devices/{SecondDeviceId}/messages/devicebound/#" },
+                    sentTopics);
+            }
+
+            // The caller's operation keeps its template so that it could be resolved again.
+            Assert.Equal(topicTemplate, publish.Topic);
+            Assert.Equal(topicTemplate, Assert.Single(subscribe.TopicFilters).Topic);
+            Assert.Equal(topicTemplate, Assert.Single(unsubscribe.TopicFilters));
+        }
+
+        /// <summary>
+        /// An operation that has read this device's ID for its topic must not be overtaken by a re-provisioning that
+        /// assigns a different ID and connects to a different hub; otherwise the old ID would be sent over the new hub
+        /// connection. Re-provisioning must instead wait for that operation, so every topic reaches the wire over a
+        /// connection to the hub that assigned the ID in it.
+        /// </summary>
+        [Theory]
+        [InlineData("publish")]
+        [InlineData("subscribe")]
+        [InlineData("unsubscribe")]
+        public async Task ReprovisioningWaitsForOperationThatIsResolvingItsDeviceId(string operation)
+        {
+            const string FirstDeviceId = "firstDeviceId";
+            const string SecondDeviceId = "secondDeviceId";
+            string topicTemplate = $"devices/{IConnectionClient.DeviceIdPlaceholder}/messages/devicebound/#";
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                AssignedDeviceIdSelector = registrationCount => registrationCount == 1 ? FirstDeviceId : SecondDeviceId,
+            };
+
+            string? connectedHostName = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                Volatile.Write(ref connectedHostName, connect.HostName);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            // Every feature topic that reaches the wire is recorded along with the host of the connection it was sent
+            // over. One that finds the connection gone is not sent, as a real client would refuse it.
+            List<(string Topic, string? HostName)> sentTopics = new();
+            void RecordAttempt(string topic)
+            {
+                if (!mockMqttClient.IsConnected())
+                {
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                lock (sentTopics)
+                {
+                    sentTopics.Add((topic, Volatile.Read(ref connectedHostName)));
+                }
+            }
+
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                RecordAttempt(publish.Topic);
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                if (!subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic.StartsWith(ProvisioningTopicPrefix)))
+                {
+                    RecordAttempt(Assert.Single(subscribe.TopicFilters).Topic);
+                }
+
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+            };
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                RecordAttempt(Assert.Single(unsubscribe.TopicFilters));
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+
+            // Pause the operation's first attempt at the moment it reads this device's ID.
+            TaskCompletionSource deviceIdBeingRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            using ManualResetEventSlim resumeDeviceIdRead = new(false);
+            int deviceIdReadCount = 0;
+            connectionClient.BeforeDeviceIdForTopicsRead = () =>
+            {
+                if (Interlocked.Increment(ref deviceIdReadCount) == 1)
+                {
+                    deviceIdBeingRead.TrySetResult();
+                    resumeDeviceIdRead.Wait(s_testTimeout);
+                }
+            };
+
+            MqttPublish publish = new() { Topic = topicTemplate };
+            MqttSubscribe subscribe = new(topicTemplate, MqttQualityOfServiceLevel.AtLeastOnce);
+            MqttUnsubscribe unsubscribe = new(topicTemplate);
+            Task pendingOperation = Task.Run(
+                () => operation switch
+                {
+                    "publish" => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, TestContext.Current.CancellationToken),
+                },
+                TestContext.Current.CancellationToken);
+
+            await deviceIdBeingRead.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client re-provisions and is assigned a new device ID on a
+            // new hub. It must not get as far as connecting to Device Provisioning Service while the operation that has
+            // read the old device ID could still be sent.
+            int connectAttemptsBeforeFault = mockMqttClient.ConnectAttemptCount;
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+            Assert.Equal(connectAttemptsBeforeFault, mockMqttClient.ConnectAttemptCount);
+            Assert.Equal(FirstAssignedHub, Volatile.Read(ref connectedHostName));
+
+            resumeDeviceIdRead.Set();
+
+            await pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(SecondDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+            lock (sentTopics)
+            {
+                Assert.Equal(
+                    new (string, string?)[] { ($"devices/{SecondDeviceId}/messages/devicebound/#", SecondAssignedHub) },
+                    sentTopics);
+            }
+        }
+
+        /// <summary>
         /// While re-provisioning, this client is connected to Device Provisioning Service, so the underlying MQTT
         /// connection is up even though the device is not present on any hub. A feature operation started then must
         /// not be sent over that DPS connection; it must wait until the device is present on its hub again.
@@ -1552,6 +1788,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             public Func<int, DeviceRegistrationResult?>? TerminalRegistrationResultSelector { get; set; }
 
             /// <summary>
+            /// When set, chooses the device ID each registration assigns (given the running registration count), so a
+            /// test can re-provision this device to a different device ID. Defaults to always assigning the same one.
+            /// </summary>
+            public Func<int, string>? AssignedDeviceIdSelector { get; set; }
+
+            /// <summary>
             /// When set, the terminal status poll's response topic carries this many seconds as its Retry-After, letting
             /// a test drive the service's retry-after guidance.
             /// </summary>
@@ -1588,7 +1830,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         ?? new DeviceRegistrationResult()
                         {
                             RegistrationId = RegistrationId,
-                            DeviceId = DeviceId,
+                            DeviceId = AssignedDeviceIdSelector?.Invoke(RegistrationCount) ?? DeviceId,
                             AssignedHub = _assignedHubSelector(RegistrationCount),
                             Status = ProvisioningRegistrationStatus.Assigned,
                         };

@@ -37,6 +37,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
+        /// <summary>
+        /// Invoked each time this client is about to read the device ID that it substitutes into a feature operation's
+        /// topic, letting a test pause an operation at that point.
+        /// </summary>
+        public Action? BeforeDeviceIdForTopicsRead { get; set; }
+
+        internal override string GetDeviceIdForTopics()
+        {
+            BeforeDeviceIdForTopicsRead?.Invoke();
+            return base.GetDeviceIdForTopics();
+        }
+
         internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
         {
             return connectionProfile == ConnectionProfile.Classic;
