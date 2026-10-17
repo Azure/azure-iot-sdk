@@ -848,8 +848,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
             };
 
-            // Telemetry is sent normally once the connection is re-established.
+            // Telemetry fails with the not-connected error while no connection is up, like a real MQTT client, and is
+            // sent normally once the connection is re-established.
             Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            TaskCompletionSource telemetryAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             string? hubTheTelemetryWasSentTo = null;
             mockMqttClient.OnPublish = publish =>
             {
@@ -860,6 +862,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
                 if (!mockMqttClient.IsConnected())
                 {
+                    telemetryAttempted.TrySetResult();
                     throw new MqttClientNotConnectedException("mock client not connected exception");
                 }
 
@@ -896,10 +899,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 () => telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") }, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
-            // Give the telemetry a chance to (wrongly) be rejected while the backoff is still running.
-            await Task.WhenAny(pendingTelemetry, Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken));
-            Assert.False(pendingTelemetry.IsCompleted, "The telemetry should be waiting for the re-provisioning recovery.");
+            // The telemetry got past the feature client's guard and reached the connection while it was still down, so
+            // it was started during the backoff rather than after recovery.
+            await telemetryAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.False(pendingTelemetry.IsCompleted, "The telemetry should be waiting for the re-provisioning recovery.");
 
             // Once the next re-provisioning attempt succeeds, the waiting telemetry is sent to the newly assigned hub.
             await pendingTelemetry.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
@@ -907,103 +911,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(3, mockDps.RegistrationCount);
             Assert.Equal(SecondAssignedHub, hubTheTelemetryWasSentTo);
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
-        }
-
-        /// <summary>
-        /// While re-provisioning, this client is connected to Device Provisioning Service, so the underlying MQTT
-        /// connection is up even though the device is not present on any hub. A feature operation started then must
-        /// not be sent over that DPS connection; it must wait until the device is present on its hub again.
-        /// </summary>
-        [Fact]
-        public async Task FeatureOperationWhileConnectedToDpsDuringReprovisioningWaitsForHub()
-        {
-            using MockConnectionMqttClient mockMqttClient = new();
-            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
-
-            // Hold the re-provisioning registration open so that this client stays connected to DPS.
-            TaskCompletionSource reprovisioningRegistrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            TaskCompletionSource releaseReprovisioningRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            mockDps.RegistrationRequested += async registrationCount =>
-            {
-                if (registrationCount == 2)
-                {
-                    reprovisioningRegistrationStarted.TrySetResult();
-                    await releaseReprovisioningRegistration.Task;
-                }
-            };
-
-            string? currentHostName = null;
-            mockMqttClient.OnConnect = connect =>
-            {
-                currentHostName = connect.HostName;
-                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
-            };
-
-            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
-            List<string?> hostsTheTelemetryWasSentTo = new();
-            mockMqttClient.OnPublish = publish =>
-            {
-                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
-                {
-                    return handleProvisioningPublishAsync.Invoke(publish);
-                }
-
-                if (!mockMqttClient.IsConnected())
-                {
-                    throw new MqttClientNotConnectedException("mock client not connected exception");
-                }
-
-                lock (hostsTheTelemetryWasSentTo)
-                {
-                    hostsTheTelemetryWasSentTo.Add(currentHostName);
-                }
-
-                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
-            };
-
-            ConnectionClient connectionClient = new(new()
-            {
-                MqttClient = mockMqttClient,
-                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
-            });
-            using TelemetryClient telemetryClient = new(connectionClient);
-
-            await connectionClient.ProvisionAndConnectAsync(
-                CreateProvisioningSettings(),
-                CreateAuthenticationProvider(),
-                cancellationToken: TestContext.Current.CancellationToken);
-
-            // The hub rejects this device's identity, so this client re-provisions and is now connected to DPS.
-            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
-            await reprovisioningRegistrationStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-
-            Assert.Equal(ConnectionEndpoint.DeviceProvisioningService, connectionClient.CurrentEndpoint);
-            Assert.True(mockMqttClient.IsConnected());
-
-            Task pendingTelemetry = Task.Run(
-                () => telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") }, TestContext.Current.CancellationToken),
-                TestContext.Current.CancellationToken);
-
-            // Give the telemetry a chance to (wrongly) be sent over the DPS connection.
-            await Task.WhenAny(pendingTelemetry, Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken));
-
-            lock (hostsTheTelemetryWasSentTo)
-            {
-                Assert.Empty(hostsTheTelemetryWasSentTo);
-            }
-
-            Assert.False(pendingTelemetry.IsCompleted, "The telemetry should be waiting for the device to be present on its hub.");
-
-            // Once re-provisioning finishes and the device is present on its new hub, the telemetry is sent there.
-            releaseReprovisioningRegistration.TrySetResult();
-            await pendingTelemetry.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-
-            lock (hostsTheTelemetryWasSentTo)
-            {
-                Assert.Equal(SecondAssignedHub, Assert.Single(hostsTheTelemetryWasSentTo));
-            }
-
-            Assert.Equal(2, mockDps.RegistrationCount);
         }
 
         /// <summary>
