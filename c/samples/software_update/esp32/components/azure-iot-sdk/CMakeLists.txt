@@ -42,6 +42,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/features/su/su_report.c"
         "${AZ_IOT_ROOT}/src/features/su/su_channel_dps.c"
         "${AZ_IOT_ROOT}/src/features/su/su_protocol.c"
+        "${AZ_IOT_ROOT}/src/features/su/su_retry.c"
         "${AZ_IOT_ROOT}/src/mqttv3/telemetry_client.c"
         "${AZ_IOT_ROOT}/src/mqttv3/c2d_client.c"
         "${AZ_IOT_ROOT}/src/mqttv3/direct_method_client.c"

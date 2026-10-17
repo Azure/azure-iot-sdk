@@ -125,13 +125,14 @@ extern "C"
 /* In-struct scratch used to (de)serialize the persisted workflow state passed to
  * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
  * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then
- * length-prefixed workflow id, applied update id and channel state, 4 CRC).
+ * length-prefixed workflow id, applied update id and channel state, 16 retry
+ * schedule, 4 CRC).
  * Derived from the upstream step/file limits, so raising them grows it; a
  * compile-time assertion in su_client.c checks the exact serialized size fits.
  * Lives in the caller-allocated client struct, so no static or heap buffer. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
 #define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
-  (76u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
    + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                    \
    + 16u                                                                   \
        * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)                      \
@@ -642,28 +643,40 @@ extern "C"
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
-     * current workflow may not be replaced (see az_iot_su_replacement_policy).
+     * current workflow may not be replaced (see az_iot_su_replacement_policy),
+     * or a due retry of a failed workflow was not started because that
+     * workflow's terminal report is not yet settled with the service.
      * Nothing was processed or reported for it. Carries `state` (unchanged)
      * and `reason` AZ_IOT_ERR_BUSY. Raised again on each redelivery. To take
      * it, request an update again once the current workflow has ended (Idle
-     * or Failed) and, when its last apply asked for a reboot, after that
-     * reboot. */
+     * or Failed) and its report is settled and, when its last apply asked for
+     * a reboot, after that reboot. */
     AZ_IOT_SU_EVENT_UPDATE_DEFERRED,
 
     /* An update check was answered with no update. Carries `state` and
      * `operation` (the route that asked). */
     AZ_IOT_SU_EVENT_NO_UPDATE,
 
-    /* A delivered update carried the workflow id of the current (or last
-     * finished) workflow and was ignored as a redelivery: nothing was
-     * processed or reported for it. Carries `state` (unchanged). Raised again
-     * on each redelivery. */
+    /* A delivered update carried the workflow id of the current workflow, or
+     * of the last one when it SUCCEEDED or was SKIPPED, and was ignored as a
+     * redelivery: nothing was processed or reported for it. Carries `state`
+     * (unchanged). Raised again on each redelivery. A FAILED or CANCELED
+     * workflow offered again is retried instead (see
+     * AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT). */
     AZ_IOT_SU_EVENT_UPDATE_DUPLICATE,
 
     /* The service accepted a status report. Carries `state` and
      * `report_terminal`. Once a terminal report is accepted, nothing more is
      * owed to the service for that workflow. */
-    AZ_IOT_SU_EVENT_REPORT_ACCEPTED
+    AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
+
+    /* The last workflow FAILED or was CANCELED and was offered again before
+     * its retry wait elapsed, so it was not started: nothing was processed or
+     * reported for it. Carries `state` (unchanged) and `retry_after_ms`.
+     * Raised again on each early offer. The wait is 1 h after the first
+     * failure, doubling per consecutive failure up to 24 h, plus up to 10%
+     * jitter, and survives a restart when persistence is configured. */
+    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT
   } az_iot_su_event_kind;
 
   /**
@@ -743,6 +756,8 @@ extern "C"
     int32_t extended_result_code;
     /** REPORT_ACCEPTED: the report carried a terminal outcome. */
     bool report_terminal;
+    /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
+    uint32_t retry_after_ms;
   } az_iot_su_event;
 
   /**
@@ -755,6 +770,14 @@ extern "C"
    * restored from persistence during az_iot_su_client_resume(). Do not assume
    * any one of them. */
   typedef void (*az_iot_su_observer_callback)(const az_iot_su_event* event, void* user_ctx);
+
+  /** @brief Retry schedule of a FAILED or CANCELED workflow. Internal to the client. */
+  typedef struct az_iot_su_workflow_retry
+  {
+    uint32_t failures; /**< Consecutive FAILED or CANCELED attempts. */
+    uint64_t due_ms; /**< Monotonic instant the next attempt may start; 0: now. */
+    uint64_t due_unix_s; /**< The same instant in Unix seconds; 0: unknown. */
+  } az_iot_su_workflow_retry;
 
   typedef struct az_iot_su_client
   {
@@ -815,11 +838,21 @@ extern "C"
       /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
        */
       bool checkpoint_superseded;
+      /** The stored checkpoint is the retry record of a FAILED or CANCELED workflow. */
+      bool checkpoint_retry;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
-       * is a redelivery and is ignored. Retry timestamp and manifest CRC are
-       * not persisted and are otherwise unused. */
+       * is a redelivery and is ignored unless that workflow FAILED or was
+       * CANCELED. Retry timestamp and manifest CRC are not persisted and are
+       * otherwise unused. */
       bool active_workflow_valid;
+      /** The workflow named by active_workflow_id has started and not yet ended. */
+      bool active_workflow_running;
+      /** Retry schedule of active_workflow_id after it FAILED or was CANCELED. */
+      az_iot_su_workflow_retry workflow_retry;
+      /** Unix time source, from the connection client options; NULL uses time(). */
+      az_iot_unix_time_callback unix_time_fn;
+      void* unix_time_ctx; /**< Passed to unix_time_fn. */
       uint8_t active_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE];
       size_t active_workflow_id_len;
       uint8_t active_retry_timestamp[AZ_IOT_SU_RETRY_TIMESTAMP_SIZE];
@@ -924,7 +957,7 @@ extern "C"
       /** Backoff after retryable verdicts with no service delay; reset by any accepted operation.
        */
       az_iot_retry_state retry;
-      /** Jitter PRNG state for retry and persist_retry. */
+      /** Jitter PRNG state for retry, persist_retry and workflow_retry. */
       uint64_t retry_rng;
       /** pending_fetch was re-armed by a verdict that armed retry. */
       bool pending_fetch_paced;

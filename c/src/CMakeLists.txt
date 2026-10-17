@@ -28,6 +28,7 @@ add_library(az_iot_core
     features/su/su_report.c
     features/su/su_channel_dps.c
     features/su/su_protocol.c
+    features/su/su_retry.c
 )
 
 add_library(azure::iot::core ALIAS az_iot_core)
