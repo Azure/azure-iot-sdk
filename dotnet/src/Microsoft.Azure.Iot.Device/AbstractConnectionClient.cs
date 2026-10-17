@@ -298,7 +298,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+                return await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, publish, cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -308,7 +308,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+                return await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, subscribe, cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -318,7 +318,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+                return await ManagedMqttConnection.UnsubscribeAsync(ConnectionEndpoint.IotHub, unsubscribe, cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -509,8 +509,9 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.CanReprovision = CanReprovision;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
-            // targets an IoT hub.
-            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.IotHub;
+            // targets an IoT hub. This also waits for any provisioning operation still in flight to finish, so that
+            // none of them can be sent over the hub connection established below.
+            await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.IotHub, cancellationToken);
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
@@ -989,8 +990,9 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.CanReprovision = false;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
-            // targets Device Provisioning Service.
-            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.DeviceProvisioningService;
+            // targets Device Provisioning Service. This also waits for any feature operation meant for IoT hub that is
+            // still in flight to finish, so that none of them can be sent over the DPS connection established below.
+            await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, cancellationToken);
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
@@ -1130,7 +1132,7 @@ namespace Microsoft.Azure.Iot.Device
         private async Task SubscribeToRegistrationResponseMessagesAsync(CancellationToken cancellationToken)
         {
             Trace.TraceInformation("Subscribing to DPS response topic {0}", ProvisioningSubscribeFilter);
-            MqttSubscribeAck subscribeResults = await ManagedMqttConnection.SubscribeAsync(new(ProvisioningSubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
+            MqttSubscribeAck subscribeResults = await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.DeviceProvisioningService, new(ProvisioningSubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
@@ -1160,7 +1162,7 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
 
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.DeviceProvisioningService, publish, cancellationToken);
 
             Trace.TraceInformation("Successfully published registration request to DPS with request Id {0}", _provisioningRequestId);
 
@@ -1210,7 +1212,7 @@ namespace Microsoft.Azure.Iot.Device
                 Trace.TraceInformation("Publishing to DPS on topic {0}", topic);
 
                 // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(message, cancellationToken);
+                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.DeviceProvisioningService, message, cancellationToken);
 
                 RegistrationOperationStatus currentStatus;
                 try
@@ -1475,15 +1477,10 @@ namespace Microsoft.Azure.Iot.Device
 
                     try
                     {
-                        // Feature operations may only go to IoT hub. While this client targets Device Provisioning
-                        // Service (for example, while re-provisioning) the underlying MQTT connection may be up, but it
-                        // is a connection to DPS, so the operation must wait for the device to be present on its hub
-                        // again rather than be sent over it.
-                        if (CurrentEndpoint != ConnectionEndpoint.IotHub)
-                        {
-                            throw new MqttClientNotConnectedException("This client is not currently connected to IoT hub.");
-                        }
-
+                        // The connection layer only sends this over a connection to IoT hub. While it targets Device
+                        // Provisioning Service instead (for example, while re-provisioning) it throws
+                        // MqttClientNotConnectedException, so this operation waits for the device to be present on its
+                        // hub again rather than being sent over a DPS connection.
                         return await funcToRetry.Invoke(cancellationToken);
                     }
                     catch (MqttClientNotConnectedException)

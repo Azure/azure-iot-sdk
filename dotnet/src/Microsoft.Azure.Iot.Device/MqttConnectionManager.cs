@@ -73,11 +73,35 @@ namespace Microsoft.Azure.Iot.Device
         /// asked to retry connecting to an IoT hub or to Device Provisioning Service.
         /// </summary>
         /// <remarks>
-        /// The owning connection client sets this to <see cref="ConnectionEndpoint.IotHub"/> for hub connections and
+        /// The owning connection client changes this through <see cref="SwitchEndpointAsync"/>, to
+        /// <see cref="ConnectionEndpoint.IotHub"/> for hub connections and
         /// <see cref="ConnectionEndpoint.DeviceProvisioningService"/> for provisioning connections, alongside
-        /// <see cref="CanReprovision"/>.
+        /// <see cref="CanReprovision"/>. Every PUBLISH, SUBSCRIBE and UNSUBSCRIBE names the endpoint it is meant for and
+        /// is only sent while this is that endpoint.
         /// </remarks>
-        public ConnectionEndpoint ConnectionEndpoint { get; set; } = ConnectionEndpoint.None;
+        public ConnectionEndpoint ConnectionEndpoint
+        {
+            get
+            {
+                lock (_endpointLock)
+                {
+                    return _connectionEndpoint;
+                }
+            }
+        }
+
+        // Guards _connectionEndpoint, _inFlightOperationCounts and _staleOperationsDrained so that admitting an operation
+        // for an endpoint and switching away from that endpoint are serialized with each other.
+        private readonly object _endpointLock = new();
+        private ConnectionEndpoint _connectionEndpoint = ConnectionEndpoint.None;
+
+        // The number of PUBLISH/SUBSCRIBE/UNSUBSCRIBE operations currently handed to the underlying client, indexed by
+        // the endpoint each one was admitted for.
+        private readonly int[] _inFlightOperationCounts = new int[Enum.GetValues<ConnectionEndpoint>().Length];
+
+        // Completed once no operation admitted for an endpoint other than the current one is still in flight. Only set
+        // while an endpoint switch is waiting for that.
+        private TaskCompletionSource? _staleOperationsDrained;
 
         /// <summary>
         /// Whether this layer is in a connection lifecycle that could still release an operation waiting for the
@@ -850,16 +874,102 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Send a PUBLISH and settle it.
+        /// Change the endpoint that the connections this layer maintains target, and wait until no PUBLISH, SUBSCRIBE or
+        /// UNSUBSCRIBE meant for the previous endpoint is still in flight.
+        /// </summary>
+        /// <remarks>
+        /// Operations are admitted for an endpoint under the same lock that this switches the endpoint under, so once
+        /// this returns no operation meant for the previous endpoint can reach the underlying client. The caller must
+        /// await this before connecting to the new endpoint; otherwise an operation that was admitted while the previous
+        /// endpoint was current could be sent over the new endpoint's connection (for example, feature traffic meant
+        /// for IoT hub being sent to Device Provisioning Service while re-provisioning).
+        /// </remarks>
+        public async Task SwitchEndpointAsync(ConnectionEndpoint endpoint, CancellationToken cancellationToken = default)
+        {
+            Task staleOperationsDrained;
+            lock (_endpointLock)
+            {
+                _connectionEndpoint = endpoint;
+
+                if (!HasStaleOperationsInFlight())
+                {
+                    return;
+                }
+
+                _staleOperationsDrained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                staleOperationsDrained = _staleOperationsDrained.Task;
+            }
+
+            Trace.TraceInformation("Waiting for operations meant for the previous endpoint to finish before targeting {0}.", endpoint);
+            await staleOperationsDrained.WaitAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Admit an operation meant for the given endpoint, or throw <see cref="MqttClientNotConnectedException"/> if
+        /// this layer is not targeting that endpoint.
+        /// </summary>
+        /// <remarks>
+        /// Every admitted operation must be ended with exactly one call to <see cref="EndOperation"/>.
+        /// </remarks>
+        private void BeginOperation(ConnectionEndpoint endpoint)
+        {
+            lock (_endpointLock)
+            {
+                if (_connectionEndpoint != endpoint)
+                {
+                    // Reported as "not connected" because, from the caller's point of view, it is: there is no
+                    // connection to the endpoint it wants. The layer above waits for one rather than failing.
+                    throw new MqttClientNotConnectedException($"Not connected to {endpoint}; the current connection targets {_connectionEndpoint}.");
+                }
+
+                _inFlightOperationCounts[(int)endpoint]++;
+            }
+        }
+
+        private void EndOperation(ConnectionEndpoint endpoint)
+        {
+            TaskCompletionSource? staleOperationsDrained = null;
+            lock (_endpointLock)
+            {
+                _inFlightOperationCounts[(int)endpoint]--;
+
+                if (_staleOperationsDrained != null && !HasStaleOperationsInFlight())
+                {
+                    staleOperationsDrained = _staleOperationsDrained;
+                    _staleOperationsDrained = null;
+                }
+            }
+
+            staleOperationsDrained?.TrySetResult();
+        }
+
+        // Must be called while holding _endpointLock.
+        private bool HasStaleOperationsInFlight()
+        {
+            for (int endpoint = 0; endpoint < _inFlightOperationCounts.Length; endpoint++)
+            {
+                if (endpoint != (int)_connectionEndpoint && _inFlightOperationCounts[endpoint] > 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Send a PUBLISH to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(ConnectionEndpoint endpoint, MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            BeginOperation(endpoint);
             try
             {
                 var puback = await _underlyingMqttClient.PublishAsync(publish, cancellationToken);
@@ -874,19 +984,25 @@ namespace Microsoft.Azure.Iot.Device
                     IsContained = true,
                 };
             }
+            finally
+            {
+                EndOperation(endpoint);
+            }
         }
 
         /// <summary>
-        /// Send a SUBSCRIBE and settle it.
+        /// Send a SUBSCRIBE to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttSubscribeAck> SubscribeAsync(ConnectionEndpoint endpoint, MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
+            BeginOperation(endpoint);
             try
             {
                 var suback = await _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
@@ -901,19 +1017,25 @@ namespace Microsoft.Azure.Iot.Device
                     IsContained = true,
                 };
             }
+            finally
+            {
+                EndOperation(endpoint);
+            }
         }
 
         /// <summary>
-        /// Send a UNSUBSCRIBE and settle it.
+        /// Send a UNSUBSCRIBE to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(ConnectionEndpoint endpoint, MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
+            BeginOperation(endpoint);
             try
             {
                 var unsuback = await _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
@@ -927,6 +1049,10 @@ namespace Microsoft.Azure.Iot.Device
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
                 };
+            }
+            finally
+            {
+                EndOperation(endpoint);
             }
         }
 
