@@ -1448,26 +1448,55 @@ namespace Microsoft.Azure.Iot.Device
                 }
             }
 
+            // Counts the connection events that release the latch, so that an event which fires after an attempt started
+            // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
+            int connectionEventCount = 0;
+
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
+                Interlocked.Increment(ref connectionEventCount);
                 ReleaseLatch();
                 return Task.CompletedTask;
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            Action HandleUnrecoverableFault = ReleaseLatch; // Stop waiting for a connection that is never coming back
+            Action HandleUnrecoverableFault = () =>
+            {
+                // Stop waiting for a connection that is never coming back
+                Interlocked.Increment(ref connectionEventCount);
+                ReleaseLatch();
+            };
             UnrecoverablyFaulted += HandleUnrecoverableFault;
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
                 {
+                    int connectionEventCountBeforeAttempt = Volatile.Read(ref connectionEventCount);
+
                     try
                     {
+                        // Feature operations may only go to IoT hub. While this client targets Device Provisioning
+                        // Service (for example, while re-provisioning) the underlying MQTT connection may be up, but it
+                        // is a connection to DPS, so the operation must wait for the device to be present on its hub
+                        // again rather than be sent over it.
+                        if (CurrentEndpoint != ConnectionEndpoint.IotHub)
+                        {
+                            throw new MqttClientNotConnectedException("This client is not currently connected to IoT hub.");
+                        }
+
                         return await funcToRetry.Invoke(cancellationToken);
                     }
                     catch (MqttClientNotConnectedException)
                     {
                         latch.Reset(); // No-op if the HandleDisconnection already reset this latch. Only here because there is a chance that this method was called while MQTT client was disconnected
+
+                        if (Volatile.Read(ref connectionEventCount) != connectionEventCountBeforeAttempt)
+                        {
+                            // The device became present again (or this client faulted) after this attempt started, so
+                            // that release must not be waited for again. Re-evaluate straight away.
+                            ThrowIfUnrecoverablyFaulted();
+                            continue;
+                        }
 
                         // A fault that this client will not recover from must not be waited out, whether it happened
                         // before this operation started or while this operation was waiting.
