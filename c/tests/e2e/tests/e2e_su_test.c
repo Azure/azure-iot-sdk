@@ -411,7 +411,6 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
 
   assert_int_equal(fx.last_op, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_not_equal(fx.last_result, AZ_IOT_OK);
-  assert_int_not_equal(fx.last_action, AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
   assert_int_equal(fx.last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
 
   fixture_close(&fx);

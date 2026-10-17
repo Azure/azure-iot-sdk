@@ -3714,7 +3714,7 @@ static void an_unacknowledged_terminal_report_survives_a_reboot(void** state)
 }
 
 /* The record is kept through a retryable verdict and a report abandoned for
- * want of a session; ALREADY_REPORTED retires it. */
+ * want of a session; a final service rejection retires it. */
 static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3753,7 +3753,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   fresh->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
       NULL,
       fresh->chan.engine_ctx);
   assert_false(fresh->log.have_persist);
@@ -5442,9 +5442,7 @@ static void do_work_drives_the_channel(void** state)
   assert_int_equal(fx->chan.do_work_count, before + 2);
 }
 
-/* A verdict the engine must NOT retry. ALREADY_REPORTED means a terminal result
- * is already recorded for this workflow, so the report HAS been delivered --
- * reporting is idempotent on workflowId. Re-arming it would retry forever, and
+/* Verdicts the engine must NOT retry. Re-arming them would retry forever, and
  * during a held bootstrap session that starves the update check until the hold
  * expires.
  *
@@ -5461,12 +5459,11 @@ static void a_terminal_verdict_does_not_re_arm_the_report(void** state)
   fx->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
+      AZ_IOT_SU_ERROR_ACTION_PROCEED,
       NULL,
       fx->chan.engine_ctx);
   assert_false(fx->su._internal.device_properties_report_pending);
 
-  /* Same for the other terminal verdicts. */
   fx->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
       AZ_IOT_ERR_DPS,
@@ -5506,16 +5503,9 @@ static void an_abandoned_operation_is_reported_to_observers(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->abandoned_count, 0);
 
-  /* Nor is a success, nor ALREADY_REPORTED -- the service has the report, so
-   * nothing was lost. */
+  /* Nor is a success. */
   fx->chan.result_cb(
       AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL, fx->chan.engine_ctx);
-  fx->chan.result_cb(
-      AZ_IOT_SU_OP_REPORT_STATUS,
-      AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
-      NULL,
-      fx->chan.engine_ctx);
   assert_int_equal(fx->abandoned_count, 0);
 
   /* FATAL is, and carries the diagnosis. */
@@ -6618,7 +6608,6 @@ static void a_stale_fallback_does_not_hold_an_excluded_fetch_retry(void** state)
   } verdicts[] = {
     { AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL },
     { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO, NULL },
-    { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG, NULL },
     { AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, &hinted },
   };
 
@@ -6989,20 +6978,15 @@ static void catalog_engine_error(void** state)
   assert_int_equal(count_ops(&fx->log, OP_APPLY), applies);
 
   bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-      || row->action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
   if (terminal)
   {
-    bool legacy_conflict = row->action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
-    assert_int_equal(fx->abandoned_count, legacy_conflict ? 0 : 1);
-    if (!legacy_conflict)
-    {
-      assert_int_equal(fx->last_abandoned_operation, row->operation);
-      assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_DPS);
-      assert_int_equal(fx->last_error_code, row->numeric);
-      assert_string_equal(fx->last_error_text, row->code);
-      assert_string_equal(fx->last_tracking_id, "catalog-track");
-    }
+    assert_int_equal(fx->abandoned_count, 1);
+    assert_int_equal(fx->last_abandoned_operation, row->operation);
+    assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_DPS);
+    assert_int_equal(fx->last_error_code, row->numeric);
+    assert_string_equal(fx->last_error_text, row->code);
+    assert_string_equal(fx->last_tracking_id, "catalog-track");
     assert_int_equal(fx->su._internal.pending_fetch, 0);
     assert_int_equal(fx->su._internal.fetch_in_flight, 0);
     assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
@@ -7013,7 +6997,7 @@ static void catalog_engine_error(void** state)
       assert_false(fx->log.have_persist);
       assert_wire_pumps_do_not_publish(fx, sent);
       wire_response(fx, original_rid, 200, "", "");
-      assert_int_equal(fx->abandoned_count, legacy_conflict ? 0 : 1);
+      assert_int_equal(fx->abandoned_count, 1);
       /* Recovery is an explicit application poll, not acceptance of the report. */
       wire_fetch(fx, AZ_IOT_SU_OP_GET_UPDATE);
       wire_response(fx, original_rid, 200, "", "");
@@ -7049,8 +7033,7 @@ static void catalog_engine_error(void** state)
     assert_memory_equal(fx->log.persist_blob, checkpoint, checkpoint_len);
   }
   bool corrective = row->action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
-  bool drop_config = row->action == AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG;
-  if (!corrective && !drop_config)
+  if (!corrective)
   {
     if (row->delay_ms != 0)
     {
@@ -7088,13 +7071,6 @@ static void catalog_engine_error(void** state)
     assert_non_null(strstr((const char*)pub->payload, "\"manufacturer\":\"Contoso\""));
     assert_non_null(strstr((const char*)pub->payload, "\"model\":\"Foobar\""));
     assert_null(strstr((const char*)pub->payload, "Etag"));
-  }
-  else if (drop_config)
-  {
-    assert_string_equal(wire_channel(fx)->agent_info_etag, "cached-agent");
-    assert_string_equal(wire_channel(fx)->service_config_etag, "");
-    assert_non_null(strstr((const char*)pub->payload, "\"agentInfoEtag\":\"cached-agent\""));
-    assert_null(strstr((const char*)pub->payload, "serviceConfigEtag"));
   }
   else
   {

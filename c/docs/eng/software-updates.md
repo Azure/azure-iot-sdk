@@ -46,7 +46,7 @@ it keeps no per-device state. The device never talks to the update service direc
 no subscription and no unsolicited offer: the agent polls.
 
 API version: `2026-11-02-preview`. Public REST definition:
-[Azure/azure-rest-api-specs#44617](https://github.com/Azure/azure-rest-api-specs/pull/44617).
+[device.json](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/deviceprovisioningservices/data-plane/DeviceProvisioningServices/preview/2026-11-02-preview/device.json).
 
 ### Operations
 
@@ -111,7 +111,8 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
 ### Response
 
 - `serviceConfiguration.rootKeyDownloadUrl`: the root-key package for signature verification.
-  Omitted when the sent `serviceConfigEtag` is still current.
+  Omitted only when the sent `serviceConfigEtag` matches; a missing or stale ETag gets the current
+  configuration in the 200 response, not an error.
 - `serviceConfigEtag`, `agentInfoEtag`: always present.
 - `updateMetadata`: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`, present
   only when an update applies. **Omitted means "no update"** (HTTP 200, not an error).
@@ -151,14 +152,15 @@ carries no code (empty or unparseable) is classified by its status alone -- 429 
 | Case | Code / status | Device action |
 | --- | --- | --- |
 | No update | 200, `updateMetadata` omitted | Nothing to apply. Not an error. |
-| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
+| Update service not linked, or linked without access to the device's namespace | 409 `UPDATE_ACCOUNT_NOT_LINKED` / `UPDATE_ACCOUNT_ACCESS_DENIED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
+| Device not fully provisioned (regular fetch only) | 409 `DEVICE_NOT_PROVISIONED` | Stop retrying and expose abandonment; a later scheduled check succeeds once the device is provisioned. |
+| Device-class limit reached | 400 `MAX_DEVICE_CLASSES_EXCEEDED` | Stop retrying and expose abandonment for operator action. |
 | Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The application re-polls for current state. |
 | Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
-| Service configuration stale | 400 `OUTDATED_SERVICE_CONFIG` | Retry without `serviceConfigEtag`. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
 | Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
-| Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
+| Bad request, auth, disabled | 400 / 401 / 403 `FORBIDDEN` | Fix the request or credentials; do not retry unchanged. |
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
@@ -168,10 +170,8 @@ retried until acknowledged or explicitly rejected permanently by the service.
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
 `info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
 A recognized string wins over numeric/status fallback. An **untyped** shared numeric `409000`
-retains the legacy operation-dependent interpretation (`PROCEED` on fetch,
-`ALREADY_REPORTED` on report); without an originating string it cannot reliably distinguish
-account linkage from a rejected report. That compatibility fallback does not prove that the
-reported payload was accepted. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
+is `PROCEED` on a fetch (it must not block provisioning) and `FATAL` on a report: an identical
+report is a 200, so a 409 never means the report was recorded. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
 
 ---
 
@@ -486,8 +486,8 @@ If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 
 When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
-retires it once the channel's verdict is final: accepted, `ALREADY_REPORTED`,
-or refused by the service. A report abandoned for want of a session is kept, so
+retires it once the channel's verdict is final: accepted or refused by the
+service. A report abandoned for want of a session is kept, so
 it is re-sent after the next boot. Retiring a permanently rejected record, including
 `REPORT_CONFLICT`, stops replay; it is not evidence of delivery. A new `workflowId` replaces
 it, unless the last apply returned `REBOOT_REQUIRED` and the client has not been
@@ -876,9 +876,9 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
  * condition is deliberate: a second list in the channel would be free to drift
- * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is
- * UPDATE_ACCOUNT_NOT_LINKED on a fetch, a permanent refusal that otherwise
- * reads exactly like "no update available".
+ * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is an
+ * update account the service cannot use, a refusal that otherwise reads
+ * exactly like "no update available".
  *
  * The event carries the service diagnosis (numeric `errorCode`, the
  * best-effort error TEXT from `message`, and `trackingId`), because the

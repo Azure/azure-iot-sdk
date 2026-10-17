@@ -1003,12 +1003,12 @@ RS256 signature verification) through the crypto backends in `c/adapters/crypto_
 
 ### Device-update error-response catalog
 
-The Software Update service defines 12 named error codes and a body-optional 429. These tests start **after DPS translation**,
+The Software Update service returns 15 named error codes and a body-optional 429. These tests start **after DPS translation**,
 using the SDK's flat MQTT error body and response-topic status. They do not feed
 the nested HTTP `{error:{code,...}}` envelope to a device or verify gateway translation.
 
 [`su_error_cases.h`](../../tests/support/su_error_cases.h) is the executable inventory:
-**223 independently named cases in each of three existing cmocka suites**, not a loop
+**258 independently named cases in each of three existing cmocka suites**, not a loop
 that hides later rows after the first failure. Expectations are explicit contract inputs.
 The common inventory keeps parser, channel and engine rows identical without adding a runner.
 
@@ -1020,15 +1020,18 @@ The common inventory keeps parser, channel and engine rows identical without add
 | `INVALID_REQUEST` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
 | `UNKNOWN_AGENT_INFO_VERSION` | 5 | 5 | — | Drop both cached ETags, resend full agent info, keep caller deadline. |
 | `OUTDATED_AGENT_INFO` | 5 | 5 | — | Same corrective resend, not replay of an unchanged ETag-only request. |
-| `OUTDATED_SERVICE_CONFIG` | 5 | 5 | — | Drop only the cached service-config ETag; retry immediately with the agent-info ETag. |
-| `UPDATE_ACCOUNT_NOT_LINKED` | 5 | 5 | 5 | `PROCEED` compatibility policy; stop retry, expose abandonment, allow provisioning. Not successful no-offer. |
+| `MAX_DEVICE_CLASSES_EXCEEDED` | 5 | 5 | — | Fatal; stop unchanged request and expose abandonment. |
+| `FORBIDDEN` | 5 | 5 | 5 | Fatal; stop unchanged request and expose abandonment. |
+| `UPDATE_ACCOUNT_NOT_LINKED` | 5 | 5 | 5 | `PROCEED`; stop retry, expose abandonment, allow provisioning. Not successful no-offer. |
+| `UPDATE_ACCOUNT_ACCESS_DENIED` | 5 | 5 | 5 | Same as `UPDATE_ACCOUNT_NOT_LINKED`. |
+| `DEVICE_NOT_PROVISIONED` | 5 | — | — | Fatal; stop retry, expose abandonment. Regular fetch only. |
 | `UNKNOWN_WORKFLOW_ID` | — | — | 5 | Fatal; stop reporting this workflow, expose rejection, never claim delivery. |
 | `REPORT_CONFLICT` | — | — | 6 | Fatal when typed; stop conflicting replay, expose rejection; application explicitly re-polls. |
 | `INTERNAL_SERVER_ERROR` | 5 | 5 | 5 | Jittered exponential backoff, then unchanged retry. |
 | `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay; fallback backoff or honor supplied delay. |
 | 429 | 12 | 12 | 12 | Typed and bodyless × supplied, missing, zero, malformed (`3s`), negative, HTTP-date topic values. Valid seconds gate retry; all unusable hints fall back to backoff. |
 | Related numeric/open-code fallback (not additional named codes) | 9 | 9 | 8 | SDK-documented numeric buckets, captured `500001`, unknown string fallback, bodyless 503. |
-| **Total per suite** | **76** | **76** | **71** | **223** |
+| **Total per suite** | **91** | **86** | **81** | **258** |
 
 The five named-code variants are: `info.aduErrorCode` without a numeric code (with
 diagnostic prose); `message` only; `message` with a contradictory numeric bucket;
@@ -1047,9 +1050,8 @@ The fallback rows, on all routes, are numeric `400000`, `409000`, `429000`, capt
 `500001`, `503000`, unknown `FUTURE_CODE` with `400002` or `503000`, and bodyless 503.
 Fetches additionally exercise numeric `400004` corrective resend. Numeric values come
 from the SDK's existing DPS constants/captured fixtures, **not HTTP status multiplication**.
-The untyped shared `409000` retains legacy `PROCEED` (fetch) / `ALREADY_REPORTED`
-(report); absence of a string prevents reliable discrimination. This compatibility
-interpretation is not proof that the conflicting payload was recorded.
+The untyped shared `409000` is `PROCEED` on a fetch and `FATAL` on a report; a 409
+never means the report was recorded.
 
 | Suite | Evidence beyond classification |
 | --- | --- |
