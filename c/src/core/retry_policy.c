@@ -77,7 +77,11 @@ uint32_t az_iot_retry_policy__delay_ms(
      * underflow. Rearranging to (base - span) + r gives the identical
      * distribution over [base-span, base+span] in unsigned arithmetic only. */
     uint64_t span = (base * pct) / 100u;
-    if (span > 0)
+    if (span > 0 && policy->jitter_mode == AZ_IOT_RETRY_JITTER_ADDITIVE)
+    {
+      result = base + xorshift64(rng_state) % (span + 1u);
+    }
+    else if (span > 0)
     {
       uint64_t r = xorshift64(rng_state) % (2u * span + 1u);
       result = (base - span) + r;
@@ -143,16 +147,143 @@ bool az_iot_retry_state__schedule(
   if (!az_iot_retry_policy__next(policy, &state->_internal.attempt, rng_state, &delay_ms))
   {
     state->_internal.due_ms = 0u;
+    state->_internal.due_unix_s = 0u;
+    state->_internal.due_unix_aligned = false;
     return false;
   }
   state->_internal.due_ms = az_iot_time_mono_ms() + (uint64_t)delay_ms;
+  state->_internal.due_unix_s = 0u;
+  state->_internal.due_unix_aligned = false;
   return true;
+}
+
+void az_iot_retry_state__set_unix_deadline(
+    az_iot_retry_state* state,
+    uint64_t unix_now_s,
+    uint64_t mono_at_ms)
+{
+  uint64_t due = state->_internal.due_ms;
+  uint64_t wait_s = ((due > mono_at_ms ? due - mono_at_ms : 0u) + 999u) / 1000u + 1u;
+  bool known = due != 0u && unix_now_s != 0u && unix_now_s <= UINT64_MAX - wait_s;
+  state->_internal.due_unix_s = known ? unix_now_s + wait_s : 0u;
+  state->_internal.due_unix_aligned = known;
+}
+
+bool az_iot_retry_state__schedule_until(
+    az_iot_retry_state* state,
+    const az_iot_retry_policy* policy,
+    uint64_t* rng_state,
+    uint64_t unix_now_s)
+{
+  /* Measured from entry, so a pause before scheduling cannot pull the deadline in. */
+  uint64_t entry_ms = az_iot_time_mono_ms();
+  if (!az_iot_retry_state__schedule(state, policy, rng_state))
+  {
+    return false;
+  }
+  az_iot_retry_state__set_unix_deadline(state, unix_now_s, entry_ms);
+  return true;
+}
+
+uint32_t az_iot_retry_state__remaining_ms(const az_iot_retry_state* state)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t due = state->_internal.due_ms;
+  if (due <= now)
+  {
+    return 0u;
+  }
+  return (due - now > (uint64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)(due - now);
+}
+
+static void wr_u32le(uint8_t* p, uint32_t v)
+{
+  p[0] = (uint8_t)(v & 0xFFu);
+  p[1] = (uint8_t)((v >> 8) & 0xFFu);
+  p[2] = (uint8_t)((v >> 16) & 0xFFu);
+  p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static uint32_t rd_u32le(const uint8_t* p)
+{
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+void az_iot_retry_state__save(const az_iot_retry_state* state, uint8_t* out)
+{
+  uint64_t left_s = ((uint64_t)az_iot_retry_state__remaining_ms(state) + 999u) / 1000u;
+  /* Nothing scheduled: no deadline, so a restore waits for nothing. */
+  uint64_t due_unix = (state->_internal.due_ms == 0u) ? 0u : state->_internal.due_unix_s;
+  wr_u32le(out, state->_internal.attempt);
+  wr_u32le(out + 4u, (uint32_t)left_s);
+  wr_u32le(out + 8u, (uint32_t)(due_unix & 0xFFFFFFFFu));
+  wr_u32le(out + 12u, (uint32_t)(due_unix >> 32));
+}
+
+void az_iot_retry_state__restore(
+    az_iot_retry_state* state,
+    const uint8_t* in,
+    uint64_t unix_now_s,
+    uint32_t max_wait_ms)
+{
+  az_iot_retry_state__restore_at(state, in, unix_now_s, max_wait_ms, az_iot_time_mono_ms());
+}
+
+void az_iot_retry_state__restore_at(
+    az_iot_retry_state* state,
+    const uint8_t* in,
+    uint64_t unix_now_s,
+    uint32_t max_wait_ms,
+    uint64_t mono_at_ms)
+{
+  uint64_t wait_ms = (uint64_t)rd_u32le(in + 4u) * 1000u;
+  uint64_t due_unix = (uint64_t)rd_u32le(in + 8u) | ((uint64_t)rd_u32le(in + 12u) << 32);
+  bool keep_deadline = due_unix != 0u;
+  if (due_unix != 0u && unix_now_s != 0u)
+  {
+    uint64_t left_s = (due_unix > unix_now_s) ? due_unix - unix_now_s : 0u;
+    wait_ms = (left_s > UINT64_MAX / 1000u) ? UINT64_MAX : left_s * 1000u;
+  }
+  if (wait_ms > max_wait_ms)
+  {
+    wait_ms = max_wait_ms;
+    keep_deadline = keep_deadline && unix_now_s == 0u;
+  }
+  state->_internal.attempt = rd_u32le(in);
+  state->_internal.due_ms = (wait_ms == 0u) ? 0u : mono_at_ms + wait_ms;
+  /* A kept deadline never matches due_ms exactly: the Unix time has no
+   * fraction, and an unknown time restarts the whole saved wait. */
+  az_iot_retry_state__set_unix_deadline(state, unix_now_s, mono_at_ms);
+  if (keep_deadline
+      || (due_unix != 0u && state->_internal.due_unix_s != 0u
+          && due_unix < state->_internal.due_unix_s))
+  {
+    /* The earlier one, so a capped deadline cannot creep later on each restart. */
+    state->_internal.due_unix_s = due_unix;
+    state->_internal.due_unix_aligned = false;
+  }
 }
 
 void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms)
 {
+  /* An unaligned Unix deadline cannot honour any floor; drop it even when
+   * due_ms already satisfies this one. */
+  if (!state->_internal.due_unix_aligned)
+  {
+    state->_internal.due_unix_s = 0u;
+  }
   if (state->_internal.due_ms < not_before_ms)
   {
+    /* An aligned Unix deadline moves by whole seconds only: rounding each
+     * fractional deferral up would compound. Otherwise it is dropped, and a
+     * restore falls back to the saved wait. */
+    uint64_t later_ms
+        = (state->_internal.due_ms == 0u) ? 0u : not_before_ms - state->_internal.due_ms;
+    uint64_t later_s = (later_ms % 1000u == 0u) ? later_ms / 1000u : 0u;
+    bool keep = later_s != 0u && state->_internal.due_unix_aligned
+        && state->_internal.due_unix_s != 0u && state->_internal.due_unix_s <= UINT64_MAX - later_s;
+    state->_internal.due_unix_s = keep ? state->_internal.due_unix_s + later_s : 0u;
+    state->_internal.due_unix_aligned = keep;
     state->_internal.due_ms = not_before_ms;
   }
 }
@@ -164,6 +295,8 @@ bool az_iot_retry_state__due(az_iot_retry_state* state)
     return false;
   }
   state->_internal.due_ms = 0u;
+  state->_internal.due_unix_s = 0u;
+  state->_internal.due_unix_aligned = false;
   return true;
 }
 
@@ -181,6 +314,8 @@ void az_iot_retry_state__reset(az_iot_retry_state* state)
 {
   state->_internal.attempt = 0u;
   state->_internal.due_ms = 0u;
+  state->_internal.due_unix_s = 0u;
+  state->_internal.due_unix_aligned = false;
 }
 
 az_iot_retry_policy az_iot_connection_client_get_default_retry_policy(void)
