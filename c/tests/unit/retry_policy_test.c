@@ -1039,6 +1039,33 @@ static void fractional_deferrals_do_not_inflate_the_deadline(void** state)
   assert_int_equal(w._internal.due_unix_s, 1800000000u + 61u + 2u);
 }
 
+/* A defer() whose floor does not extend due_ms still drops an unaligned Unix
+ * deadline, so a later restore cannot schedule before that floor. */
+static void a_non_extending_defer_drops_an_unaligned_deadline(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 60000, .max_delay_ms = 60000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  az_iot_retry_state__set_unix_deadline(&s, 1800000000u, s._internal.due_ms - 60000u);
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 1800000000u + 30u, 86400000u);
+  assert_false(r._internal.due_unix_aligned);
+  assert_int_not_equal(r._internal.due_unix_s, 0u);
+  az_iot_retry_state__defer(&r, r._internal.due_ms - 500u);
+  assert_int_equal(r._internal.due_unix_s, 0u);
+
+  /* The restore now uses the saved wait, not the dropped deadline. */
+  uint32_t before = az_iot_retry_state__remaining_ms(&r);
+  az_iot_retry_state__save(&r, rec);
+  az_iot_retry_state__restore(&r, rec, 1800000000u + 31u, 86400000u);
+  assert_true(az_iot_retry_state__remaining_ms(&r) + 1000u >= before);
+}
+
 static void the_monotonic_clock_never_goes_backwards(void** state)
 {
   (void)state;
@@ -1087,6 +1114,7 @@ int main(void)
     cmocka_unit_test(a_capped_deadline_does_not_creep_across_restarts),
     cmocka_unit_test(a_pause_before_restoring_does_not_shorten_the_wait),
     cmocka_unit_test(fractional_deferrals_do_not_inflate_the_deadline),
+    cmocka_unit_test(a_non_extending_defer_drops_an_unaligned_deadline),
     cmocka_unit_test(jitter_is_deterministic_for_a_seed),
     cmocka_unit_test(a_zero_rng_state_still_jitters),
     cmocka_unit_test(is_enabled_depends_only_on_the_initial_delay),
