@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
-        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
@@ -57,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
             }
 
             MqttClientOptionsBuilder optionsBuilder;

@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     {
         public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync = null!;
         public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync = null!;
-        public event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync = null!;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>> ConnectingAsync = null!;
         public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync = null!;
 
         private int _connectAttemptCount;
@@ -47,7 +47,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect);
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
             }
 
             Interlocked.Increment(ref _connectAttemptCount);

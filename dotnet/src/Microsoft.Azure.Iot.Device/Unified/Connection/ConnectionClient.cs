@@ -15,6 +15,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -53,15 +54,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
-        public override MqttConnect MqttConnectOverride(MqttConnect connect)
+        internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
-            //Defer to gen 2 client
             Debug.Assert(CurrentConnectionContext != null);
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
-            connect.Password = Array.Empty<byte>();
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
             return connect;
@@ -171,16 +170,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     else if (status.Equals("200"))
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                        if (HandleCertificateSigningCompleteAsync != null)
+                        // The authentication provider receives these on the next connection attempt to IoT hub.
+                        if (CurrentConnectionContext != null)
                         {
-                            //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
-                            Debug.Assert(CurrentConnectionContext != null);
-                            CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
                         }
-                        else
-                        {
-                            Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
-                        }
+
                         pendingCertificateSigningOperation.SetCompleted(response);
                         return;
                     }

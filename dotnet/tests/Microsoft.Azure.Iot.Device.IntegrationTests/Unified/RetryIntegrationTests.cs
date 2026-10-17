@@ -194,6 +194,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // attempts can finally succeed. Reusing the cached enrollment restores the exact same registration and
             // device certificate the device was provisioned with. Its ETag is cleared first because the enrollment was
             // deleted above, so the recreation must be unconditional rather than matching the now-gone resource.
+            Assert.NotNull(device.IndividualEnrollment);
             device.IndividualEnrollment.ETag = null;
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(device.IndividualEnrollment, cancellationToken);
 
