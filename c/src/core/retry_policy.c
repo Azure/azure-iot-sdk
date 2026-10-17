@@ -266,6 +266,12 @@ void az_iot_retry_state__restore_at(
 
 void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms)
 {
+  /* An unaligned Unix deadline cannot honour any floor; drop it even when
+   * due_ms already satisfies this one. */
+  if (!state->_internal.due_unix_aligned)
+  {
+    state->_internal.due_unix_s = 0u;
+  }
   if (state->_internal.due_ms < not_before_ms)
   {
     /* An aligned Unix deadline moves by whole seconds only: rounding each
