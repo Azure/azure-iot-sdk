@@ -306,7 +306,9 @@ internal class Program
 
     private static string CreateCertificateSigningRequest(string commonName, ECDsa privateKey)
     {
-        CertificateRequest request = new($"CN={commonName}", privateKey, HashAlgorithmName.SHA256);
+        X500DistinguishedNameBuilder subject = new();
+        subject.AddCommonName(commonName);
+        CertificateRequest request = new(subject.Build(), privateKey, HashAlgorithmName.SHA256);
 
         // DPS and IoT Hub take the DER-encoded PKCS#10 request, Base64-encoded without PEM headers
         return Convert.ToBase64String(request.CreateSigningRequest());
