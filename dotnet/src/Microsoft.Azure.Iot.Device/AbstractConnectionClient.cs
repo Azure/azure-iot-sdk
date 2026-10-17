@@ -314,22 +314,6 @@ namespace Microsoft.Azure.Iot.Device
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
 
-        public async Task<MqttPublishAck> PublishAsync(Func<ConnectionContext, MqttPublish> publishFactory, CancellationToken cancellationToken = default)
-        {
-            Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
-            {
-                ConnectionContext? context = CurrentConnectionContext;
-                if (context == null)
-                {
-                    throw new MqttClientNotConnectedException("Cannot publish before the IoT Hub connection context is available.");
-                }
-
-                return await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, publishFactory(context), cancellationToken);
-            };
-
-            return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
-        }
-
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>

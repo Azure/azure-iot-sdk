@@ -55,54 +55,51 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
+            string deviceId = currentConnectionContext.DeviceId;
+
             if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
             {
                 throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
             }
 
-            string topicProperties = string.Empty;
+            //TODO fill in content type, encoding, etc from message user properties
+            var mqttMessage = new MqttPublish
+            {
+                Topic = string.Format(ClassicTelemetryTopicFormat, deviceId),
+                PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            };
+
             // When publishing to MQTTv3 Hub, the topic string includes all the system properties (correlation id, message id, etc.)
             // and all the custom user properties. The values of all these properties must be URL encoded. The user property keys should
             // also be URL encoded, but the system properties' keys should not be URL encoded.
             if (message.MessageId != null)
             {
-                topicProperties += $"&{MessagePropertyMessageId}={Uri.EscapeDataString(message.MessageId)}";
+                mqttMessage.Topic += $"&{MessagePropertyMessageId}={Uri.EscapeDataString(message.MessageId)}";
             }
 
             if (message.CorrelationId != null)
             {
-                topicProperties += $"&{MessagePropertyCorrelationId}={Uri.EscapeDataString(message.CorrelationId)}";
+                mqttMessage.Topic += $"&{MessagePropertyCorrelationId}={Uri.EscapeDataString(message.CorrelationId)}";
             }
 
             if (message.ContentType != null)
             {
-                topicProperties += $"&{MessagePropertyContentType}={Uri.EscapeDataString(message.ContentType)}";
+                mqttMessage.Topic += $"&{MessagePropertyContentType}={Uri.EscapeDataString(message.ContentType)}";
             }
 
             if (message.ContentEncoding != null)
             {
-                topicProperties += $"&{MessagePropertyContentEncoding}={Uri.EscapeDataString(message.ContentEncoding)}";
+                mqttMessage.Topic += $"&{MessagePropertyContentEncoding}={Uri.EscapeDataString(message.ContentEncoding)}";
             }
 
             foreach (var customUserPropertyKey in message.UserProperties.Keys)
             {
-                topicProperties += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
+                mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
             }
 
-            //TODO fill in content type, encoding, etc from message user properties
-            var mqttMessage = new MqttPublish
-            {
-                Topic = string.Format(ClassicTelemetryTopicFormat, currentConnectionContext.DeviceId) + topicProperties,
-                PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-            };
-
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await _connection.PublishAsync(connectionContext =>
-            {
-                mqttMessage.Topic = string.Format(ClassicTelemetryTopicFormat, connectionContext.DeviceId) + topicProperties;
-                return mqttMessage;
-            }, cancellationToken);
+            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
         }
 
         /// <summary>

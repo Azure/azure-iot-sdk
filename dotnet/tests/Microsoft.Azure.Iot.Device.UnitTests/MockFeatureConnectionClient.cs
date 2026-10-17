@@ -36,8 +36,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Optional override for how the "service" answers a publish. Defaults to a successful PUBACK.</summary>
         public Func<MqttPublish, Task<MqttPublishAck>>? OnPublish { get; set; }
 
-        public Func<Func<ConnectionContext, MqttPublish>, CancellationToken, Task<MqttPublishAck>>? OnPublishWithContext { get; set; }
-
         public bool IsDisposed { get; private set; }
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
@@ -52,22 +50,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
 
             return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-        }
-
-        public async Task<MqttPublishAck> PublishAsync(Func<ConnectionContext, MqttPublish> publishFactory, CancellationToken cancellationToken = default)
-        {
-            if (OnPublishWithContext != null)
-            {
-                return await OnPublishWithContext(publishFactory, cancellationToken);
-            }
-
-            ConnectionContext? context = CurrentConnectionContext;
-            if (context == null)
-            {
-                throw new NotSupportedException("Must be connected before calling this method.");
-            }
-
-            return await PublishAsync(publishFactory(context), cancellationToken);
         }
 
         public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
