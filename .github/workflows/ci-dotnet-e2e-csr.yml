@@ -61,7 +61,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@9109e1ce6d9d19bbc750f4715b85db1f5167190e # v1.0.1 + dps-symmkey-group-enrollment-devices
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -74,6 +74,7 @@ jobs:
           enable-certificate-management: 'true'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
+          dps-symmkey-group-enrollment-devices: '1'
 
       - name: Upload test config
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -145,6 +146,11 @@ jobs:
           }
           Write-Host "CSR bootstrap device: $groupRegId"
 
+          if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
+            throw "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY not found in the test config; the certificate-management suite needs a symmetric-key enrollment group."
+          }
+          Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
+
           # Materialize the device X.509 material to files. The in-process test
           # reads cert/key/CA by PATH, so CI decodes the base64 PEMs and builds a
           # CA trust bundle here (no network download).
@@ -182,10 +188,10 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          # Only the certificate management integration tests run in this
-          # pipeline; all other tests run in the ci-dotnet pipeline.
+          # Only tests labeled Category=CertificateManagement run here;
+          # all other tests run in ci-dotnet.
           dotnet test ./dotnet/Project.slnx `
-            --filter "FullyQualifiedName~CertificateManagementIntegrationTests" `
+            --filter "Category=CertificateManagement" `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
@@ -194,6 +200,7 @@ jobs:
             --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
             --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
             --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
+            --environment IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY=$env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 

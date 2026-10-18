@@ -23,6 +23,13 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
         PRIVATE az_iot_mqttv3 az_iot_adapter_paho az_iot_certificate_provider_managed)
     az_iot_apply_warnings(az_iot_sample_auth_dps_csr_managed)
 
+    add_executable(az_iot_sample_auth_dps_persist_assignment
+        dps_persist_assignment/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_dps_persist_assignment PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_dps_persist_assignment
+        PRIVATE az_iot_core az_iot_adapter_paho az_iot_certificate_provider_managed)
+    az_iot_apply_warnings(az_iot_sample_auth_dps_persist_assignment)
+
     add_executable(az_iot_sample_auth_hub_renew
         hub_renew/main.c ${_auth_common}/sample_utils.c)
     target_include_directories(az_iot_sample_auth_hub_renew PRIVATE ${_auth_common})
@@ -32,20 +39,14 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
 endif()
 
 # The complete app-owned custom provider: real PKCS#10 CSR issuance from
-# samples/common using platform-native crypto - CNG on Windows, OpenSSL
-# elsewhere. Needs the Paho adapter; on non-Windows it needs OpenSSL 3.0+.
+# samples/common. Needs the Paho adapter and OpenSSL 3.0+ on every platform.
 if(AZ_IOT_WITH_PAHO)
     set(_csr_backend_src "")
     set(_csr_backend_libs "")
-    if(WIN32)
-        set(_csr_backend_src ${_auth_common}/sample_csr_cng.c)
-        set(_csr_backend_libs crypt32 ncrypt)
-    else()
-        find_package(OpenSSL 3.0 QUIET)
-        if(OPENSSL_FOUND)
-            set(_csr_backend_src ${_auth_common}/sample_csr_openssl.c)
-            set(_csr_backend_libs OpenSSL::Crypto)
-        endif()
+    find_package(OpenSSL 3.0 QUIET)
+    if(OPENSSL_FOUND)
+        set(_csr_backend_src ${_auth_common}/sample_csr_openssl.c)
+        set(_csr_backend_libs OpenSSL::Crypto)
     endif()
 
     if(_csr_backend_src)
@@ -115,4 +116,23 @@ if(AZ_IOT_WITH_PAHO AND TARGET OpenSSL::Crypto)
     target_link_libraries(az_iot_sample_auth_user_provided_sas_token
         PRIVATE az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho OpenSSL::Crypto)
     az_iot_apply_warnings(az_iot_sample_auth_user_provided_sas_token)
+endif()
+
+# DPS TPM attestation over HTTPS (libcurl), then the hub over the Paho adapter
+# with SAS tokens signed by a TPM simulated in software (OpenSSL).
+if(AZ_IOT_WITH_PAHO AND TARGET az_iot_crypto_openssl)
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        add_executable(az_iot_sample_auth_dps_tpm
+            dps_tpm/main.c
+            ${_auth_common}/sample_tpm_sim.c
+            ${_auth_common}/sample_dps_tpm.c
+            ${_auth_common}/sample_utils.c)
+        target_include_directories(az_iot_sample_auth_dps_tpm PRIVATE ${_auth_common})
+        target_link_libraries(az_iot_sample_auth_dps_tpm PRIVATE
+            az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl OpenSSL::Crypto CURL::libcurl)
+        az_iot_apply_warnings(az_iot_sample_auth_dps_tpm)
+    else()
+        message(STATUS "az_iot_sample_auth_dps_tpm: libcurl not found; not built.")
+    endif()
 endif()

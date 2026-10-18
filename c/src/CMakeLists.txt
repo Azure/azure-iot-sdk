@@ -16,9 +16,12 @@ add_library(az_iot_core
     core/proto3.c
     core/span_writer.c
     core/json_string.c
+    core/base64.c
     core/message.c
     core/certificate_provider_pem.c
     core/crypto.c
+    core/sas_token.c
+    core/dps_tpm_client.c
     features/su/su_client.c
     features/su/su_device_properties.c
     features/su/su_root_keys_microsoft.c
@@ -79,6 +82,7 @@ add_library(az_iot_mqttv5
     mqttv5/direct_method_client.c
     mqttv5/direct_method_codec.c
     mqttv5/twin_client.c
+    mqttv5/custom_topic_client.c
 )
 add_library(azure::iot::mqttv5 ALIAS az_iot_mqttv5)
 # mqttv5's own internal headers live under mqttv5/internal/; core's are reached

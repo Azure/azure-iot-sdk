@@ -102,7 +102,10 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
   opaque capability id; `compatibilityProperties` is 1–5 key/value pairs. The service combines
   them into the device class. Required unless a still-current `agentInfoEtag` is sent; onboarding
   always requires it.
-- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`.
+- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`/absent
+  when nothing is installed. Sent on both routes: an unprovisioned device may already hold an
+  update (applied before registration completed, or preinstalled), and the service uses it to
+  withhold an offer for what is installed. The SDK omits the key when nothing is installed.
 - `agentInfoEtag`, `serviceConfigEtag`: optional; let the service skip unchanged data.
 
 ### Response
@@ -125,7 +128,10 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
   terminal reports when the manifest has steps.
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
-rejected with `409 REPORT_CONFLICT`.
+rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
+An explicit conflict stops replay and raises `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the
+service diagnosis. The application requests current state with `az_iot_su_client_request_update()`;
+the SDK does not add an automatic recovery poll or change the application's polling cadence.
 
 ### Trust
 
@@ -145,17 +151,27 @@ carries no code (empty or unparseable) is classified by its status alone -- 429 
 | Case | Code / status | Device action |
 | --- | --- | --- |
 | No update | 200, `updateMetadata` omitted | Nothing to apply. Not an error. |
-| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured". Do not retry. |
+| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
+| Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The application re-polls for current state. |
+| Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
 | Service configuration stale | 400 `OUTDATED_SERVICE_CONFIG` | Retry without `serviceConfigEtag`. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
-| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
 | Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
 any accepted operation; it counts against the request timeout. Reports are durable writes,
-retried until acknowledged.
+retried until acknowledged or explicitly rejected permanently by the service.
+
+At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
+`info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
+A recognized string wins over numeric/status fallback. An **untyped** shared numeric `409000`
+retains the legacy operation-dependent interpretation (`PROCEED` on fetch,
+`ALREADY_REPORTED` on report); without an originating string it cannot reliably distinguish
+account linkage from a rejected report. That compatibility fallback does not prove that the
+reported payload was accepted. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
 
 ---
 
@@ -213,8 +229,8 @@ stateDiagram-v2
     RestoreStarted --> Idle : restore complete (reports failure)
     Failed --> Idle : error reported to cloud
 
-    DownloadStarted --> ManifestReceived : new workflowId (replacement)
-    InstallStarted --> ManifestReceived : new workflowId (replacement)
+    DownloadStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
+    InstallStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
 ```
 
 ### Already-Installed Check
@@ -264,8 +280,8 @@ security.
 ### Device Properties on the Wire
 
 Device properties reach the service on **every update check**: manufacturer, model and custom
-properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on the regular route
-(the onboarding route omits it). There is no unsolicited report: status reports are keyed on
+properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on both routes when
+set (omitted when nothing is installed). There is no unsolicited report: status reports are keyed on
 `workflowId`, so a device with no workflow has nothing to report.
 
 #### Device-Properties Model
@@ -301,9 +317,20 @@ superseded. The client MUST distinguish:
 
 | Condition | Meaning | Behavior |
 |-----------|---------|----------|
-| New `workflowId` | **Replacement** | MUST restart from ManifestReceived with the new deployment |
-| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
+| New `workflowId`, before the first `install_fn` call, or once the workflow ended (Idle / Failed) | **Replacement** | MUST restart from ManifestReceived with the new deployment |
+| New `workflowId`, from the first `install_fn` call until the workflow ends, or after a last apply that returned `REBOOT_REQUIRED` until re-initialization (the reboot) | **Deferred** | MUST NOT process; the current workflow runs to its end; raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`) on each delivery. The application requests an update again later |
+| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore; raises `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` on each delivery |
 | `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
+| Payload that cannot be decoded (not JSON, required field missing or mistyped, invalid escape) | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_PROTOCOL`) |
+
+A deployment is validated as a whole, so from its first `install_fn` call it is
+not interleaved with another: a partly applied or not yet activated deployment
+is neither dropped (no `restore_fn`, no report) nor mixed with a newer one.
+`az_iot_su_client_config_options::replacement_policy` selects this:
+`AZ_IOT_SU_REPLACEMENT_DEFER` (default) as above. `AZ_IOT_SU_REPLACEMENT_ROLLBACK`
+(roll back with `restore_fn`, report FAILED with facility `0x9`, then start the
+new workflow) is declared but not yet supported: `az_iot_su_client_init()`
+returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ### Result-Code Mapping
 
@@ -341,12 +368,32 @@ defines a structured layout:
 | `0x6` | Apply | `apply_fn` failed |
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
 | `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
+| `0x9` | Superseded | reserved for `AZ_IOT_SU_REPLACEMENT_ROLLBACK` (not yet supported) |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK
 sub-code for internal failures) so a device-side failure can be diagnosed from
 the cloud without on-device logs. When a failure has no meaningful sub-code, the
 low bits MUST be `0`.
+
+Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification failed:
+
+| Sub-code | Name | Cause |
+|---|---|---|
+| `0x1` | `CRYPTO` | backend fault: no `verify_rs256`, SHA-256 failed, or `verify_rs256` failed with other than `AZ_IOT_ERR_AUTH`/`AZ_IOT_ERR_INVALID_ARG` |
+| `0x2` | `MALFORMED` | signature, `sjwk` or signing key missing, not a 3-part token, or not valid base64/JSON |
+| `0x3` | `TOO_LARGE` | a decoded part exceeds the scratch or its field limit |
+| `0x4` | `ALG` | `alg` ≠ `RS256` |
+| `0x5` | `UNKNOWN_KID` | `kid` matches no enabled root key |
+| `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
+| `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
+| `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
+
+Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
+`extended_result_code` (the first failed step's code, else the overall one) and
+`reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
+`AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
+otherwise.
 
 **`result_details`.** OPTIONAL free-form string. When set, it MUST be a copy into
 a client-owned buffer (no pointer into hook-owned memory), consistent with the
@@ -424,8 +471,9 @@ rules are in §2.
 
 ### Cancellation
 
-Software updates carries no cancel action. A new `workflowId` replaces the in-progress workflow: the
-engine restarts at ManifestReceived when it is delivered. `az_iot_su_is_cancelled()` remains
+Software updates carries no cancel action. A new `workflowId` replaces the in-progress workflow
+only before its first `install_fn` call; later it is deferred (see Duplicate vs. Replacement
+Detection). `az_iot_su_is_cancelled()` remains
 for hooks to poll; no software updates input sets it.
 
 ### Reboot coordination
@@ -433,14 +481,17 @@ for hooks to poll; no software updates input sets it.
 If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 
 1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_state_fn`: after `install_fn`, the step's Apply; after `apply_fn`, the next step's start (after the last step, the terminal record below).
-2. The application MUST reboot the device after the client persists state.
+2. The application MUST reboot the device after the client persists state. Until it does, a new `workflowId` is deferred.
 3. On startup, the application MUST call `az_iot_su_client_resume()`, which reads persisted state and continues the workflow from the appropriate phase.
 
 When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
 retires it once the channel's verdict is final: accepted, `ALREADY_REPORTED`,
 or refused by the service. A report abandoned for want of a session is kept, so
-it is re-sent after the next boot. A new `workflowId` replaces it.
+it is re-sent after the next boot. Retiring a permanently rejected record, including
+`REPORT_CONFLICT`, stops replay; it is not evidence of delivery. A new `workflowId` replaces
+it, unless the last apply returned `REBOOT_REQUIRED` and the client has not been
+re-initialized since: then the new workflow is deferred.
 
 ### Persistence & Resume Blob Format
 
@@ -479,10 +530,9 @@ The byte layout is documented next to the serializer in
    `do_work()`. Otherwise core rehydrates `current_request`, `current_step`,
    `current_file`, the overall and per-step results and channel state.
 3. **Replacement check** — when the next offer arrives, core compares its
-   `workflowId` against the persisted one. A different id means the persisted
-   workflow was superseded while the device was down: core MUST discard the
-   resumed state and process the new deployment. The same id is a duplicate and
-   is ignored.
+   `workflowId` against the persisted one. The same id is a duplicate and is
+   ignored. A different id is deferred while the resumed workflow runs (it
+   resumes past `install_fn`) and replaces a restored terminal record.
 4. **Re-entry point** — `resume()` MUST re-enter at a *phase boundary*, never
    mid-hook (hooks are not assumed re-entrant across reboot):
    - persisted `state` ∈ {`INSTALL_*`} ⇒ re-enter at the start of **Apply** for
@@ -521,8 +571,8 @@ The byte layout is documented next to the serializer in
    - a held new workflow proceeds.
 
    A write needed later is still attempted once; a tracked success resets the count.
-   While a workflow is held at a reboot boundary, a new `workflowId` is ignored
-   (the service offers it again on a later check) and a cancel waits. A cancel
+   While a workflow is held at a reboot boundary, a new `workflowId` is deferred
+   and a cancel waits. A cancel
    that reaches an installed step not yet applied (`INSTALL_COMPLETE` /
    `APPLY_STARTED`) rolls it back first, reported like the give-up above when
    there is no `restore_fn`; completed steps are kept.
@@ -779,6 +829,9 @@ typedef struct az_iot_su_client
  *   device_properties_buffer / size: caller-owned cache the client copies into.
  *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
  *     with az_iot_su_device_properties_buffer_size().
+ *   replacement_policy: what a new workflow id does to a workflow that may not
+ *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
+ *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
  */
 typedef struct az_iot_su_client_config_options
 {
@@ -788,6 +841,7 @@ typedef struct az_iot_su_client_config_options
     const az_iot_su_device_properties* device_properties;
     uint8_t*                            device_properties_buffer;
     size_t                              device_properties_buffer_size;
+    az_iot_su_replacement_policy        replacement_policy;
 } az_iot_su_client_config_options;
 
 az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
@@ -797,7 +851,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  * SDK. Every observer receives every event; read `kind` first.
  *
  *   WORKFLOW_STATE_CHANGED -- the deployment moved. Otherwise observable only
- *     by polling az_iot_su_client_get_state().
+ *     by polling az_iot_su_client_get_state(). Entering FAILED carries why
+ *     (`reason`, `extended_result_code`).
  *   OPERATION_ABANDONED    -- an operation reached a verdict that stops the
  *     CLIENT re-arming it. It does NOT mean the application may not ask again;
  *     that is the intended response, which is why the event carries the route:
@@ -807,7 +862,16 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
  *   UPDATE_REFUSED         -- a delivered update was not processed because it
- *     does not fit a compile-time limit (workflow id or request buffer).
+ *     does not fit a compile-time limit (workflow id or request buffer) or
+ *     cannot be decoded.
+ *   UPDATE_DEFERRED        -- a delivered update with a new workflow id was not
+ *     started: the current workflow has changed the device, or a reboot its
+ *     last apply asked for is owed.
+ *   NO_UPDATE              -- an update check was answered with no update.
+ *   UPDATE_DUPLICATE       -- a delivered update repeats the current workflow
+ *     id and was ignored.
+ *   REPORT_ACCEPTED        -- the service accepted a status report;
+ *     `report_terminal` marks the workflow's final one.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
@@ -840,7 +904,9 @@ az_iot_result az_iot_su_client_remove_observer(
  * Initialize the software updates client. `connection` is the connection client whose DPS
  * session carries the software updates channel; `options` carries the rest (hooks,
  * crypto, trust store, device properties + caller cache). Returns
- * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
+ * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
+ * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
+ * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
  * the buffer is too small for device_properties.
  */
@@ -884,7 +950,7 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
- * device record and omits installedUpdateId.
+ * device record. Sends installedUpdateId when set, like the regular route.
  *
  * The application chooses the route: it is the only party that knows whether
  * it has a device record, because it persists its provisioning result across
@@ -1124,7 +1190,7 @@ updates core owns all orchestration**:
 
 | Responsibility | Owner |
 |----------------|-------|
-| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links) |
+| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links; base64 through `az_iot_base64_decode()`) |
 | SJWK extraction, JWK `n`/`e` parsing | **core** |
 | Root-key store, `kid` resolution | **core** (see §7) |
 | Revocation enforcement (disabled kids) | **core** |
@@ -1241,7 +1307,7 @@ capacity is compile-time configurable:
 
 ```c
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 4
+#define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 ```
 
@@ -1463,6 +1529,7 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
 | `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
+| `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)

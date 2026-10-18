@@ -9,8 +9,9 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 | Scenario | Sample | Provider |
 | --- | --- | --- |
-| X.509 certificate and key from files | every [`unified/`](../unified/) and [`mqttv5/`](../mqttv5/) sample | `az_iot_certificate_provider_pem` |
+| X.509 certificate and key from files (development) | every [`unified/`](../unified/) and [`mqttv5/`](../mqttv5/) sample | `az_iot_certificate_provider_pem` |
 | DPS issues an operational certificate from a CSR | [`dps_csr_managed`](dps_csr_managed/README.md) | managed (OpenSSL) |
+| Same, saving the assignment to skip DPS on restart | [`dps_persist_assignment`](dps_persist_assignment/README.md) | managed (OpenSSL) |
 | Same, with the CSR built by application code | [`custom_certificate_provider`](custom_certificate_provider/README.md) | `sample_cert_provider` (in `samples/common`) |
 | Renew the operational certificate over an mqttv3 hub | [`hub_renew`](hub_renew/README.md) | managed (OpenSSL) |
 | Key in a PKCS#11 token or TPM, named by a URI | [`hsm_pkcs11`](hsm_pkcs11/README.md) | your own; returns a key reference |
@@ -19,10 +20,11 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 | SAS keys to DPS and to the hub | [`dps_sas_key`](dps_sas_key/README.md) | none |
 | SAS key to DPS, DPS-issued certificate to the hub | [`dps_sas_key_issued_cert`](dps_sas_key_issued_cert/README.md) | managed (OpenSSL), no bootstrap certificate |
 | SAS tokens from the application, e.g. a TPM, HSM or token service | [`user_provided_sas_token`](user_provided_sas_token/README.md) | none |
+| DPS TPM attestation over HTTPS, then hub SAS tokens signed by the TPM (simulated) | [`dps_tpm`](dps_tpm/README.md) | none |
 
 ## Choosing how each role authenticates
 
-Further provider certificates are proposed and not implemented yet; see
+A provider may offer several certificates per role (`load()` index 0, 1, ...); see
 [connecting.md](../../docs/connecting.md#authentication).
 
 Each role (DPS, hub) uses whichever of these sources are configured, tried in this order:
@@ -47,9 +49,12 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | X.509 | X.509 | Supported | `unified/`, `mqttv5/` samples |
 | X.509 | SAS | Not provisioned by DPS | Expressible; no sample |
 | SAS | SAS, mqttv5 | Not supported by the service yet | Designed for; the token request carries the hub generation. Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED` |
-| TPM attestation | any | Not available over MQTT | Out of scope. A TPM can hold the X.509 key (`hsm_pkcs11`) or sign SAS tokens (`user_provided_sas_token`) |
+| TPM attestation | SAS signed by the TPM, mqttv3 | Supported over HTTPS and AMQP, not MQTT; the sample uses HTTPS | `dps_tpm` |
 
 ## Which non-extractable key route applies
+
+In production, keep device private keys in hardware rather than in files; see
+[Production keys](../../docs/connecting.md#production-keys).
 
 - **The key can be named** (a PKCS#11 URI, a TPM 2.0 object) and an OpenSSL 3.x provider for it is
   installed: return `client_key_uri` + `crypto_engine_id`, as in `hsm_pkcs11`. The Paho adapter
@@ -65,8 +70,8 @@ The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON` (the 
 
 | Sample | Built when |
 | --- | --- |
-| `dps_csr_managed`, `hub_renew` | OpenSSL 3.0+ and the Paho adapter (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`) |
-| `custom_certificate_provider` | The Paho adapter, and OpenSSL 3.0+ outside Windows |
+| `dps_csr_managed`, `dps_persist_assignment`, `hub_renew` | OpenSSL 3.0+ and the Paho adapter (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`) |
+| `custom_certificate_provider` | OpenSSL 3.0+ and the Paho adapter |
 | `hsm_pkcs11` | The Paho adapter |
 | `custom_provider_template`, `hsm_sign_callback` | Always |
 | `dps_sas_key` | The Paho adapter and the OpenSSL crypto backend (`AZ_IOT_WITH_CRYPTO_OPENSSL`) |

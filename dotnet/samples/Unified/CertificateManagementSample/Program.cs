@@ -1,7 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -18,26 +18,13 @@ internal class Program
         string deviceId = SampleConstants.LoadDeviceId();
         string registrationId = deviceId;
         string idScope = SampleConstants.LoadIdScope();
-        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
-
         // Create initial certificate signing request for DPS to fulfill while provisioning
         var (csrBase64, privateKey) = GenerateCsrAndPrivateKey(registrationId, CsrAlgorithm.RSA);
 
-        using ConnectionClient connectionClient = new()
-        {
-            // Setup callback to handle constructing X509AuthenticationProvider each time a CSR completes
-            HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
-            {
-                // Convert to PEM and save
-                string pemChain = ConvertToPem(IssuedCertificates);
+        // Pair any certificate issued for this CSR (by DPS or IoT hub) with its private key when connecting to IoT hub
+        X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider(privateKey);
 
-                using X509Certificate2 deviceCertTemp = CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
-
-                // Export and reimport with Exportable flag
-                byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-                return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
-            }
-        };
+        using ConnectionClient connectionClient = new();
 
         // Provision and connect to IoT hub using the certificates signed by DPS. Save those certificates signed by DPS locally
         ProvisioningSettings provisioningSettings = new(idScope)
@@ -63,8 +50,8 @@ internal class Program
             Console.WriteLine($"Certificate signing request failed: {ex.Error.Message}");
         }
 
-        // At this point, the certificate signing request has completed and the connection client has already swapped the underlying authentication provider to use
-        // the newly signed certificates. The next time that the connection client needs to reconnect to IoT hub, it will use these new certificates. No further action
-        // is needed from the application layer for this to take effect.
+        // At this point, the certificate signing request has completed and the connection client has recorded the newly signed certificates. The next time that
+        // the connection client needs to reconnect to IoT hub, the authentication provider pairs them with the CSR private key and presents them. No further
+        // action is needed from the application layer for this to take effect.
     }
 }

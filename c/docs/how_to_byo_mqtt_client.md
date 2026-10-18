@@ -56,15 +56,30 @@ The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properti
 - `correlation_data` / `correlation_data_len` → Correlation Data property
 - `response_topic` → Response Topic property
 - `content_type` → Content Type property
-- `user_properties` / `user_properties_count` → User Property pairs
-
+- `user_properties` → User Property pairs: read every one with `az_iot_mqtt_user_properties_next()` (UTF-8, not NUL-terminated: use the lengths) and send them in order. The view is valid only during `publish()`; serialize or copy during the call. There is no count limit; if the packet cannot carry them, fail the publish (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`), never drop some.
 **On inbound MESSAGE** — extract these MQTT v5 properties from the received packet and populate the corresponding `az_iot_mqtt_message` fields before delivering `EVT_MESSAGE`:
 - Correlation Data → `correlation_data` / `correlation_data_len`
 - Response Topic → `response_topic`
 - Content Type → `content_type`
-- User Properties → `user_properties` / `user_properties_count`
+- User Properties → `user_properties`, an `az_iot_mqtt_user_properties` view. Implement its `next` over your client's own storage (the received bytes, a property list), so nothing is copied and none is dropped; or, if your client already copies them into NUL-terminated pairs, use `az_iot_mqtt_user_properties_from_array()`. It must stay valid until your event callback returns. A malformed property makes `next` return `AZ_IOT_ERR_PROTOCOL`.
 
-If any property is absent in the packet, set the pointer to NULL and the length/count to 0.
+If any property is absent in the packet, set the pointer to NULL and the length to 0; leave `user_properties` zero-initialized for none.
+
+A `next` over a list your client keeps (`my_prop` is its element type):
+
+```c
+static az_iot_result my_next(const void* src, size_t len, size_t* cursor,
+                             az_iot_mqtt_user_property_view* out)
+{
+  const my_prop* list = (const my_prop*)src;
+  if (*cursor >= len) { return AZ_IOT_ERR_NOT_FOUND; }
+  const my_prop* p = &list[(*cursor)++];
+  out->key = p->key;     out->key_len = p->key_len;     /* never NULL */
+  out->value = p->value; out->value_len = p->value_len; /* never NULL */
+  return AZ_IOT_OK;
+}
+/* inbound: msg.user_properties = (az_iot_mqtt_user_properties){ my_next, list, count }; */
+```
 
 **On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`. MQTT 3.1.1 carries the flag too, so a v3.1.1 adapter must populate it as well: a session connected with Clean Session 0 has no other way to learn whether the broker resumed it.
 
@@ -83,6 +98,8 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 **On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`). The SDK retries an identity refusal on `identity_recovery` (and, in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, re-provisions through DPS), and a connection failure on `reconnection_policy`. An adapter that flattens the two leaves the device on the wrong retry schedule, and unable to follow a DPS hub reassignment in `REPROVISION` mode.
 
 **On a refused SUBACK** — set `status` from `az_iot_mqtt_suback_result(version, suback_code)`, for the same reason. Pass the code exactly as it came off the wire: a v3.1.1 SUBACK return code (`0x00`–`0x02` granted QoS, `0x80` Failure) or a v5 reason code; pass a negative value for failures your client raised itself. The helper decides whether the broker refused the *filter* in a way a retry cannot change (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` — `0x87` Not authorized, `0x8F` Topic Filter invalid) or hit something transient (`AZ_IOT_ERR_MQTT` — `0x97` Quota exceeded, `0x80` Unspecified error). That distinction is what lets connection policy separate a filter that will be refused identically next time from one that failed because the service was briefly unwell; an adapter that flattens them denies it the choice. **A granted QoS lower than the one requested is a success, not a refusal** — never report it as an error.
+
+**On a PUBACK** — set `status` from `az_iot_mqtt_puback_result(version, puback_code)`. Pass the v5 reason code as it came off the wire, `0` for a v3.1.1 PUBACK, and a negative value for failures your client raised itself. Any v5 code below `0x80` is a success, including `0x10` No matching subscribers. A refusal the broker will repeat (`0x87` Not authorized, `0x90` Topic Name invalid, `0x99` Payload format invalid) becomes `AZ_IOT_ERR_PUBLISH_REFUSED`, as does `0x95` Packet too large, which is not a PUBACK code on the wire but may be passed for a publish your client drops as over the server's Maximum Packet Size; `0x97` Quota exceeded becomes `AZ_IOT_ERR_BUSY`; anything else stays `AZ_IOT_ERR_MQTT`. Feature clients pass this status unchanged to the application's publish callback, so flattening it to `AZ_IOT_ERR_MQTT` makes a refusal look temporary.
 
 **On any acknowledgement that carries a code** — also set `protocol_code` on the `az_iot_mqtt_event` to that verbatim wire value, and leave it 0 only when there is none. A non-zero value is always the wire code, including the granted QoS on a SUBACK that succeeded. `status` is what the SDK branches on; `protocol_code` is what a log line and a support engineer read, and it is the only way a code newer than this SDK survives the trip into C. Do not substitute your own numbering for it.
 
@@ -123,6 +140,8 @@ Two obligations, and only one of them is a choice.
 >
 > An adapter still reading `opts.tls.verify_server` **will not compile**, and that is deliberate: a source alias would let such an adapter keep gating verification on a field that no longer means verification, so a caller who set only a certificate would get an *unverified* TLS session. The compile error puts the decision in front of you. The fix is to verify unconditionally and use `use_tls` solely as one of the TLS triggers.
 
+**Copy TLS material during `connect()`.** Like `username` and `password`, the `tls` strings are valid only while `connect()` runs: the SDK then releases them to the certificate provider, which may wipe `client_key_pem` and `client_key_password`. `tls.sign` and `tls.sign_ctx` are the exception: they stay valid until the adapter client is destroyed, so the handshake may call `sign()` after `connect()` returns. Conformance: `mutual_tls_does_not_read_paths_after_returning`, and `mutual_tls_does_not_read_pem_after_returning` for `AZ_IOT_CONFORMANCE_CAP_TLS_PEM` (4.5).
+
 **Non-extractable keys.** If `tls.client_key_uri` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 
 ## Step 2 — Implement the factory
@@ -149,9 +168,14 @@ az_iot_mqtt_factory* az_iot_mymqtt_factory_create_v3_1_1(void)
     st->public_.factory_ctx = st;
     return &st->public_;
 }
+
+void az_iot_mymqtt_factory_destroy(az_iot_mqtt_factory* factory)
+{
+    free(factory); /* NULL: no-op */
+}
 ```
 
-The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time.
+The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time. The application owns the factory and releases it with your destroy function; the connection client only borrows it.
 
 ## Step 3 — Wire it into CMake
 
@@ -290,6 +314,8 @@ opts.client_cert_path = "/path/to/device-cert.pem";
 return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
 ```
 
+If your adapter loads TLS credentials from in-memory PEM (`trusted_ca_pem`, `client_cert_pem`, `client_key_pem`), declare `AZ_IOT_CONFORMANCE_CAP_TLS_PEM`. It needs no material: the suite issues a client certificate, connects with PEM only, and wipes the buffers as soon as `connect()` returns; the handshake must still succeed. It needs a TLS build (`-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`).
+
 Each declared route is proved by its own real TLS handshake, signed with a key you cannot read: `key_custody_completes_a_tls_handshake` for the URI route, `key_custody_sign_hook_completes_a_tls_handshake` for the callback route. Declaring one route does not oblige you to the other — the bundled Paho adapter declares only `_URI`, because Paho exposes no TLS key callback.
 
 **A capability you declare but never exercise fails the run**, unless you opt out explicitly (option 3 below). A declaration is your claim, and a green suite has to mean the claim was checked — so by default the suite will not pass a run that skipped it. You will see:
@@ -313,11 +339,21 @@ Once the conformance suite is green, plug the factory into the connection client
 
 ```c
 az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-az_iot_connection_client_register_mqtt_factory(client, f);
+if (az_iot_connection_client_register_mqtt_factory(client, f) != AZ_IOT_OK)
+{
+    /* handle the error */
+}
 /* register a v5 factory too if you support HUB_MQTT_V5 */
+
+/* ... use the client ... */
+
+az_iot_connection_client_deinit(client);
+az_iot_mymqtt_factory_destroy(f);
 ```
 
 The connection client picks the right factory at session-open time based on the MQTT version required for the target Azure service.
+
+Registration lends the factory to the connection client; the application still owns it. Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it.
 
 ## Common pitfalls
 
@@ -328,6 +364,7 @@ The connection client picks the right factory at session-open time based on the 
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
 - **Wrong version.** Registering only a v3.1.1 factory when you need MQTTv5 (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- **Destroying a factory before `deinit()`.** The connection client keeps using a registered factory until `az_iot_connection_client_deinit()` returns; destroying it earlier is a use-after-free.
 
 ## Feature clients and what they need from the adapter
 
@@ -337,7 +374,7 @@ The following feature clients depend on v5 adapter properties being correctly pa
 |----------------|----------------------------|---------------------------------|
 | Direct Method  | `correlation_data`, `response_topic` | `correlation_data`, `response_topic` |
 | Twin           | `correlation_data` | `correlation_data` |
-| Telemetry      | `content_type`, `user_properties` | (none — send only) |
+| Telemetry      | `content_type`, `correlation_data`, `user_properties` | (none — send only) |
 
 If your v5 adapter does not propagate these properties, the feature clients will silently fail to correlate responses or deliver incomplete data to the application.
 

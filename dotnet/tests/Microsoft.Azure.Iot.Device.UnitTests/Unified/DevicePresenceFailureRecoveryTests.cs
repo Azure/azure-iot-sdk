@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
@@ -37,7 +38,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
@@ -51,7 +52,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(-1)] // -1 fails every topic in the presence subscribe
         public async Task AnnounceDevicePresenceRecoversWhenClassicPresenceSubscribeGrantIsUnsuccessful(int failingTopicIndex)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -63,18 +64,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Sessions never resume, so every connect's presence flow re-sends the classic topic SUBSCRIBE that the
             // failure case targets.
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnect = connect =>
             {
                 Interlocked.Increment(ref connectCount);
-                return new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
             };
 
-            mockMqttClient.OnDisconnectAttempt += async (disconnect) =>
+            mockMqttClient.OnDisconnect = disconnect =>
             {
                 Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
             };
 
-            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+            mockMqttClient.OnSubscribe = async (subscribe) =>
             {
                 // Only the presence flow subscribes in this test, so every subscribe here is the classic topic SUBSCRIBE.
                 if (Interlocked.Increment(ref presenceSubscribeCount) == 1)

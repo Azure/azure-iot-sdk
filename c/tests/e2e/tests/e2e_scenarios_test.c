@@ -243,6 +243,13 @@ typedef struct
   char expected[64];
   bool received;
   bool matched;
+  /* System properties, decoded inside the callback. */
+  char message_id[96];
+  char correlation_id[96];
+  char content_type[64];
+  char content_encoding[64];
+  char expiry_time[64];
+  az_iot_result results[5];
 } c2d_ctx;
 
 static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
@@ -251,19 +258,31 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   size_t expected_len = strlen(c->expected);
   c->matched = (msg->payload_len == expected_len)
       && (memcmp(msg->payload, c->expected, expected_len) == 0);
+  /* Each reader leaves its buffer empty when the property is absent or does
+   * not decode, which the assertions then catch. */
+  c->results[0]
+      = az_iot_c2d_message_get_message_id(msg, c->message_id, sizeof(c->message_id), NULL);
+  c->results[1] = az_iot_c2d_message_get_correlation_id(
+      msg, c->correlation_id, sizeof(c->correlation_id), NULL);
+  c->results[2]
+      = az_iot_c2d_message_get_content_type(msg, c->content_type, sizeof(c->content_type), NULL);
+  c->results[3] = az_iot_c2d_message_get_content_encoding(
+      msg, c->content_encoding, sizeof(c->content_encoding), NULL);
+  c->results[4]
+      = az_iot_c2d_message_get_expiry_time(msg, c->expiry_time, sizeof(c->expiry_time), NULL);
   c->received = true;
 }
 
-static void test_c2d(void** state)
+/* Subscribe, send cctx->expected from the service with @p properties (may be
+ * NULL), and pump the device until it arrives or E2E_C2D_TIMEOUT_S passes. */
+static void c2d_send_and_receive(
+    e2e_fixture* fx,
+    c2d_ctx* cctx,
+    const az_iot_e2e_c2d_properties* properties)
 {
-  e2e_fixture* fx = (e2e_fixture*)*state;
-
-  c2d_ctx cctx = { 0 };
-  make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
-
   az_iot_mqttv3_c2d_client c2d;
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&c2d, on_c2d, &cctx), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&c2d, on_c2d, cctx), AZ_IOT_OK);
 
   /* Give the subscription a few work slices to settle before the cloud sends. */
   for (int i = 0; i < 20; ++i)
@@ -276,8 +295,12 @@ static void test_c2d(void** state)
    * connection" as telemetry). Retry with a short backoff up to
    * E2E_CONNECT_TIMEOUT_S, pumping the device in between; each attempt opens a
    * fresh connection (a failed one tears itself down and releases the TLS slot). */
-  bool sent = az_iot_e2e_service_send_c2d(
-      fx->service, fx->dev.device_id, (const uint8_t*)cctx.expected, strlen(cctx.expected));
+  bool sent = az_iot_e2e_service_send_c2d_with_properties(
+      fx->service,
+      fx->dev.device_id,
+      (const uint8_t*)cctx->expected,
+      strlen(cctx->expected),
+      properties);
   for (time_t connect_start = time(NULL);
        !sent && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -285,8 +308,12 @@ static void test_c2d(void** state)
     {
       device_do_work(fx, E2E_PUMP_MS);
     }
-    sent = az_iot_e2e_service_send_c2d(
-        fx->service, fx->dev.device_id, (const uint8_t*)cctx.expected, strlen(cctx.expected));
+    sent = az_iot_e2e_service_send_c2d_with_properties(
+        fx->service,
+        fx->dev.device_id,
+        (const uint8_t*)cctx->expected,
+        strlen(cctx->expected),
+        properties);
   }
   if (!sent)
   {
@@ -295,15 +322,60 @@ static void test_c2d(void** state)
   assert_true(sent);
 
   time_t start = time(NULL);
-  while (!cctx.received && (time(NULL) - start) < E2E_C2D_TIMEOUT_S)
+  while (!cctx->received && (time(NULL) - start) < E2E_C2D_TIMEOUT_S)
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
+}
+
+static void test_c2d(void** state)
+{
+  e2e_fixture* fx = (e2e_fixture*)*state;
+
+  c2d_ctx cctx = { 0 };
+  make_marker(cctx.expected, sizeof(cctx.expected), "c2d");
+
+  c2d_send_and_receive(fx, &cctx, NULL);
 
   assert_true(cctx.received);
   assert_true(cctx.matched);
+}
+
+static void test_c2d_system_properties(void** state)
+{
+  e2e_fixture* fx = (e2e_fixture*)*state;
+
+  c2d_ctx cctx = { 0 };
+  make_marker(cctx.expected, sizeof(cctx.expected), "c2dsys");
+
+  char message_id[80];
+  char correlation_id[80];
+  snprintf(message_id, sizeof(message_id), "mid-%s", cctx.expected);
+  snprintf(correlation_id, sizeof(correlation_id), "cid/%s", cctx.expected);
+
+  az_iot_e2e_c2d_properties properties = { 0 };
+  properties.message_id = message_id;
+  properties.correlation_id = correlation_id;
+  properties.content_type = "application/json";
+  properties.content_encoding = "utf-8";
+  properties.absolute_expiry_time_ms = ((int64_t)time(NULL) + 3600) * 1000;
+
+  c2d_send_and_receive(fx, &cctx, &properties);
+
+  assert_true(cctx.received);
+  assert_true(cctx.matched);
+  for (size_t i = 0; i < sizeof(cctx.results) / sizeof(cctx.results[0]); ++i)
+  {
+    assert_int_equal(cctx.results[i], AZ_IOT_OK);
+  }
+  assert_string_equal(cctx.message_id, message_id);
+  assert_string_equal(cctx.correlation_id, correlation_id);
+  assert_string_equal(cctx.content_type, "application/json");
+  assert_string_equal(cctx.content_encoding, "utf-8");
+  /* ISO 8601 as the service formats it; only its presence is pinned. */
+  assert_non_null(strchr(cctx.expiry_time, 'T'));
 }
 
 /* ---- direct method -------------------------------------------------------- */
@@ -537,6 +609,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_telemetry),
     cmocka_unit_test(test_c2d),
+    cmocka_unit_test(test_c2d_system_properties),
     cmocka_unit_test(test_direct_method),
     cmocka_unit_test(test_twin),
   };

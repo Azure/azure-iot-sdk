@@ -19,6 +19,10 @@ typedef struct
   char* registration_id; /**< AZ_IOT_DPS_SAS_REGISTRATION_ID */
   char* trusted_ca; /**< AZ_IOT_TRUSTED_CA: PEM file path */
   char* global_endpoint; /**< AZ_IOT_DPS_GLOBAL_ENDPOINT, or NULL */
+  char* proxy_host; /**< AZ_IOT_PROXY_HOST, or NULL for a direct connection */
+  uint16_t proxy_port; /**< AZ_IOT_PROXY_PORT, or 0 */
+  char* proxy_username; /**< AZ_IOT_PROXY_USERNAME, or NULL */
+  char* proxy_password; /**< AZ_IOT_PROXY_PASSWORD, or NULL */
 } e2e_sas_config;
 
 /** @brief Credentials each scope connected with. */
@@ -27,6 +31,8 @@ typedef struct
   az_iot_auth_source dps_source;
   az_iot_auth_source hub_source;
   int hub_renewals; /**< Hub CONNECTED events flagged is_credential_renewal. */
+  int dps_renewals; /**< DPS CONNECTED events flagged is_credential_renewal. */
+  int dps_losses; /**< DPS DISCONNECTING events not flagged is_credential_renewal. */
   az_iot_connection_client* client; /**< The run's client while it exists; else NULL. */
 } e2e_sas_run;
 
@@ -53,6 +59,14 @@ void e2e_sas_connect_renew_and_send(
     e2e_sas_run* run,
     const az_iot_connection_client_options* copts,
     const char* label,
+    int renewals);
+
+/** @brief Opens a provision_only client with @p copts and holds its
+ * provisioning session until it has been renewed @p renewals times, with no
+ * other loss of the session, then closes it. Fills @p run. */
+void e2e_sas_hold_dps_and_renew(
+    e2e_sas_run* run,
+    const az_iot_connection_client_options* copts,
     int renewals);
 
 #endif /* E2E_SAS_DEVICE_H */

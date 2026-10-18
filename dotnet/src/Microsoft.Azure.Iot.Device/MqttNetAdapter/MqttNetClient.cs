@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
         public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
         public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
-        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
@@ -57,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
             }
 
             MqttClientOptionsBuilder optionsBuilder;
@@ -119,37 +119,38 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 });
             }
 
-            if (connect.ClientCertificate != null)
+            // TLS is always used, including SAS-authenticated connections that have no client certificate
+            optionsBuilder.WithTlsOptions(tlsOptions =>
             {
-                optionsBuilder.WithTlsOptions(tlsOptions =>
+                if (connect.ClientCertificate != null)
                 {
                     tlsOptions.WithClientCertificates(new List<X509Certificate2>
                     {
                         connect.ClientCertificate,
                     });
+                }
 
-                    // Custom validation of the server (remote) certificate, e.g. certificate pinning or a private root.
-                    if (connect.RemoteCertificateValidationCallback != null)
-                    {
-                        RemoteCertificateValidationCallback remoteValidation = connect.RemoteCertificateValidationCallback;
-                        tlsOptions.WithCertificateValidationHandler(args =>
-                            remoteValidation(_underlyingClient, args.Certificate, args.Chain, args.SslPolicyErrors));
-                    }
+                // Custom validation of the server (remote) certificate, e.g. certificate pinning or a private root.
+                if (connect.RemoteCertificateValidationCallback != null)
+                {
+                    RemoteCertificateValidationCallback remoteValidation = connect.RemoteCertificateValidationCallback;
+                    tlsOptions.WithCertificateValidationHandler(args =>
+                        remoteValidation(_underlyingClient, args.Certificate, args.Chain, args.SslPolicyErrors));
+                }
 
-                    // Custom selection of the client certificate to present, e.g. to support certificate rotation.
-                    // The selected certificate signs the handshake with its own (possibly HSM-backed) private key.
-                    if (connect.LocalCertificateSelectionCallback != null)
-                    {
-                        LocalCertificateSelectionCallback localSelection = connect.LocalCertificateSelectionCallback;
-                        tlsOptions.WithCertificateSelectionHandler(args =>
-                            localSelection(_underlyingClient, args.TargetHost, args.LocalCertificates, null, args.AcceptableIssuers));
-                    }
+                // Custom selection of the client certificate to present, e.g. to support certificate rotation.
+                // The selected certificate signs the handshake with its own (possibly HSM-backed) private key.
+                if (connect.LocalCertificateSelectionCallback != null)
+                {
+                    LocalCertificateSelectionCallback localSelection = connect.LocalCertificateSelectionCallback;
+                    tlsOptions.WithCertificateSelectionHandler(args =>
+                        localSelection(_underlyingClient, args.TargetHost, args.LocalCertificates, null, args.AcceptableIssuers));
+                }
 
-                    tlsOptions.UseTls(true);
-                    tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
-                    tlsOptions.WithIgnoreCertificateRevocationErrors(false);
-                });
-            }
+                tlsOptions.UseTls(true);
+                tlsOptions.WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
+                tlsOptions.WithIgnoreCertificateRevocationErrors(false);
+            });
 
             var o = optionsBuilder.Build();
 

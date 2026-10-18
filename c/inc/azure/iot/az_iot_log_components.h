@@ -33,6 +33,7 @@
 #define AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY "mqttv5_telemetry"
 #define AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN "mqttv5_twin"
 #define AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD "mqttv5_direct_method"
+#define AZ_IOT_LOG_COMPONENT_MQTTV5_CUSTOM_TOPIC "mqttv5_custom_topic"
 /** @} */
 
 #endif /* AZ_IOT_LOG_COMPONENTS_H */

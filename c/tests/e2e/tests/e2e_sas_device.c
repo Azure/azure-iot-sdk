@@ -30,6 +30,7 @@ static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256)
 typedef struct
 {
   az_iot_connection_state hub_state;
+  az_iot_connection_state dps_state;
   e2e_sas_run* run;
   int send_done;
   az_iot_result send_status;
@@ -83,6 +84,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
     {
       c->run->dps_source = event->auth_source;
+      if (event->is_credential_renewal)
+      {
+        c->run->dps_renewals++;
+      }
     }
     else
     {
@@ -96,6 +101,14 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
     c->hub_state = event->state;
+  }
+  else
+  {
+    c->dps_state = event->state;
+    if (event->state == AZ_IOT_CONN_STATE_DISCONNECTING && !event->is_credential_renewal)
+    {
+      c->run->dps_losses++;
+    }
   }
 }
 
@@ -113,6 +126,20 @@ void e2e_sas_config_load(e2e_sas_config* cfg)
   cfg->registration_id = az_iot_test_env_dup("AZ_IOT_DPS_SAS_REGISTRATION_ID");
   cfg->trusted_ca = az_iot_test_env_dup("AZ_IOT_TRUSTED_CA");
   cfg->global_endpoint = az_iot_test_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT");
+  cfg->proxy_host = az_iot_test_env_dup("AZ_IOT_PROXY_HOST");
+  cfg->proxy_username = az_iot_test_env_dup("AZ_IOT_PROXY_USERNAME");
+  cfg->proxy_password = az_iot_test_env_dup("AZ_IOT_PROXY_PASSWORD");
+  cfg->proxy_port = 0;
+  char* proxy_port = az_iot_test_env_dup("AZ_IOT_PROXY_PORT");
+  if (proxy_port != NULL)
+  {
+    unsigned long p = strtoul(proxy_port, NULL, 10);
+    if (p > 0 && p <= 65535)
+    {
+      cfg->proxy_port = (uint16_t)p;
+    }
+    free(proxy_port);
+  }
   assert_non_null(cfg->id_scope);
   assert_non_null(cfg->group_key);
   assert_non_null(cfg->registration_id);
@@ -126,6 +153,9 @@ void e2e_sas_config_free(e2e_sas_config* cfg)
   free(cfg->registration_id);
   free(cfg->trusted_ca);
   free(cfg->global_endpoint);
+  free(cfg->proxy_host);
+  free(cfg->proxy_username);
+  free(cfg->proxy_password);
 }
 
 void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_options* copts)
@@ -136,6 +166,10 @@ void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_optio
   {
     copts->dps.global_endpoint = cfg->global_endpoint;
   }
+  copts->proxy.host = cfg->proxy_host;
+  copts->proxy.port = cfg->proxy_port;
+  copts->proxy.username = cfg->proxy_username;
+  copts->proxy.password = cfg->proxy_password;
   copts->trusted_ca.path = cfg->trusted_ca;
   copts->crypto = az_iot_crypto_openssl();
   copts->sas_buffer.buffer = g_sas_buffer;
@@ -161,6 +195,8 @@ void e2e_sas_connect_renew_and_send(
   run->dps_source = AZ_IOT_AUTH_SOURCE_NONE;
   run->hub_source = AZ_IOT_AUTH_SOURCE_NONE;
   run->hub_renewals = 0;
+  run->dps_renewals = 0;
+  run->dps_losses = 0;
   sas_ctx ctx = { .hub_state = AZ_IOT_CONN_STATE_IDLE, .run = run };
   az_iot_connection_client conn = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
@@ -169,9 +205,8 @@ void e2e_sas_connect_renew_and_send(
   run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&conn, az_iot_paho_factory_create_v3_1_1()),
-      AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(&telemetry, &conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
@@ -218,5 +253,58 @@ void e2e_sas_connect_renew_and_send(
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
+  az_iot_paho_factory_destroy(factory);
+  run->client = NULL;
+}
+
+void e2e_sas_hold_dps_and_renew(
+    e2e_sas_run* run,
+    const az_iot_connection_client_options* copts,
+    int renewals)
+{
+  run->dps_source = AZ_IOT_AUTH_SOURCE_NONE;
+  run->hub_source = AZ_IOT_AUTH_SOURCE_NONE;
+  run->hub_renewals = 0;
+  run->dps_renewals = 0;
+  run->dps_losses = 0;
+  sas_ctx ctx
+      = { .hub_state = AZ_IOT_CONN_STATE_IDLE, .dps_state = AZ_IOT_CONN_STATE_IDLE, .run = run };
+  az_iot_connection_client conn = { 0 };
+  assert_true(copts->dps.provision_only);
+  assert_int_equal(az_iot_connection_client_init(&conn, copts), AZ_IOT_OK);
+  run->client = &conn;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
+  time_t start = time(NULL);
+  while (ctx.dps_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.dps_state != AZ_IOT_CONN_STATE_FAULTED
+         && (time(NULL) - start) < E2E_SAS_CONNECT_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_int_equal(ctx.dps_state, AZ_IOT_CONN_STATE_CONNECTED);
+  start = time(NULL);
+  /* Until the last renewal's session is up. */
+  while ((run->dps_renewals < renewals || ctx.dps_state != AZ_IOT_CONN_STATE_CONNECTED)
+         && ctx.dps_state != AZ_IOT_CONN_STATE_FAULTED
+         && (time(NULL) - start) < E2E_SAS_RENEWAL_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_true(run->dps_renewals >= renewals);
+  assert_int_equal(ctx.dps_state, AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(run->dps_losses, 0);
+  assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(az_iot_connection_client_close(&conn), AZ_IOT_OK);
+  start = time(NULL);
+  while (ctx.dps_state != AZ_IOT_CONN_STATE_IDLE && (time(NULL) - start) < E2E_SAS_CLOSE_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_int_equal(ctx.dps_state, AZ_IOT_CONN_STATE_IDLE);
+  az_iot_connection_client_deinit(&conn);
+  az_iot_paho_factory_destroy(factory);
   run->client = NULL;
 }

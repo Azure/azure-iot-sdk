@@ -36,6 +36,7 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
   az_iot_mqttv3_c2d_client c2d;
   int c2d_initialized;
 } sample_state;
@@ -58,6 +59,7 @@ static void sample_state_destroy(sample_state* s)
     s->c2d_initialized = 0;
   }
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -96,20 +98,35 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
   ctx->messages_received++;
 
   printf("C2D #%d: %zu bytes", ctx->messages_received, msg->payload_len);
-  if (msg->content_type)
+
+  /* Properties are decoded on demand into buffers the application owns. */
+  char value[128];
+  if (az_iot_c2d_message_get_message_id(msg, value, sizeof(value), NULL) == AZ_IOT_OK)
   {
-    /* The "$.ct" property out of the topic. */
-    printf(" [%s]", msg->content_type);
+    printf(" mid=%s", value);
+  }
+  if (az_iot_c2d_message_get_correlation_id(msg, value, sizeof(value), NULL) == AZ_IOT_OK)
+  {
+    printf(" cid=%s", value);
   }
 
-  /* Plain text. Past AZ_IOT_C2D_MAX_PROPERTIES the rest are dropped with a
-   * warning. A decoded bag that overruns AZ_IOT_C2D_PROPERTY_BUFFER, or a
-   * malformed escape, surfaces NO properties rather than a truncated one. The
-   * message itself is always delivered. */
-  for (size_t i = 0; i < msg->properties_count; ++i)
+  /* Every property, system ones included. One that does not fit or does not
+   * decode is reported and skipped; the message is still delivered. */
+  char key[64];
+  size_t cursor = 0;
+  az_iot_result r;
+  while ((r = az_iot_c2d_properties_next(
+              &msg->properties, &cursor, key, sizeof(key), NULL, value, sizeof(value), NULL, NULL))
+         != AZ_IOT_ERR_NOT_FOUND)
   {
-    printf(
-        " %s=%s", msg->properties[i].key, msg->properties[i].value ? msg->properties[i].value : "");
+    if (r == AZ_IOT_OK)
+    {
+      printf(" %s=%s", key, value);
+    }
+    else
+    {
+      printf(" [property skipped: %s]", az_iot_result_to_string(r));
+    }
   }
 
   if (msg->payload_len > 0 && msg->payload_len <= 256)
@@ -135,14 +152,6 @@ int main(void)
     return 1;
   }
 
-  /* The mock bypass is MQTT v5 only. */
-  if (sample_initial_profile(&state.config) != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
-  {
-    printf("Cloud-to-device messages are not available on this hub generation.\n");
-    sample_state_destroy(&state);
-    return 1;
-  }
-
   user_context user_ctx = { 0 };
 
   /* Certificate provider */
@@ -160,7 +169,9 @@ int main(void)
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -171,8 +182,8 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* v3.1.1 serves both DPS and an MQTTv3 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

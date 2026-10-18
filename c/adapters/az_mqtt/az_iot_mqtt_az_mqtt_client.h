@@ -33,6 +33,7 @@
 
 #if AZ_IOT_AZ_MQTT_V == 5
 #include <az_mqtt5/az_mqtt5_client.h>
+#include <az_mqtt5/az_mqtt5_codec.h>
 #define _AZM(name) az_mqtt5_##name
 #define _AZM_VERSION AZ_IOT_MQTT_VERSION_5
 #define _AZM_FACTORY_CREATE az_iot_az_mqtt_factory_create_v5
@@ -50,14 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// MQTT 5 uses twice as many entries, and az_mqtt uses at most 65,535.
-#if AZ_IOT_AZ_MQTT_INFLIGHT_MAX < 1 || AZ_IOT_AZ_MQTT_INFLIGHT_MAX > 32767
-#error "AZ_IOT_AZ_MQTT_INFLIGHT_MAX must be 1 to 32767"
-#endif
 #if AZ_IOT_AZ_MQTT_V == 5
-#if AZ_IOT_AZ_MQTT_BUFFER_SIZE < 1 || AZ_IOT_AZ_MQTT_BUFFER_SIZE > 268435455
-#error "AZ_IOT_AZ_MQTT_BUFFER_SIZE must be 1 to 268435455 (MQTT 5 Maximum Packet Size)"
-#endif
 /** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
 #define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
 /** @brief In-flight entries: AZ_IOT_AZ_MQTT_INFLIGHT_MAX requests, plus those kept for inbound. */
@@ -69,16 +63,17 @@
 /** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
-  (AZ_IOT_AZ_MQTT_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
+  (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
 #endif
 
 #if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
-    < AZ_IOT_AZ_MQTT_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
-#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must hold one packet of AZ_IOT_AZ_MQTT_BUFFER_SIZE"
+    < AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
+#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must hold one packet of AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE"
 #endif
 
-/** @brief Room for the strings of one received PUBLISH: its bytes, plus one NUL per string. */
-#define _AZM_STRINGS_SIZE (AZ_IOT_AZ_MQTT_BUFFER_SIZE + 3 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
+/** @brief Room for the strings of one received PUBLISH (topic, Content Type, Response Topic): its
+ * bytes, plus one NUL each. User Properties are not copied. */
+#define _AZM_STRINGS_SIZE (AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 3)
 
 /** @brief Connect strings owned until the next connect: host, credentials, TLS, proxy, will... */
 #define _AZM_OWNED_MAX (20 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
@@ -111,15 +106,10 @@ typedef struct
   az_mqtt_inflight_entry inflight[_AZM_INFLIGHT_ENTRIES];
 #if AZ_IOT_AZ_MQTT_V == 5
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_user_property publish_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_user_property received_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_user_property ack_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
-  az_mqtt5_reason_code suback_codes[4];
-  int32_t subscription_ids[4];
+  int32_t decode_codes[4]; /* Subscription identifiers or reason codes. */
   int32_t server_disconnect_code; /* -1: none. */
   uint8_t disconnect_reason_code;
 #endif
-  az_iot_mqtt_user_property message_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   az_mqtt_native_error native[_AZM_NATIVE_MAX];
   int native_count;
   /* Session: connecting until CONNECTED is reported; then connected until closed. */
@@ -353,6 +343,82 @@ static void _azm_on_disconnect(az_mqtt5_client* client, az_mqtt5_disconnect_data
 }
 #endif
 
+#if AZ_IOT_AZ_MQTT_V == 5
+/** @brief az_iot_mqtt_user_properties_next_fn over the raw Properties of a received PUBLISH. */
+static az_iot_result _azm_user_property_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  if (*cursor > source_len || source_len > INT32_MAX)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_span const properties = az_span_create((uint8_t*)(uintptr_t)source, (int32_t)source_len);
+  int32_t offset = (int32_t)*cursor;
+  az_mqtt5_user_property p;
+  az_result const rc = az_mqtt5_codec_next_user_property(properties, &offset, &p);
+  if (rc == AZ_ERROR_ITEM_NOT_FOUND)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  if (az_result_failed(rc))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
+  *cursor = (size_t)offset;
+  out->key = (const char*)az_span_ptr(p.key);
+  out->key_len = (size_t)az_span_size(p.key);
+  out->value = (const char*)az_span_ptr(p.value);
+  out->value_len = (size_t)az_span_size(p.value);
+  return AZ_IOT_OK;
+}
+
+/** @brief Context of _azm_publish_user_property_next(): the properties and their own cursor. */
+typedef struct
+{
+  const az_iot_mqtt_user_properties* properties;
+  size_t cursor; /**< SDK cursor (any size_t); the codec cursor only counts properties. */
+} _azm_publish_user_properties;
+
+/**
+ * @brief az_mqtt5_publish_options.user_property_next over an az_iot_mqtt_user_properties.
+ *
+ * The codec cursor counts properties read and restarts at 0 for each encoding pass, which
+ * restarts the SDK cursor.
+ */
+static az_result _azm_publish_user_property_next(
+    void* context,
+    int32_t* cursor,
+    az_mqtt5_user_property* out)
+{
+  _azm_publish_user_properties* const ctx = (_azm_publish_user_properties*)context;
+  if (*cursor < 0 || *cursor == INT32_MAX)
+  {
+    return AZ_ERROR_ARG;
+  }
+  if (*cursor == 0)
+  {
+    ctx->cursor = 0;
+  }
+  az_iot_mqtt_user_property_view p;
+  az_iot_result const r = az_iot_mqtt_user_properties_next(ctx->properties, &ctx->cursor, &p);
+  if (r == AZ_IOT_ERR_NOT_FOUND)
+  {
+    return AZ_ERROR_ITEM_NOT_FOUND;
+  }
+  if (r != AZ_IOT_OK || p.key_len > UINT16_MAX || p.value_len > UINT16_MAX)
+  {
+    return AZ_ERROR_ARG;
+  }
+  (*cursor)++;
+  out->key = az_span_create((uint8_t*)(uintptr_t)p.key, (int32_t)p.key_len);
+  out->value = az_span_create((uint8_t*)(uintptr_t)p.value, (int32_t)p.value_len);
+  return AZ_OK;
+}
+#endif
+
 static void _azm_on_publish(_AZM(client) * client, _AZM(publish_data) const* publish)
 {
   _azm_client* m = _azm_of(client);
@@ -365,16 +431,13 @@ static void _azm_on_publish(_AZM(client) * client, _AZM(publish_data) const* pub
   message.qos = (az_iot_mqtt_qos)publish->qos;
   message.retain = publish->retain;
 #if AZ_IOT_AZ_MQTT_V == 5
-  int32_t const count = publish->user_property_count;
-  for (int32_t i = 0; i < count; i++)
+  // A view into the receive buffer, valid while the event is delivered below.
+  if (az_span_size(publish->properties) > 0)
   {
-    m->message_properties[i].key
-        = az_iot_az_mqtt_string_writer_add(&strings, publish->user_properties[i].key);
-    m->message_properties[i].value
-        = az_iot_az_mqtt_string_writer_add(&strings, publish->user_properties[i].value);
+    message.user_properties.next = _azm_user_property_next;
+    message.user_properties.source = az_span_ptr(publish->properties);
+    message.user_properties.source_len = (size_t)az_span_size(publish->properties);
   }
-  message.user_properties = count > 0 ? m->message_properties : NULL;
-  message.user_properties_count = (size_t)count;
   message.topic_alias = publish->topic_alias;
   message.message_expiry_seconds = publish->message_expiry_interval;
   if (az_span_size(publish->content_type) > 0)
@@ -413,7 +476,11 @@ static void _azm_emit_publish_ack(_azm_client* m, _AZM(ack_data) const* ack)
   event.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
   event.packet_id = ack->packet_id;
   event.protocol_code = code;
-  event.status = (az_result_failed(ack->status) || code >= 0x80) ? AZ_IOT_ERR_MQTT : AZ_IOT_OK;
+  event.status = az_iot_mqtt_puback_result(_AZM_VERSION, (int)code);
+  if (event.status == AZ_IOT_OK && az_result_failed(ack->status))
+  {
+    event.status = AZ_IOT_ERR_MQTT;
+  }
   _azm_emit(m, &event);
 }
 
@@ -680,7 +747,7 @@ static bool _azm_copy_options(
   // Below the entry count, so az_mqtt keeps this many entries for inbound QoS 2.
   c->receive_maximum = _AZM_RECEIVE_MAXIMUM;
   // Omitted, it would mean any size; larger packets do not fit the receive buffer.
-  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_BUFFER_SIZE;
+  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {
@@ -748,8 +815,8 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
     _azm_release_owned(m);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  options.send_buffer = az_span_create(m->send_buffer, AZ_IOT_AZ_MQTT_BUFFER_SIZE);
-  options.receive_buffer = az_span_create(m->receive_buffer, AZ_IOT_AZ_MQTT_BUFFER_SIZE);
+  options.send_buffer = az_span_create(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
+  options.receive_buffer = az_span_create(m->receive_buffer, AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
   options.inflight_control_buffer = _AZM_SPAN_OF(m->inflight);
   options.inflight_message_buffer = persists
       ? az_span_create(m->message_storage, AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE)
@@ -765,13 +832,10 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   options.on_transport_error = _azm_on_transport_error;
 #if AZ_IOT_AZ_MQTT_V == 5
   options.on_disconnect = _azm_on_disconnect;
-  options.buffers.connack_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.publish_user_properties = _AZM_SPAN_OF(m->received_properties);
-  options.buffers.publish_subscription_identifiers = _AZM_SPAN_OF(m->subscription_ids);
-  options.buffers.suback_reason_codes = _AZM_SPAN_OF(m->suback_codes);
-  options.buffers.suback_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.ack_user_properties = _AZM_SPAN_OF(m->ack_properties);
-  options.buffers.disconnect_user_properties = _AZM_SPAN_OF(m->ack_properties);
+  // User Properties are read from the raw Properties of a PUBLISH; those of other packets are not
+  // used.
+  options.decode_user_properties = AZ_SPAN_EMPTY;
+  options.decode_codes = _AZM_SPAN_OF(m->decode_codes);
   m->server_disconnect_code = -1;
   m->disconnect_reason_code = o->disconnect_reason_code;
 #endif
@@ -937,39 +1001,31 @@ static az_iot_result _azm_publish(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   _AZM(publish_options) publish = _AZM(publish_options_default)();
+#if AZ_IOT_AZ_MQTT_V == 5
+  _azm_publish_user_properties user_properties = { &msg->user_properties, 0 };
+#endif
   publish.topic = az_span_create_from_str((char*)(uintptr_t)msg->topic);
   publish.payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
   publish.qos = (az_mqtt_qos)msg->qos;
   publish.retain = msg->retain;
 #if AZ_IOT_AZ_MQTT_V == 5
   // A Response Topic is a non-empty Topic Name.
-  if ((msg->user_properties == NULL && msg->user_properties_count > 0)
-      || (msg->correlation_data == NULL && msg->correlation_data_len > 0)
+  if ((msg->correlation_data == NULL && msg->correlation_data_len > 0)
       || (msg->response_topic != NULL
           && (msg->response_topic[0] == '\0' || strpbrk(msg->response_topic, "+#") != NULL)))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (msg->user_properties_count > AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
-      || msg->correlation_data_len > (size_t)INT32_MAX)
+  if (msg->correlation_data_len > (size_t)INT32_MAX)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  int32_t count = 0;
-  for (size_t i = 0; i < msg->user_properties_count; i++)
+  // Read while encoding: no copy, no limit but the send buffer.
+  if (msg->user_properties.next != NULL)
   {
-    az_iot_mqtt_user_property const* p = &msg->user_properties[i];
-    if (p->key == NULL)
-    {
-      continue;
-    }
-    m->publish_properties[count].key = az_span_create_from_str((char*)(uintptr_t)p->key);
-    m->publish_properties[count].value
-        = az_span_create_from_str((char*)(uintptr_t)(p->value != NULL ? p->value : ""));
-    count++;
+    publish.user_property_next = _azm_publish_user_property_next;
+    publish.user_property_context = &user_properties;
   }
-  publish.user_properties = count > 0 ? m->publish_properties : NULL;
-  publish.user_property_count = count;
   publish.topic_alias = msg->topic_alias;
   publish.message_expiry_interval = msg->message_expiry_seconds;
   if (msg->content_type != NULL)
@@ -1094,7 +1150,9 @@ static az_iot_mqtt_client* _azm_create(void* factory_context)
     return NULL;
   }
   // One block: send buffer, receive buffer, transport (16-byte aligned), received strings.
-  size_t const transport_offset = (2u * AZ_IOT_AZ_MQTT_BUFFER_SIZE + 15u) & ~(size_t)15u;
+  size_t const transport_offset
+      = ((size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 15u)
+      & ~(size_t)15u;
   size_t const strings_offset
       = transport_offset + (((size_t)az_mqtt_transport_sizeof() + 15u) & ~(size_t)15u);
   uint8_t* block = (uint8_t*)malloc(strings_offset + (size_t)_AZM_STRINGS_SIZE);
@@ -1104,7 +1162,7 @@ static az_iot_mqtt_client* _azm_create(void* factory_context)
     return NULL;
   }
   m->send_buffer = block;
-  m->receive_buffer = block + AZ_IOT_AZ_MQTT_BUFFER_SIZE;
+  m->receive_buffer = block + AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE;
   m->transport = (az_mqtt_transport*)(void*)(block + transport_offset);
   m->strings = (char*)(block + strings_offset);
   m->base.iface = &_azm_iface;
@@ -1118,9 +1176,7 @@ az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void)
   {
     factory->version = _AZM_VERSION;
     factory->create = _azm_create;
-    // The connection client frees a registered factory through destroy(factory_ctx).
     factory->factory_ctx = factory;
-    factory->destroy = az_iot_az_mqtt_factory_free;
   }
   return factory;
 }

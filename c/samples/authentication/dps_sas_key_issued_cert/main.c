@@ -103,13 +103,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
-  ((sample_context*)user_ctx)->issued = true;
+  ((sample_context*)user_ctx)->issued = (store_result == AZ_IOT_OK);
   fprintf(
       stderr,
-      "[dps_sas_key_issued_cert] certificate issued (%zu in chain)\n",
-      issued != NULL ? issued->count : (size_t)0);
+      "[dps_sas_key_issued_cert] certificate issued (%zu in chain), store: %s\n",
+      issued != NULL ? issued->count : (size_t)0,
+      az_iot_result_to_string(store_result));
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -207,13 +211,15 @@ int main(void)
   sample_context ctx = { 0 };
   az_iot_certificate_provider_managed operational = { 0 };
   az_iot_connection_client client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
 
   /* CSR key and issued chain only; no bootstrap certificate. */
-  az_iot_certificate_provider_managed_options op_opts = {
-    .operational_key_pem_path = config.op_key,
-    .operational_cert_pem_path = config.op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options op_opts
+      = az_iot_certificate_provider_managed_options_default();
+  op_opts.operational_key_pem_path = config.op_key;
+  op_opts.operational_cert_pem_path = config.op_cert;
+  op_opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&operational, &op_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key_issued_cert] managed provider init failed\n");
@@ -221,7 +227,7 @@ int main(void)
   }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.client_id = config.reg_id;
+  opts.device_id = config.reg_id;
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.endpoint;
@@ -239,16 +245,15 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
 
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  factory_v5 = az_iot_paho_factory_create_v5();
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_operational_cert_callback(&client, on_operational_cert, &ctx)
           != AZ_IOT_OK
       /* v3.1.1 serves DPS and an mqttv3 hub; v5 serves an mqttv5 hub. */
-      || az_iot_connection_client_register_mqtt_factory(
-             &client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key_issued_cert] connection client setup failed\n");
@@ -288,6 +293,8 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
   az_iot_certificate_provider_managed_deinit(&operational);
   config_release(&config);
   return rc;

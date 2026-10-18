@@ -11,8 +11,10 @@
  *   - the lifecycle state machine
  *     (IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE,
  *      with RETRY_PENDING and FAULTED side branches)
- *   - DPS provisioning (when opts.dps.id_scope is set and opts.host is NULL,
- *     open() internally provisions via DPS before connecting to the hub)
+ *   - DPS provisioning (when opts.dps.id_scope is set and opts.iothub_hostname is NULL,
+ *     open() internally provisions via DPS before connecting to the hub; with
+ *     opts.iothub_hostname set too, open() connects to that saved hub and DPS is the
+ *     fallback)
  *
  * Single-threaded contract: every state transition and every user state-callback
  * fires from inside az_iot_connection_client_do_work(). The MQTT adapter's
@@ -43,7 +45,6 @@
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
 #include "internal/dispatch.h"
-#include "internal/env.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
@@ -112,6 +113,13 @@
 #define DPS_REGISTER_CSR_MEMBER_SUFFIX "\""
 #define DPS_REGISTER_PAYLOAD_MEMBER_PREFIX "\"payload\":"
 
+/** @brief mqttv3 hub CONNECT api-version. Hub certificate management
+ * ($iothub/credentials) requires 2025-08-01-preview; the pinned azure-sdk-for-c
+ * username helper emits 2020-09-30, so the username is built here. */
+#define HUB_API_VERSION "2025-08-01-preview"
+/** @brief DeviceClientType value, unchanged from the azure-sdk-for-c default. */
+#define HUB_DEVICE_CLIENT_TYPE "azsdk-c%2F" AZ_SDK_VERSION_STRING
+
 /* The pinned azure-sdk-for-c helper emits 2019-03-31. Build the CONNECT
  * username here for every DPS session, including CSR and provision-only software updates. */
 #define DPS_API_VERSION "2026-11-02-preview"
@@ -129,7 +137,6 @@
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_MQTT_V3_STR "classic"
 #define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
-#define DPS_CONNECTION_PROFILE_OVERRIDE_ENV "AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
@@ -426,8 +433,9 @@ static bool reason_is_retriable(az_iot_result reason)
      * Re-provisioning returns the same assignment. */
     case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
     case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
-    /* The broker refused the filter itself. */
+    /* The broker refused the filter, or the publish, itself. */
     case AZ_IOT_ERR_SUBSCRIPTION_REFUSED:
+    case AZ_IOT_ERR_PUBLISH_REFUSED:
     /* Caller, build or programming faults: retrying re-runs the same bad call. */
     case AZ_IOT_ERR_INVALID_ARG:
     case AZ_IOT_ERR_NOT_SUPPORTED:
@@ -600,8 +608,9 @@ static void clear_sas_token_request(az_iot_connection_client* c, az_iot_connecti
 
 /**
  * @brief Whether the transition of @p scope to @p new_state with @p reason is
- * part of a SAS token renewal in progress: the hub's RETRY_PENDING through
- * CONNECTED, without a failure.
+ * part of a SAS token renewal in progress, without a failure: the hub's
+ * RETRY_PENDING through CONNECTED, or the provisioning session's DISCONNECTING
+ * through CONNECTED.
  */
 static bool is_sas_token_renewal_transition(
     const az_iot_connection_client* c,
@@ -609,8 +618,10 @@ static bool is_sas_token_renewal_transition(
     az_iot_connection_state new_state,
     az_iot_result reason)
 {
-  return scope == AZ_IOT_CONN_SCOPE_HUB && c->sas_token_renewal_in_progress && reason == AZ_IOT_OK
-      && (new_state == AZ_IOT_CONN_STATE_RETRY_PENDING || new_state == AZ_IOT_CONN_STATE_SETTING_UP
+  az_iot_connection_state first = scope == AZ_IOT_CONN_SCOPE_HUB ? AZ_IOT_CONN_STATE_RETRY_PENDING
+                                                                 : AZ_IOT_CONN_STATE_DISCONNECTING;
+  return c->sas_token_renewal_in_progress[scope] && reason == AZ_IOT_OK
+      && (new_state == first || new_state == AZ_IOT_CONN_STATE_SETTING_UP
           || new_state == AZ_IOT_CONN_STATE_CONNECTING || new_state == AZ_IOT_CONN_STATE_CONNECTED);
 }
 
@@ -674,12 +685,14 @@ static void set_state_to(
   c->state[scope] = new_state;
   log_state_transition(c, scope, new_state, reason);
   bool is_token_renewal = is_sas_token_renewal_transition(c, scope, new_state, reason);
-  /* CONNECTED completes a renewal; any other transition of the hub ends it. */
-  if (scope == AZ_IOT_CONN_SCOPE_HUB
-      && (!is_token_renewal || new_state == AZ_IOT_CONN_STATE_CONNECTED))
+  /* CONNECTED completes a renewal; any other transition of the scope ends it. */
+  if (!is_token_renewal || new_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    c->sas_token_renewal_in_progress = false;
-    c->sas_token_renewal_disconnect_deadline_ms = 0;
+    c->sas_token_renewal_in_progress[scope] = false;
+    if (scope == AZ_IOT_CONN_SCOPE_HUB)
+    {
+      c->sas_token_renewal_disconnect_deadline_ms = 0;
+    }
   }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. A settled scope has no attempt
@@ -726,7 +739,8 @@ static void set_state_to(
     {
       recovery.classification = classify_failure(scope, reason);
     }
-    recovery.endpoint = (scope == AZ_IOT_CONN_SCOPE_DPS) ? dps_endpoint(c) : c->opts.host;
+    recovery.endpoint
+        = (scope == AZ_IOT_CONN_SCOPE_DPS) ? dps_endpoint(c) : c->opts.iothub_hostname;
     event.recovery = &recovery;
   }
   /* Detail rides only an event that is actually reporting a failure, and only
@@ -831,8 +845,9 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
       : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
 }
 
-/* Apply the caller's transport, WebSocket path and proxy to one connect, and
- * resolve the port: an explicit @p port wins, 0 means "derive from transport".
+/* Apply the caller's transport, WebSocket path and proxy to one connect for
+ * @p role, and resolve the port: an explicit @p port wins, 0 means "derive from
+ * transport".
  *
  * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
  * that needs a proxy or WebSockets to reach the hub needs them to reach DPS
@@ -841,10 +856,17 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
 static void resolve_connect_transport(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role,
     uint16_t port)
 {
   copts->transport = c->opts.transport;
   copts->websocket_path = c->opts.websocket_path;
+  /* The mqttv5 hub serves WebSockets on its own path; DPS and the mqttv3 hub keep
+   * the adapter default. */
+  if (copts->websocket_path == NULL && role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    copts->websocket_path = AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH;
+  }
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
@@ -1033,6 +1055,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
+static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind);
 
 /* Forward decls — used in dps_apply_deferred(). */
 static az_iot_result check_owned_string(size_t buf_cap, const char* s);
@@ -1098,6 +1121,17 @@ static bool provider_has_sign(const az_iot_certificate_provider* p)
 {
   return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
       && p->vtable->sign != NULL;
+}
+
+/**
+ * @brief True when @p p makes CSRs and stores the issued chains: the only
+ * source of CSRs for DPS enrollment and hub renewal.
+ */
+static bool provider_owns_csr(const az_iot_certificate_provider* p)
+{
+  return p != NULL && p->vtable != NULL && p->vtable->version >= CERT_PROVIDER_VTABLE_V2
+      && p->vtable->get_csr != NULL && p->vtable->release_csr != NULL
+      && p->vtable->store_issued_certificate != NULL;
 }
 
 /* Can this credential set possibly complete a TLS handshake? A client
@@ -1183,6 +1217,42 @@ static void keep_provider_trust(
   copts->tls.trusted_ca_path = mat->trusted_ca_path;
 }
 
+static void release_material(az_iot_connection_client* c, az_iot_connection_scope scope);
+
+/**
+ * @brief Holds @p mat, from a successful load(), for @p scope's attempt until
+ * release_material(). The adapter's TLS options point into it.
+ */
+static void hold_material(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_certificate_material* mat)
+{
+  release_material(c, scope);
+  c->held_material[scope] = *mat;
+  c->material_held[scope] = true;
+}
+
+/**
+ * @brief Releases the material @p scope holds, if any. Called once the
+ * adapter's connect() has copied it, when the attempt ends first, and from
+ * close() and deinit(): an observer may close() and deinit the provider from
+ * the CONNECTING announcement, before the attempt resumes.
+ */
+static void release_material(az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  az_iot_certificate_provider* p = c->opts.certificate_provider;
+  if (c->material_held[scope])
+  {
+    c->material_held[scope] = false;
+    if (p != NULL)
+    {
+      p->vtable->release(p, &c->held_material[scope]);
+    }
+    memset(&c->held_material[scope], 0, sizeof(c->held_material[scope]));
+  }
+}
+
 /** @brief Replaces the provider's trust anchors with opts.trusted_ca, when set. */
 static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_connect_options* copts)
 {
@@ -1237,18 +1307,18 @@ static bool is_span_safe_cstr(const char* s)
 }
 
 /**
- * @brief (Re)initializes c->hub_client from the current opts.host /
- * opts.client_id. Not cached: DPS (re)provisioning replaces both, and the
+ * @brief (Re)initializes c->hub_client from the current opts.iothub_hostname /
+ * opts.device_id. Not cached: DPS (re)provisioning replaces both, and the
  * client holds spans of their old lengths. Cheap: it only stores spans.
  */
 static bool ensure_hub_client(az_iot_connection_client* c)
 {
   c->hub_client_initialized = false;
-  if (is_span_safe_cstr(c->opts.host) && is_span_safe_cstr(c->opts.client_id)
+  if (is_span_safe_cstr(c->opts.iothub_hostname) && is_span_safe_cstr(c->opts.device_id)
       && (c->opts.model_id == NULL || strlen(c->opts.model_id) <= (size_t)INT32_MAX))
   {
-    az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.host);
-    az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.client_id);
+    az_span host_span = az_span_create_from_str((char*)(uintptr_t)c->opts.iothub_hostname);
+    az_span id_span = az_span_create_from_str((char*)(uintptr_t)c->opts.device_id);
     az_iot_hub_client_options hub_opts = az_iot_hub_client_options_default();
     if (is_nonempty_cstr(c->opts.model_id))
     {
@@ -1261,6 +1331,30 @@ static bool ensure_hub_client(az_iot_connection_client* c)
 }
 
 /**
+ * @brief Builds the mqttv3 hub CONNECT username
+ * "{host}/{client_id}/?api-version=HUB_API_VERSION&DeviceClientType=...[&model-id=...]",
+ * the azure-sdk-for-c layout with HUB_API_VERSION.
+ * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit @p buf.
+ */
+static az_iot_result hub_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
+{
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
+  az_iot_span_writer_append_str(&writer, c->opts.iothub_hostname);
+  az_iot_span_writer_append_str(&writer, "/");
+  az_iot_span_writer_append_str(&writer, c->opts.device_id);
+  az_iot_span_writer_append_str(
+      &writer, "/?api-version=" HUB_API_VERSION "&DeviceClientType=" HUB_DEVICE_CLIENT_TYPE);
+  if (is_nonempty_cstr(c->opts.model_id))
+  {
+    az_iot_span_writer_append_str(&writer, "&model-id=");
+    az_iot_span_writer_append_url_encoded(&writer, c->opts.model_id);
+  }
+  return az_iot_span_writer_end_str(&writer, NULL) == AZ_IOT_OK ? AZ_IOT_OK
+                                                                : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+}
+
+/**
  * @brief Whether the largest token for @p scope fits the token area,
  * every ID byte URL-encoded to 3. azure-sdk-for-c's SAS helpers check sizes
  * with preconditions, whose default handler never returns, so oversize input
@@ -1269,8 +1363,8 @@ static bool ensure_hub_client(az_iot_connection_client* c)
 static bool sas_token_fits(const az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   bool is_dps = scope == AZ_IOT_CONN_SCOPE_DPS;
-  const char* first = is_dps ? c->opts.dps.id_scope : c->opts.host;
-  const char* second = is_dps ? c->opts.dps.registration_id : c->opts.client_id;
+  const char* first = is_dps ? c->opts.dps.id_scope : c->opts.iothub_hostname;
+  const char* second = is_dps ? c->opts.dps.registration_id : c->opts.device_id;
   if (first == NULL || second == NULL)
   {
     return false;
@@ -1406,16 +1500,13 @@ static az_iot_result apply_sas_key(
   c->sas_token_in_use = (uint8_t)(scope + 1);
   c->auth[scope].source
       = secondary ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY : AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
-  if (!is_dps)
-  {
-    /* Both clocks: the monotonic one may stop while the device is suspended. */
-    uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
-    c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + delay_ms;
-    c->sas_token_expiry_ms = 0;
-    c->sas_token_expiry_unix_seconds = 0;
-    /* Rounded up: a truncated deadline would renew at once, every time. */
-    c->sas_token_renewal_due_unix_seconds = now + (delay_ms + 999u) / 1000u;
-  }
+  /* Both clocks: the monotonic one may stop while the device is suspended. */
+  uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth, lifetime);
+  c->sas_token_renewal_due_ms[scope] = az_iot_time_mono_ms() + delay_ms;
+  c->sas_token_expiry_ms[scope] = 0;
+  c->sas_token_expiry_unix_seconds[scope] = 0;
+  /* Rounded up: a truncated deadline would renew at once, every time. */
+  c->sas_token_renewal_due_unix_seconds[scope] = now + (delay_ms + 999u) / 1000u;
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
 }
@@ -1666,33 +1757,114 @@ static void note_identity_refusal(az_iot_connection_client* c, az_iot_result sta
   }
 }
 
-/** @brief Source after @p s in the order X.509, primary key, secondary key,
- * user-provided token, wrapping to X.509. */
-static az_iot_auth_source auth_source_after(az_iot_auth_source s)
-{
-  switch (s)
-  {
-    case AZ_IOT_AUTH_SOURCE_X509:
-      return AZ_IOT_AUTH_SOURCE_PRIMARY_KEY;
-    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
-      return AZ_IOT_AUTH_SOURCE_SECONDARY_KEY;
-    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
-      return AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
-    case AZ_IOT_AUTH_SOURCE_NONE:
-    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
-    default:
-      return AZ_IOT_AUTH_SOURCE_X509;
-  }
-}
-
 /** @brief az_iot_auth of @p scope. */
 static const az_iot_auth* auth_of(const az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   return scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
 }
 
+#if AZ_IOT_MAX_CERTS_PER_ROLE < 1 || AZ_IOT_MAX_CERTS_PER_ROLE > 255
+#error "AZ_IOT_MAX_CERTS_PER_ROLE must be 1 to 255"
+#endif
+
+/** @brief Credential sources in pass order: the X.509 certificates by index,
+ * then the primary key, the secondary key and the user-provided token. */
+#define AUTH_POSITIONS ((unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 3u)
+
+/** @brief Position of source @p s (certificate @p index for X.509) in pass order. */
+static unsigned auth_position(az_iot_auth_source s, uint8_t index)
+{
+  switch (s)
+  {
+    case AZ_IOT_AUTH_SOURCE_X509:
+      return index;
+    case AZ_IOT_AUTH_SOURCE_PRIMARY_KEY:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE;
+    case AZ_IOT_AUTH_SOURCE_SECONDARY_KEY:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u;
+    case AZ_IOT_AUTH_SOURCE_USER_PROVIDED:
+    case AZ_IOT_AUTH_SOURCE_NONE:
+    default:
+      return (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 2u;
+  }
+}
+
+/**
+ * @brief Loads @p scope's certificate at @p index: for DPS the bootstrap
+ * identity; for the hub at index 0 the operational identity, else the
+ * bootstrap one, and at later indexes the role index 0 resolved to.
+ */
+static az_iot_result load_x509(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint8_t index,
+    az_iot_certificate_material* mat)
+{
+  az_iot_certificate_provider* prov = c->opts.certificate_provider;
+  if (scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_BOOTSTRAP;
+    return prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, index, mat);
+  }
+  if (index != 0)
+  {
+    az_iot_cert_role role = c->auth[scope].x509_role == (uint8_t)AZ_IOT_CRED_OPERATIONAL
+        ? AZ_IOT_CRED_OPERATIONAL
+        : AZ_IOT_CRED_BOOTSTRAP;
+    return prov->vtable->load(prov, role, index, mat);
+  }
+  c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_OPERATIONAL;
+  az_iot_result op_lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, 0, mat);
+  az_iot_result lr = op_lr;
+  if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
+  {
+    c->auth[scope].x509_role = (uint8_t)AZ_IOT_CRED_BOOTSTRAP;
+    lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, 0, mat);
+    /* A bootstrap NOT_FOUND must not hide the operational error. */
+    if (lr == AZ_IOT_ERR_NOT_FOUND && op_lr != AZ_IOT_ERR_NOT_FOUND)
+    {
+      lr = op_lr;
+    }
+  }
+  return lr;
+}
+
+/**
+ * @brief For an attempt about to reuse a kept certificate past index 0
+ * (@p *first X.509, @p *x509_index > 0): checks index 0 again. When it is gone,
+ * or (hub) its role changed -- e.g. DPS issued an operational certificate --
+ * the pass restarts from the first source (@p *first NONE, index 0).
+ */
+static void recheck_kept_certificate(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_auth_source* first,
+    uint8_t* x509_index)
+{
+  if (*first != AZ_IOT_AUTH_SOURCE_X509 || *x509_index == 0)
+  {
+    return;
+  }
+  az_iot_certificate_provider* prov = c->opts.certificate_provider;
+  uint8_t role = c->auth[scope].x509_role;
+  az_iot_certificate_material mat = { 0 };
+  az_iot_result lr = load_x509(c, scope, 0, &mat);
+  c->auth[scope].x509_available = lr == AZ_IOT_OK;
+  if (lr == AZ_IOT_OK)
+  {
+    prov->vtable->release(prov, &mat);
+  }
+  if (lr != AZ_IOT_OK || c->auth[scope].x509_role != role)
+  {
+    c->auth[scope].first = AZ_IOT_AUTH_SOURCE_NONE;
+    c->auth[scope].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
+    *first = AZ_IOT_AUTH_SOURCE_NONE;
+    *x509_index = 0;
+  }
+}
+
 /** @brief Whether @p s can be tried for @p scope: X.509 when the last load()
- * returned a certificate, a key or token callback when it is set. */
+ * at index 0 returned a certificate, a key or token callback when it is set. */
 static bool auth_source_available(
     const az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -1714,29 +1886,82 @@ static bool auth_source_available(
 }
 
 /**
+ * @brief Whether position @p p (see auth_position()) can be tried for
+ * @p scope. A certificate past index 0 is probed with load(); the first index
+ * that fails ends the certificates (@p x509_end).
+ */
+static bool auth_position_available(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    unsigned p,
+    unsigned* x509_end)
+{
+  if (p >= (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE)
+  {
+    az_iot_auth_source s = p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? AZ_IOT_AUTH_SOURCE_PRIMARY_KEY
+        : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+                                                        : AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+    return auth_source_available(c, scope, s);
+  }
+  /* No certificate at index 0: none past it either. */
+  if (p == 0 || p >= *x509_end || !auth_source_available(c, scope, AZ_IOT_AUTH_SOURCE_X509))
+  {
+    return p == 0 && auth_source_available(c, scope, AZ_IOT_AUTH_SOURCE_X509);
+  }
+  az_iot_certificate_material mat = { 0 };
+  az_iot_result lr = load_x509(c, scope, (uint8_t)p, &mat);
+  if (lr != AZ_IOT_OK)
+  {
+    if (lr != AZ_IOT_ERR_NOT_FOUND)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "certificate provider load() of index %u failed (%s); no further certificates",
+          p,
+          az_iot_result_to_string(lr));
+    }
+    *x509_end = p;
+    return false;
+  }
+  c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+  return true;
+}
+
+/**
  * @brief After the service rejected the credential of the last attempt on
  * @p scope: selects the next source of the pass and returns true, or ends the
  * pass and returns false.
  *
  * A pass tries each available source once, from the one it began with, in the
- * order X.509, primary key, secondary key, user-provided token, wrapping. After a full pass the
- * next attempt starts at the first source.
+ * order X.509 (index 0, 1, ...), primary key, secondary key, user-provided
+ * token, wrapping. After a full pass the next attempt starts at the first
+ * source.
  */
 static bool auth_next_source(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
   az_iot_auth_source s = c->auth[scope].source;
-  az_iot_auth_source from = c->auth[scope].pass_from;
-  for (int i = 0; s != AZ_IOT_AUTH_SOURCE_NONE && from != AZ_IOT_AUTH_SOURCE_NONE && i < 3; ++i)
+  az_iot_auth_source from_s = c->auth[scope].pass_from;
+  if (s != AZ_IOT_AUTH_SOURCE_NONE && from_s != AZ_IOT_AUTH_SOURCE_NONE)
   {
-    s = auth_source_after(s);
-    if (s == from)
+    unsigned from = auth_position(from_s, c->auth[scope].pass_from_x509_index);
+    unsigned pos = auth_position(s, c->auth[scope].x509_index);
+    unsigned x509_end = (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE;
+    for (unsigned i = 1; i < AUTH_POSITIONS; ++i)
     {
-      break;
-    }
-    if (auth_source_available(c, scope, s))
-    {
-      c->auth[scope].first = s;
-      return true;
+      unsigned p = (pos + i) % AUTH_POSITIONS;
+      if (p == from)
+      {
+        break;
+      }
+      if (auth_position_available(c, scope, p, &x509_end))
+      {
+        c->auth[scope].first = p < (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? AZ_IOT_AUTH_SOURCE_X509
+            : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE      ? AZ_IOT_AUTH_SOURCE_PRIMARY_KEY
+            : p == (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE + 1u ? AZ_IOT_AUTH_SOURCE_SECONDARY_KEY
+                                                            : AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+        c->auth[scope].first_x509_index = p < (unsigned)AZ_IOT_MAX_CERTS_PER_ROLE ? (uint8_t)p : 0u;
+        return true;
+      }
     }
   }
   c->auth[scope].first = AZ_IOT_AUTH_SOURCE_NONE;
@@ -2086,20 +2311,17 @@ static void apply_user_token(
     copts->password = c->sas_token;
     c->sas_token_in_use = (uint8_t)(scope + 1);
     c->auth[scope].source = AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
-    if (scope == AZ_IOT_CONN_SCOPE_HUB)
-    {
-      /* valid_seconds counts from delivery, not from this use. */
-      uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth_of(c, scope), valid_seconds);
-      uint64_t left_ms = delay_ms > age_ms ? delay_ms - age_ms : 0;
-      uint64_t expiry_ms = now_ms + (valid_ms - age_ms);
-      c->sas_token_renewal_due_ms = now_ms + left_ms;
-      c->sas_token_renewal_due_unix_seconds
-          = unix_deadline_seconds(unix_seconds, (left_ms + 999u) / 1000u);
-      c->sas_token_expiry_ms = expiry_ms;
-      /* Rounded down: never later than the token's real expiry. */
-      c->sas_token_expiry_unix_seconds
-          = unix_deadline_seconds(unix_seconds, (expiry_ms - now_ms) / 1000u);
-    }
+    /* valid_seconds counts from delivery, not from this use. */
+    uint64_t delay_ms = get_sas_token_renewal_delay_ms(auth_of(c, scope), valid_seconds);
+    uint64_t left_ms = delay_ms > age_ms ? delay_ms - age_ms : 0;
+    uint64_t expiry_ms = now_ms + (valid_ms - age_ms);
+    c->sas_token_renewal_due_ms[scope] = now_ms + left_ms;
+    c->sas_token_renewal_due_unix_seconds[scope]
+        = unix_deadline_seconds(unix_seconds, (left_ms + 999u) / 1000u);
+    c->sas_token_expiry_ms[scope] = expiry_ms;
+    /* Rounded down: never later than the token's real expiry. */
+    c->sas_token_expiry_unix_seconds[scope]
+        = unix_deadline_seconds(unix_seconds, (expiry_ms - now_ms) / 1000u);
     /* The transport takes the token; it is wiped after connect(). */
     memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
     c->sas_token_holder = 0;
@@ -2109,9 +2331,8 @@ static void apply_user_token(
   az_iot_mqtt_connect_options timings = { 0 };
   resolve_connect_timings(c, &timings);
   /* Counted from when the request may be asked. */
-  uint64_t ask_ms = scope == AZ_IOT_CONN_SCOPE_HUB && c->sas_token_ask_after_ms > now_ms
-      ? c->sas_token_ask_after_ms
-      : now_ms;
+  uint64_t ask_ms
+      = c->sas_token_ask_after_ms[scope] > now_ms ? c->sas_token_ask_after_ms[scope] : now_ms;
   uint64_t deadline_ms = ask_ms + (uint64_t)timings.connect_timeout_seconds * 1000u;
   if (c->sas_token_request[scope].request_id != 0)
   {
@@ -2350,17 +2571,17 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
     if (c->dps_enrolling)
     {
       provider = c->opts.certificate_provider;
-      if (provider == NULL || provider->vtable->get_csr == NULL)
+      if (!provider_owns_csr(provider))
       {
         AZ_IOT_LOG_ERROR(
             AZ_IOT_LOG_COMPONENT_DPS,
             "register: request_operational_certificate is set but the certificate "
-            "provider does not implement get_csr");
+            "provider does not implement get_csr, release_csr and store_issued_certificate");
         stage_local_error(
             c,
             AZ_IOT_CONN_SCOPE_DPS,
             AZ_IOT_ERR_NOT_SUPPORTED,
-            "certificate provider has no get_csr()");
+            "certificate provider cannot make CSRs and store chains");
         return AZ_IOT_ERR_NOT_SUPPORTED;
       }
 
@@ -2368,8 +2589,18 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
           = provider->vtable->get_csr(provider, c->opts.dps.registration_id, &csr);
       if (csr_result != AZ_IOT_OK || csr.csr_base64 == NULL)
       {
-        AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
-        csr_result = (csr_result != AZ_IOT_OK) ? csr_result : AZ_IOT_ERR_INTERNAL;
+        if (csr_result == AZ_IOT_OK)
+        {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr returned no CSR");
+          provider->vtable->release_csr(provider, &csr);
+          csr_result = AZ_IOT_ERR_INTERNAL;
+        }
+        else
+        {
+          AZ_IOT_LOG_ERROR(
+              AZ_IOT_LOG_COMPONENT_DPS, "register: certificate provider get_csr failed");
+        }
         stage_local_error(
             c, AZ_IOT_CONN_SCOPE_DPS, csr_result, "certificate provider get_csr() failed");
         return csr_result;
@@ -2485,13 +2716,227 @@ static az_iot_result dps_enter_registration_state(az_json_reader* jr, az_span pa
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/** @brief Whether the current token is the property name @p name. */
+static bool dps_json_key_is(const az_json_reader* jr, const char* name)
+{
+  return jr->token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+      && az_json_token_is_text_equal(&jr->token, az_span_create_from_str((char*)(uintptr_t)name));
+}
+
+/**
+ * @brief Read an operation-level "failed" or "disabled" registration verdict.
+ *
+ * Fallback for the one body shape azure-sdk-for-c rejects that is still a
+ * verdict: a registrationState with deviceId but no assignedHub, which is how
+ * the service reports e.g. a failed reprovisioning. Every field that parser
+ * type-checks is checked the same way here, so any other malformed body is
+ * still rejected.
+ *
+ * @param payload Response body (non-empty).
+ * @param[out] out On success, operation_id, operation_status and
+ * registration_state (extended_error_code, error_message) are set; spans point
+ * into @p payload.
+ * @return true if @p payload is exactly one JSON object with a string
+ * operationId, a "failed" or "disabled" status, and a registrationState object
+ * with a string deviceId and no assignedHub.
+ */
+static bool dps_parse_operation_refusal(
+    az_span payload,
+    az_iot_provisioning_client_register_response* out)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+
+  az_span operation_id = AZ_SPAN_EMPTY;
+  bool have_status = false;
+  bool have_device_id = false;
+  az_iot_provisioning_client_operation_status status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+  /* registrationState values take precedence over top-level ones. */
+  uint32_t error_code = 0;
+  uint32_t state_error_code = 0;
+  bool have_state_error_code = false;
+  az_span error_message = AZ_SPAN_EMPTY;
+  az_span state_error_message = AZ_SPAN_EMPTY;
+  bool have_state_error_message = false;
+
+  for (;;)
+  {
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      break;
+    }
+    bool is_operation_id = dps_json_key_is(&jr, "operationId");
+    bool is_status = dps_json_key_is(&jr, "status");
+    bool is_state = dps_json_key_is(&jr, DPS_JSON_REGISTRATION_STATE);
+    bool is_code = dps_json_key_is(&jr, "errorCode");
+    bool is_message = dps_json_key_is(&jr, "message");
+    bool is_text
+        = is_message || dps_json_key_is(&jr, "trackingId") || dps_json_key_is(&jr, "timestampUtc");
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      return false;
+    }
+    if (is_operation_id)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      operation_id = jr.token.slice;
+    }
+    else if (is_status)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("failed")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_FAILED;
+      }
+      else if (az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("disabled")))
+      {
+        status = AZ_IOT_PROVISIONING_STATUS_DISABLED;
+      }
+      else
+      {
+        return false;
+      }
+      have_status = true;
+    }
+    else if (is_code)
+    {
+      if (az_result_failed(az_json_token_get_uint32(&jr.token, &error_code)))
+      {
+        return false;
+      }
+    }
+    else if (is_text)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        return false;
+      }
+      if (is_message)
+      {
+        error_message = jr.token.slice;
+      }
+    }
+    else if (is_state)
+    {
+      if (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
+        return false;
+      }
+      for (;;)
+      {
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (jr.token.kind == AZ_JSON_TOKEN_END_OBJECT)
+        {
+          break;
+        }
+        if (dps_json_key_is(&jr, "assignedHub"))
+        {
+          return false;
+        }
+        bool is_device_id = dps_json_key_is(&jr, "deviceId");
+        bool is_state_code = dps_json_key_is(&jr, "errorCode");
+        bool is_state_message = dps_json_key_is(&jr, "errorMessage");
+        bool is_state_text = dps_json_key_is(&jr, "lastUpdatedDateTimeUtc");
+        bool is_payload = dps_json_key_is(&jr, "payload");
+        if (az_result_failed(az_json_reader_next_token(&jr)))
+        {
+          return false;
+        }
+        if (is_state_code)
+        {
+          if (az_result_failed(az_json_token_get_uint32(&jr.token, &state_error_code)))
+          {
+            return false;
+          }
+          have_state_error_code = true;
+        }
+        else if (is_device_id || is_state_message || is_state_text)
+        {
+          if (jr.token.kind != AZ_JSON_TOKEN_STRING)
+          {
+            return false;
+          }
+          have_device_id = have_device_id || is_device_id;
+          if (is_state_message)
+          {
+            state_error_message = jr.token.slice;
+            have_state_error_message = true;
+          }
+        }
+        else if (
+            is_payload && jr.token.kind != AZ_JSON_TOKEN_NULL
+            && jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+        {
+          return false;
+        }
+        else if (az_result_failed(az_json_reader_skip_children(&jr)))
+        {
+          return false;
+        }
+      }
+    }
+    else if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
+      return false;
+    }
+  }
+  if (!have_status || !have_device_id || az_span_size(operation_id) <= 0)
+  {
+    return false;
+  }
+  /* Only insignificant whitespace may follow the object. */
+  az_span end_token = jr.token.slice;
+  uint8_t* begin = az_span_ptr(payload);
+  int32_t consumed = (int32_t)(az_span_ptr(end_token) - begin) + az_span_size(end_token);
+  for (int32_t i = consumed; i < az_span_size(payload); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return false;
+    }
+  }
+
+  out->operation_id = operation_id;
+  out->operation_status = status;
+  out->registration_state = (az_iot_provisioning_client_registration_state){ 0 };
+  out->registration_state.extended_error_code
+      = have_state_error_code ? state_error_code : error_code;
+  out->registration_state.error_message
+      = have_state_error_message ? state_error_message : error_message;
+  return true;
+}
+
 /* Record the connection profile from its verbatim wire form. The raw string is
  * always stored -- an unrecognised profile is exactly the case where the text
  * matters -- and only the enum degrades to UNKNOWN. A value too long for the
  * buffer is stored truncated and treated as unknown, which is correct: every
  * profile this SDK recognises is short, so an overlong one cannot be one of
  * them. */
-static void connection_profile_set(az_iot_connection_client* c, az_span raw)
+static void profile_record(
+    az_span raw,
+    az_iot_connection_profile* profile,
+    char* raw_buf,
+    size_t raw_cap,
+    bool* raw_truncated)
 {
   int32_t n = az_span_size(raw);
   if (n < 0)
@@ -2499,95 +2944,89 @@ static void connection_profile_set(az_iot_connection_client* c, az_span raw)
     n = 0;
   }
   bool truncated = false;
-  if ((size_t)n >= sizeof(c->connection_profile_raw))
+  if ((size_t)n >= raw_cap)
   {
-    n = (int32_t)(sizeof(c->connection_profile_raw) - 1);
+    n = (int32_t)(raw_cap - 1);
     truncated = true;
   }
   if (n > 0)
   {
-    memcpy(c->connection_profile_raw, az_span_ptr(raw), (size_t)n);
+    memcpy(raw_buf, az_span_ptr(raw), (size_t)n);
   }
-  c->connection_profile_raw[n] = '\0';
-  c->connection_profile_raw_truncated = truncated;
+  raw_buf[n] = '\0';
+  *raw_truncated = truncated;
 
   if (truncated)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_DPS,
         "connectionProfile is longer than %u bytes and was truncated to \"%s\"",
-        (unsigned)sizeof(c->connection_profile_raw),
-        c->connection_profile_raw);
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+        (unsigned)raw_cap,
+        raw_buf);
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V3_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
-  else if (strcmp(c->connection_profile_raw, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   }
   else
   {
-    c->connection_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+    *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   }
 }
 
-/* Development bridge while the DPS api-version that carries connectionProfile
- * is not deployed. It applies only when the property is absent/null; an actual
- * wire value always wins, so enabling this cannot mask service rollout. */
-static az_iot_result dps_apply_connection_profile_override(az_iot_connection_client* c)
+/** @brief Records @p raw as the profile of the hub @p c is bound to. */
+static void connection_profile_set(az_iot_connection_client* c, az_span raw)
 {
-  char value[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+  profile_record(
+      raw,
+      &c->connection_profile,
+      c->connection_profile_raw,
+      sizeof(c->connection_profile_raw),
+      &c->connection_profile_raw_truncated);
+}
 
-  if (az_iot_env_read(DPS_CONNECTION_PROFILE_OVERRIDE_ENV, value, sizeof(value)) != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_DPS, "" DPS_CONNECTION_PROFILE_OVERRIDE_ENV " is too long");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (value[0] == '\0')
-  {
-    return AZ_IOT_OK;
-  }
+/** @brief Records @p raw as the pending assignment's profile, adopted with its hub. */
+static void dps_assigned_profile_set(az_iot_connection_client* c, az_span raw)
+{
+  profile_record(
+      raw,
+      &c->dps_assigned_profile,
+      c->dps_assigned_profile_raw,
+      sizeof(c->dps_assigned_profile_raw),
+      &c->dps_assigned_profile_raw_truncated);
+}
 
-  if (strcmp(value, CONNECTION_PROFILE_MQTT_V3_STR) != 0
-      && strcmp(value, CONNECTION_PROFILE_MQTT_V5_STR) != 0)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "%s must be \"classic\" or \"mqttV5\", not \"%s\"",
-        DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-        value);
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  AZ_IOT_LOG_WARNF(
-      AZ_IOT_LOG_COMPONENT_DPS,
-      "connectionProfile was absent/null; applying development override %s=%s",
-      DPS_CONNECTION_PROFILE_OVERRIDE_ENV,
-      value);
-  connection_profile_set(c, az_span_create_from_str(value));
-  return AZ_IOT_OK;
+/** @brief Records the pending assignment's profile, as it is adopted. */
+static void dps_assigned_profile_commit(az_iot_connection_client* c)
+{
+  c->connection_profile = c->dps_assigned_profile;
+  memcpy(c->connection_profile_raw, c->dps_assigned_profile_raw, sizeof(c->connection_profile_raw));
+  c->connection_profile_raw_truncated = c->dps_assigned_profile_raw_truncated;
 }
 
 /* Read registrationState.connectionProfile from the DPS ASSIGNED payload.
  *
  * Absent or null is NOT an error -- the service contract documents it as
- * meaning "classic" -- so the caller is left with the MQTTv3 default it was
- * seeded with. Only a malformed payload fails here; an unrecognised *value*
- * fails later, at the point the session role is chosen, so the profile is
- * already recorded and readable when it does. */
+ * meaning "classic" -- so it leaves the MQTTv3 default set on entry. Only a malformed payload fails
+ * here; an unrecognised *value* fails later, at the point the session role is chosen, once the
+ * profile is adopted and readable. Written to the pending dps_assigned_profile* fields. */
 static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az_span payload)
 {
+  /* Each assignment starts from the default: an absent profile must not keep
+   * the one an earlier, failed assignment recorded. */
+  dps_assigned_profile_set(c, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+
   az_json_reader jr;
   az_iot_result r = dps_enter_registration_state(&jr, payload);
   if (r != AZ_IOT_OK)
   {
-    /* No registrationState at all: nothing to read, keep the default unless a
-     * development override was requested. */
-    return (r == AZ_IOT_ERR_NOT_FOUND) ? dps_apply_connection_profile_override(c) : r;
+    /* No registrationState at all: nothing to read, keep the default. */
+    return (r == AZ_IOT_ERR_NOT_FOUND) ? AZ_IOT_OK : r;
   }
 
   while (az_result_succeeded(az_json_reader_next_token(&jr))
@@ -2606,12 +3045,11 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
     {
       if (jr.token.kind == AZ_JSON_TOKEN_STRING)
       {
-        connection_profile_set(c, jr.token.slice);
+        dps_assigned_profile_set(c, jr.token.slice);
         return AZ_IOT_OK;
       }
-      /* null (or any non-string) resolves to the MQTTv3 default unless the
-       * development bridge explicitly supplies the profile. */
-      return dps_apply_connection_profile_override(c);
+      /* null (or any non-string) resolves to the MQTTv3 default. */
+      return AZ_IOT_OK;
     }
     if (jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT || jr.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
     {
@@ -2621,15 +3059,35 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
       }
     }
   }
-  return dps_apply_connection_profile_override(c);
+  return AZ_IOT_OK;
 }
 
-/* Parse registrationState.issuedCertificateChain (an array of base64 DER certs)
- * from the DPS ASSIGNED payload, PEM-wrap each entry, and hand the chain to the
+/**
+ * @brief Whether dps_apply_deferred() would adopt the parsed assignment: a
+ * supported profile the attached feature clients accept, and a hub and device id.
+ *
+ * @param[in] c Client, with dps_assigned_* already parsed.
+ * @return true if the assignment would be adopted.
+ */
+static bool dps_assignment_acceptable(const az_iot_connection_client* c)
+{
+  return (c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+          || c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      && (c->required_profile_refs == 0 || c->required_profile == c->dps_assigned_profile)
+      && is_nonempty_cstr(c->dps_assigned_hub) && is_nonempty_cstr(c->dps_assigned_device_id);
+}
+
+/* Parse registrationState.issuedCertificateChain (an array of base64 DER or PEM
+ * certs) from the DPS ASSIGNED payload and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
  * does not surface this field, so we walk the raw payload with az_json. */
 static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span payload)
 {
+  /* A truncated or malformed payload never reaches the provider. */
+  if (!az_iot_cert_util_json_is_complete(payload))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
   az_json_reader jr;
   az_iot_result entered = dps_enter_registration_state(&jr, payload);
   if (entered != AZ_IOT_OK)
@@ -2687,22 +3145,17 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   issued.certificates = certs;
   issued.count = count;
 
-  /* Persist via the provider (if capable) and/or notify the app (D4). The
-   * issued chain must be handled by at least one of the two. */
-  bool handled = false;
-  if (p && p->vtable && p->vtable->store_issued_certificate)
+  /* Store in the provider (open() guarantees it can), then notify the app with
+   * the outcome (D4). A failed store fails the registration. */
+  rc = p->vtable->store_issued_certificate(p, &issued);
+  if (rc != AZ_IOT_OK)
   {
-    rc = p->vtable->store_issued_certificate(p, &issued);
-    handled = (rc == AZ_IOT_OK);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_DPS, "storing the issued certificate failed (%d)", (int)rc);
   }
-  if (rc == AZ_IOT_OK && c->op_cert_cb)
+  if (c->op_cert_cb)
   {
-    c->op_cert_cb(&issued, c->op_cert_cb_ctx);
-    handled = true;
-  }
-  if (rc == AZ_IOT_OK && !handled)
-  {
-    rc = AZ_IOT_ERR_NOT_SUPPORTED;
+    c->op_cert_cb(&issued, rc, c->op_cert_cb_ctx);
   }
   return rc;
 }
@@ -2857,6 +3310,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_provisioning_client_register_response resp = { 0 };
       az_result ar = az_iot_provisioning_client_parse_received_topic_and_payload(
           &c->dps_prov, topic_span, payload_span, &resp);
+      /* ITEM_NOT_FOUND only comes from the body, so the topic (status,
+       * retry-after) was parsed. A failed/disabled verdict the SDK parser
+       * rejects is still a verdict. */
+      if (ar == AZ_ERROR_ITEM_NOT_FOUND && dps_parse_operation_refusal(payload_span, &resp))
+      {
+        ar = AZ_OK;
+      }
       if (az_result_failed(ar))
       {
         /* A registration response we cannot parse is not something waiting
@@ -2880,6 +3340,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         case AZ_IOT_PROVISIONING_STATUS_ASSIGNED:
         {
+          /* An issued chain is stored only from a complete payload; check it
+           * before any assignment field is read or cached, so a rejected
+           * payload leaves nothing (hub, profile) behind for the retry. */
+          if (c->dps_enrolling && !az_iot_cert_util_json_is_complete(payload_span))
+          {
+            dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+            return;
+          }
           int32_t hub_n = az_span_size(resp.registration_state.assigned_hub_hostname);
           int32_t dev_n = az_span_size(resp.registration_state.device_id);
           if (hub_n < 0 || (size_t)hub_n + 1 > sizeof(c->dps_assigned_hub) || dev_n < 0
@@ -2898,19 +3366,32 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
-          /* Which hub generation we were assigned to. Read before the issued
-           * cert so the profile is recorded even if the cert path fails. */
+          /* Which hub generation we were assigned to. Held pending and recorded
+           * only when the assignment is adopted (dps_apply_deferred()): until
+           * then the cached or saved hub, and its profile, still apply. */
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
           if (pr != AZ_IOT_OK)
           {
             dps_finalize(c, pr, false);
             return;
           }
-          if (c->dps_enrolling)
+          /* An assignment dps_apply_deferred() will reject keeps the stored
+           * certificate: it must stay paired with the adopted assignment. */
+          if (c->dps_enrolling && !dps_assignment_acceptable(c))
           {
+            AZ_IOT_LOG_WARN(
+                AZ_IOT_LOG_COMPONENT_DPS,
+                "the assignment will be rejected; not storing its issued certificate");
+            c->dps_cert_withheld = true;
+          }
+          else if (c->dps_enrolling)
+          {
+            /* Before the store: it runs the operational-certificate callback. */
+            c->dps_cert_awaits_adoption = true;
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)
             {
+              c->dps_cert_awaits_adoption = false;
               dps_finalize(c, sc, false);
               return;
             }
@@ -2927,7 +3408,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               "assigned hub=%s device_id=%s profile=%s",
               c->dps_assigned_hub,
               c->dps_assigned_device_id,
-              profile_name(c->connection_profile));
+              profile_name(c->dps_assigned_profile));
           if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
           {
             c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
@@ -2956,10 +3437,13 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           az_span err_msg = resp.registration_state.error_message;
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
-              "register: errorCode=%ld errorMessage=%.*s",
+              "register: errorCode=%ld errorMessage=%.*s operationId=%.*s",
               (long)resp.registration_state.extended_error_code,
               (int)az_span_size(err_msg),
-              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "");
+              az_span_size(err_msg) > 0 ? (const char*)az_span_ptr(err_msg) : "",
+              (int)az_span_size(resp.operation_id),
+              az_span_size(resp.operation_id) > 0 ? (const char*)az_span_ptr(resp.operation_id)
+                                                  : "");
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_DPS,
               "register: provisioning failed/disabled; DPS response: %.*s",
@@ -3119,7 +3603,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, 0);
+  resolve_connect_transport(c, &copts, AZ_IOT_MQTT_ROLE_DPS, 0);
   resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   copts.username = dps_username;
@@ -3149,15 +3633,20 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   if (c->opts.certificate_provider)
   {
     az_iot_certificate_material mat = { 0 };
-    az_iot_result lr = c->opts.certificate_provider->vtable->load(
-        c->opts.certificate_provider, AZ_IOT_CRED_BOOTSTRAP, &mat);
-    c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
+    uint8_t x509_index
+        = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_DPS].first_x509_index : 0u;
+    recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_DPS, &first, &x509_index);
+    az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_DPS, x509_index, &mat);
+    if (x509_index == 0)
+    {
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_available = lr == AZ_IOT_OK;
+    }
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
     if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
     {
-      /* The pass reached X.509 after its keys were rejected, and the
-       * certificate is gone: the pass ends, failing this attempt, rather than
-       * trying those keys again unpaced. */
+      /* The certificate selected (by fallback, or kept after connecting) is
+       * gone: the pass ends, failing this attempt, rather than trying the
+       * sources before it again unpaced. */
       AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
       c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -3174,7 +3663,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_DPS, &mat);
     }
     else if (lr == AZ_IOT_OK)
     {
@@ -3184,7 +3673,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       const char* key_query = strchr(key_uri, '?');
       AZ_IOT_LOG_DEBUGF(
           AZ_IOT_LOG_COMPONENT_DPS,
-          "bootstrap TLS ca=%s cert=%s key=%s key_uri=%.*s%s engine=%s",
+          "bootstrap TLS index=%u ca=%s cert=%s key=%s key_uri=%.*s%s engine=%s",
+          (unsigned)x509_index,
           text_or_none(mat.trusted_ca_path),
           text_or_none(mat.client_cert_path),
           text_or_none(mat.client_key_path),
@@ -3192,14 +3682,16 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
           key_uri,
           key_query != NULL ? "?<redacted>" : "",
           text_or_none(mat.crypto_engine_id));
-      c->opts.certificate_provider->vtable->release(c->opts.certificate_provider, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_DPS, &mat);
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, AZ_IOT_CONN_SCOPE_DPS);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, cr, "certificate material rejected");
         return cr;
       }
       c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_X509;
+      c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = x509_index;
       apply_trusted_ca(c, &copts);
     }
     else
@@ -3221,6 +3713,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, AZ_IOT_CONN_SCOPE_DPS);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -3234,6 +3727,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, AZ_IOT_CONN_SCOPE_DPS);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
@@ -3251,10 +3745,13 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index;
   }
 
   c->dps_mqtt = mc;
   c->dps_phase = DPS_PHASE_CONNECTING;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -3281,11 +3778,13 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
      * bookkeeping; recreating it here would undo the caller's own close. */
     c->dps_start_cancelled = true;
     sas_wipe_token(c);
+    release_material(c, AZ_IOT_CONN_SCOPE_DPS);
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, AZ_IOT_CONN_SCOPE_DPS);
   if (r != AZ_IOT_OK)
   {
     dps_teardown_mqtt(c);
@@ -3376,6 +3875,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
   if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = c->auth[AZ_IOT_CONN_SCOPE_DPS].source;
+    c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index;
   }
   az_iot_result r = dps_do_register_publish(c);
   if (r == AZ_IOT_OK)
@@ -3388,8 +3888,8 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
 /* Fail an assignment this client cannot use, and make sure the NEXT open()
  * goes back to DPS instead of to whatever assignment is still cached.
  *
- * Declining to adopt the new values is not enough on a re-provision: opts.host
- * and opts.client_id still name the hub from the previous assignment, and
+ * Declining to adopt the new values is not enough on a re-provision: opts.iothub_hostname
+ * and opts.device_id still name the hub from the previous assignment, and
  * open() skips DPS whenever a host is set. Without this the client would
  * connect to the stale hub -- and for a profile mismatch it would do so with
  * session_role already switched to the generation this very response was
@@ -3403,6 +3903,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
  * would retry it. */
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
+  c->dps_cert_awaits_adoption = false;
   c->needs_reprovision = true;
   fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_DPS, reason);
 }
@@ -3410,7 +3911,7 @@ static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 /* Process deferred DPS finalization. Called from _do_work() after process_loop.
  *
  * On success, tears down the DPS MQTT session, validates the assigned profile,
- * adopts host/client_id and starts the hub connect.
+ * adopts iothub_hostname/device_id and starts the hub connect.
  *
  * On failure, retries under the reconnection policy when one is configured and
  * the application has not closed the client, and transitions to FAULTED
@@ -3428,7 +3929,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
   bool have_assignment = c->dps_pending_have_assignment;
+  bool cert_withheld = c->dps_cert_withheld;
+  c->dps_cert_withheld = false;
   az_iot_result status = c->dps_pending_status;
+  if (status != AZ_IOT_OK || !have_assignment)
+  {
+    c->dps_cert_awaits_adoption = false;
+  }
   uint32_t retry_after_secs = c->dps_pending_retry_after_secs;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
@@ -3592,6 +4099,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
+  /* close() from a teardown event above cancels the assignment. */
+  if (c->close_count != closes)
+  {
+    return;
+  }
+  dps_assigned_profile_commit(c);
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
    * -- a device that appears to connect and then misbehaves is far worse to
@@ -3599,10 +4112,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * az_iot_connection_client_get_hub_profile() so the offending value can be
    * logged or reported.
    *
-   * Checked BEFORE the assignment is applied to opts.host / opts.client_id,
+   * Checked BEFORE the assignment is applied to opts.iothub_hostname / opts.device_id,
    * which is what keeps a rejected assignment from being adopted. Refusing to
    * adopt it is only half of the job, though: on a RE-provision the previous
-   * assignment is still cached in opts.host, and open() skips DPS whenever a
+   * assignment is still cached in opts.iothub_hostname, and open() skips DPS whenever a
    * host is set. reject_assignment() therefore also demands that the next
    * open() go back to DPS -- see its comment. */
   az_iot_result r;
@@ -3670,16 +4183,31 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     reject_assignment(c, r);
     return;
   }
+
+  /* The issued chain was withheld for an assignment that was to be rejected;
+   * the profile pins changed since. Adopting it would pair the assignment
+   * with the previous certificate. */
+  if (cert_withheld)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "the attached feature clients changed while the assignment was pending; registering "
+        "again");
+    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
+
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
+      &c->opts.iothub_hostname,
       c->dps_assigned_hub);
   (void)replace_owned_string(
       c->provisioned_device_id,
       sizeof(c->provisioned_device_id),
-      &c->opts.client_id,
+      &c->opts.device_id,
       c->dps_assigned_device_id);
+  c->dps_cert_awaits_adoption = false;
   drop_subscriptions_from_other_generations(c);
   /* A hub token asked for, or held, before this assignment may be for
    * another hub or device: the next attempt asks again. */
@@ -3702,6 +4230,27 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  if (c->assignment_cb)
+  {
+    az_iot_hub_profile assigned_profile = {
+      .connection_profile = c->connection_profile,
+      .connection_profile_raw = c->connection_profile_raw,
+      .connection_profile_raw_truncated = c->connection_profile_raw_truncated,
+    };
+    az_iot_dps_assignment assignment = {
+      .hub_hostname = c->opts.iothub_hostname,
+      .device_id = c->opts.device_id,
+      .profile = &assigned_profile,
+    };
+    c->assignment_cb(&assignment, c->assignment_cb_ctx);
+  }
+  /* A state callback above, or the assignment callback, closed or reopened the
+   * client: the assignment stays adopted, but no hub connect starts for it. */
+  if (c->close_count != closes || c->open_seq != seq)
+  {
+    return;
+  }
 
   /* The assignment is kept, but no hub attempt starts past the bound. */
   if (identity_recovery_expired(c))
@@ -4141,7 +4690,7 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUB_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -4184,7 +4733,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -4209,8 +4758,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   msg.payload = body;
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_0;
-  msg.user_properties = &type_prop;
-  msg.user_properties_count = 1;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   msg.correlation_data = c->presence.nonce;
   msg.correlation_data_len = PRESENCE_NONCE_LEN;
 
@@ -4239,7 +4787,7 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
 
-  const char* device_id = c->opts.client_id ? c->opts.client_id : "";
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
   const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUFFIX };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
@@ -4257,23 +4805,16 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
 
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, PRESENCE_TYPE_KEY, &type)
+      != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, PRESENCE_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
-    /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
-    return strncmp(up->value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
-        && (up->value[n] == '\0' || up->value[n] == ':');
+    return false;
   }
-  return false;
+  size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
+  /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
+  return type.value_len >= n && memcmp(type.value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
+      && (type.value_len == n || type.value[n] == ':');
 }
 
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
@@ -4372,7 +4913,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred_reason = evt->status;
       }
       else if (
-          c->sas_token_renewal_in_progress
+          c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]
           && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
           && !reason_is_identity_refusal(evt->status))
       {
@@ -4442,32 +4983,54 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_PUBLISH_ACK:
     {
       bool matched = false;
+      az_iot_publish_ack_callback cb = NULL;
+      void* ctx = NULL;
       for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
       {
         /* cb == NULL: reserved by a publish still in progress; not yet matchable. */
         if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].cb != NULL
             && c->pending_pubacks[i].packet_id == evt->packet_id)
         {
-          az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
-          void* ctx = c->pending_pubacks[i].user_ctx;
+          cb = c->pending_pubacks[i].cb;
+          ctx = c->pending_pubacks[i].user_ctx;
           c->pending_pubacks[i].in_use = false;
           c->pending_pubacks[i].cb = NULL;
           c->pending_pubacks[i].user_ctx = NULL;
           matched = true;
-          if (cb)
-          {
-            cb(evt->status, ctx);
-          }
           break;
         }
       }
-      if (!matched && evt->status != AZ_IOT_OK)
+      if (evt->status != AZ_IOT_OK)
       {
-        AZ_IOT_LOG_ERRORF(
-            AZ_IOT_LOG_COMPONENT_CONNECTION,
-            "publish with packet id %u failed (%s); it had no completion callback",
-            (unsigned)evt->packet_id,
-            az_iot_result_to_string(evt->status));
+        /* protocol_code 0 is "not reported": printed as "none" (precision 0 prints no digit). */
+        bool const has_code = evt->protocol_code != 0;
+        if (matched)
+        {
+          AZ_IOT_LOG_WARNF(
+              AZ_IOT_LOG_COMPONENT_CONNECTION,
+              "publish with packet id %u failed (%s, protocol code %s%.*X)",
+              (unsigned)evt->packet_id,
+              az_iot_result_to_string(evt->status),
+              has_code ? "0x" : "none",
+              has_code ? 2 : 0,
+              (unsigned)evt->protocol_code);
+        }
+        else
+        {
+          AZ_IOT_LOG_ERRORF(
+              AZ_IOT_LOG_COMPONENT_CONNECTION,
+              "publish with packet id %u failed (%s, protocol code %s%.*X); it had no "
+              "completion callback",
+              (unsigned)evt->packet_id,
+              az_iot_result_to_string(evt->status),
+              has_code ? "0x" : "none",
+              has_code ? 2 : 0,
+              (unsigned)evt->protocol_code);
+        }
+      }
+      if (cb)
+      {
+        cb(evt->status, ctx);
       }
       break;
     }
@@ -4566,15 +5129,15 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   mc->iface->set_inbound_cb(mc, on_mqtt_event, c);
 
   az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = c->opts.host;
-  copts.client_id = c->opts.client_id;
+  copts.host = c->opts.iothub_hostname;
+  copts.client_id = c->opts.device_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_connect_transport(c, &copts, c->session_role, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
-  /* Build hub MQTT username via azure-sdk-for-c (MQTTv3 only).
-   * MQTTv5 does not use the MQTTv3 username format. */
-  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
+  /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
+  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
   {
     /* IoT Hub requires the username: fail locally rather than CONNECT without it. */
     if (!ensure_hub_client(c))
@@ -4585,9 +5148,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
           c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_INVALID_ARG, "invalid host, client ID or model ID");
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    size_t ulen = 0;
-    if (az_result_failed(az_iot_hub_client_get_user_name(
-            &c->hub_client, c->hub_username, sizeof(c->hub_username), &ulen)))
+    if (hub_build_username(c, c->hub_username, sizeof(c->hub_username)) != AZ_IOT_OK)
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -4602,7 +5163,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     }
     copts.username = c->hub_username;
   }
-  else if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.host && c->opts.client_id)
+  else if (
+      c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
   {
     /* MQTTv5: generate the per-attempt connection nonce now so it
      * rides the CONNECT username (correlationId) and is reused as the birth
@@ -4650,24 +5213,20 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   {
     az_iot_certificate_provider* prov = c->opts.certificate_provider;
     az_iot_certificate_material mat = { 0 };
-    az_iot_result op_lr = prov->vtable->load(prov, AZ_IOT_CRED_OPERATIONAL, &mat);
-    az_iot_result lr = op_lr;
-    if (lr == AZ_IOT_ERR_NOT_FOUND || lr == AZ_IOT_ERR_NOT_INITIALIZED)
+    uint8_t x509_index
+        = first == AZ_IOT_AUTH_SOURCE_X509 ? c->auth[AZ_IOT_CONN_SCOPE_HUB].first_x509_index : 0u;
+    recheck_kept_certificate(c, AZ_IOT_CONN_SCOPE_HUB, &first, &x509_index);
+    az_iot_result lr = load_x509(c, AZ_IOT_CONN_SCOPE_HUB, x509_index, &mat);
+    if (x509_index == 0)
     {
-      lr = prov->vtable->load(prov, AZ_IOT_CRED_BOOTSTRAP, &mat);
-      /* A bootstrap NOT_FOUND must not hide the operational error. */
-      if (lr == AZ_IOT_ERR_NOT_FOUND && op_lr != AZ_IOT_ERR_NOT_FOUND)
-      {
-        lr = op_lr;
-      }
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
     }
-    c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_available = lr == AZ_IOT_OK;
     /* Only an absent certificate selects SAS; other failures fail the attempt. */
     if (lr == AZ_IOT_ERR_NOT_FOUND && first == AZ_IOT_AUTH_SOURCE_X509)
     {
-      /* The pass reached X.509 after its keys were rejected, and the
-       * certificate is gone: the pass ends, failing this attempt, rather than
-       * trying those keys again unpaced. */
+      /* The certificate selected (by fallback, or kept after connecting) is
+       * gone: the pass ends, failing this attempt, rather than trying the
+       * sources before it again unpaced. */
       AZ_IOT_LOG_WARN(
           AZ_IOT_LOG_COMPONENT_CONNECTION, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
@@ -4693,19 +5252,21 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       /* X.509 was rejected in this pass: SAS, with the provider's trust anchors. */
       keep_provider_trust(&copts, &mat);
-      prov->vtable->release(prov, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_HUB, &mat);
     }
     else
     {
       az_iot_result cr = apply_certificate_material(&copts, &mat, prov);
-      prov->vtable->release(prov, &mat);
+      hold_material(c, AZ_IOT_CONN_SCOPE_HUB, &mat);
       if (cr != AZ_IOT_OK)
       {
+        release_material(c, AZ_IOT_CONN_SCOPE_HUB);
         mc->iface->destroy(mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, cr, "certificate material rejected");
         return cr;
       }
       c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_X509;
+      c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = x509_index;
       apply_trusted_ca(c, &copts);
     }
   }
@@ -4717,6 +5278,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if (pending)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
+      release_material(c, AZ_IOT_CONN_SCOPE_HUB);
       mc->iface->destroy(mc);
       return AZ_IOT_OK;
     }
@@ -4730,6 +5292,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         &copts);
     if (sr != AZ_IOT_OK)
     {
+      release_material(c, AZ_IOT_CONN_SCOPE_HUB);
       mc->iface->destroy(mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
@@ -4747,6 +5310,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       || first == AZ_IOT_AUTH_SOURCE_NONE)
   {
     c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
+    c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from_x509_index = c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index;
   }
 
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
@@ -4755,11 +5319,13 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     AZ_IOT_LOG_DEBUG(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "attempt closed from the state callback; abandoned");
     sas_wipe_token(c);
+    release_material(c, AZ_IOT_CONN_SCOPE_HUB);
     mc->iface->destroy(mc);
     return AZ_IOT_OK;
   }
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
+  release_material(c, AZ_IOT_CONN_SCOPE_HUB);
   if (r != AZ_IOT_OK)
   {
     mc->iface->destroy(mc);
@@ -4782,7 +5348,7 @@ static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
   /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
   if (c->close_count != closes || c->open_seq != seq)
   {
-    c->sas_token_renewal_in_progress = false;
+    c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
@@ -4799,9 +5365,9 @@ static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
 static void start_sas_token_renewal(az_iot_connection_client* c, uint64_t now)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
-  c->sas_token_renewal_due_ms = 0;
-  c->sas_token_renewal_due_unix_seconds = 0;
-  c->sas_token_renewal_in_progress = true;
+  c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
+  c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
+  c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
   c->sas_token_renewal_disconnect_deadline_ms = now + SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS;
   if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
   {
@@ -4816,69 +5382,245 @@ static bool is_sas_token_source(az_iot_auth_source source)
       || source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
 }
 
-/** @brief Asks again for a hub renewal token after SAS_TOKEN_RENEWAL_RETRY_MS.
- * The session stays up meanwhile. */
-static void retry_sas_token_renewal_later(az_iot_connection_client* c)
+/** @brief Asks again for @p scope's renewal token after
+ * SAS_TOKEN_RENEWAL_RETRY_MS. The session stays up meanwhile. */
+static void retry_sas_token_renewal_later(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope)
 {
-  c->sas_token_renewal_due_ms = az_iot_time_mono_ms() + (uint64_t)SAS_TOKEN_RENEWAL_RETRY_MS;
-  c->sas_token_renewal_due_unix_seconds = 0;
+  c->sas_token_renewal_due_ms[scope] = az_iot_time_mono_ms() + (uint64_t)SAS_TOKEN_RENEWAL_RETRY_MS;
+  c->sas_token_renewal_due_unix_seconds[scope] = 0;
   /* Held even if the token expires first and the session reconnects. */
-  c->sas_token_ask_after_ms = c->sas_token_renewal_due_ms;
+  c->sas_token_ask_after_ms[scope] = c->sas_token_renewal_due_ms[scope];
 }
 
-/** @brief Opens a request for the hub's renewal token; do_work() asks for it
- * while the session stays up, and the renewal starts once it is READY. */
-static void request_sas_token_for_renewal(az_iot_connection_client* c)
+/** @brief Opens a request for @p scope's renewal token, or makes a held one
+ * it; do_work() asks for it while the session stays up, and the renewal starts
+ * once it is READY. */
+static void request_sas_token_for_renewal(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope)
 {
-  c->sas_token_renewal_due_ms = 0;
-  c->sas_token_renewal_due_unix_seconds = 0;
-  if (c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id == 0)
+  c->sas_token_renewal_due_ms[scope] = 0;
+  c->sas_token_renewal_due_unix_seconds[scope] = 0;
+  if (c->sas_token_request[scope].request_id == 0)
   {
-    open_sas_token_request(c, AZ_IOT_CONN_SCOPE_HUB, true, 0);
+    open_sas_token_request(c, scope, true, 0);
+  }
+  else if (c->sas_token_request[scope].held)
+  {
+    /* Supplied while the session could not be renewed (e.g. registering). */
+    c->sas_token_request[scope].held = false;
+    c->sas_token_request[scope].for_renewal = true;
   }
 }
 
-/** @brief Whether the hub's renewal token was delivered and awaits its renewal. */
-static bool sas_token_renewal_ready(const az_iot_connection_client* c)
+/** @brief Whether @p scope's renewal token was delivered and awaits its renewal. */
+static bool sas_token_renewal_ready(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope)
 {
-  return c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id != 0
-      && c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].for_renewal
-      && c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].ready
-      && c->sas_token_holder == (uint8_t)(AZ_IOT_CONN_SCOPE_HUB + 1)
-      && c->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+  return c->sas_token_request[scope].request_id != 0 && c->sas_token_request[scope].for_renewal
+      && c->sas_token_request[scope].ready && c->sas_token_holder == (uint8_t)(scope + 1)
+      && c->auth[scope].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
 }
 
 /**
- * @brief Called from do_work(): starts a SAS token renewal of the connected
- * hub when due or when its user-provided token is delivered, and reconnects one whose disconnect
- * was not reported in time.
+ * @brief Whether the provisioning session can be renewed now: up on a SAS
+ * token, wanted, and not registering (a registration ends or keeps it first).
  */
-static void process_sas_token_renewal(az_iot_connection_client* c)
+static bool dps_session_renewable(const az_iot_connection_client* c)
 {
-  az_iot_auth_source source = c->auth[AZ_IOT_CONN_SCOPE_HUB].source;
-  if (c->active_client == NULL || c->user_close
-      || c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED
-      || !is_sas_token_source(source))
+  return az_iot_connection_client__dps_session_ready(c) && !c->dps_pending_finalize
+      && !c->dps_registration_ref && dps_session_demanded(c)
+      && is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_DPS].source);
+}
+
+/** @brief Whether @p scope's session is up on a SAS token it may renew. */
+static bool sas_session_renewable(const az_iot_connection_client* c, az_iot_connection_scope scope)
+{
+  if (scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    return dps_session_renewable(c);
+  }
+  return c->active_client != NULL && !c->user_close
+      && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+      && is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_HUB].source);
+}
+
+/** @brief Whether @p scope's user-provided token reached its expiry. */
+static bool user_sas_token_expired(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint64_t now)
+{
+  return c->auth[scope].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED
+      && ((c->sas_token_expiry_ms[scope] != 0 && now >= c->sas_token_expiry_ms[scope])
+          || (c->sas_token_expiry_unix_seconds[scope] != 0
+              && unix_now(c) >= c->sas_token_expiry_unix_seconds[scope]));
+}
+
+/** @brief Whether @p scope's renewal is due. */
+static bool sas_token_renewal_due(
+    const az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint64_t now)
+{
+  return (c->sas_token_renewal_due_ms[scope] != 0 && now >= c->sas_token_renewal_due_ms[scope])
+      || (c->sas_token_renewal_due_unix_seconds[scope] != 0
+          && unix_now(c) >= c->sas_token_renewal_due_unix_seconds[scope]);
+}
+
+/**
+ * @brief Whether @p scope's delivered renewal token expired before its use;
+ * if so, it is asked for again and the session stays up.
+ */
+static bool renewal_token_expired_before_use(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    uint64_t now)
+{
+  if (user_token_age_ms(c, scope, now, unix_now(c))
+      < (uint64_t)c->sas_token_request[scope].valid_seconds * 1000u)
+  {
+    return false;
+  }
+  c->sas_token_request[scope].asked = false;
+  c->sas_token_request[scope].ready = false;
+  c->sas_token_holder = 0;
+  sas_wipe_token(c);
+  return true;
+}
+
+/**
+ * @brief Renews the provisioning session's SAS token: MQTT 3.1.1 cannot
+ * re-authenticate, so the session is closed and opened again at once, with no
+ * policy delay: DISCONNECTING, SETTING_UP, CONNECTING, then CONNECTED, flagged
+ * as a renewal. A delivered user-provided token is used; otherwise the new
+ * session waits for one, as any attempt.
+ */
+static void renew_dps_session(az_iot_connection_client* c)
+{
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_DPS, "renewing the SAS token; reconnecting");
+  az_iot_connection_scope dps = AZ_IOT_CONN_SCOPE_DPS;
+  c->sas_token_renewal_due_ms[dps] = 0;
+  c->sas_token_renewal_due_unix_seconds[dps] = 0;
+  c->sas_token_expiry_ms[dps] = 0;
+  c->sas_token_expiry_unix_seconds[dps] = 0;
+  if (c->sas_token_request[dps].request_id != 0)
+  {
+    /* The renewal request becomes the new attempt's. */
+    c->sas_token_request[dps].for_renewal = false;
+    c->sas_token_request[dps].held
+        = c->sas_token_request[dps].ready && c->sas_token_holder == (uint8_t)(dps + 1);
+    if (!c->sas_token_request[dps].held)
+    {
+      az_iot_mqtt_connect_options timings = { 0 };
+      resolve_connect_timings(c, &timings);
+      uint64_t now = az_iot_time_mono_ms();
+      uint64_t ask = c->sas_token_ask_after_ms[dps] > now ? c->sas_token_ask_after_ms[dps] : now;
+      c->sas_token_request[dps].deadline_ms
+          = ask + (uint64_t)timings.connect_timeout_seconds * 1000u;
+    }
+  }
+  c->sas_token_renewal_in_progress[dps] = true;
+  if (c->dps_mqtt->iface && c->dps_mqtt->iface->disconnect)
+  {
+    (void)c->dps_mqtt->iface->disconnect(c->dps_mqtt);
+  }
+  dps_teardown_mqtt(c);
+  /* As dps_close_session(): a session asked for from the callback starts anew. */
+  c->dps_phase = DPS_PHASE_NONE;
+  uint32_t closes = c->close_count;
+  set_state_to(c, dps, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  if (c->close_count != closes)
+  {
+    c->sas_token_renewal_in_progress[dps] = false;
+    return;
+  }
+  /* A session the callback started continues the renewal (set_state_to()
+   * keeps the flag through CONNECTED). */
+  if (c->state[dps] != AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    return;
+  }
+  if (!dps_session_demanded(c))
+  {
+    set_state_to(c, dps, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+    return;
+  }
+  az_iot_result r = dps_start(c);
+  if (r != AZ_IOT_OK && !c->dps_start_cancelled)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_DPS, "could not reopen the provisioning session (%d)", (int)r);
+    /* As a failed dps_session_ensure() start. */
+    dps_user_retry_schedule(c, 0);
+    set_state_to(c, dps, AZ_IOT_CONN_STATE_IDLE, r);
+  }
+}
+
+/**
+ * @brief Called from do_work(): renews the provisioning session's SAS token
+ * when due, when its user-provided token is delivered, or when that token
+ * expired with its replacement still pending.
+ */
+static void process_dps_sas_token_renewal(az_iot_connection_client* c)
+{
+  az_iot_connection_scope dps = AZ_IOT_CONN_SCOPE_DPS;
+  if (!dps_session_renewable(c))
   {
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
-  if (!c->sas_token_renewal_in_progress && sas_token_renewal_ready(c))
+  if (sas_token_renewal_ready(c, dps))
   {
-    if (user_token_age_ms(c, AZ_IOT_CONN_SCOPE_HUB, now, unix_now(c))
-        >= (uint64_t)c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].valid_seconds * 1000u)
+    if (!renewal_token_expired_before_use(c, dps, now))
     {
-      /* Expired before use: asked again; the session stays up. */
-      c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].asked = false;
-      c->sas_token_request[AZ_IOT_CONN_SCOPE_HUB].ready = false;
-      c->sas_token_holder = 0;
-      sas_wipe_token(c);
-      return;
+      renew_dps_session(c);
     }
-    start_sas_token_renewal(c, now);
     return;
   }
-  if (c->sas_token_renewal_in_progress)
+  if (user_sas_token_expired(c, dps, now))
+  {
+    renew_dps_session(c);
+    return;
+  }
+  if (sas_token_renewal_due(c, dps, now))
+  {
+    if (c->auth[dps].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED)
+    {
+      request_sas_token_for_renewal(c, dps);
+    }
+    else
+    {
+      renew_dps_session(c);
+    }
+  }
+}
+
+/**
+ * @brief Called from do_work(): starts a SAS token renewal of the connected
+ * hub when due or when its user-provided token is delivered, reconnects one
+ * whose disconnect was not reported in time.
+ */
+static void process_sas_token_renewal(az_iot_connection_client* c)
+{
+  az_iot_connection_scope hub = AZ_IOT_CONN_SCOPE_HUB;
+  if (!sas_session_renewable(c, hub))
+  {
+    return;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  if (!c->sas_token_renewal_in_progress[hub] && sas_token_renewal_ready(c, hub))
+  {
+    if (!renewal_token_expired_before_use(c, hub, now))
+    {
+      start_sas_token_renewal(c, now);
+    }
+    return;
+  }
+  if (c->sas_token_renewal_in_progress[hub])
   {
     if (c->sas_token_renewal_disconnect_deadline_ms != 0
         && now >= c->sas_token_renewal_disconnect_deadline_ms)
@@ -4891,23 +5633,18 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   }
   /* The token expired while its replacement is still pending: the session
    * ends, and the reconnect waits for the token. */
-  if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED
-      && ((c->sas_token_expiry_ms != 0 && now >= c->sas_token_expiry_ms)
-          || (c->sas_token_expiry_unix_seconds != 0
-              && unix_now(c) >= c->sas_token_expiry_unix_seconds)))
+  if (user_sas_token_expired(c, hub, now))
   {
-    c->sas_token_expiry_ms = 0;
-    c->sas_token_expiry_unix_seconds = 0;
+    c->sas_token_expiry_ms[hub] = 0;
+    c->sas_token_expiry_unix_seconds[hub] = 0;
     start_sas_token_renewal(c, now);
     return;
   }
-  if ((c->sas_token_renewal_due_ms != 0 && now >= c->sas_token_renewal_due_ms)
-      || (c->sas_token_renewal_due_unix_seconds != 0
-          && unix_now(c) >= c->sas_token_renewal_due_unix_seconds))
+  if (sas_token_renewal_due(c, hub, now))
   {
-    if (source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED)
+    if (c->auth[hub].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED)
     {
-      request_sas_token_for_renewal(c);
+      request_sas_token_for_renewal(c, hub);
     }
     else
     {
@@ -4941,7 +5678,7 @@ static void fail_sas_token_attempt(
       /* As any registration that failed to start: re-registered, or the
        * cached hub tried; see do_work(). */
       c->dps_registration_ref = false;
-      c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+      c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, reason);
     }
     else
@@ -5015,7 +5752,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
   if (c->dps_registration_ref)
   {
     c->dps_registration_ref = false;
-    c->needs_reprovision = c->needs_reprovision || c->opts.host == NULL;
+    c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
     schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, r);
     return;
   }
@@ -5102,14 +5839,13 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
     fail_expired_sas_token_request(c, scope);
     return;
   }
-  if (!c->sas_token_request[scope].asked && scope == AZ_IOT_CONN_SCOPE_HUB
-      && c->sas_token_ask_after_ms != 0)
+  if (!c->sas_token_request[scope].asked && c->sas_token_ask_after_ms[scope] != 0)
   {
-    if (az_iot_time_mono_ms() < c->sas_token_ask_after_ms)
+    if (az_iot_time_mono_ms() < c->sas_token_ask_after_ms[scope])
     {
       return;
     }
-    c->sas_token_ask_after_ms = 0;
+    c->sas_token_ask_after_ms[scope] = 0;
   }
   if (!c->sas_token_request[scope].asked)
   {
@@ -5124,7 +5860,7 @@ static void process_sas_token_request_of(az_iot_connection_client* c, az_iot_con
       clear_sas_token_request(c, scope);
       if (for_renewal)
       {
-        retry_sas_token_renewal_later(c);
+        retry_sas_token_renewal_later(c, scope);
         return;
       }
       stage_local_error(c, scope, error, "SAS token request failed");
@@ -5160,7 +5896,8 @@ static void process_sas_token_request(az_iot_connection_client* c)
 /**
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next SAS
  * token deadline: a token request's bound (none while one waits to be asked,
- * as do_work() asks it), the hub's renewal, or its renewal disconnect bound.
+ * as do_work() asks it), a session's renewal, or the hub's renewal disconnect
+ * bound.
  */
 static uint32_t limit_wait_to_sas_token_deadlines(
     const az_iot_connection_client* c,
@@ -5175,10 +5912,9 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       continue;
     }
     uint64_t due = c->sas_token_request[i].asked ? c->sas_token_request[i].deadline_ms : now;
-    if (!c->sas_token_request[i].asked && i == (int)AZ_IOT_CONN_SCOPE_HUB
-        && c->sas_token_ask_after_ms > now)
+    if (!c->sas_token_request[i].asked && c->sas_token_ask_after_ms[i] > now)
     {
-      due = c->sas_token_ask_after_ms;
+      due = c->sas_token_ask_after_ms[i];
     }
     if (due != 0)
     {
@@ -5186,40 +5922,45 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       remaining = left < remaining ? left : remaining;
     }
   }
-  if (c->active_client != NULL && !c->user_close
-      && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
-      && is_sas_token_source(c->auth[AZ_IOT_CONN_SCOPE_HUB].source))
+  const az_iot_connection_scope scopes[] = { AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_SCOPE_HUB };
+  for (size_t i = 0; i < sizeof(scopes) / sizeof(scopes[0]); ++i)
   {
-    uint64_t deadline = c->sas_token_renewal_in_progress
-        ? c->sas_token_renewal_disconnect_deadline_ms
-        : c->sas_token_renewal_due_ms;
-    if (!c->sas_token_renewal_in_progress && c->sas_token_expiry_ms != 0
-        && (deadline == 0 || c->sas_token_expiry_ms < deadline))
+    az_iot_connection_scope scope = scopes[i];
+    if (!sas_session_renewable(c, scope))
     {
-      deadline = c->sas_token_expiry_ms;
+      continue;
+    }
+    bool in_progress = c->sas_token_renewal_in_progress[scope];
+    uint64_t deadline = in_progress ? c->sas_token_renewal_disconnect_deadline_ms
+                                    : c->sas_token_renewal_due_ms[scope];
+    if (!in_progress && c->sas_token_expiry_ms[scope] != 0
+        && (deadline == 0 || c->sas_token_expiry_ms[scope] < deadline))
+    {
+      deadline = c->sas_token_expiry_ms[scope];
     }
     if (deadline != 0)
     {
       uint64_t left = deadline > now ? deadline - now : 0;
       remaining = left < remaining ? left : remaining;
     }
-    if (!c->sas_token_renewal_in_progress && sas_token_renewal_ready(c))
+    if (in_progress)
+    {
+      continue;
+    }
+    if (sas_token_renewal_ready(c, scope))
     {
       remaining = 0;
     }
-    if (!c->sas_token_renewal_in_progress)
+    uint64_t unix_seconds = unix_now(c);
+    const uint64_t unix_deadlines[]
+        = { c->sas_token_renewal_due_unix_seconds[scope], c->sas_token_expiry_unix_seconds[scope] };
+    for (size_t k = 0; k < sizeof(unix_deadlines) / sizeof(unix_deadlines[0]); ++k)
     {
-      uint64_t unix_seconds = unix_now(c);
-      const uint64_t unix_deadlines[]
-          = { c->sas_token_renewal_due_unix_seconds, c->sas_token_expiry_unix_seconds };
-      for (size_t k = 0; k < sizeof(unix_deadlines) / sizeof(unix_deadlines[0]); ++k)
+      if (unix_deadlines[k] != 0)
       {
-        if (unix_deadlines[k] != 0)
-        {
-          uint64_t left
-              = unix_deadlines[k] > unix_seconds ? (unix_deadlines[k] - unix_seconds) * 1000u : 0;
-          remaining = left < remaining ? left : remaining;
-        }
+        uint64_t left
+            = unix_deadlines[k] > unix_seconds ? (unix_deadlines[k] - unix_seconds) * 1000u : 0;
+        remaining = left < remaining ? left : remaining;
       }
     }
   }
@@ -5266,108 +6007,6 @@ static void apply_deferred(az_iot_connection_client* c)
     default:
       break;
   }
-}
-
-/* ------------------------------------------------------------------------- */
-/* MQTTv5 mock bypass (env-var-driven, for local dev/test only)            */
-/* ------------------------------------------------------------------------- */
-
-/* When AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (e.g. "localhost:8883"), skip DPS
- * entirely and connect to the mock MQTTv5 using MQTT v5. The device identity
- * comes from AZ_IOT_DEVICE_ID (must match the cert CN in the mock). This
- * avoids the need for a real DPS service during local development. */
-#define MQTT_V5_MOCK_ENDPOINT_ENV "AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT"
-#define MQTT_V5_MOCK_DEVICE_ID_ENV "AZ_IOT_DEVICE_ID"
-/** @brief Capacity for the mock endpoint ("host:port"). */
-#define MQTT_V5_MOCK_ENDPOINT_BUF 256
-
-static bool mock_mqtt_v5_configured(void)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  /* Too long still counts as set: the bypass then rejects it. */
-  return az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || endpoint[0] != '\0';
-}
-
-/* Parse "host:port" into host string and port. Writes host into out_host
- * (up to cap), returns the port, or 0 when the endpoint carries none -- 0 means
- * "derive from the transport" at connect time, so a DPS-assigned hub endpoint
- * does not pin the connection to 8883 when WebSockets were selected. */
-static uint16_t parse_host_port(const char* endpoint, char* out_host, size_t cap)
-{
-  uint16_t port = 0;
-  const char* colon = strrchr(endpoint, ':');
-  size_t host_len;
-  if (colon && colon != endpoint)
-  {
-    host_len = (size_t)(colon - endpoint);
-    unsigned long p = strtoul(colon + 1, NULL, 10);
-    if (p > 0 && p <= 65535)
-    {
-      port = (uint16_t)p;
-    }
-  }
-  else
-  {
-    host_len = strlen(endpoint);
-  }
-  if (host_len >= cap)
-  {
-    host_len = cap - 1;
-  }
-  memcpy(out_host, endpoint, host_len);
-  out_host[host_len] = '\0';
-  return port;
-}
-
-static az_iot_result apply_mqtt_v5_mock_bypass(az_iot_connection_client* c)
-{
-  char endpoint[MQTT_V5_MOCK_ENDPOINT_BUF];
-  char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-
-  if (az_iot_env_read(MQTT_V5_MOCK_ENDPOINT_ENV, endpoint, sizeof(endpoint)) != AZ_IOT_OK
-      || az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf)) != AZ_IOT_OK)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* Falls back to the DPS registration id when AZ_IOT_DEVICE_ID is unset. */
-  const char* device_id = id_buf[0] != '\0' ? id_buf : c->opts.dps.registration_id;
-
-  if (endpoint[0] == '\0' || !is_nonempty_cstr(device_id))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  char host[256];
-  uint16_t port = parse_host_port(endpoint, host, sizeof(host));
-
-  az_iot_result r = replace_owned_string(
-      c->provisioned_iot_hub_hostname,
-      sizeof(c->provisioned_iot_hub_hostname),
-      &c->opts.host,
-      host);
-  if (r == AZ_IOT_OK)
-  {
-    c->opts.port = port;
-    r = replace_owned_string(
-        c->provisioned_device_id, sizeof(c->provisioned_device_id), &c->opts.client_id, device_id);
-  }
-  if (r == AZ_IOT_OK)
-  {
-    c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    c->dps_phase = DPS_PHASE_DONE;
-
-    /* Warn, not debug: provisioning was skipped entirely, so anyone reading
-     * the log needs to know this session never talked to DPS. */
-    AZ_IOT_LOG_WARNF(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "mqttv5 mock bypass active; host=%s port=%u device=%s",
-        host,
-        (unsigned)(port ? port : default_port_for_transport(c->opts.transport)),
-        device_id);
-  }
-
-  return r;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -5492,10 +6131,10 @@ static size_t sas_key_refs(const az_iot_connection_client* c, sas_key_ref refs[4
     const az_iot_auth* auth
         = scope == AZ_IOT_CONN_SCOPE_DPS ? &c->opts.dps_auth : &c->opts.hub_auth;
     /* A group key derives per device: the registration ID, which DPS also
-     * makes the device ID, or client_id for a direct hub connection. */
+     * makes the device ID, or device_id for a direct hub connection. */
     const char* id = (scope == AZ_IOT_CONN_SCOPE_DPS || dps_configured(c))
         ? c->opts.dps.registration_id
-        : c->opts.client_id;
+        : c->opts.device_id;
     const char* keys[2] = { auth->sas.primary_key_base64, auth->sas.secondary_key_base64 };
     for (int k = 0; k < 2 && is_nonempty_cstr(keys[k]); ++k)
     {
@@ -5681,26 +6320,9 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_DPS] = AZ_IOT_CONN_STATE_IDLE;
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
-   * during their init (which happens before open()). When the mqttv5 mock is
-   * configured, also resolve the device_id so subscriptions can be built. */
-  if (mock_mqtt_v5_configured())
-  {
-    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
-    /* Resolve device_id from AZ_IOT_DEVICE_ID or DPS registration_id */
-    char id_buf[AZ_IOT_DPS_DEVICE_ID_BUF];
-    (void)az_iot_env_read(MQTT_V5_MOCK_DEVICE_ID_ENV, id_buf, sizeof(id_buf));
-    const char* dev_id = id_buf[0] != '\0' ? id_buf : client->opts.dps.registration_id;
-    if (is_nonempty_cstr(dev_id))
-    {
-      (void)replace_owned_string(
-          client->provisioned_device_id,
-          sizeof(client->provisioned_device_id),
-          &client->opts.client_id,
-          dev_id);
-    }
-  }
-  else if (
-      client->opts.host && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+   * during their init (which happens before open()). */
+  if (client->opts.iothub_hostname
+      && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
      * (host == NULL) the profile is learned during provisioning, so
@@ -5719,8 +6341,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
       client->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5
           ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
           : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
-  /* A direct connect has no service to ask, so the seed above is the answer. */
-  client->connection_profile_resolved = !dps_configured(client);
+  /* A direct connect has no service to ask, and a saved hub (host with DPS
+   * configured) declares its profile, so the seed above is the answer until a
+   * registration replaces it. */
+  client->connection_profile_resolved
+      = !dps_configured(client) || is_nonempty_cstr(client->opts.iothub_hostname);
   /* send_csr() needs opts.csr_payload_buffer, so its presence is what marks a device that may
    * renew. Reserving now, with nothing in flight, cannot fail and keeps every renewal tracked. */
   if (az_span_size(client->opts.csr_payload_buffer) > 0)
@@ -5770,17 +6395,13 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
     client->session_handlers[i].cb = NULL;
     client->session_handlers[i].user_ctx = NULL;
   }
+  release_material(client, AZ_IOT_CONN_SCOPE_DPS);
+  release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   teardown_active(client);
   dps_teardown_mqtt(client);
   sas_wipe(client);
-  /* dispatch is embedded; nothing to free. */
-  for (size_t i = 0; i < client->factory_count; ++i)
-  {
-    if (client->factories[i].destroy)
-    {
-      client->factories[i].destroy(client->factories[i].factory_ctx);
-    }
-  }
+  /* dispatch is embedded; nothing to free. Registered factories are borrowed;
+   * the application destroys them after this returns. */
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
 }
@@ -5795,24 +6416,15 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  /* Registering the same factory twice used to append a second entry. It was
-   * never reachable -- find_factory() returns the first match for a version --
-   * but deinit() walks the whole registry and calls every entry's destroy
-   * hook, so the duplicate freed the same factory_ctx a second time. A
-   * double free is a disproportionate punishment for a redundant call, and
-   * "register the transport" is exactly the kind of setup step an application
-   * repeats on a reconfigure path.
-   *
-   * An exact duplicate is therefore idempotent: the registry already routes
-   * this version to this factory, so there is nothing to do. Registering a
-   * DIFFERENT factory for a version that already has one still appends, and
-   * still loses to the first one at lookup -- that is a separate question
-   * about override semantics, not a memory-safety bug. */
+  /* An identical entry is redundant: find_factory() returns the first match
+   * for a version, so registering the same factory again is a no-op. A
+   * different factory for an already-registered version still appends and
+   * loses to the first one at lookup. */
   for (size_t i = 0; i < client->factory_count; ++i)
   {
     const az_iot_mqtt_factory* f = &client->factories[i];
     if (f->create == factory->create && f->factory_ctx == factory->factory_ctx
-        && f->destroy == factory->destroy && f->version == factory->version)
+        && f->version == factory->version)
     {
       return AZ_IOT_OK;
     }
@@ -6000,18 +6612,30 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+    az_iot_connection_client* client,
+    az_iot_dps_assignment_callback cb,
+    void* user_ctx)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->assignment_cb = cb;
+  client->assignment_cb_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
 /**
  * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
  *
  * @param[in] c Client.
- * @param[in] mock_bypass The mqttv5 mock bypass has replaced host, device id and profile.
  */
-static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass)
+static void log_open_summary(const az_iot_connection_client* c)
 {
   const char* transport
       = c->opts.transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET ? "websocket" : "tcp";
-  if (!mock_bypass && dps_configured(c)
-      && (!is_nonempty_cstr(c->opts.host) || c->needs_reprovision))
+  if (dps_configured(c) && (!is_nonempty_cstr(c->opts.iothub_hostname) || c->needs_reprovision))
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6029,12 +6653,11 @@ static void log_open_summary(const az_iot_connection_client* c, bool mock_bypass
   }
   AZ_IOT_LOG_INFOF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "open: sdk=%s route=%s host=%s device_id=%s profile=%s model_id=%s transport=%s",
+      "open: sdk=%s route=hub host=%s device_id=%s profile=%s model_id=%s transport=%s",
       az_iot_version_string(),
-      mock_bypass ? "mock" : "hub",
-      text_or_none(c->opts.host),
-      text_or_none(c->opts.client_id),
-      mock_bypass ? "mqttv5" : profile_name(c->connection_profile),
+      text_or_none(c->opts.iothub_hostname),
+      text_or_none(c->opts.device_id),
+      profile_name(c->connection_profile),
       text_or_none(c->opts.model_id),
       transport);
 }
@@ -6068,7 +6691,18 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
 
-  /* Rejected rather than quietly ignored: opts.host names the hub this option
+  /* A set iothub_hostname names a hub only when non-empty and paired with a
+   * device id, whichever route this open() takes. */
+  if (client->opts.iothub_hostname
+      && (!is_nonempty_cstr(client->opts.iothub_hostname)
+          || !is_nonempty_cstr(client->opts.device_id)))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "open: iothub_hostname is empty or set without device_id");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* Rejected rather than quietly ignored: opts.iothub_hostname names the hub this option
    * says does not exist, and an operational certificate is issued BY a
    * registration, which this device never performs. */
   if (client->opts.dps.provision_only)
@@ -6079,11 +6713,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
           AZ_IOT_LOG_COMPONENT_CONNECTION, "open: dps.provision_only requires dps.id_scope");
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (is_nonempty_cstr(client->opts.host))
+    if (is_nonempty_cstr(client->opts.iothub_hostname))
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "open: dps.provision_only is set, but opts.host names a hub");
+          "open: dps.provision_only is set, but opts.iothub_hostname names a hub");
       return AZ_IOT_ERR_INVALID_ARG;
     }
     if (client->opts.dps.request_operational_certificate)
@@ -6119,17 +6753,15 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   }
 
   /* CSR-based operational-cert enrollment (D2) requires a certificate_provider
-   * whose vtable exposes get_csr (ABI version >= 2). Fail fast otherwise. */
+   * that makes the CSR and stores the issued chain. Fail fast otherwise. */
   if (client->opts.dps.request_operational_certificate)
   {
-    az_iot_certificate_provider* p = client->opts.certificate_provider;
-    if (!p || !p->vtable || p->vtable->version < CERT_PROVIDER_VTABLE_V2
-        || p->vtable->get_csr == NULL)
+    if (!provider_owns_csr(client->opts.certificate_provider))
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "open: request_operational_certificate set but provider "
-          "does not support CSR enrollment");
+          "open: request_operational_certificate needs a certificate provider with "
+          "get_csr, release_csr and store_issued_certificate");
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     if (az_span_size(client->opts.csr_payload_buffer) <= 0)
@@ -6198,10 +6830,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       return AZ_IOT_ERR_NOT_SUPPORTED;
     }
     az_iot_certificate_material mat = { 0 };
-    az_iot_result lr = p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, &mat);
+    az_iot_result lr = p->vtable->load(p, AZ_IOT_CRED_OPERATIONAL, 0, &mat);
     if (lr != AZ_IOT_OK)
     {
-      lr = p->vtable->load(p, AZ_IOT_CRED_BOOTSTRAP, &mat);
+      lr = p->vtable->load(p, AZ_IOT_CRED_BOOTSTRAP, 0, &mat);
     }
     if (lr == AZ_IOT_OK)
     {
@@ -6235,40 +6867,22 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
-  /* --- MQTTv5 mock bypass: when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set,
-   * skip DPS and connect directly to the mock MQTTv5 (MQTT v5). ---
-   *
-   * Never for provision_only: the bypass makes a hostless client a hub
-   * connection, and an environment variable must not override a declared
-   * device shape. */
-  bool mock_bypass = mock_mqtt_v5_configured() && !client->opts.dps.provision_only;
-  if (mock_bypass)
+  /* As in close(): an open() from a teardown observer abandons the stored
+   * chain's assignment. */
+  if (client->dps_cert_awaits_adoption)
   {
-    az_iot_result r = apply_mqtt_v5_mock_bypass(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-      return r;
-    }
-    /* After the bypass, so the summary shows the endpoint actually used. */
-    log_open_summary(client, true);
-    /* host + client_id are set, session_role = HUB_MQTT_V5 → fall through
-     * to start_connect_attempt which will resolve the v5 factory. */
-    r = start_connect_attempt(client);
-    if (r != AZ_IOT_OK)
-    {
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, r);
-    }
-    return r;
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
   }
-  log_open_summary(client, false);
+
+  log_open_summary(client);
 
   /* No hub: bring the provisioning session up and stop there. No registration
    * ref is taken. The standing ref alone gives both behaviours the pump needs
    * -- do not collect it, and re-establish it if it drops.
    *
    * Before the registration route below, which would otherwise claim this
-   * client: opts.host is NULL on a provision_only device, so it matches. */
+   * client: opts.iothub_hostname is NULL on a provision_only device, so it matches. */
   if (client->opts.dps.provision_only)
   {
     client->dps_standing_ref = true;
@@ -6293,7 +6907,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
 
   /* DPS will be used for registration: no hub is cached, or a previous outcome
    * demanded re-provisioning even though one is. */
-  if (dps_configured(client) && (!client->opts.host || client->needs_reprovision))
+  if (dps_configured(client) && (!client->opts.iothub_hostname || client->needs_reprovision))
   {
     /* Raised before the start, so a session that is already up is adopted
      * rather than replaced. */
@@ -6341,11 +6955,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     return r;
   }
 
-  if (!client->opts.host || !client->opts.client_id)
+  if (!client->opts.iothub_hostname || !client->opts.device_id)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "open: host or client_id not set (and DPS not configured)");
+        "open: iothub_hostname or device_id not set, and no DPS registration is due");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -6386,6 +7000,8 @@ static void dps_close_session(az_iot_connection_client* c)
   dps_teardown_mqtt(c);
   c->dps_registration_ref = false;
   c->dps_phase = DPS_PHASE_NONE;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -6405,9 +7021,19 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   client->close_count++;
+  release_material(client, AZ_IOT_CONN_SCOPE_DPS);
+  release_material(client, AZ_IOT_CONN_SCOPE_HUB);
+  /* A stored chain whose assignment was never adopted: the cached hub no
+   * longer matches the certificate, so the next open() registers again. */
+  if (client->dps_cert_awaits_adoption)
+  {
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
+  }
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
-  client->sas_token_ask_after_ms = 0;
+  client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_DPS] = 0;
+  client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
 
   /* Before the idempotency check below, not after it. close() is the
    * documented exit from a settled refusal, and on a DPS-only device both
@@ -6767,8 +7393,7 @@ az_iot_result az_iot_connection_client_do_work(
     client->csr_op.in_use = false;
     puback_abandon(client, &client->csr_op);
     az_iot_csr_event evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.kind = AZ_IOT_CSR_FAILED;
+    csr_event_init(&evt, AZ_IOT_CSR_FAILED);
     evt.status = AZ_IOT_ERR_TIMEOUT;
     if (cb)
     {
@@ -6835,6 +7460,7 @@ az_iot_result az_iot_connection_client_do_work(
   }
 
   process_sas_token_renewal(client);
+  process_dps_sas_token_renewal(client);
 
   /* If we are waiting to reconnect and the deadline has passed, attempt it.
    *
@@ -6871,10 +7497,10 @@ az_iot_result az_iot_connection_client_do_work(
        * assignment to fall back to. That fallback exists so a failing
        * dps_start() cannot loop through provisioning forever -- but it is only
        * a fallback if the hub path has somewhere to go. With no assignment
-       * (opts.host still NULL) an ordinary retry would hand the adapter a NULL
+       * (opts.iothub_hostname still NULL) an ordinary retry would hand the adapter a NULL
        * endpoint and the client would never reach DPS again, so the demand
        * survives and the next retry provisions. */
-      client->needs_reprovision = (client->opts.host == NULL);
+      client->needs_reprovision = (client->opts.iothub_hostname == NULL);
       /* session_role stays the cached hub's: the provisioning session carries
        * its own role, and the hub fallback must keep the assigned protocol. */
       attempted = AZ_IOT_CONN_SCOPE_DPS;
@@ -6968,7 +7594,7 @@ az_iot_result az_iot_connection_client__set_session_role(
   return AZ_IOT_OK;
 }
 
-/* Internal helper used by both __set_host and __set_client_id. Copies `s` into
+/* Internal helper used by both __set_iothub_hostname and __set_device_id. Copies `s` into
  * the in-struct fixed buffer `owned_buf` (bounded by `buf_cap`) and points
  * `*opts_slot` (the live pointer the rest of the code reads) at it. No heap. */
 /* Whether `s` could be adopted into a buffer of `buf_cap` bytes. Split out of
@@ -7007,7 +7633,9 @@ static az_iot_result replace_owned_string(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* client, const char* host)
+az_iot_result az_iot_connection_client__set_iothub_hostname(
+    az_iot_connection_client* client,
+    const char* iothub_hostname)
 {
   if (!client)
   {
@@ -7020,13 +7648,13 @@ az_iot_result az_iot_connection_client__set_host(az_iot_connection_client* clien
   return replace_owned_string(
       client->provisioned_iot_hub_hostname,
       sizeof(client->provisioned_iot_hub_hostname),
-      &client->opts.host,
-      host);
+      &client->opts.iothub_hostname,
+      iothub_hostname);
 }
 
-az_iot_result az_iot_connection_client__set_client_id(
+az_iot_result az_iot_connection_client__set_device_id(
     az_iot_connection_client* client,
-    const char* client_id)
+    const char* device_id)
 {
   if (!client)
   {
@@ -7039,8 +7667,8 @@ az_iot_result az_iot_connection_client__set_client_id(
   return replace_owned_string(
       client->provisioned_device_id,
       sizeof(client->provisioned_device_id),
-      &client->opts.client_id,
-      client_id);
+      &client->opts.device_id,
+      device_id);
 }
 
 void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed)
@@ -7100,6 +7728,26 @@ az_iot_result az_iot_connection_client__presence_nonce(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client__birth_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if ((client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
+       && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+      || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -7228,16 +7876,24 @@ bool az_iot_connection_client__is_connected(const az_iot_connection_client* clie
 
 const char* az_iot_connection_client__device_id(const az_iot_connection_client* client)
 {
-  return client ? client->opts.client_id : NULL;
+  return client ? client->opts.device_id : NULL;
 }
 
 const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client)
 {
-  /* opts.host tracks the effective hub: the caller-supplied host for a direct
+  /* opts.iothub_hostname tracks the effective hub: the caller-supplied host for a direct
    * connection, or the DPS-assigned hub (copied into provisioned_iot_hub_hostname
    * and pointed-to here) after provisioning. NULL for a not-yet-provisioned
    * DPS-only client. */
-  return client ? client->opts.host : NULL;
+  return client ? client->opts.iothub_hostname : NULL;
+}
+
+const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client)
+{
+  /* Gated on opts.iothub_hostname so the pair is never half-set: a DPS client may carry a
+   * caller device_id that is not the device id DPS will assign. Both are
+   * replaced together when an assignment is adopted. */
+  return (client && client->opts.iothub_hostname) ? client->opts.device_id : NULL;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_get_hub_profile(
@@ -7276,6 +7932,11 @@ az_iot_result az_iot_connection_client__require_profile(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "a feature client for the other hub generation is already "
         "attached to this connection");
+    return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
+  }
+  /* A stored issued chain is committed to the pending assignment's profile. */
+  if (client->dps_cert_awaits_adoption && client->dps_assigned_profile != profile)
+  {
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
   if (client->connection_profile_resolved && client->connection_profile != profile)
@@ -8099,14 +8760,142 @@ static void drop_subscriptions_from_other_generations(az_iot_connection_client* 
 #define CSR_JSON_CERTIFICATES "certificates"
 #define CSR_JSON_ERROR_CODE "errorCode"
 #define CSR_JSON_RETRY_AFTER "retryAfter"
+#define CSR_JSON_TRACKING_ID "trackingId"
+#define CSR_JSON_INFO "info"
+#define CSR_JSON_CREDENTIAL_ERROR "credentialError"
+#define CSR_JSON_CREDENTIAL_MESSAGE "credentialMessage"
 
-/* Parse errorCode + retryAfter (both optional) from an error response body. */
-static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_retry)
+/** @brief Fields of a hub renewal error body; strings are NUL-terminated, "" when absent. */
+typedef struct csr_error_info
 {
-  *out_code = 0;
-  *out_retry = 0;
+  int32_t code; /**< errorCode; 0 when absent. */
+  int32_t retry_after_s; /**< retryAfter; 0 when absent. */
+  char credential_error[64]; /**< info.credentialError. */
+  char credential_message[256]; /**< info.credentialMessage. */
+  char tracking_id[128]; /**< trackingId. */
+} csr_error_info;
+
+/** @brief Zero @p evt, set its kind and its string fields to "". */
+static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind)
+{
+  memset(evt, 0, sizeof(*evt));
+  evt->kind = kind;
+  evt->credential_error = "";
+  evt->credential_message = "";
+  evt->tracking_id = "";
+}
+
+/**
+ * @brief Copy the string at the reader's token into @p dst with JSON escapes decoded, except
+ *        `\` `u` + 4 hex digits, kept as received. Left "" when the token is not a string or
+ *        does not fit: never truncated.
+ */
+static void csr_json_copy_string(const az_json_reader* jr, char* dst, size_t dst_size)
+{
+  /* The reader has one segment, so the slice is the whole value, already validated. */
+  const uint8_t* src = az_span_ptr(jr->token.slice);
+  int32_t src_len = az_span_size(jr->token.slice);
+  size_t out = 0;
+  dst[0] = '\0';
+  if (jr->token.kind != AZ_JSON_TOKEN_STRING)
+  {
+    return;
+  }
+  for (int32_t i = 0; i < src_len; ++i)
+  {
+    char ch = (char)src[i];
+    if (ch == '\\' && i + 1 < src_len)
+    {
+      ch = (char)src[++i];
+      switch (ch)
+      {
+        case 'b':
+          ch = '\b';
+          break;
+        case 'f':
+          ch = '\f';
+          break;
+        case 'n':
+          ch = '\n';
+          break;
+        case 'r':
+          ch = '\r';
+          break;
+        case 't':
+          ch = '\t';
+          break;
+        case 'u':
+          if (out + 2 >= dst_size)
+          {
+            dst[0] = '\0';
+            return;
+          }
+          dst[out++] = '\\';
+          break;
+        default: /* '"', '\\', '/' */
+          break;
+      }
+    }
+    if (out + 1 >= dst_size)
+    {
+      dst[0] = '\0';
+      return;
+    }
+    dst[out++] = ch;
+  }
+  dst[out] = '\0';
+}
+
+/**
+ * @brief Read `info.credentialError` and `info.credentialMessage`; the reader is at the
+ *        object's BEGIN_OBJECT and is left at its END_OBJECT.
+ * @return false if the body ended or is malformed.
+ */
+static bool csr_parse_error_info(az_json_reader* jr, csr_error_info* out)
+{
+  while (az_result_succeeded(az_json_reader_next_token(jr)))
+  {
+    if (jr->token.kind == AZ_JSON_TOKEN_END_OBJECT)
+    {
+      return true;
+    }
+    if (jr->token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
+    {
+      continue;
+    }
+    bool is_error
+        = az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR(CSR_JSON_CREDENTIAL_ERROR));
+    bool is_message
+        = az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR(CSR_JSON_CREDENTIAL_MESSAGE));
+    if (az_result_failed(az_json_reader_next_token(jr)))
+    {
+      return false;
+    }
+    if (is_error)
+    {
+      csr_json_copy_string(jr, out->credential_error, sizeof(out->credential_error));
+    }
+    else if (is_message)
+    {
+      csr_json_copy_string(jr, out->credential_message, sizeof(out->credential_message));
+    }
+    if ((jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT
+         || jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+        && az_result_failed(az_json_reader_skip_children(jr)))
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** @brief Parse a hub renewal error body into @p out. Every field is optional. */
+static void csr_parse_error(az_span payload, csr_error_info* out)
+{
+  memset(out, 0, sizeof(*out));
   az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+  if (az_span_size(payload) <= 0 /* az_json_reader_init() would spin on it */
+      || az_result_failed(az_json_reader_init(&jr, payload, NULL))
       || az_result_failed(az_json_reader_next_token(&jr))
       || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
   {
@@ -8121,22 +8910,36 @@ static void csr_parse_error(az_span payload, int32_t* out_code, int32_t* out_ret
     }
     bool is_code = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_ERROR_CODE));
     bool is_retry = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_RETRY_AFTER));
+    bool is_tracking
+        = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_TRACKING_ID));
+    bool is_info = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR(CSR_JSON_INFO));
     if (az_result_failed(az_json_reader_next_token(&jr)))
     {
       return;
     }
     if (is_code && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
-      if (az_result_failed(az_json_token_get_int32(&jr.token, out_code)))
+      if (az_result_failed(az_json_token_get_int32(&jr.token, &out->code)))
       {
-        *out_code = 0;
+        out->code = 0;
       }
     }
     else if (is_retry && jr.token.kind == AZ_JSON_TOKEN_NUMBER)
     {
-      if (az_result_failed(az_json_token_get_int32(&jr.token, out_retry)))
+      if (az_result_failed(az_json_token_get_int32(&jr.token, &out->retry_after_s)))
       {
-        *out_retry = 0;
+        out->retry_after_s = 0;
+      }
+    }
+    else if (is_tracking && jr.token.kind == AZ_JSON_TOKEN_STRING)
+    {
+      csr_json_copy_string(&jr, out->tracking_id, sizeof(out->tracking_id));
+    }
+    else if (is_info && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
+    {
+      if (!csr_parse_error_info(&jr, out))
+      {
+        return;
       }
     }
     else if (
@@ -8174,13 +8977,40 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
       c->csr_op.request_id,
       az_iot_result_to_string(status));
   az_iot_csr_event evt;
-  memset(&evt, 0, sizeof(evt));
-  evt.kind = AZ_IOT_CSR_FAILED;
+  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
   evt.status = status;
   if (cb)
   {
     cb(&evt, uc);
   }
+}
+
+/**
+ * @brief Store a hub-issued chain in the certificate provider. Never touches the
+ * live session: on failure the previous credential stays in use for the next
+ * connect.
+ *
+ * @return AZ_IOT_OK if stored, else the provider's error (AZ_IOT_ERR_NOT_SUPPORTED
+ * if the provider can no longer store).
+ */
+static az_iot_result csr_store_issued(
+    az_iot_connection_client* c,
+    const az_iot_issued_certificate* issued)
+{
+  az_iot_certificate_provider* p = c->opts.certificate_provider;
+  if (!provider_owns_csr(p))
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  az_iot_result rc = p->vtable->store_issued_certificate(p, issued);
+  if (rc != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "storing the renewed certificate failed (%s); keeping the current one",
+        az_iot_result_to_string(rc));
+  }
+  return rc;
 }
 
 /* Inbound handler for $iothub/credentials/res/{status}/?$rid={rid}. */
@@ -8192,20 +9022,41 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  /* Parse the status code and $rid from the topic. */
+  /* Parse "<status>/?<properties>" after the prefix: a 3-digit status, then
+   * $rid as one of the '&'-separated properties. Anything else is not a
+   * response to this client's request. */
   const char* p = msg->topic + (sizeof(CSR_RES_PREFIX) - 1);
   int status = 0;
-  while (*p >= '0' && *p <= '9')
+  int digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 3)
   {
     status = status * 10 + (*p - '0');
     ++p;
+    ++digits;
   }
-  const char* rid = strstr(p, "$rid=");
+  if (digits != 3 || p[0] != '/' || p[1] != '?')
+  {
+    return;
+  }
+  p += 2;
+  const char* rid = NULL;
+  for (const char* prop = p; prop != NULL;)
+  {
+    if (strncmp(prop, "$rid=", 5) == 0)
+    {
+      rid = prop + 5;
+      break;
+    }
+    prop = strchr(prop, '&');
+    if (prop != NULL)
+    {
+      ++prop; /* past the separator; empty properties are skipped in turn */
+    }
+  }
   if (!rid)
   {
     return;
   }
-  rid += 5;
   size_t rid_len = strcspn(rid, "&");
   if (rid_len != strlen(c->csr_op.request_id) || strncmp(rid, c->csr_op.request_id, rid_len) != 0)
   {
@@ -8214,9 +9065,12 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 
   az_iot_csr_callback cb = c->csr_op.cb;
   void* uc = c->csr_op.user_ctx;
-  az_span payload = az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len);
+  /* An empty message may carry a NULL payload: az_span_create() must not see it. */
+  az_span payload = (msg->payload != NULL && msg->payload_len > 0)
+      ? az_span_create((uint8_t*)(uintptr_t)msg->payload, (int32_t)msg->payload_len)
+      : AZ_SPAN_EMPTY;
   az_iot_csr_event evt;
-  memset(&evt, 0, sizeof(evt));
+  csr_event_init(&evt, AZ_IOT_CSR_ACCEPTED);
 
   if (status == 202)
   {
@@ -8243,7 +9097,9 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     size_t count = 0;
     az_iot_result rc = AZ_IOT_ERR_PROTOCOL;
     az_json_reader jr;
-    if (az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
+    /* A truncated or malformed response is never treated as ISSUED. */
+    if (az_iot_cert_util_json_is_complete(payload)
+        && az_result_succeeded(az_json_reader_init(&jr, payload, NULL))
         && az_result_succeeded(az_json_reader_next_token(&jr))
         && jr.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
     {
@@ -8288,6 +9144,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       evt.kind = AZ_IOT_CSR_ISSUED;
       evt.status = AZ_IOT_OK;
       evt.issued = &issued;
+      evt.store_status = csr_store_issued(c, &issued);
       if (cb)
       {
         cb(&evt, uc);
@@ -8307,12 +9164,22 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
 
   /* Error response (4xx/5xx). */
   {
-    int32_t code = 0, retry = 0;
-    csr_parse_error(payload, &code, &retry);
+    csr_error_info err;
+    csr_parse_error(payload, &err);
     evt.kind = AZ_IOT_CSR_FAILED;
     evt.status = AZ_IOT_ERR_MQTT;
-    evt.service_code = code;
-    evt.retry_after_s = (uint32_t)(retry > 0 ? retry : 0);
+    evt.service_code = err.code;
+    evt.retry_after_s = (uint32_t)(err.retry_after_s > 0 ? err.retry_after_s : 0);
+    evt.credential_error = err.credential_error;
+    evt.credential_message = err.credential_message;
+    evt.tracking_id = err.tracking_id;
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "certificate renewal failed: status=%d errorCode=%d credentialError=%s trackingId=%s",
+        status,
+        (int)err.code,
+        err.credential_error[0] != '\0' ? err.credential_error : "-",
+        err.tracking_id[0] != '\0' ? err.tracking_id : "-");
     if (cb)
     {
       cb(&evt, uc);
@@ -8320,39 +9187,24 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 }
 
-AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
+/**
+ * @brief Validate @p csr_base64, then subscribe (once), build and publish the
+ * renewal request, and open the in-flight slot.
+ */
+static az_iot_result csr_publish(
     az_iot_connection_client* client,
-    const az_iot_certificate_signing_request* csr,
+    const char* csr_base64,
+    const char* device_id,
     const char* request_id,
-    const char* replace,
-    az_iot_csr_callback cb,
-    void* user_ctx)
+    const char* replace)
 {
-  if (!client || !csr || !csr->csr_base64 || !cb)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (!az_iot_connection_client__is_connected(client))
-  {
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
-  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
-  }
-  if (client->csr_op.in_use)
-  {
-    return AZ_IOT_ERR_BUSY;
-  }
-  if (az_span_size(client->opts.csr_payload_buffer) <= 0)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
-  }
-
   /* Validate the CSR: base64 and within the 8 KB service cap. */
   size_t csr_len = 0;
-  if (!az_iot_cert_util_is_base64(csr->csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
+  if (!az_iot_cert_util_is_base64(csr_base64, &csr_len) || csr_len > CSR_MAX_BASE64)
   {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: the certificate provider's CSR is not base64 or exceeds 8 KB");
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
@@ -8392,15 +9244,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   }
 
   /* Build the request body into the caller-provided payload buffer. */
-  const char* device_id = az_iot_connection_client__device_id(client);
-  if (!device_id)
-  {
-    device_id = "";
-  }
   char* body = (char*)az_span_ptr(client->opts.csr_payload_buffer);
   size_t body_len = 0;
   const char* body_parts[]
-      = { CSR_RENEW_BODY_ID_PREFIX,     device_id, CSR_RENEW_BODY_CSR_INFIX, csr->csr_base64,
+      = { CSR_RENEW_BODY_ID_PREFIX,     device_id, CSR_RENEW_BODY_CSR_INFIX, csr_base64,
           CSR_RENEW_BODY_REPLACE_INFIX, replace,   CSR_RENEW_BODY_SUFFIX };
   /* Without a replacement id the body stops after the csr field, so the last
    * three parts collapse to the closing brace. */
@@ -8432,8 +9279,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_1;
 
-  client->csr_op.cb = cb;
-  client->csr_op.user_ctx = user_ctx;
   client->csr_op.in_use = true;
   client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
 
@@ -8445,6 +9290,73 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
     return r;
   }
   return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
+    az_iot_connection_client* client,
+    const char* request_id,
+    const char* replace,
+    az_iot_csr_callback cb,
+    void* user_ctx)
+{
+  if (!client || !cb)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!az_iot_connection_client__is_connected(client))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
+  }
+  if (client->csr_op.in_use)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  if (az_span_size(client->opts.csr_payload_buffer) <= 0)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE; /* caller must provide opts.csr_payload_buffer */
+  }
+  az_iot_certificate_provider* provider = client->opts.certificate_provider;
+  if (!provider_owns_csr(provider))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: the certificate provider does not implement get_csr, release_csr and "
+        "store_issued_certificate");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  const char* device_id = az_iot_connection_client__device_id(client);
+  if (!device_id)
+  {
+    device_id = "";
+  }
+  az_iot_certificate_signing_request csr = { 0 };
+  az_iot_result r = provider->vtable->get_csr(provider, device_id, &csr);
+  if (r != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "send_csr: certificate provider get_csr failed (%s)",
+        az_iot_result_to_string(r));
+    return r;
+  }
+  if (!csr.csr_base64)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "send_csr: certificate provider get_csr returned no CSR");
+    provider->vtable->release_csr(provider, &csr);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+
+  client->csr_op.cb = cb;
+  client->csr_op.user_ctx = user_ctx;
+  r = csr_publish(client, csr.csr_base64, device_id, request_id, replace);
+  provider->vtable->release_csr(provider, &csr);
+  return r;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client)
@@ -8602,9 +9514,9 @@ static az_iot_result check_sas_token_identity(
   }
   else
   {
-    parts[0] = c->opts.host;
+    parts[0] = c->opts.iothub_hostname;
     parts[1] = "/devices/";
-    parts[2] = c->opts.client_id;
+    parts[2] = c->opts.device_id;
   }
   if (!is_nonempty_cstr(parts[0]) || !is_nonempty_cstr(parts[2]))
   {
@@ -8669,10 +9581,9 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_update_sas_token(
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  /* A hub session on a user-provided token is renewed with it. */
-  bool renew = scope == AZ_IOT_CONN_SCOPE_HUB && client->active_client != NULL
-      && !client->user_close && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
-      && client->auth[AZ_IOT_CONN_SCOPE_HUB].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
+  /* A session on a user-provided token is renewed with it. */
+  bool renew = sas_session_renewable(client, scope)
+      && client->auth[scope].source == AZ_IOT_AUTH_SOURCE_USER_PROVIDED;
   if (client->sas_token_request[scope].request_id == 0)
   {
     open_sas_token_request(client, scope, renew, 0);

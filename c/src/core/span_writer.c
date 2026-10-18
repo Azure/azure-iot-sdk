@@ -8,6 +8,8 @@
 
 #include "internal/span_writer.h"
 
+#include <azure/core/az_base64.h>
+
 /* Longest uint32_t in decimal is 4294967295: ten digits. */
 #define AZ_IOT_SPAN_WRITER_DECIMAL_DIGITS_MAX 10
 
@@ -179,6 +181,45 @@ void az_iot_span_writer_append_url_encoded(az_iot_span_writer* writer, const cha
   }
 }
 
+void az_iot_span_writer_append_base64(
+    az_iot_span_writer* writer,
+    const uint8_t* data,
+    size_t length)
+{
+  if (length == 0)
+  {
+    return;
+  }
+  if (data == NULL)
+  {
+    writer_fail(writer, AZ_IOT_ERR_INVALID_ARG);
+    return;
+  }
+  /* Every 3 bytes become 4, so the encoded length must fit int32_t. */
+  if (length > (size_t)(INT32_MAX / 4) * 3u)
+  {
+    writer_fail(writer, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    return;
+  }
+  int32_t encoded_length = (int32_t)((length + 2u) / 3u * 4u);
+  uint8_t* cursor = writer_reserve(writer, encoded_length);
+  if (cursor == NULL)
+  {
+    return;
+  }
+  /* Both spans are non-empty and the destination holds the whole encoding, so
+   * az_base64_encode()'s preconditions hold. */
+  int32_t written = 0;
+  if (az_result_failed(az_base64_encode(
+          az_span_create(cursor, encoded_length),
+          az_span_create((uint8_t*)(uintptr_t)data, (int32_t)length),
+          &written))
+      || written != encoded_length)
+  {
+    writer_fail(writer, AZ_IOT_ERR_INTERNAL);
+  }
+}
+
 /* Value of one hexadecimal digit, or -1 when @p c is not one. */
 static int hex_digit_value(uint8_t c)
 {
@@ -195,6 +236,55 @@ static int hex_digit_value(uint8_t c)
     return c - 'a' + 10;
   }
   return -1;
+}
+
+int az_iot_url_decode_byte(const char* value, size_t length, size_t* pos)
+{
+  const uint8_t* source = (const uint8_t*)value;
+  if (source[*pos] != (uint8_t)'%')
+  {
+    return source[(*pos)++];
+  }
+  /* A truncated or non-hexadecimal escape is rejected rather than passed
+   * through: the service always sends well-formed encoding, so a bad one means
+   * the input was not what we think it is, and inventing a plausible value from
+   * it would hand the application data that was never sent. */
+  if (length - *pos < 3)
+  {
+    return -1;
+  }
+  int hi = hex_digit_value(source[*pos + 1]);
+  int lo = hex_digit_value(source[*pos + 2]);
+  if (hi < 0 || lo < 0)
+  {
+    return -1;
+  }
+  *pos += 3;
+  return (hi << 4) | lo;
+}
+
+AZ_NODISCARD az_iot_result
+az_iot_url_decoded_length(const char* value, size_t length, bool reject_nul, size_t* out_length)
+{
+  size_t decoded = 0;
+  for (size_t pos = 0; pos < length; ++decoded)
+  {
+    int b = az_iot_url_decode_byte(value, length, &pos);
+    if (b < 0 || (reject_nul && b == 0))
+    {
+      return AZ_IOT_ERR_PROTOCOL;
+    }
+  }
+  *out_length = decoded;
+  return AZ_IOT_OK;
+}
+
+void az_iot_url_decode_into(const char* value, size_t length, uint8_t* out)
+{
+  for (size_t pos = 0; pos < length;)
+  {
+    *out++ = (uint8_t)az_iot_url_decode_byte(value, length, &pos);
+  }
 }
 
 void az_iot_span_writer_append_url_decoded(
@@ -221,48 +311,21 @@ void az_iot_span_writer_append_url_decoded(
     return;
   }
 
-  const uint8_t* source = (const uint8_t*)value;
-
-  /* Measure and validate in one pass before writing anything, so a malformed
-   * escape late in the input cannot leave a half-decoded value behind. A
-   * truncated or non-hexadecimal escape is rejected rather than passed through:
-   * the service always sends well-formed encoding, so a bad one means the topic
-   * was not what we think it is, and inventing a plausible value from it would
-   * hand the application data that was never sent. */
-  int32_t decoded_length = 0;
-  for (size_t i = 0; i < length; ++i)
+  /* Measure and validate before writing anything, so a malformed escape late
+   * in the input cannot leave a half-decoded value behind. */
+  size_t decoded_length = 0;
+  if (az_iot_url_decoded_length(value, length, false, &decoded_length) != AZ_IOT_OK)
   {
-    if (source[i] == (uint8_t)'%')
-    {
-      if (i + 2 >= length || hex_digit_value(source[i + 1]) < 0
-          || hex_digit_value(source[i + 2]) < 0)
-      {
-        writer_fail(writer, AZ_IOT_ERR_PROTOCOL);
-        return;
-      }
-      i += 2;
-    }
-    decoded_length++;
+    writer_fail(writer, AZ_IOT_ERR_PROTOCOL);
+    return;
   }
 
-  uint8_t* cursor = writer_reserve(writer, decoded_length);
+  uint8_t* cursor = writer_reserve(writer, (int32_t)decoded_length);
   if (cursor == NULL)
   {
     return;
   }
-
-  for (size_t i = 0; i < length; ++i)
-  {
-    if (source[i] == (uint8_t)'%')
-    {
-      *cursor++ = (uint8_t)((hex_digit_value(source[i + 1]) << 4) | hex_digit_value(source[i + 2]));
-      i += 2;
-    }
-    else
-    {
-      *cursor++ = source[i];
-    }
-  }
+  az_iot_url_decode_into(value, length, cursor);
 }
 
 void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value)
@@ -326,6 +389,26 @@ static void writer_append_decimal(az_iot_span_writer* writer, uint32_t magnitude
 void az_iot_span_writer_append_u32(az_iot_span_writer* writer, uint32_t value)
 {
   writer_append_decimal(writer, value, false);
+}
+
+void az_iot_span_writer_append_u64(az_iot_span_writer* writer, uint64_t value)
+{
+  uint8_t digits[20];
+  int32_t count = 0;
+  do
+  {
+    digits[count++] = (uint8_t)('0' + (value % 10u));
+    value /= 10u;
+  } while (value != 0u);
+  uint8_t* cursor = writer_reserve(writer, count);
+  if (cursor == NULL)
+  {
+    return;
+  }
+  while (count > 0)
+  {
+    *cursor++ = digits[--count];
+  }
 }
 
 void az_iot_span_writer_append_u32_padded(

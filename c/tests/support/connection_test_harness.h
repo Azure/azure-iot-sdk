@@ -128,7 +128,6 @@ typedef struct az_iot_test_conn
   az_iot_connection_client client_storage;
   az_iot_connection_client* client;
   az_iot_mqtt_factory* factory;
-  bool factory_registered;
   az_iot_test_state_log log;
 } az_iot_test_conn;
 
@@ -237,9 +236,9 @@ static inline size_t az_iot_test_index_of(
 static inline az_iot_connection_client_options az_iot_test_mqtt_v3_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   return opts;
 }
 

@@ -22,7 +22,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | `270336`, `64`, `16` | Per-client limits of the az_mqtt adapter: largest packet each way (send and receive buffers; MQTT 5: also the Maximum Packet Size advertised), QoS 1/2 exchanges in flight, MQTT 5 user properties per packet. Each client allocates, when created, the send and receive buffers, a buffer for the strings of a received PUBLISH (`AZ_IOT_AZ_MQTT_BUFFER_SIZE` + 3 + 2 × `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` bytes) and the transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5: also `session_expiry_seconds` > 0) it also allocates the store of unacknowledged QoS 1/2 PUBLISH (`AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE`, default `AZ_IOT_AZ_MQTT_BUFFER_SIZE` + 18), kept until the client is destroyed. With the defaults: about 792 KiB per client, 1,056 KiB with such a session. |
+| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
 | `AZ_IOT_WITH_RUST_MQTT` | `OFF` | Build the Rust MQTT adapter shell: a C adapter that forwards to a Rust MQTT client the application installs at run time. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
@@ -32,8 +32,75 @@ it adds `c/`.
 | `AZ_IOT_ENABLE_HARDENING` | `ON` | Hardened compiler and linker flags: stack protector, FORTIFY, PIE and RELRO on GCC and Clang; `/guard:cf`, `/CETCOMPAT` and `/sdl` on MSVC. |
 | `AZ_SDK_C_TAG`, `AZ_SDK_C_REPO` | `1.5.0`, GitHub | Version and source of azure-sdk-for-c, fetched at configure time. |
 | `PAHO_C_TAG`, `PAHO_C_REPO` | `v1.3.13`, GitHub | Version and source of Eclipse Paho C, fetched at configure time. |
+| `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C` | `OFF` | Use an installed azure-sdk-for-c 1.5.0+ instead of fetching it. See [Installed dependencies](#installed-dependencies). |
+| `AZ_IOT_USE_INSTALLED_PAHO` | `OFF` | Use an installed Eclipse Paho C 1.3.13+ (`eclipse-paho-mqtt-c` CMake package) instead of fetching it. See [Installed dependencies](#installed-dependencies). |
 
 Options for the test suites, coverage and static analysis are described in [docs/eng](eng/).
+
+### Installed dependencies
+
+azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. To use installed
+copies instead (e.g. from vcpkg or a package feed), turn on `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C`
+and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`:
+
+- azure-sdk-for-c ships no CMake package. [Findazure-sdk-for-c.cmake](../cmake/Findazure-sdk-for-c.cmake)
+  looks for `azure/core/az_version.h` under `include` or `include/azure-sdk-for-c`, and for the
+  `az_core`, `az_iot_common`, `az_iot_hub`, `az_iot_provisioning` and platform (`az_posix`,
+  `az_win32` or `az_noplatform`) libraries under `lib`. Debug builds link libraries of the same
+  names from `debug/lib` (vcpkg layout) when present. Consumers of the installed SDK need exactly the
+  azure-sdk-for-c version it was built with.
+  [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
+  commits.
+- Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
+  is preferred. With vcpkg, add the `installed-paho` feature:
+  `-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_FEATURES=installed-paho -DAZ_IOT_USE_INSTALLED_PAHO=ON`.
+  On Windows, use a static triplet (e.g. `x64-windows-static`) to match the SDK's static C runtime;
+  with Ninja, also set `-DVCPKG_APPLOCAL_DEPS=OFF` (no DLLs to copy; parallel copy steps can collide).
+
+`c/vcpkg.json` pins its port versions with `builtin-baseline`. An installed dependency is not
+copied into the `azure-iot-sdk` package: its config file finds it again, so consumers need the
+dependency's prefix on `CMAKE_PREFIX_PATH` too. With MSVC, installed libraries must use the
+static C runtime (`/MT`, `/MTd` for Debug), as the SDK does.
+
+### az_mqtt adapter sizes
+
+Defaults are in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h). Each value
+comes from, in order:
+
+1. a definition: a compiler `-D`, the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or CMake
+   (which passes each option only when set);
+2. the footprint, `AZ_IOT_AZ_MQTT_FOOTPRINT`;
+3. the `DEFAULT` footprint.
+
+| Macro | `DEFAULT` | `CONSTRAINED` | Effect |
+| --- | --- | --- | --- |
+| `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE` | 270336 (264 KiB) | 8192 (8 KiB) | Largest outgoing packet. A larger connect or publish fails. |
+| `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
+| `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
+| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. Macro only. |
+
+IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
+messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
+8 KiB.
+
+Each client allocates, when created, the send and receive buffers, a buffer for the strings of a
+received PUBLISH (receive size + 3 bytes; user properties are read in place) and the
+transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5:
+also `session_expiry_seconds` > 0) it also allocates the message store, kept until the client is
+destroyed. Per client: about 792 KiB with `DEFAULT` (1,056 KiB with such a session), 272 KiB with
+`CONSTRAINED` (280 KiB).
+
+The values apply where the adapter sources are compiled; defining them only for the application
+has no effect. Without CMake, compile the adapter with them:
+
+```sh
+cc -DAZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED -DAZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE=36864 ...
+cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the include path
+```
+
+With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, any option above, or
+`-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
 
 ### Limits in the public headers
 
@@ -117,9 +184,6 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
-| `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` | 16 | User properties on one mqttv5 telemetry message, 2 of them added by the client. Extra properties are dropped with a warning. |
-| `AZ_IOT_C2D_MAX_PROPERTIES` | 8 | Properties surfaced on one cloud-to-device message. Extra properties are dropped with a warning; the message is still delivered. |
-| `AZ_IOT_C2D_PROPERTY_BUFFER` | 256 | Decoded property names and values of one cloud-to-device message. When they do not fit, the message is delivered with no properties and a `WARN` log. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
@@ -129,8 +193,9 @@ Defaults used when the matching option is left at 0:
 
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_SU_MAX_ROOT_KEYS` | 4 | Root keys in the trust store. |
-| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 4096 | Copy of the update metadata (manifest and signature) for the current deployment. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
+| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 16384 | Copy of the update metadata (manifest, signature and file URLs) for the current deployment; a one-file offer is about 5 KiB. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also sizes `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` and the scratch the client verifies the signature in, so the client holds about twice this value. |
+| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures). A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
@@ -181,8 +246,8 @@ always the same thing.
 | `az_iot_connection_client_options` (`az_iot_connection_client_options_default()`) | DPS or direct hub connection, certificates, crypto backend, reconnection and identity recovery policies, timeouts, WebSockets, HTTP proxy, MQTT session terms, Last Will, mqttv5 twin push | [Connecting a device](connecting.md), [az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h) |
 | `az_iot_retry_policy` (`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()`, `_get_fixed_interval_retry_policy()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection), [az_iot_retry_policy.h](../inc/azure/iot/az_iot_retry_policy.h) |
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
-| `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
-| `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
+| `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256, EC P-384 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
+| `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties, replacement policy. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
 | `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 
 ### Setters on feature clients

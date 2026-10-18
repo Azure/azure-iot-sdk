@@ -55,12 +55,12 @@ static void test_sas_onboarding_then_an_issued_certificate(void** state)
   (void)remove_operational_files(NULL);
 
   az_iot_certificate_provider_managed provider = { 0 };
-  az_iot_certificate_provider_managed_options mopts = {
-    .trusted_ca_pem_path = cfg.trusted_ca,
-    .operational_key_pem_path = g_op_key,
-    .operational_cert_pem_path = g_op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options mopts
+      = az_iot_certificate_provider_managed_options_default();
+  mopts.trusted_ca_pem_path = cfg.trusted_ca;
+  mopts.operational_key_pem_path = g_op_key;
+  mopts.operational_cert_pem_path = g_op_cert;
+  mopts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   assert_int_equal(az_iot_certificate_provider_managed_init(&provider, &mopts), AZ_IOT_OK);
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();

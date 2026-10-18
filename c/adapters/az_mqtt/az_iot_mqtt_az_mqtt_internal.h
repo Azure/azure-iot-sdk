@@ -10,6 +10,8 @@
 #ifndef AZ_IOT_MQTT_AZ_MQTT_INTERNAL_H
 #define AZ_IOT_MQTT_AZ_MQTT_INTERNAL_H
 
+#include "az_iot_az_mqtt_config.h"
+
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -20,28 +22,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** @brief MQTT 5 user properties per packet, each direction. A larger outgoing count is refused;
- * received ones beyond it are dropped. */
-#ifndef AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
-#define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 16
-#endif
-
-/** @brief Send and receive buffer size, each: the largest packet either way (MQTT 5: the
- * Maximum Packet Size advertised). */
-#ifndef AZ_IOT_AZ_MQTT_BUFFER_SIZE
-#define AZ_IOT_AZ_MQTT_BUFFER_SIZE (264 * 1024)
-#endif
-
-/** @brief QoS 1/2 exchanges in flight at once, both directions together. */
-#ifndef AZ_IOT_AZ_MQTT_INFLIGHT_MAX
-#define AZ_IOT_AZ_MQTT_INFLIGHT_MAX 64
-#endif
-
 /** @brief Events raised outside process_loop() and held until it runs. */
 #define AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX 4
-
-/** @brief az_iot_mqtt_factory.destroy: frees the factory (its own factory_ctx). */
-void az_iot_az_mqtt_factory_free(void* factory_ctx);
 
 /** @brief Copy of @p s (NUL-terminated), or NULL when out of memory. NULL in, NULL out. */
 char* az_iot_az_mqtt_strdup(const char* s);

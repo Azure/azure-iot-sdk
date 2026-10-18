@@ -28,14 +28,13 @@ extern "C"
   /* ---- The connection profile ---------------------------------------------- */
   /* Which generation of hub this connection speaks to, and therefore which MQTT
    * version and topic shapes it uses. One type serves both directions:
-   *   - DPS connect (host == NULL): LEARNED, from the `connectionProfile`
+   *   - DPS connect (iothub_hostname == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
-   *     Until that DPS api-version ships, local development can synthesize an
-   *     absent/null value with AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE; an
-   *     explicit service value always wins.
-   *   - Direct connect (host set, no DPS): DECLARED by the caller through
+   *   - Direct connect (iothub_hostname set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
    *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
+   *   - Saved hub (iothub_hostname and DPS set): DECLARED, as the saved registration's
+   *     profile, until a DPS registration replaces it.
    * Either way az_iot_connection_client_get_hub_profile() reports the result.
    *
    * On the wire `connectionProfile` is a STRING and an extensible union -- the
@@ -80,7 +79,7 @@ extern "C"
      * verbatim, which keeps the extensible union from becoming lossy at the C
      * boundary: a profile this SDK has never heard of still reports UNKNOWN
      * *and* the text the service sent. For absent/null it is the resolved
-     * contract default ("classic"), or the exact development override value.
+     * contract default ("classic").
      * Points into the connection client and stays valid until deinit().
      *
      * Bounded by AZ_IOT_CONNECTION_PROFILE_RAW_BUF, so it is the value verbatim
@@ -220,11 +219,9 @@ extern "C"
    * skipping any not set: the X.509 certificate from
    * az_iot_connection_client_options::certificate_provider, then the primary
    * and secondary keys of az_iot_auth::sas, then its on_sas_token_required.
-   * Setting only one of X.509 or SAS selects it alone. See az_iot_auth for
-   * fallback on rejection.
-   *
-   * Not implemented yet: further provider certificates (a load() index, see
-   * docs/eng/certificate-management.md).
+   * The provider may offer several certificates per role (load() index 0, 1,
+   * ...); each is a source in that order. Setting only one of X.509 or SAS
+   * selects it alone. See az_iot_auth for fallback on rejection.
    */
   typedef enum az_iot_auth_source
   {
@@ -331,7 +328,7 @@ extern "C"
       const char* secondary_key_base64;
       /** @brief The keys are enrollment-group keys. The device key is then
        * HMAC-SHA256(group key, id), with id the DPS registration ID, or
-       * client_id for a direct hub connection. */
+       * device_id for a direct hub connection. */
       bool is_enrollment_group_key;
       /** @brief Application-supplied tokens, or NULL. Tried after the keys.
        * Needs sas_buffer; not crypto or a Unix time. */
@@ -341,12 +338,12 @@ extern "C"
        * 0 selects AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS. */
       uint32_t token_lifetime_seconds;
       /**
-       * @brief When to renew the hub session's token, as a percent of
+       * @brief When to renew the session's token, as a percent of
        * token_lifetime_seconds for key-signed tokens, or of
        * the lifetime_seconds given to az_iot_connection_client_update_sas_token()
        * for user-provided ones. 0
        * selects AZ_IOT_DEFAULT_SAS_RENEWAL_PERCENT; init() rejects values
-       * above 99. A provisioning session is not renewed.
+       * above 99.
        *
        * MQTT 3.1.1 cannot re-authenticate a live session, so renewal
        * disconnects and reconnects at once, with or without a
@@ -354,7 +351,14 @@ extern "C"
        * CONNECTED, all with az_iot_connection_state_event::is_credential_renewal
        * set and reason AZ_IOT_OK. The session resumes per session_continuity;
        * publishes awaiting a PUBACK complete with AZ_IOT_ERR_NOT_CONNECTED. A
-       * failed reconnect is reported and retried as any other failure. A
+       * failed reconnect is reported and retried as any other failure.
+       *
+       * A provisioning session kept open without a registration (provision_only,
+       * or held by a feature client) is renewed the same way: DISCONNECTING,
+       * SETTING_UP, CONNECTING, then CONNECTED, all flagged, reason AZ_IOT_OK;
+       * its users see DISCONNECTING as for any loss of the session. A
+       * registration in progress is not interrupted. A failed reconnect is
+       * handled as that session's other failures. A
        * user-provided token is asked for first (is_renewal), while the session
        * continues: the renewal starts once it is supplied. If none is there
        * when the current token expires, the session ends and the reconnect
@@ -366,7 +370,20 @@ extern "C"
 
   typedef struct az_iot_connection_client_options
   {
-    const char* host; /* hub host (or NULL when using DPS) */
+    /**
+     * @brief Azure IoT Hub host name; NULL to provision through the Azure
+     * Device Provisioning Service (DPS) first.
+     *
+     * Set with device_id and connection_profile, without dps.id_scope, for a
+     * direct connect. Set them WITH the dps fields to restore a previous
+     * registration (e.g. after a reboot): open() connects to this saved IoT
+     * Hub, and DPS is used only when a re-provision is due (see
+     * dps.max_hub_connect_attempts_before_reprovision,
+     * AZ_IOT_IDENTITY_RECOVERY_REPROVISION,
+     * az_iot_connection_client_request_reprovision()). A registration then
+     * replaces iothub_hostname, device_id and the profile.
+     */
+    const char* iothub_hostname;
     /* Port for the HUB connect. 0 selects the default for `transport`: 8883 for
      * MQTT over TCP, 443 for MQTT over WebSockets.
      *
@@ -414,11 +431,11 @@ extern "C"
      * forever, which is the failure this bounds. Expiry is treated as transient
      * -- silence is not a refusal -- so it reconnects under the policy. */
     uint32_t subscription_ack_timeout_seconds;
-    const char* client_id; /* device id */
-    az_iot_connection_profile connection_profile; /* direct-connect generation (host set,
-                                                   * no DPS): MQTT_V3 (v3.1.1, default) or
-                                                   * MQTT_V5 (MQTTv5). Ignored when using DPS,
-                                                   * where it is learned instead. */
+    const char* device_id; /* required with iothub_hostname */
+    az_iot_connection_profile connection_profile; /* generation of the hub named by iothub_hostname:
+                                                   * MQTT_V3 (v3.1.1, default) or MQTT_V5
+                                                   * (MQTTv5). Ignored when iothub_hostname is NULL,
+                                                   * where DPS assigns it. */
     const char* model_id; /* IoT Plug and Play model id announced at
                            * connection (NULL = none). Not used by device
                            * update, which matches a device on the
@@ -434,7 +451,9 @@ extern "C"
      * first for each role (az_iot_auth_source); a role for which it has no
      * certificate moves on to SAS. A load() failure other than
      * AZ_IOT_ERR_NOT_FOUND fails the attempt instead of connecting without
-     * TLS.
+     * TLS. Its keys must not change while the client is open; load() is called
+     * on every connect, so a key changed while closed is used on the next
+     * open().
      */
     az_iot_certificate_provider* certificate_provider;
 
@@ -484,9 +503,10 @@ extern "C"
      * is never truncated. */
     az_span csr_payload_buffer;
 
-    /* DPS provisioning options.  When host is NULL and id_scope is set, the
-     * connection client internally provisions via DPS before connecting to the
-     * assigned hub. */
+    /* Azure Device Provisioning Service (DPS) options. When id_scope is set and
+     * iothub_hostname is NULL, the connection client provisions via DPS before
+     * connecting to the assigned Azure IoT Hub. With iothub_hostname set too,
+     * DPS is the fallback for that saved IoT Hub (see iothub_hostname). */
     struct
     {
       const char* global_endpoint; /* NULL => "global.azure-devices-provisioning.net" */
@@ -496,8 +516,9 @@ extern "C"
                                              * from the certificate_provider during DPS
                                              * registration and connect to the assigned
                                              * hub with the issued operational cert.
-                                             * Requires a provider whose vtable exposes
-                                             * get_csr (version >= 2). */
+                                             * Requires a provider with get_csr,
+                                             * release_csr and store_issued_certificate;
+                                             * the chain is always stored there. */
 
       /* Consecutive failed hub connect attempts after which the assignment is
        * treated as stale and re-provisioning is forced. Defaults to
@@ -535,7 +556,7 @@ extern "C"
        * from it would hide real misconfiguration; retrying it would loop.
        *
        * Requires dps.id_scope and dps.registration_id. open() returns
-       * AZ_IOT_ERR_INVALID_ARG if opts.host or
+       * AZ_IOT_ERR_INVALID_ARG if opts.iothub_hostname or
        * dps.request_operational_certificate is also set.
        */
       bool provision_only;
@@ -615,8 +636,10 @@ extern "C"
     az_iot_mqtt_transport transport;
 
     /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), which
-     * is what IoT Hub and DPS expect; set it only for a gateway that terminates
+     * selects the service's path per session: AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH
+     * ("/$iothub/websocket") for DPS and an mqttv3 hub,
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
+     * here is used for every session; set it only for a gateway that terminates
      * WebSockets elsewhere. */
     const char* websocket_path;
 
@@ -644,9 +667,12 @@ extern "C"
      * client: changing push mode at runtime would desynchronize the device's
      * expectation from the service's most recently recorded decision.
      *
-     * Both default to false (pull-only). With push_desired, the service pushes
-     * the desired snapshot on connect instead of the mqttv5 twin client fetching
-     * it. With push_reported, a pushed reported section reaches
+     * Both default to false. With push_desired, the service pushes the desired
+     * snapshot on connect and each desired patch while connected. Without it
+     * (pull mode) the service sends no desired patches: the mqttv5 twin client
+     * fetches the snapshot on connect when behind, and later changes are seen
+     * only on reconnect or after az_iot_mqttv5_twin_client_get(). With
+     * push_reported, a pushed reported section reaches
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
@@ -991,7 +1017,8 @@ extern "C"
      * attempt follows the refusal. Valid only until the callback returns. */
     const az_iot_connection_recovery_info* recovery;
     /** @brief The transition is a planned SAS token renewal, not a failure:
-     * the hub's RETRY_PENDING through CONNECTED (see
+     * the hub's RETRY_PENDING, or the provisioning session's DISCONNECTING,
+     * through CONNECTED (see
      * az_iot_auth::sas::renewal_percent). Only where renewal needs a reconnect
      * (MQTT); a transport that re-authenticates in session has no transition
      * to flag. */
@@ -1000,8 +1027,8 @@ extern "C"
      * CONNECTED, the one rejected on a rejection. AZ_IOT_AUTH_SOURCE_NONE from
      * a new session's SETTING_UP until a credential is selected. */
     az_iot_auth_source auth_source;
-    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index.
-     * Always 0 until multiple certificates per role are implemented. */
+    /** @brief For AZ_IOT_AUTH_SOURCE_X509, the provider certificate index
+     * (load() index). */
     uint8_t x509_index;
   } az_iot_connection_state_event;
 
@@ -1029,7 +1056,7 @@ extern "C"
   {
     AZ_IOT_CSR_ACCEPTED = 0, /* 202: hub accepted; signing in progress      */
     AZ_IOT_CSR_ISSUED, /* 200: issued chain delivered (evt->issued)   */
-    AZ_IOT_CSR_FAILED /* rejected/failed (evt->status, service_code)  */
+    AZ_IOT_CSR_FAILED /* rejected/failed (evt->status, service_code, ...) */
   } az_iot_csr_event_kind;
 
   typedef struct az_iot_csr_event
@@ -1039,15 +1066,37 @@ extern "C"
     int32_t service_code; /* hub errorCode on FAILED; 0 otherwise     */
     uint32_t retry_after_s; /* suggested retry delay; 0 if none         */
     const az_iot_issued_certificate* issued; /* non-NULL on ISSUED          */
+    /* ISSUED only: result of storing the chain in the certificate provider.
+     * AZ_IOT_OK if the next connect uses it. */
+    az_iot_result store_status;
+    /** @brief FAILED: the hub's `info.credentialError`. Never NULL; empty when
+     * absent or too long. Valid only during the callback. */
+    const char* credential_error;
+    /** @brief FAILED: the hub's `info.credentialMessage`, free text. Never
+     * NULL; empty when absent or too long. Valid only during the callback. */
+    const char* credential_message;
+    /** @brief FAILED: the hub's `trackingId`, for support requests. Never
+     * NULL; empty when absent or too long. Valid only during the callback. */
+    const char* tracking_id;
   } az_iot_csr_event;
 
   typedef void (*az_iot_csr_callback)(const az_iot_csr_event* evt, void* user_ctx);
 
-  /* Fired when the connection client obtains a DPS/provider-issued operational
-   * certificate during provisioning (D4). Optional; use for app-side persistence
-   * or to react (e.g. inventory). The chain is valid only during the callback. */
-  typedef void (
-      *az_iot_operational_cert_callback)(const az_iot_issued_certificate* issued, void* user_ctx);
+  /**
+   * @brief Fired when DPS issues an operational certificate (D4), after the
+   * attempt to store the chain in the certificate provider. Optional.
+   *
+   * @param issued The chain; valid only during the callback.
+   * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
+   * chain is stored. On failure the registration fails.
+   *
+   * Runs while the provisioning message is being processed: do not call
+   * az_iot_connection_client_close() or _deinit() from it.
+   */
+  typedef void (*az_iot_operational_cert_callback)(
+      const az_iot_issued_certificate* issued,
+      az_iot_result store_result,
+      void* user_ctx);
 
   /* Fired when a DPS registration completes and the assignment carries a custom
    * payload -- `registrationState.payload`, the counterpart of
@@ -1058,6 +1107,42 @@ extern "C"
    * inbound MQTT message, which is reused as soon as the callback returns.
    * Copy anything that must outlive the call. */
   typedef void (*az_iot_registration_payload_callback)(az_span payload, void* user_ctx);
+
+  /**
+   * @brief A DPS assignment the client adopted. Persist it to connect straight
+   * to the hub after a restart; see docs/connecting.md.
+   *
+   * Every pointer is valid only during the callback; copy what must be kept.
+   */
+  typedef struct az_iot_dps_assignment
+  {
+    /** @brief Assigned IoT Hub hostname; restore as opts.iothub_hostname. */
+    const char* hub_hostname;
+    /** @brief Assigned device id; restore as opts.device_id. */
+    const char* device_id;
+    /** @brief Assigned profile; restore profile->connection_profile as
+     * opts.connection_profile. Never AZ_IOT_CONNECTION_PROFILE_UNKNOWN. */
+    const az_iot_hub_profile* profile;
+  } az_iot_dps_assignment;
+
+  /**
+   * @brief Fired each time the client adopts a DPS assignment: after the first
+   * registration and after every re-provision, before the hub connect starts.
+   * Not fired for an assignment the client rejects; its issued certificate,
+   * if any, is not stored either.
+   *
+   * With dps.request_operational_certificate, the issued chain is already
+   * stored in the certificate provider.
+   *
+   * Runs from az_iot_connection_client_do_work(). It may call
+   * az_iot_connection_client_close(), and then no hub connect follows; it must
+   * not call az_iot_connection_client_deinit().
+   *
+   * @param assignment The adopted assignment; valid only during the call.
+   * @param user_ctx   As registered.
+   */
+  typedef void (
+      *az_iot_dps_assignment_callback)(const az_iot_dps_assignment* assignment, void* user_ctx);
 
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
@@ -1209,9 +1294,9 @@ extern "C"
  */
 #define AZ_IOT_SAS_BUFFER_SIZE(key_count, token_size) \
   (80u + (size_t)(key_count) * AZ_IOT_SAS_KEY_MAX + (size_t)(token_size))
-/** @brief Reserved: most certificates the client will load from the provider
- * per role once multiple certificates are implemented (indexes 0 to this - 1),
- * even if the provider never returns AZ_IOT_ERR_NOT_FOUND. At most 256. */
+/** @brief Most certificates the client loads from the provider per role
+ * (indexes 0 to this - 1), even if the provider never returns
+ * AZ_IOT_ERR_NOT_FOUND. 1 to 255. */
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
@@ -1599,16 +1684,18 @@ extern "C"
     bool dps_have_issued_cert; /* an operational cert was issued by DPS/Hub and stored */
 
     /* What this connection is to. Seeded from opts.connection_profile at init so
-     * a direct connect is always answerable, then overwritten on the DPS path by
-     * whatever `connectionProfile` the ASSIGNED payload carried. The raw string
-     * is kept verbatim so an unrecognised profile is still reportable. */
+     * a direct connect or saved hub is always answerable, then overwritten by
+     * the `connectionProfile` of a DPS assignment when that assignment is
+     * adopted (dps_assigned_profile* holds it until then). The raw string is
+     * kept verbatim so an unrecognised profile is still reportable. */
     az_iot_connection_profile connection_profile;
     char connection_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool connection_profile_raw_truncated;
     /* True once connection_profile is authoritative rather than the value
-     * seeded at init: immediately for a direct connect, where opts declares it,
-     * and when ASSIGNED is applied on the DPS path -- including an ASSIGNED that
-     * carries no connectionProfile, since absent resolves to "classic". */
+     * seeded at init: immediately when opts.iothub_hostname is set (direct connect or
+     * saved hub), where opts declares it, and otherwise when a DPS assignment is
+     * adopted -- including one that carries no connectionProfile, since absent
+     * resolves to "classic". */
     bool connection_profile_resolved;
 
     /* The generation the attached feature clients require, refcounted by them.
@@ -1714,11 +1801,15 @@ extern "C"
       az_iot_auth_source source;
       uint8_t x509_index;
       /* Fallback: where the next attempt starts (NONE: the first source),
-       * where the current pass began (NONE: no pass), and whether the last
-       * load() returned a certificate. */
+       * where the current pass began (NONE: no pass), with their certificate
+       * indexes for X.509; whether the last load() at index 0 returned a
+       * certificate, and the role it was for. */
       az_iot_auth_source first;
+      uint8_t first_x509_index;
       az_iot_auth_source pass_from;
+      uint8_t pass_from_x509_index;
       bool x509_available;
+      uint8_t x509_role; /* az_iot_cert_role */
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
@@ -1730,14 +1821,15 @@ extern "C"
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
     uint32_t dps_demand_epoch;
-    /* Hub SAS token renewal: when the current token is due (monotonic ms, and
-     * Unix seconds for a monotonic clock that stops in suspend; 0: none), the
-     * bound on the wait for the renewal disconnect (0: not waiting), and
-     * whether a renewal is in progress. */
-    uint64_t sas_token_renewal_due_ms;
-    uint64_t sas_token_renewal_due_unix_seconds;
+    /* SAS token renewal per scope: when the current token is due (monotonic
+     * ms, and Unix seconds for a monotonic clock that stops in suspend; 0:
+     * none) and whether a renewal is in progress. The disconnect deadline is
+     * the hub's: the bound on the wait for its renewal disconnect (0: not
+     * waiting). */
+    uint64_t sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_renewal_disconnect_deadline_ms;
-    bool sas_token_renewal_in_progress;
+    bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
     /* User-provided SAS token request per scope; request_id 0: none. The
      * callback is called from do_work() (asked); ready once the token is in
      * the token area (see sas_token_holder). */
@@ -1745,7 +1837,7 @@ extern "C"
     {
       uint32_t request_id;
       bool asked;
-      bool for_renewal; /* a hub renewal: the session stays up meanwhile */
+      bool for_renewal; /* a renewal: the session stays up meanwhile */
       bool held; /* supplied unasked: kept for the next attempt */
       bool ready;
       size_t token_len;
@@ -1754,13 +1846,13 @@ extern "C"
       uint64_t delivered_unix_seconds; /* the same in Unix time; 0: unknown */
       uint64_t deadline_ms; /* bound on the wait (monotonic); 0: none */
     } sas_token_request[AZ_IOT_CONN_SCOPE_COUNT];
-    /* When the hub's user-provided token expires: monotonic ms, and Unix
+    /* When each scope's user-provided token expires: monotonic ms, and Unix
      * seconds for a monotonic clock that stops in suspend; 0: none. */
-    uint64_t sas_token_expiry_ms;
-    uint64_t sas_token_expiry_unix_seconds;
-    /* The hub's next token request is not asked before this (monotonic ms):
-     * a renewal request that could not be asked. 0: none. */
-    uint64_t sas_token_ask_after_ms;
+    uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
+    uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Each scope's next token request is not asked before this (monotonic
+     * ms): a renewal request that could not be asked. 0: none. */
+    uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint32_t sas_token_last_request_id;
     /* Bytes a delivered token may use now, terminator excluded. */
     size_t sas_token_capacity;
@@ -1780,6 +1872,24 @@ extern "C"
       const void* owner;
       uint16_t count;
     } puback_reservations[AZ_IOT_MAX_PUBACK_RESERVATIONS];
+    /* Provider material an attempt holds until connect() has copied it;
+     * close() and deinit() release it. */
+    az_iot_certificate_material held_material[AZ_IOT_CONN_SCOPE_COUNT];
+    bool material_held[AZ_IOT_CONN_SCOPE_COUNT];
+
+    /* The assignment's connection profile, adopted with the hub and device id. */
+    az_iot_connection_profile dps_assigned_profile;
+    char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+    bool dps_assigned_profile_raw_truncated;
+
+    az_iot_dps_assignment_callback assignment_cb;
+    void* assignment_cb_ctx;
+    /* A stored issued chain awaits adoption of its assignment: the other
+     * generation cannot be required until then. */
+    bool dps_cert_awaits_adoption;
+    /* The issued chain was not stored because the assignment was to be
+     * rejected; it must not be adopted. */
+    bool dps_cert_withheld;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
@@ -1806,10 +1916,12 @@ extern "C"
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
-   *   - DPS (host==NULL): dps.id_scope, dps.registration_id.
-   *   - Direct hub connect: host, client_id; also set
+   *   - DPS (iothub_hostname==NULL): dps.id_scope, dps.registration_id.
+   *   - Direct hub connect: iothub_hostname, device_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
    *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1).
+   *   - Saved hub with DPS fallback: both of the above, iothub_hostname, device_id and
+   *     connection_profile taken from the previous registration.
    *   - Per role: certificate_provider for X.509, and/or SAS keys and a
    *     user-provided token callback in dps_auth / hub_auth. */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
@@ -1818,12 +1930,33 @@ extern "C"
       az_iot_connection_client* client,
       const az_iot_connection_client_options* opts);
 
+  /**
+   * @brief Deinitialize the client.
+   *
+   * Does not destroy factories registered with az_iot_connection_client_register_mqtt_factory():
+   * the application owns them and destroys them after this returns.
+   */
   void az_iot_connection_client_deinit(az_iot_connection_client* client);
 
-  /* Register an MQTT factory in the client's adapter registry. The client may hold
-   * multiple factories; at session-open time it picks the one whose
-   * (version, supported_roles_mask) matches the required (version, role) for that
-   * session. Adapters for DPS+MQTTv3 must be v3.1.1; adapters for MQTTv5 must be v5. */
+  /**
+   * @brief Register an MQTT factory in the client's adapter registry.
+   *
+   * The client may hold multiple factories; at session-open time it picks the one whose version
+   * matches the session (DPS and mqttv3: v3.1.1; mqttv5: v5).
+   *
+   * Ownership: the application owns the factory. The struct is copied and need not outlive this
+   * call; factory_ctx is borrowed and must stay valid until az_iot_connection_client_deinit()
+   * returns. Adapter factories (Paho, az_mqtt, Rust) are their own factory_ctx, so destroy them
+   * (e.g. az_iot_paho_factory_destroy()) only after deinit(). Registering the same factory again
+   * returns AZ_IOT_OK and changes nothing. On any other result nothing is borrowed; the application
+   * may release the factory at once.
+   *
+   * @param client A client initialized with az_iot_connection_client_init().
+   * @param factory The factory.
+   * @retval AZ_IOT_OK Registered (or already registered).
+   * @retval AZ_IOT_ERR_INVALID_ARG NULL client, factory, or factory->create.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The registry is full (AZ_IOT_MAX_MQTT_FACTORIES).
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
       az_iot_connection_client* client,
       const az_iot_mqtt_factory* factory);
@@ -1897,6 +2030,20 @@ extern "C"
       az_iot_registration_payload_callback cb,
       void* user_ctx);
 
+  /**
+   * @brief Registers a callback fired when a DPS assignment is adopted. Optional;
+   * NULL @p cb unregisters.
+   *
+   * @param[in] client   Client.
+   * @param[in] cb       See az_iot_dps_assignment_callback.
+   * @param[in] user_ctx Passed to @p cb.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client.
+   */
+  az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+      az_iot_connection_client* client,
+      az_iot_dps_assignment_callback cb,
+      void* user_ctx);
+
   /* Open a session to the configured host. Non-blocking; observe state via callback
    * and drive progress with do_work().
    *
@@ -1910,8 +2057,9 @@ extern "C"
    * @brief Supplies a SAS token for @p scope, from az_iot_auth::sas::on_sas_token_required
    * or at any other time.
    *
-   * - A connect attempt or hub renewal waiting for one takes it.
-   * - Otherwise, for a hub session connected with a user-provided token:
+   * - A connect attempt or renewal waiting for one takes it.
+   * - Otherwise, for a session connected with a user-provided token (the hub,
+   *   or a provisioning session that is not registering):
    *   renews the session with it now. MQTT 3.1.1 cannot re-authenticate a live
    *   session, so the session disconnects and reconnects at once, as for any
    *   renewal (see az_iot_auth::sas::renewal_percent).
@@ -1990,23 +2138,29 @@ extern "C"
       az_iot_connection_client* client,
       uint32_t timeout_ms);
 
-  /* Request a renewed operational certificate from the connected (MQTTv3) hub by
-   * sending a CSR. Two-phase: the callback fires with AZ_IOT_CSR_ACCEPTED (202),
-   * then AZ_IOT_CSR_ISSUED (200) carrying the new chain, or AZ_IOT_CSR_FAILED.
-   *   request_id: NULL => the SDK generates one; pass a prior id to resubmit.
-   *   replace:    NULL, or "*" / a request id to supersede an active hub-side op.
-   * The request's device id is taken from the connected client_id. Only one CSR
-   * operation may be in flight; returns AZ_IOT_ERR_BUSY otherwise. The request is
-   * always tracked: if the
-   * broker rejects it, the callback fires at once with AZ_IOT_CSR_FAILED and the
-   * PUBACK status. The issued
-   * chain in AZ_IOT_CSR_ISSUED is valid only for the duration of the callback.
-   * If no terminal (200/error) response arrives within an internal timeout, the
-   * callback fires once with AZ_IOT_CSR_FAILED / AZ_IOT_ERR_TIMEOUT and the slot
-   * is released, so a lost response can never wedge renewal permanently. */
+  /**
+   * @brief Request a renewed operational certificate from the connected (MQTTv3)
+   * hub.
+   *
+   * The CSR comes from the certificate provider's get_csr(), with the device id
+   * as subject; the provider needs get_csr, release_csr and
+   * store_issued_certificate, else AZ_IOT_ERR_NOT_SUPPORTED before anything is
+   * sent. Two-phase: @p cb fires with AZ_IOT_CSR_ACCEPTED (202), then
+   * AZ_IOT_CSR_ISSUED (200) or AZ_IOT_CSR_FAILED. On ISSUED the chain is stored
+   * with store_issued_certificate() before @p cb, which reports the result in
+   * az_iot_csr_event::store_status. The live session is kept; the next connect
+   * uses the stored chain, or the previous credential if the store failed.
+   *
+   * Only one operation may be in flight (AZ_IOT_ERR_BUSY). A request the broker
+   * rejects fails at once with the PUBACK status; one with no terminal response
+   * within an internal timeout fails with AZ_IOT_ERR_TIMEOUT.
+   *
+   * @param request_id NULL to generate one, or a prior id to resubmit.
+   * @param replace NULL, or "*" / a request id to supersede an active hub-side
+   * operation.
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
       az_iot_connection_client* client,
-      const az_iot_certificate_signing_request* csr,
       const char* request_id,
       const char* replace,
       az_iot_csr_callback cb,
@@ -2019,13 +2173,33 @@ extern "C"
   AZ_NODISCARD az_iot_result az_iot_connection_client_cancel_csr(az_iot_connection_client* client);
 
   /* Returns the effective IoT Hub address (FQDN) this client is bound to: the
-   * host supplied in options for a direct-hub connection, or the DPS-assigned hub
+   * iothub_hostname supplied in options (direct or saved hub), or the DPS-assigned hub
    * once provisioning completes. Returns NULL when no host has been established
-   * yet (e.g. a DPS-only client that has not finished provisioning). The returned
-   * pointer is owned by the client and stays valid until deinit(). Useful for
+   * yet (e.g. a DPS-only client that has not finished provisioning). Points at the
+   * caller-supplied iothub_hostname, or at a buffer owned by the client; an adopted
+   * DPS assignment changes the value returned (the caller's string is never
+   * modified), so copy it to keep it. Useful for
    * protocol-independent, HTTPS-only features such as file upload that must reach
    * the hub's REST endpoint directly rather than over the MQTT session. */
   const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client);
+
+  /**
+   * @brief Get the device id this client connects to the IoT Hub with.
+   *
+   * The device id paired with az_iot_connection_client_get_iothub_address(): the
+   * caller-supplied device_id for a direct-hub connection, or the DPS-assigned
+   * device id once the assignment is adopted. The DPS device id need not equal
+   * the registration id (e.g. custom allocation), so save this value, not the
+   * registration id, to connect directly to the assigned hub later.
+   *
+   * @param[in] client The connection client.
+   * @return The device id, or NULL when @p client is NULL or no hub has been
+   * established yet (az_iot_connection_client_get_iothub_address() returns NULL).
+   * Points at the caller-supplied device_id, or at a buffer owned by the client.
+   * An adopted DPS assignment changes the value returned (the caller's string
+   * is never modified); copy it to keep it.
+   */
+  const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client);
 
   /* Report what this client is connected to, so an application can branch on the
    * hub generation without inferring it from its own configuration.

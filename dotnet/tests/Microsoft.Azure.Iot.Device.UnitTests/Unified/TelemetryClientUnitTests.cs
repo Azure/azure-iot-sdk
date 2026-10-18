@@ -4,7 +4,9 @@
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text;
 using Xunit;
@@ -20,7 +22,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TelemetryClient telemetryClient = new(connection);
 
@@ -37,7 +39,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
 
             MqttPublish publish = Assert.Single(connection.PublishedMessages);
-            Assert.StartsWith($"devices/{DeviceId}/messages/events/", publish.Topic);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.StartsWith($"devices/{IConnectionClient.DeviceIdPlaceholder}/messages/events/", publish.Topic);
             Assert.Equal(MqttQualityOfServiceLevel.AtLeastOnce, publish.QualityOfServiceLevel);
             Assert.Equal(Encoding.UTF8.GetBytes("hello"), publish.Payload);
 
@@ -54,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TelemetryClient telemetryClient = new(connection);
 
@@ -84,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             TelemetryClient telemetryClient = new(connection);
             telemetryClient.Dispose();

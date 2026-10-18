@@ -75,6 +75,13 @@ az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
     tests/e2e_notify_time_test.c service/e2e_notify_time.c)
 target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
 
+# Response header parsing of the e2e HTTPS client (status, Content-Length,
+# Retry-After). Pure parsing; named `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_http_headers tests/e2e_http_headers_test.c)
+target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------
@@ -144,6 +151,25 @@ if(AZ_IOT_BUILD_E2E_CSR)
         az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
         az_iot_certificate_provider_managed)
 endif()
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_tpm
+#
+# DPS TPM attestation with a TPM simulated in software (samples/common): an
+# individual enrollment for a new EK (DPS service API), registration over
+# HTTPS, then the assigned mqttv3 hub with TPM-signed SAS tokens. Needs
+# IOT_DPS_CONNECTION_STRING to create the enrollment.
+# ---------------------------------------------------------------------------
+set(_e2e_sample_common ${PROJECT_SOURCE_DIR}/samples/common)
+az_iot_add_cmocka_test(az_iot_tests_e2e_tpm
+    tests/e2e_tpm_test.c
+    ${_e2e_sample_common}/sample_tpm_sim.c
+    ${_e2e_sample_common}/sample_dps_tpm.c
+    ${_e2e_sample_common}/sample_utils.c)
+target_include_directories(az_iot_tests_e2e_tpm PRIVATE ${_e2e_sample_common} service)
+target_link_libraries(az_iot_tests_e2e_tpm PRIVATE
+    az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
+    OpenSSL::Crypto)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload
@@ -220,5 +246,69 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
         az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
 endif()
 
+
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_mqttv5_custom_topic
+#
+# mqttv5 custom topics. Needs an mqttv5 hub with the custom topic templates
+# e2e/{deviceId}/# and e2e/shared/#, which only the ci-c-e2e-mqttv5 workflow's
+# environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_MQTTV5)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custom_topic
+        tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_custom_topic PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 twin: desired delivery (push and pull), reported patches, GET options, push_reported.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_twin
+        tests/e2e_mqttv5_twin_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_twin PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 connection lifecycle: DPS profile, saved hub with DPS fallback, reopen, eviction.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_connection
+        tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 telemetry: delivery, properties as the service sees them, order and size limits.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_telemetry
+        tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_telemetry PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.
+    # Not run on Windows: concurrent REST calls would share the transport's one global TLS session.
+    set(_e2e_direct_method_ctest "")
+    if(WIN32)
+        set(_e2e_direct_method_ctest NO_CTEST)
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
+        tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_direct_method PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+
+    # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
+    # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, AZ_IOT_E2E_PROXY_LOG); fails
+    # without them.
+    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_transport
+        tests/e2e_mqttv5_transport_test.c tests/e2e_device.c)
+    target_link_libraries(az_iot_tests_e2e_mqttv5_transport PRIVATE
+        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    if(UNIX)
+        # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
+        target_compile_definitions(az_iot_tests_e2e_mqttv5_transport PRIVATE _POSIX_C_SOURCE=200809L)
+    endif()
+
+    # mqttv5 key custody: the device key inside a PKCS#11 token (eng/setup-softhsm.sh), as
+    # az_iot_tests_e2e_custody. Needs AZ_IOT_CLIENT_KEY_URI; fails without it.
+    if(AZ_IOT_BUILD_E2E_PKCS11)
+        az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custody tests/e2e_mqttv5_custody_test.c)
+        target_link_libraries(az_iot_tests_e2e_mqttv5_custody PRIVATE
+            az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    endif()
+endif()
 
 endif() # AZ_IOT_WITH_PAHO

@@ -15,8 +15,8 @@
  *   1. Register BOTH MQTT adapters: DPS and MQTTv3 speak v3.1.1, MQTTv5 speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This
  *      one assumes MQTTv3, which is what DPS assigns when it names no
- *      connectionProfile (MQTT v5 under AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT, see
- *      sample_initial_profile()); a real device would persist the last one.
+ *      connectionProfile (see sample_initial_profile()); a real device would
+ *      persist the last one.
  *   3. If DPS assigns the other generation -- on the first connect, or later
  *      when the device is moved and re-provisions -- the connection stops with
  *      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH before the hub is reached, and
@@ -48,6 +48,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is initialized. */
   az_iot_mqttv3_telemetry_client mqttv3;
   az_iot_mqttv5_telemetry_client mqttv5;
@@ -112,6 +114,8 @@ static void sample_state_destroy(sample_state* state)
 {
   telemetry_destroy(state);
   az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_paho_factory_destroy(state->factory_v3);
+  az_iot_paho_factory_destroy(state->factory_v5);
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -208,7 +212,9 @@ int main(void)
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -220,15 +226,15 @@ int main(void)
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub.
    * The connection picks the one the assigned hub needs. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

@@ -4,6 +4,7 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using System.Text;
@@ -20,7 +21,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -54,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 

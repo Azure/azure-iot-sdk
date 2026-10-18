@@ -12,9 +12,10 @@
  * key. The callback must not block, so it records the request; the token is
  * produced outside it and handed over with
  * az_iot_connection_client_update_sas_token(). With no clock yet the request
- * waits. Here the token is signed with OpenSSL to stay runnable; replace
- * sign_token() with your key store (TPM, HSM, secure element) or a call to a
- * token service. Needs no crypto backend and no clock in the SDK.
+ * waits. The SDK formats the token (az_iot_sas_token.h); only its HMAC comes
+ * from the key store, here OpenSSL to stay runnable. Replace key_store_hmac()
+ * with your TPM, HSM or secure element, or sign_token() with a call to a token
+ * service. Needs no crypto backend and no clock in the SDK.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -66,39 +67,36 @@ typedef struct
   az_iot_result failed_reason; /**< Reason of that failure. */
 } sample_context;
 
-/** @brief Appends @p n bytes of @p src at @p *pos in @p dst (capacity @p cap). */
-static bool put(char* dst, size_t cap, size_t* pos, const char* src, size_t n)
+/**
+ * @brief Stand-in key store: HMAC-SHA256 of @p data with the device key.
+ * Replace with your TPM, HSM or secure element; only this function touches
+ * the key.
+ */
+static bool key_store_hmac(
+    const key_store* store,
+    const char* data,
+    size_t data_len,
+    uint8_t mac[AZ_IOT_SHA256_SIZE])
 {
-  if (n > cap - *pos)
-  {
-    return false;
-  }
-  memcpy(dst + *pos, src, n);
-  *pos += n;
-  return true;
-}
-
-/** @brief URL-encodes the base64 characters that need it. */
-static bool put_url_encoded(char* dst, size_t cap, size_t* pos, const char* src, size_t n)
-{
-  for (size_t i = 0; i < n; ++i)
-  {
-    const char* enc = src[i] == '+' ? "%2B" : src[i] == '/' ? "%2F" : src[i] == '=' ? "%3D" : NULL;
-    if (!(enc != NULL ? put(dst, cap, pos, enc, 3) : put(dst, cap, pos, &src[i], 1)))
-    {
-      return false;
-    }
-  }
-  return true;
+  unsigned int mac_len = 0;
+  return HMAC(
+             EVP_sha256(),
+             store->key,
+             (int)store->key_len,
+             (const uint8_t*)data,
+             data_len,
+             mac,
+             &mac_len)
+      != NULL
+      && mac_len == AZ_IOT_SHA256_SIZE;
 }
 
 /**
- * @brief Signs `<resource_uri>\n<expiry>` and formats the token. Replace with
- * your key store: only this function touches the key.
+ * @brief Has the key store sign the request's string to sign, then formats
+ * the token with the SDK.
  *
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the token does not fit
- * @p out; AZ_IOT_ERR_INVALID_ARG for a resource URI longer than this sample
- * signs; AZ_IOT_ERR_INTERNAL when signing or encoding fails.
+ * @p out; AZ_IOT_ERR_INTERNAL when signing fails.
  */
 static az_iot_result sign_token(
     const key_store* store,
@@ -109,58 +107,20 @@ static az_iot_result sign_token(
     size_t cap,
     size_t* out_len)
 {
-  char expiry_text[24];
-  int expiry_len = snprintf(expiry_text, sizeof(expiry_text), "%llu", (unsigned long long)expiry);
-  if (expiry_len <= 0 || (size_t)expiry_len >= sizeof(expiry_text))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-  char to_sign[AZ_IOT_SAS_TOKEN_SIZE(256)];
+  char to_sign[AZ_IOT_SAS_STRING_TO_SIGN_SIZE(AZ_IOT_SAS_TOKEN_SIZE(256))];
   size_t to_sign_len = 0;
-  if (!put(to_sign, sizeof(to_sign), &to_sign_len, resource_uri, strlen(resource_uri))
-      || !put(to_sign, sizeof(to_sign), &to_sign_len, "\n", 1)
-      || !put(to_sign, sizeof(to_sign), &to_sign_len, expiry_text, (size_t)expiry_len))
+  az_iot_result r = az_iot_sas_token_string_to_sign(
+      resource_uri, expiry, to_sign, sizeof(to_sign), &to_sign_len);
+  if (r != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return r;
   }
-
-  /* The HMAC and its base64 are the token's signature: wiped on every exit. */
-  uint8_t mac[32];
-  char sig_b64[64];
-  unsigned int mac_len = 0;
-  int32_t sig_len = 0;
-  az_iot_result r = AZ_IOT_ERR_INTERNAL;
-  if (HMAC(
-          EVP_sha256(),
-          store->key,
-          (int)store->key_len,
-          (const uint8_t*)to_sign,
-          to_sign_len,
-          mac,
-          &mac_len)
-          != NULL
-      && mac_len == sizeof(mac)
-      && !az_result_failed(az_base64_encode(
-          az_span_create((uint8_t*)sig_b64, (int32_t)sizeof(sig_b64)),
-          az_span_create(mac, (int32_t)sizeof(mac)),
-          &sig_len)))
-  {
-    static const char k_prefix[] = "SharedAccessSignature sr=";
-    size_t pos = 0;
-    bool ok = put(out, cap, &pos, k_prefix, sizeof(k_prefix) - 1)
-        && put(out, cap, &pos, resource_uri, strlen(resource_uri))
-        && put(out, cap, &pos, "&sig=", 5)
-        && put_url_encoded(out, cap, &pos, sig_b64, (size_t)sig_len)
-        && put(out, cap, &pos, "&se=", 4) && put(out, cap, &pos, expiry_text, (size_t)expiry_len);
-    if (ok && key_name[0] != '\0')
-    {
-      ok = put(out, cap, &pos, "&skn=", 5) && put(out, cap, &pos, key_name, strlen(key_name));
-    }
-    *out_len = pos;
-    r = ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
+  /* The MAC is the token's signature: wiped on every exit. */
+  uint8_t mac[AZ_IOT_SHA256_SIZE];
+  r = key_store_hmac(store, to_sign, to_sign_len, mac)
+      ? az_iot_sas_token_from_signature(resource_uri, key_name, expiry, mac, out, cap, out_len)
+      : AZ_IOT_ERR_INTERNAL;
   OPENSSL_cleanse(mac, sizeof(mac));
-  OPENSSL_cleanse(sig_b64, sizeof(sig_b64));
   return r;
 }
 
@@ -283,6 +243,8 @@ int main(void)
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
 
   int32_t key_len = 0;
   if (id_scope == NULL || reg_id == NULL || key_b64 == NULL
@@ -305,7 +267,7 @@ int main(void)
   tokens.sas.user_ctx = &ctx;
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.client_id = reg_id;
+  opts.device_id = reg_id;
   opts.dps.id_scope = id_scope;
   opts.dps.registration_id = reg_id;
   opts.dps.global_endpoint = endpoint;
@@ -316,13 +278,12 @@ int main(void)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  factory_v5 = az_iot_paho_factory_create_v5();
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &client, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[user_provided_sas_token] connection client setup failed\n");
@@ -352,6 +313,8 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
   OPENSSL_cleanse(&ctx.store, sizeof(ctx.store));
   free(id_scope);
   free(reg_id);

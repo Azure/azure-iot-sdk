@@ -5,8 +5,9 @@
 /* SPDX-License-Identifier: MIT */
 /* SAS end-to-end: a device in a DPS symmetric-key enrollment group registers
  * and connects to the assigned mqttv3 hub with SAS tokens the SDK signs from
- * the group key, then sends telemetry; renews the hub token; and does both
- * with tokens the application signs (on_sas_token_required).
+ * the group key, then sends telemetry; renews the hub token; renews a
+ * provisioning session held open (provision_only); and does both with tokens
+ * the application signs (on_sas_token_required).
  *
  * Environment: AZ_IOT_DPS_ID_SCOPE,
  * AZ_IOT_DPS_SAS_GROUP_KEY, AZ_IOT_DPS_SAS_REGISTRATION_ID, AZ_IOT_TRUSTED_CA;
@@ -66,6 +67,27 @@ static void test_the_hub_sas_token_is_renewed(void** state)
   e2e_sas_run run;
   e2e_sas_connect_renew_and_send(&run, &copts, "e2e_sas_renewal", 1);
   assert_int_equal(run.hub_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
+
+  e2e_sas_config_free(&cfg);
+}
+
+/* A provision_only session on 20 s tokens renewed at 50%: reopened twice with
+ * a new token, never lost. */
+static void test_a_provisioning_session_sas_token_is_renewed(void** state)
+{
+  (void)state;
+  e2e_sas_config cfg;
+  e2e_sas_config_load(&cfg);
+
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  e2e_sas_apply_dps(&cfg, &copts);
+  copts.dps.provision_only = true;
+  copts.dps_auth.sas.token_lifetime_seconds = 20;
+  copts.dps_auth.sas.renewal_percent = 50;
+
+  e2e_sas_run run;
+  e2e_sas_hold_dps_and_renew(&run, &copts, 2);
+  assert_int_equal(run.dps_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
 
   e2e_sas_config_free(&cfg);
 }
@@ -158,6 +180,27 @@ static void sign_user_token(const az_iot_sas_token_request* request, void* user_
   OPENSSL_cleanse(token, sizeof(token));
 }
 
+/** @brief Derives the device key of @p cfg's registration into @p key. */
+static void derive_device_key(const e2e_sas_config* cfg, e2e_user_key* key)
+{
+  uint8_t group_key[64];
+  int32_t group_key_len = 0;
+  assert_true(az_result_succeeded(az_base64_decode(
+      az_span_create(group_key, (int32_t)sizeof(group_key)),
+      az_span_create_from_str(cfg->group_key),
+      &group_key_len)));
+  unsigned int key_len = 0;
+  assert_non_null(HMAC(
+      EVP_sha256(),
+      group_key,
+      group_key_len,
+      (const uint8_t*)cfg->registration_id,
+      strlen(cfg->registration_id),
+      key->key,
+      &key_len));
+  OPENSSL_cleanse(group_key, sizeof(group_key));
+}
+
 /* The same flow with tokens the application signs: DPS, the hub, and one hub
  * token renewal, then telemetry. */
 static void test_dps_and_hub_with_user_provided_tokens(void** state)
@@ -165,24 +208,8 @@ static void test_dps_and_hub_with_user_provided_tokens(void** state)
   (void)state;
   e2e_sas_config cfg;
   e2e_sas_config_load(&cfg);
-
-  uint8_t group_key[64];
-  int32_t group_key_len = 0;
-  assert_true(az_result_succeeded(az_base64_decode(
-      az_span_create(group_key, (int32_t)sizeof(group_key)),
-      az_span_create_from_str(cfg.group_key),
-      &group_key_len)));
   e2e_user_key key;
-  unsigned int key_len = 0;
-  assert_non_null(HMAC(
-      EVP_sha256(),
-      group_key,
-      group_key_len,
-      (const uint8_t*)cfg.registration_id,
-      strlen(cfg.registration_id),
-      key.key,
-      &key_len));
-  OPENSSL_cleanse(group_key, sizeof(group_key));
+  derive_device_key(&cfg, &key);
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   e2e_sas_apply_dps(&cfg, &copts);
@@ -203,6 +230,34 @@ static void test_dps_and_hub_with_user_provided_tokens(void** state)
   e2e_sas_config_free(&cfg);
 }
 
+/* A provision_only session on application-signed tokens renewed at 50%: the
+ * token is asked for (is_renewal) and the session reopened with it. */
+static void test_a_provisioning_session_user_token_is_renewed(void** state)
+{
+  (void)state;
+  e2e_sas_config cfg;
+  e2e_sas_config_load(&cfg);
+  e2e_user_key key;
+  derive_device_key(&cfg, &key);
+
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  e2e_sas_apply_dps(&cfg, &copts);
+  copts.dps.provision_only = true;
+  e2e_sas_run run;
+  key.run = &run;
+  az_iot_auth tokens = { 0 };
+  tokens.sas.on_sas_token_required = sign_user_token;
+  tokens.sas.user_ctx = &key;
+  tokens.sas.renewal_percent = 50;
+  copts.dps_auth = tokens;
+
+  e2e_sas_hold_dps_and_renew(&run, &copts, 1);
+  assert_int_equal(run.dps_source, AZ_IOT_AUTH_SOURCE_USER_PROVIDED);
+
+  OPENSSL_cleanse(&key, sizeof(key));
+  e2e_sas_config_free(&cfg);
+}
+
 int main(void)
 {
   e2e_install_log_sink();
@@ -210,6 +265,8 @@ int main(void)
     cmocka_unit_test(test_dps_and_hub_with_a_group_sas_key),
     cmocka_unit_test(test_the_hub_sas_token_is_renewed),
     cmocka_unit_test(test_dps_and_hub_with_user_provided_tokens),
+    cmocka_unit_test(test_a_provisioning_session_sas_token_is_renewed),
+    cmocka_unit_test(test_a_provisioning_session_user_token_is_renewed),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

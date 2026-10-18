@@ -204,18 +204,46 @@ static void publish_v5_emits_zero_length_keys_and_values(void** state)
   assert_packet(&p, expected, sizeof(expected));
 }
 
+/* Past 127 bytes the Remaining Length and Property Length take two bytes, as a
+ * PUBLISH carrying many User Properties needs. */
+static void publish_v5_uses_multi_byte_lengths(void** state)
+{
+  (void)state;
+  az_iot_test_mqtt_user_property props[16];
+  for (size_t i = 0; i < 16; ++i)
+  {
+    props[i].key = "key";
+    props[i].value = "value";
+  }
+  /* 16 x (1 + 2 + 3 + 2 + 5) = 208 bytes of properties. */
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 16, NULL);
+  size_t const remaining = 2u + 2u + 2u + 208u;
+  assert_int_equal(p.len, 1u + 2u + remaining);
+  assert_int_equal(p.bytes[1], (uint8_t)(0x80u | (remaining % 128u)));
+  assert_int_equal(p.bytes[2], (uint8_t)(remaining / 128u));
+  assert_int_equal(p.bytes[7], (uint8_t)(0x80u | (208u % 128u)));
+  assert_int_equal(p.bytes[8], (uint8_t)(208u / 128u));
+  assert_int_equal(p.bytes[9], 0x26u);
+}
+
 /* Too big to express comes back empty rather than truncated: the proxy rejects
  * a zero-length injection, so the test fails where it was set up instead of
  * asserting against half a packet. */
 static void publish_v5_refuses_a_packet_that_does_not_fit(void** state)
 {
   (void)state;
-  const az_iot_test_mqtt_user_property props[] = {
-    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" },
-    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" }
-  };
-  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 2, NULL);
+#define K40 "0123456789012345678901234567890123456789"
+  const az_iot_test_mqtt_user_property props[]
+      = { { K40 K40, K40 K40 }, { K40 K40, K40 K40 }, { K40 K40, K40 K40 }, { K40 K40, K40 K40 } };
+#undef K40
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 4, NULL);
   assert_int_equal(p.len, 0);
+
+  /* A length whose sum with the header would wrap is refused, not copied. */
+  static const uint8_t body[1] = { 0 };
+  az_iot_test_mqtt_packet huge
+      = az_iot_test_mqtt_publish_v5("tp", body, SIZE_MAX - 8u, NULL, 0, NULL);
+  assert_int_equal(huge.len, 0);
 
   /* And a missing topic is not a packet at all. */
   az_iot_test_mqtt_packet none = az_iot_test_mqtt_publish_v5(NULL, NULL, 0, NULL, 0, NULL);
@@ -304,6 +332,7 @@ int main(void)
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),
     cmocka_unit_test(publish_v5_lays_out_topic_properties_and_payload),
     cmocka_unit_test(publish_v5_emits_zero_length_keys_and_values),
+    cmocka_unit_test(publish_v5_uses_multi_byte_lengths),
     cmocka_unit_test(publish_v5_refuses_a_packet_that_does_not_fit),
     cmocka_unit_test(pinning_a_packet_id_clears_the_echo),
     cmocka_unit_test(pinning_a_packet_id_on_a_packet_without_one_is_ignored),

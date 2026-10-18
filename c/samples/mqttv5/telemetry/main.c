@@ -36,6 +36,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv5_telemetry_client telemetry;
   int telemetry_initialized;
 } sample_state;
@@ -48,6 +50,8 @@ static void sample_state_destroy(sample_state* state)
     state->telemetry_initialized = 0;
   }
   az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_paho_factory_destroy(state->factory_v3);
+  az_iot_paho_factory_destroy(state->factory_v5);
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -127,7 +131,9 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -139,15 +145,15 @@ int main(void)
 
   /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
    * only the hub is v5. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -181,26 +187,27 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* MQTTv5 carries properties as MQTT v5 user properties, not in the topic, so
-     * the topic stays the fixed ih/<id>/srv/telemetry and nothing is
-     * URL-encoded -- the reserved characters MQTTv3 has to escape travel here
-     * byte for byte. Two properties are added for you: type=telemetry:1, and
-     * content-type, which takes $.ct when the message sets it and
-     * application/json when it does not.
+    /* Properties are one array of name/value pairs; the name decides the kind.
      *
-     * $.ct is the one system property with a native v5 field, so it does not
-     * also travel under its own name. Every other one -- $.ce, $.mid, $.cid,
-     * $.uid, $.ctime, $.sub -- is carried verbatim, the same names the MQTTv3
-     * client percent-encodes into its topic, so a message means the same thing
-     * on either generation.
+     * System properties use the AZ_IOT_MSG_PROP_* names (az_iot_message.h):
+     * $.ct travels as the MQTT v5 Content Type, $.cid as Correlation Data, and
+     * the others ($.mid, $.ce, $.uid, ...) as user properties under the same
+     * names MQTTv3 uses, so a message means the same on either hub.
      *
-     * The budget is AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES counting the two
-     * added above. Properties past it are dropped, because the buffer is fixed,
-     * but the send warns once naming the first one lost. */
+     * Any other name is an application property, sent as a user property byte
+     * for byte (nothing is URL-encoded on mqttv5). The client also adds
+     * type=telemetry:1 and content-type. There is no limit on the count.
+     *
+     * Receiving: an mqttv5 hub sends no cloud-to-device messages, so the
+     * application gets no inbound properties; see unified/c2d_receiver for
+     * mqttv3. */
     static const uint8_t payload[] = "{\"temp\":23}";
     az_iot_telemetry_property props[] = {
+      /* System properties. */
       { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
       { AZ_IOT_MSG_PROP_MESSAGE_ID, "sample-1" },
+      { AZ_IOT_MSG_PROP_CORRELATION_ID, "sample-corr-1" },
+      /* Application property. */
       { "unit", "deg C" },
     };
     az_iot_telemetry_message msg = { 0 };

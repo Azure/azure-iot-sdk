@@ -31,6 +31,8 @@ built for constrained and embedded devices.
   one it was assigned to, and the SDK picks the protocol.
 - **X.509 authentication:** certificates from files, certificates issued by DPS from a CSR,
   renewal over IoT Hub (mqttv3 only), and private keys held in a PKCS#11 token or TPM.
+- **DPS TPM attestation:** registration over HTTPS with any HTTPS stack and TPM software stack
+  ([connecting](docs/connecting.md#authentication)).
 - **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
   proxy support.
 - **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
@@ -84,6 +86,7 @@ sample has its own README.
 | --- | --- |
 | Understand how the SDK fits together | [Architecture](docs/architecture.md) |
 | Connect a device: states, provisioning, reconnection, proxies, certificates | [Connecting a device](docs/connecting.md) |
+| Know what a telemetry send guarantees: completion, offline, reconnect, QoS, mqttv5 properties | [Sending telemetry](docs/telemetry.md) |
 | Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
 | Collect logs for troubleshooting or support | [Logging](docs/logging.md) |
 | Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |

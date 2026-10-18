@@ -67,17 +67,29 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_APPLY 0x6u /* apply_fn failure */
 #define AZ_IOT_SU_FACILITY_RESTORE 0x7u /* restore_fn failure (rollback failed) */
 #define AZ_IOT_SU_FACILITY_PERSIST 0x8u /* persist_state_fn kept failing at a reboot boundary */
+/* Superseded by a new workflow under AZ_IOT_SU_REPLACEMENT_ROLLBACK (reserved; not yet produced) */
+#define AZ_IOT_SU_FACILITY_SUPERSEDED 0x9u
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
 #define AZ_IOT_SU_EXTENDED_RESULT(facility, code) \
   (int32_t)((((uint32_t)(facility) & 0xFu) << 28) | ((uint32_t)(code) & 0x0FFFFFFFu))
 
+/* Sub-codes of AZ_IOT_SU_FACILITY_MANIFEST: why manifest verification failed. */
+#define AZ_IOT_SU_MANIFEST_ERROR_CRYPTO 0x1u /* crypto backend fault, not a rejection */
+#define AZ_IOT_SU_MANIFEST_ERROR_MALFORMED 0x2u /* signature, sjwk or key missing or invalid */
+#define AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE 0x3u /* a part exceeds its scratch or field limit */
+#define AZ_IOT_SU_MANIFEST_ERROR_ALG 0x4u /* alg is not RS256 */
+#define AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID 0x5u /* sjwk kid matches no enabled root key */
+#define AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE 0x6u /* sjwk does not verify with the root key */
+#define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
+#define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
+
 /* --- Compile-time capacities --------------------------------------------- */
 
 /* Maximum number of RSA root public keys the core trust store holds. */
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 4
+#define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 
 /* Scratch buffer (in-struct) that holds a COPY of the `updateMetadata`
@@ -85,11 +97,23 @@ extern "C"
  * valid during the subscriber callback, but the workflow is processed
  * asynchronously across many do_work() calls; the upstream parser stores spans
  * that point INTO this payload (and unescapes the manifest in place), so it must
- * outlive the callback. Sized for a v5 manifest with the upstream's bounded
- * step/file counts plus the JWS signature. Override if your deployments are
- * larger. No heap is used. */
+ * outlive the callback. Holds the escaped manifest, its JWS signature and the
+ * file URLs; a one-file offer is about 5 KiB. Override if your deployments are
+ * larger. It also bounds the scratch the client verifies the signature in (see
+ * AZ_IOT_SU_PERSIST_BLOB_SIZE). No heap is used. */
 #ifndef AZ_IOT_SU_REQUEST_BUFFER_SIZE
-#define AZ_IOT_SU_REQUEST_BUFFER_SIZE 4096
+#define AZ_IOT_SU_REQUEST_BUFFER_SIZE 16384
+#endif
+
+/**
+ * @brief Stack scratch az_iot_su_parse_update_request() decodes the manifest signature into.
+ *
+ * Holds the decoded JWS header (which embeds the signing key), the signing key and the
+ * signatures. A signature that does not fit is rejected with AZ_IOT_ERR_AUTH and an error
+ * log naming the part that is too large. The managed client does not use it.
+ */
+#ifndef AZ_IOT_SU_VERIFY_SCRATCH_SIZE
+#define AZ_IOT_SU_VERIFY_SCRATCH_SIZE 8192
 #endif
 
 /** @brief Capacity of the packed applied update id (provider, name, version). */
@@ -146,9 +170,9 @@ extern "C"
  * - a new workflow waiting on the previous record's retirement proceeds.
  * A later write is still attempted once when needed; a tracked success resets
  * the count (the best-effort erase of a stale record does not).
- * While a workflow is held at a reboot boundary, a new workflow is ignored (the
- * service offers it again) and a cancel waits; a cancel of an installed step
- * not yet applied rolls it back.
+ * While a workflow is held at a reboot boundary, a new workflow is deferred
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and a cancel waits; a cancel of an
+ * installed step not yet applied rolls it back.
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
@@ -486,8 +510,8 @@ extern "C"
    * "what this workflow is about". It is therefore the previously installed
    * update while a workflow is in progress or has failed, and the newly applied
    * update once the workflow has succeeded. It may be NULL when the device has
-   * nothing installed (a day-0 onboarding device), in which case the channel
-   * omits it rather than serializing a null.
+   * nothing installed, in which case the channel omits it rather than
+   * serializing a null.
    */
   typedef struct az_iot_su_report
   {
@@ -532,8 +556,8 @@ extern "C"
    */
   typedef enum az_iot_su_operation
   {
-    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo and
-     * omits installedUpdateId. */
+    /* Day-0 fetch: the device has no registry entry yet. Sends agentInfo, and
+     * installedUpdateId when one is set. */
     AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE = 0,
     /* Operational fetch: the device is already registered. */
     AZ_IOT_SU_OP_GET_UPDATE,
@@ -553,7 +577,9 @@ extern "C"
   typedef enum az_iot_su_event_kind
   {
     /* The deployment workflow moved. Carries `state` and `previous_state`.
-     * Otherwise observable only by polling az_iot_su_client_get_state(). */
+     * Otherwise observable only by polling az_iot_su_client_get_state().
+     * Entering AZ_IOT_SU_STATE_FAILED also carries `reason` and
+     * `extended_result_code`; other transitions carry AZ_IOT_OK and 0. */
     AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED = 0,
 
     /* An operation was ABANDONED: it reached a verdict that stops the client
@@ -569,8 +595,7 @@ extern "C"
      * az_iot_su_client_request_onboarding_update() for
      * AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, az_iot_su_client_request_update()
      * for AZ_IOT_SU_OP_GET_UPDATE. They are not interchangeable -- the regular
-     * route is rejected for a device with no registry entry, and the onboarding
-     * route omits installedUpdateId.
+     * route is rejected for a device with no registry entry.
      *
      * An abandoned AZ_IOT_SU_OP_REPORT_STATUS is DIFFERENT: there is no public
      * call to reissue one, and the event is diagnostic. The client reports
@@ -581,7 +606,13 @@ extern "C"
      * state. The service therefore keeps the last state it was told for a
      * while. That is the intended behaviour, not a gap to work around: do not
      * drive a workflow from the reported state, and treat this event as
-     * something to log rather than something to act on. */
+     * something to log rather than something to act on.
+     *
+     * The exception is a TERMINAL report the service rejected permanently
+     * (`service_error` names the cause, e.g. REPORT_CONFLICT or
+     * UNKNOWN_WORKFLOW_ID): it is retired and never sent again. The
+     * service's view is authoritative; call az_iot_su_client_request_update()
+     * to learn it. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
     /* persist_state_fn failed. Raised on the first failure of an episode
@@ -605,8 +636,34 @@ extern "C"
      * installed or reported for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
-     * AZ_IOT_SU_REQUEST_BUFFER_SIZE. Raised again on each redelivery. */
-    AZ_IOT_SU_EVENT_UPDATE_REFUSED
+     * AZ_IOT_SU_REQUEST_BUFFER_SIZE; AZ_IOT_ERR_PROTOCOL when the payload
+     * cannot be decoded (not JSON, a required field missing or of the wrong
+     * type, or an invalid string escape). Raised again on each redelivery. */
+    AZ_IOT_SU_EVENT_UPDATE_REFUSED,
+
+    /* A delivered update with a new workflow id was not started because the
+     * current workflow may not be replaced (see az_iot_su_replacement_policy).
+     * Nothing was processed or reported for it. Carries `state` (unchanged)
+     * and `reason` AZ_IOT_ERR_BUSY. Raised again on each redelivery. To take
+     * it, request an update again once the current workflow has ended (Idle
+     * or Failed) and, when its last apply asked for a reboot, after that
+     * reboot. */
+    AZ_IOT_SU_EVENT_UPDATE_DEFERRED,
+
+    /* An update check was answered with no update. Carries `state` and
+     * `operation` (the route that asked). */
+    AZ_IOT_SU_EVENT_NO_UPDATE,
+
+    /* A delivered update carried the workflow id of the current (or last
+     * finished) workflow and was ignored as a redelivery: nothing was
+     * processed or reported for it. Carries `state` (unchanged). Raised again
+     * on each redelivery. */
+    AZ_IOT_SU_EVENT_UPDATE_DUPLICATE,
+
+    /* The service accepted a status report. Carries `state` and
+     * `report_terminal`. Once a terminal report is accepted, nothing more is
+     * owed to the service for that workflow. */
+    AZ_IOT_SU_EVENT_REPORT_ACCEPTED
   } az_iot_su_event_kind;
 
   /**
@@ -658,12 +715,15 @@ extern "C"
   {
     az_iot_su_event_kind kind;
 
-    /* WORKFLOW_STATE_CHANGED only. */
+    /** Every event: the workflow state when it was raised (the new state for
+     * WORKFLOW_STATE_CHANGED). */
     az_iot_su_state state;
+    /** WORKFLOW_STATE_CHANGED only; other events repeat `state`. */
     az_iot_su_state previous_state;
 
-    /* OPERATION_ABANDONED only. `reason` is also set by PERSIST_FAILED and
-     * UPDATE_REFUSED. */
+    /* `operation`: OPERATION_ABANDONED and NO_UPDATE only; unspecified for
+     * other events. `reason` is also set by PERSIST_FAILED, UPDATE_REFUSED,
+     * UPDATE_DEFERRED and WORKFLOW_STATE_CHANGED into FAILED. */
     az_iot_su_operation operation;
     az_iot_result reason;
     az_iot_su_service_error service_error;
@@ -671,6 +731,18 @@ extern "C"
     /* PERSIST_FAILED / PERSIST_RECOVERED only. */
     uint32_t persist_attempts; /**< Consecutive failed writes. */
     bool persist_retrying; /**< PERSIST_FAILED: whether the client retries. */
+
+    /** WORKFLOW_STATE_CHANGED into FAILED: the failed step's extended result
+     * code (AZ_IOT_SU_EXTENDED_RESULT() layout: facility in bits 31..28, e.g.
+     * AZ_IOT_SU_FACILITY_MANIFEST with an AZ_IOT_SU_MANIFEST_ERROR_* sub-code),
+     * else the overall one. `reason` is then AZ_IOT_ERR_AUTH when the manifest
+     * or a file failed verification (a file hash that cannot be read
+     * included), AZ_IOT_ERR_PROTOCOL for a manifest that cannot be decoded or
+     * parsed, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
+     * included). 0 for other events. */
+    int32_t extended_result_code;
+    /** REPORT_ACCEPTED: the report carried a terminal outcome. */
+    bool report_terminal;
   } az_iot_su_event;
 
   /**
@@ -791,6 +863,10 @@ extern "C"
        * same encoding. Its deadline is pending_fetch_deadline_ms: the timeout
        * bounds the whole wait, not only the part before the channel accepts. */
       uint8_t fetch_in_flight;
+      /** An update was delivered since fetch_in_flight was last issued. */
+      bool fetch_delivered;
+      /** The report last handed to the channel is terminal; kept until its verdict. */
+      bool report_sent_terminal;
 
       /* When the pending fetch stops being retried, as a monotonic instant.
        *
@@ -854,10 +930,33 @@ extern "C"
       bool pending_fetch_paced;
       /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
+      /** install_fn was called in the current workflow. */
+      bool install_called;
+      /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
+      bool reboot_owed;
     } _internal;
   } az_iot_su_client;
 
   /* --- Lifecycle ----------------------------------------------------------- */
+
+  /**
+   * @brief What a new workflow id does to a workflow that may not be replaced.
+   *
+   * A workflow may be replaced until its first install_fn call. From then
+   * until it ends (Idle or Failed), and after a last apply that asked for a
+   * reboot until that reboot, the device holds a partly applied or not yet
+   * activated deployment, which is validated only as a whole.
+   */
+  typedef enum az_iot_su_replacement_policy
+  {
+    /** Default. The new workflow is not started and AZ_IOT_SU_EVENT_UPDATE_DEFERRED
+     * is raised; the current one runs to its end. */
+    AZ_IOT_SU_REPLACEMENT_DEFER = 0,
+    /** Roll back the current workflow with restore_fn, report it FAILED with
+     * AZ_IOT_SU_FACILITY_SUPERSEDED, then start the new one. Requires restore_fn.
+     * Not yet supported: az_iot_su_client_init() returns AZ_IOT_ERR_NOT_SUPPORTED. */
+    AZ_IOT_SU_REPLACEMENT_ROLLBACK = 1
+  } az_iot_su_replacement_policy;
 
   /**
    * Configuration for az_iot_su_client_init(). Obtain a zero-initialized
@@ -878,7 +977,9 @@ extern "C"
     /** Required. Holds the copied strings; must outlive the client. */
     uint8_t* device_properties_buffer;
     size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
-
+    /** What a new workflow id does to a workflow that may not be replaced.
+     * Default AZ_IOT_SU_REPLACEMENT_DEFER. */
+    az_iot_su_replacement_policy replacement_policy;
   } az_iot_su_client_config_options;
 
   /**
@@ -905,8 +1006,10 @@ extern "C"
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
-   *   (including zero compatibility properties).
-   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256.
+   *   (including zero compatibility properties), or replacement_policy is not
+   *   an az_iot_su_replacement_policy value.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
+   *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
    *   limits, or the cache or update-check body is too small.
@@ -1019,8 +1122,9 @@ extern "C"
    * @brief Ask for an ONBOARDING update — the day-0/pre-registration route.
    *
    * Use this while the device has no device record with the service yet. It is
-   * the permissive route: it needs no registry entry, and it does not send
-   * `installedUpdateId`.
+   * the permissive route: it needs no registry entry. Like the regular route, it
+   * sends `installedUpdateId` when the device properties set one, so the
+   * service does not offer what is already installed; it is omitted otherwise.
    *
    * The application chooses the route because it is the only party that knows:
    * it persists its provisioning result across boots, while the SDK sees only
@@ -1075,7 +1179,8 @@ extern "C"
    * @brief Ask for a REGULAR (software) update — the operational route.
    *
    * Use this once the device is provisioned and has a device record. It sends
-   * `installedUpdateId`, which is how the service knows what to offer next.
+   * `installedUpdateId` when set, which is how the service knows what to offer
+   * next.
    *
    * Calling it on a device that has no device record yet is rejected by the
    * service as an invalid request; use
@@ -1141,7 +1246,8 @@ extern "C"
    *
    * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
    * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * non-NULL outputs are zeroed on every error.
+   * non-NULL outputs are zeroed on every error. Uses
+   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack for the decoded signature.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The

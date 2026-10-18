@@ -15,19 +15,31 @@ opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
 
-if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
-    || az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v3_1_1())
-        != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, az_iot_paho_factory_create_v5())
-        != AZ_IOT_OK)
+az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
+az_iot_mqtt_factory* v5 = az_iot_paho_factory_create_v5();
+if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
+  az_iot_paho_factory_destroy(v3);
+  az_iot_paho_factory_destroy(v5);
+  return 1;
+}
+if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
+    || az_iot_connection_client_register_mqtt_factory(&client, v3) != AZ_IOT_OK
+    || az_iot_connection_client_register_mqtt_factory(&client, v5) != AZ_IOT_OK)
+{
+  az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(v3); /* NULL: no-op */
+  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 
 /* Create feature clients, then: */
 if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
 {
+  /* deinit feature clients, then: */
+  az_iot_connection_client_deinit(&client);
+  az_iot_paho_factory_destroy(v3);
+  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 for (;;)
@@ -39,11 +51,35 @@ for (;;)
 Start from `az_iot_connection_client_options_default()`. A zero-initialized options struct has
 reconnection disabled.
 
-To skip DPS and connect straight to a hub, set `host` and `client_id` instead of the `dps` fields,
-and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
-is mqttv3).
+## MQTT factory ownership
 
-[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example.
+- The application owns every factory it creates with `az_iot_paho_factory_create_*()`.
+- `az_iot_connection_client_register_mqtt_factory()` lends the factory to the connection client.
+  Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it with
+  `az_iot_paho_factory_destroy()`. Destroying it earlier is a use-after-free.
+- A factory that was never registered, or whose registration failed, can be destroyed at any time.
+- Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
+
+The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
+the application creates them, and destroys them after the connection client.
+
+Teardown:
+
+```c
+/* deinit feature clients, then: */
+az_iot_connection_client_deinit(&client);
+az_iot_paho_factory_destroy(v3);
+az_iot_paho_factory_destroy(v5);
+```
+
+To skip DPS and connect straight to a hub, set `iothub_hostname` and `device_id` instead of the `dps` fields,
+and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
+is mqttv3). To connect to a saved hub and fall back to DPS, set both; see
+[Saved hub with DPS fallback](#saved-hub-with-dps-fallback).
+
+[`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example, but not
+production-ready code. It reads its key from a file; for production, see
+[Production keys](#production-keys).
 
 ## Connection states
 
@@ -85,6 +121,10 @@ See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
 
 - `az_iot_connection_client_get_hub_profile()` reports the assigned profile once the hub is
   `CONNECTED`.
+- `az_iot_connection_client_get_iothub_address()` and `az_iot_connection_client_get_device_id()`
+  return the assigned hub and device id once the assignment is adopted (`NULL` before). The device
+  id can differ from the registration id (e.g. custom allocation); save these two values, not the
+  registration id, to connect directly later.
 - Feature clients may be created before or after `open()`. Creating one for the wrong generation
   fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - A custom registration payload (one JSON object) can be sent with `dps.registration_payload`,
@@ -101,6 +141,39 @@ when:
 - a registration fails or returns no assignment, or
 - the client rejected the assignment (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` or
   `_MISMATCH`). The next `open()` registers again instead of reusing the cached hub.
+
+### Saved hub with DPS fallback
+
+The cache lives only as long as the client. To keep using an assignment across a restart, the
+application saves it and supplies it with the `dps` fields:
+
+```c
+opts.iothub_hostname = saved_hub;        /* az_iot_dps_assignment::hub_hostname */
+opts.device_id = saved_device_id;        /* az_iot_dps_assignment::device_id */
+opts.connection_profile = saved_profile; /* az_iot_dps_assignment::profile */
+opts.dps.id_scope = "<id-scope>";
+opts.dps.registration_id = "<registration-id>";
+```
+
+- Save the values from the callback set with
+  `az_iot_connection_client_set_dps_assignment_callback()`. It fires each time an assignment is
+  adopted (first registration and every re-provision), before the hub connect. A rejected
+  assignment is not reported, and its issued certificate is not stored.
+- `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
+- It goes to DPS under the same conditions as a cached assignment (above). With
+  `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
+  is retried; set `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` to register again instead.
+- A registration replaces the hub, device id and profile; the callback reports the new values.
+- `connection_profile` is declared, as for a direct connect: a feature client for the other
+  generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- An empty `iothub_hostname`, or one without `device_id`, fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
+- Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
+  returns the stored chain, the saved hub is connected with it and no certificate is requested.
+  DPS still authenticates with the bootstrap credential. With
+  `dps.request_operational_certificate`, the issued chain is already stored in the provider when
+  the callback runs (the managed provider writes it to `operational_cert_pem_path`).
+
+Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
 
 ## Reconnection
 
@@ -193,6 +266,7 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 | `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
+| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. |
 
 ## Certificates
 
@@ -205,30 +279,69 @@ Operational certificates:
 
 - **Issued at provisioning.** Set `dps.request_operational_certificate` and provide
   `csr_payload_buffer` (`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` bytes is enough for any CSR the service
-  accepts). The device sends a CSR with its registration. The issued chain goes to the provider's
-  `store_issued_certificate()`, if it has one, and then to the callback set with
-  `az_iot_connection_client_set_operational_cert_callback()`, if set. At least one must be
-  present. If storage fails, the callback is skipped and the registration fails.
+  accepts). The provider must implement `get_csr()`, `release_csr()` and
+  `store_issued_certificate()`. The device sends the provider's CSR with its registration. The
+  issued chain is stored with the provider's `store_issued_certificate()`, then passed with the
+  store result to the callback set with `az_iot_connection_client_set_operational_cert_callback()`,
+  if set. If storage fails, the registration fails.
 - **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
-  `CONNECTED`. One renewal can be in flight at a time. The SDK does not store the renewed chain:
-  copy or persist it in the callback (it is valid only there), for example through the
-  provider, then `close()` and `open()` to use it. See
+  `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
+  at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
+  the callback, which reports the result in `store_status`. The session is kept either way. If
+  the store succeeded, `close()` then `open()` connects with the renewed chain; if it failed, the
+  provider keeps the previous credential and the next connect uses it. See
   [`samples/authentication/hub_renew`](../samples/authentication/hub_renew/main.c).
 - A DPS-issued certificate is used from the hub connect that follows the registration. The live
   session is never interrupted.
+- CSR profile. The service requires a PKCS#10 CSR, base64 DER without PEM framing, with the
+  common name set to the DPS registration ID. It does not specify a key algorithm. Certificate
+  authorities created in Azure Device Registry sign the certificates they issue with ECDSA
+  P-384/SHA-384, whatever key the CSR carries. The managed provider generates an EC P-256 (the
+  default), EC P-384 or RSA 2048 key (`key_type`). For an EC key it signs the CSR with
+  SHA-256 up to 256 bits, SHA-384 up to 384 bits (P-384) and SHA-512 above; for RSA, SHA-256. The
+  digest follows the key in use, which may have been loaded from disk.
 - At connect time the operational credential is preferred, with the bootstrap credential as a
   fallback.
 
-Keys can stay in hardware (PKCS#11, TPM) with the Paho adapter. See
-[`samples/authentication`](../samples/authentication/README.md).
+### Production keys
+
+Most X.509 samples read the device's private key from a PEM file, so they run anywhere; the
+`hsm_pkcs11` sample keeps it in a token, `hsm_sign_callback` shows the `sign()` route with a
+stand-in signer, and the SAS-only samples use none. A key in a file
+can be copied, and the device's identity with it. In production, keep each device's X.509 private
+key in hardware -- an HSM, a TPM or a secure element -- which signs with it but never releases it.
+The certificate can stay a file: it is public. A password-protected PEM key is not a substitute: the
+device must keep the password where it can read it, next to the key, so a copy of the device's
+storage still yields the key.
+
+| The key | The provider returns | Adapter | Sample |
+| --- | --- | --- | --- |
+| Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
+| Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
+
+- **Bootstrap keys** authenticate to DPS; keep them in hardware too.
+- **Operational keys.** `az_iot_certificate_provider_managed` generates the operational key in
+  software and stores it unencrypted in an owner-only file. To keep it in hardware, implement a
+  provider that creates the key there and signs the CSR with it in `get_csr()`. For TLS, `load()`
+  returns a reference to the key, or the provider implements `sign()` and `load()` returns the
+  certificate with no key, as in the table above. Start from
+  [`custom_provider_template`](../samples/authentication/custom_provider_template/README.md).
+- **SAS keys** are secrets too; keep them in hardware with a user-provided token.
+  `on_sas_token_required` only notifies and must not block: sign the
+  `az_iot_sas_token_string_to_sign()` output in hardware outside the callback, build the token
+  with `az_iot_sas_token_from_signature()`, and supply it with
+  `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. See
+  [Authentication](#authentication) and
+  [`user_provided_sas_token`](../samples/authentication/user_provided_sas_token/README.md).
+- **If a key must be a file**, give each device its own key, and let only the account the device
+  software runs as read or change it (e.g. `chmod 600`; the directory not writable by others).
 
 ## Authentication
 
-> **Partly implemented.** Implemented: X.509 from `certificate_provider`, then SAS tokens signed
-> with the primary and secondary keys, then tokens from `on_sas_token_required`, with fallback on
-> rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the hub's token
-> (`renewal_percent`); `auth_source` in state events. Proposed, not implemented yet: further
-> provider certificates.
+> **Implemented:** X.509 from `certificate_provider` (several certificates per role), then SAS
+> tokens signed with the primary and secondary keys, then tokens from `on_sas_token_required`,
+> with fallback on rejection; `trusted_ca`; `unix_time`; `token_lifetime_seconds`; renewal of the
+> hub's token (`renewal_percent`); `auth_source` and `x509_index` in state events.
 
 Each role -- DPS and hub -- is configured with any of these credential sources, tried in this
 order, skipping any not set:
@@ -276,12 +389,13 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
   a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
   later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
-  retried under the policy, notifying again. To stop waiting, call `close()`. A hub renewal is
-  notified while the session stays up, with no timeout.
+  retried under the policy, notifying again. To stop waiting, call `close()`. A renewal (hub, or a
+  provisioning session kept open) is notified while the session stays up, with no timeout.
 - **Supplying a token.** `update_sas_token()` checks the token's `sr` (decoded) and `skn` against
   the role's current identity: `AZ_IOT_ERR_INVALID_ARG` on a mismatch, `AZ_IOT_ERR_NOT_FOUND` for
-  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a hub session
-  connected with a user-provided token renews with it at once (disconnect and reconnect, as below);
+  a hub not yet assigned by DPS. A waiting attempt or renewal takes it. Otherwise, a session
+  connected with a user-provided token (the hub, or a provisioning session that is not
+  registering) renews with it at once (disconnect and reconnect, as below);
   anything else keeps it for the role's next attempt that uses a user-provided token, until the
   role settles in `IDLE` or `FAULTED`, `close()`, or the single token area is needed first (a
   key-signed token, or the other role's token request). A token supplied after its attempt timed out
@@ -293,18 +407,33 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   and a session whose token expires before its replacement arrives is ended, the reconnect
   waiting for the token. A new DPS assignment drops a hub token asked for or held before it; the
   next attempt asks again.
-- **Renewal.** In `hub_auth.sas`: at `renewal_percent` (default 80; 1-99) of
+- **Building a token.** [`az_iot_sas_token.h`](../inc/azure/iot/az_iot_sas_token.h) formats it
+  from the request's `resource_uri` and `key_name` and an expiry: `az_iot_sas_token_string_to_sign()`
+  gives what to sign, and `az_iot_sas_token_from_signature()` builds the token from its
+  HMAC-SHA256, so a key that never leaves a TPM, HSM or secure element can sign it.
+  `az_iot_sas_token_sign()` does both with a key in memory, through a crypto backend;
+  `az_iot_sas_derive_device_key()` derives a device key from an enrollment-group key.
+- **Renewal.** In `hub_auth.sas` and `dps_auth.sas`: at `renewal_percent` (default 80; 1-99) of
   `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
   disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
   `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
-  reconnect is an ordinary failure (fallback, policy). A provisioning session is not renewed: a
-  registration is short, and a session a feature client holds is reopened with a new token when
-  the service ends it.
-- **Multiple certificates.** The client loads provider certificates at index 0, 1, ... until
-  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4).
+  reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
+  registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
+  `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see
+  `DISCONNECTING` as for any loss of the session. A registration in progress is not interrupted.
+- **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until
+  `AZ_IOT_ERR_NOT_FOUND`, and never beyond `AZ_IOT_MAX_CERTS_PER_ROLE` (default 4). Each is a
+  source in the pass, in index order, before the keys: a rejected certificate falls back to the
+  next index at once. The index that connected is kept, like any source, and reported in
+  `x509_index`. The hub uses the operational certificates when index 0 of that role exists,
+  else the bootstrap ones, checked on every attempt: an operational certificate that appears
+  (e.g. issued by DPS) replaces a kept bootstrap one. Without a certificate at index 0, none past
+  it is asked for or reused: a kept later index is dropped, for DPS and the hub. A provider with one certificate per role returns `AZ_IOT_ERR_NOT_FOUND`
+  for index > 0. Uses: a self-signed identity's primary and secondary certificates, or the
+  previous issued certificate kept as a rollback.
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
   certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
@@ -313,6 +442,15 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED`.
 - **Server trust.** `trusted_ca` applies to every connection. Without it, the X.509 provider's CA
   is used if there is one, otherwise the adapter's default store.
+- **TPM attestation.** DPS takes it over HTTPS or AMQP, not MQTT, so it is a separate step before the
+  connection client: [`az_iot_dps_tpm_client.h`](../inc/azure/iot/az_iot_dps_tpm_client.h) builds
+  the registration requests and parses the responses; the application sends them over HTTPS and
+  runs the TPM (import the DPS key, HMAC-SHA256). For an mqttv3 hub, then connect directly to the
+  assigned hub (`iothub_hostname`, `device_id`, `connection_profile` from the assignment) and sign hub tokens
+  with the TPM key from `on_sas_token_required`. mqttv5 hubs do not accept SAS and need an X.509
+  certificate, which DPS does not document issuing under TPM attestation. The connection client does not re-provision such a device; on
+  `AZ_IOT_ERR_IDENTITY_REJECTED`, register again. See
+  [`dps_tpm`](../samples/authentication/dps_tpm/README.md).
 
 ## Crypto backend
 
@@ -343,6 +481,7 @@ no crypto can leave `crypto` NULL.
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
+| `AZ_IOT_ERR_PUBLISH_REFUSED` | Publish callback: the hub refused the message and will refuse it again (mqttv5 `0x87`, `0x90`, `0x99`), or it is over the hub's Maximum Packet Size (`0x95`). Do not resend unchanged. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
 | `AZ_IOT_ERR_TIMEOUT` | A handshake step or CSR operation timed out. |
 

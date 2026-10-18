@@ -4,6 +4,7 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text;
@@ -21,7 +22,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -54,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -84,7 +85,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -119,7 +120,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             TwinClient twinClient = new(connection);
             twinClient.Dispose();

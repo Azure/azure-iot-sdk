@@ -1,19 +1,43 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Models;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
 {
     public class SampleConstants
     {
-        public const string CertificatePath = outputPath + $"certificate.cer";
-        public const string PfxPath = outputPath + $"certificate.pfx";
+        // Every sample resolves the credential files against the samples root rather than the working directory, so the
+        // files that SetupSampleDevice saves are the same ones the other samples load, however each is launched.
+        private static readonly string outputPath = FindSamplesRoot();
+
+        public static readonly string CertificatePath = outputPath + "certificate.cer";
+        public static readonly string PfxPath = outputPath + "certificate.pfx";
         public const string TestCertificatesPassword = "Some dummy certificate password";
 
-        private const string outputPath = "../../../../../../";
+        private static string FindSamplesRoot()
+        {
+            foreach (string start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                DirectoryInfo? directory = new(start);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, "SetupSampleDevice", "SetupSampleDevice.csproj")))
+                    {
+                        return directory.FullName + Path.DirectorySeparatorChar;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "Could not locate the samples root directory (the one containing the SetupSampleDevice project).");
+        }
 
         public static void ClearSavedCredentials()
         {
@@ -47,7 +71,7 @@ namespace SetupSampleDevice
             File.WriteAllText(outputPath + "iothubhostname.txt", iotHubHostName);
         }
 
-        public static void SaveConnectionProfile(ConnectionProfile connectionProfile)
+        public static void SaveConnectionProfile(IotHubConnectionType connectionProfile)
         {
             File.WriteAllText(outputPath + "connectionprofile.txt", connectionProfile.ToString());
         }
@@ -106,7 +130,7 @@ namespace SetupSampleDevice
             return File.ReadAllText(outputPath + "iothubhostname.txt");
         }
 
-        public static ConnectionProfile LoadConnectionProfile()
+        public static IotHubConnectionType LoadConnectionProfile()
         {
             string? connectionProfile = System.Environment.GetEnvironmentVariable("IOT_HUB_CONNECTION_PROFILE");
             if (string.IsNullOrEmpty(connectionProfile) && File.Exists(outputPath + "connectionprofile.txt"))
@@ -114,13 +138,13 @@ namespace SetupSampleDevice
                 connectionProfile = File.ReadAllText(outputPath + "connectionprofile.txt");
             }
 
-            // Default to the classic profile when no profile was persisted, matching the enum's default.
+            // Default to the MQTT 3.x profile when no profile was persisted, matching the enum's default.
             if (string.IsNullOrEmpty(connectionProfile))
             {
-                return ConnectionProfile.Classic;
+                return IotHubConnectionType.Mqttv3;
             }
 
-            return Enum.Parse<ConnectionProfile>(connectionProfile, ignoreCase: true);
+            return Enum.Parse<IotHubConnectionType>(connectionProfile, ignoreCase: true);
         }
 
         public static byte[] LoadPfx()
@@ -133,7 +157,7 @@ namespace SetupSampleDevice
             return File.ReadAllBytes(outputPath + "certificate.pfx");
         }
 
-        public static X509AuthenticationProvider LoadAuthenticationProvider()
+        public static X509AuthenticationProvider LoadAuthenticationProvider(AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
         {
             X509Certificate2 certificate;
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
@@ -153,7 +177,9 @@ namespace SetupSampleDevice
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
 
-            return new(certificate);
+            return issuedCertificatePrivateKey == null
+                ? new(certificate)
+                : new(certificate, issuedCertificatePrivateKey);
         }
     }
 }

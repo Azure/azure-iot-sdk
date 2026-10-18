@@ -219,6 +219,11 @@ typedef struct
   az_mqtt5_user_property* user_properties;
   int32_t user_property_count;
   int32_t user_property_capacity; /**< Entries in @p user_properties; extras are dropped. */
+  /**
+   * @brief The Properties as received, after Property Length: every User Property, none dropped.
+   * Read with az_mqtt5_codec_next_user_property(). Valid as long as the other spans.
+   */
+  az_span properties;
 } az_mqtt5_publish_data;
 
 // ──────────────────────── Publish options (for sending) ──────
@@ -237,6 +242,17 @@ typedef struct
   az_span content_type;
   az_mqtt5_user_property* user_properties;
   int32_t user_property_count;
+  /**
+   * @brief Optional. When set, User Properties are read with it instead of from @p user_properties:
+   * it sets *out to the property at *cursor (0 first), increases *cursor, and returns AZ_OK, or
+   * AZ_ERROR_ITEM_NOT_FOUND after the last. A failure result fails the encode with that result;
+   * any other result, or an AZ_OK that does not increase *cursor, fails it with AZ_ERROR_ARG. It
+   * must yield the same sequence each time it restarts from 0: the encoder reads it once to size
+   * and once to write, and fails with AZ_ERROR_ARG if the encoded length differs (only the length
+   * is compared; writes never pass it).
+   */
+  az_result (*user_property_next)(void* context, int32_t* cursor, az_mqtt5_user_property* out);
+  void* user_property_context; /**< Passed to @p user_property_next. */
 } az_mqtt5_publish_options;
 
 // ──────────────────────── ACK data ───────────────────────────
@@ -266,8 +282,9 @@ typedef struct
 typedef struct
 {
   uint16_t packet_id;
-  /** @brief One per topic filter, in order. */
-  az_mqtt5_reason_code* reason_codes;
+  /** @brief One per topic filter, in order: az_mqtt5_reason_code values. int32_t, the element
+   * type of az_mqtt5_client_options.decode_codes, which holds them. */
+  int32_t* reason_codes;
   /** @brief Entries stored; never exceeds reason_code_capacity (extra codes are dropped). */
   int32_t reason_code_count;
   int32_t reason_code_capacity;
@@ -342,6 +359,8 @@ AZ_NODISCARD AZ_INLINE az_mqtt5_publish_options az_mqtt5_publish_options_default
   opts.content_type = AZ_SPAN_EMPTY;
   opts.user_properties = NULL;
   opts.user_property_count = 0;
+  opts.user_property_next = NULL;
+  opts.user_property_context = NULL;
   return opts;
 }
 
