@@ -119,6 +119,16 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         }
 
         /// <summary>
+        /// Make a copy of this publish that is sent to a different topic. Everything else is shared with this publish.
+        /// </summary>
+        internal MqttPublish WithTopic(string topic)
+        {
+            var copy = (MqttPublish)MemberwiseClone();
+            copy.Topic = topic;
+            return copy;
+        }
+
+        /// <summary>
         /// Adds a user property with a pre-encoded UTF-8 byte value.
         /// This overload is more performant when the value is already available as bytes.
         /// </summary>
