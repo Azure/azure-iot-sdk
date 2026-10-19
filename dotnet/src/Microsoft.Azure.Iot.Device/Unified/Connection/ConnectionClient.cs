@@ -85,7 +85,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
-            var suback = await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, mqttSubscribe);
+            var suback = await ManagedMqttConnection.BuildAndSubscribeAsync(ConnectionEndpoint.IotHub, () =>
+            {
+                string deviceId = GetDeviceIdForTopics();
+                return mqttSubscribe.WithTopicFilters(mqttSubscribe.TopicFilters
+                    .Select(topicFilter => topicFilter.Topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal)
+                        ? new MqttTopicFilter(
+                            topicFilter.Topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal),
+                            topicFilter.QualityOfServiceLevel)
+                        : topicFilter)
+                    .ToList());
+            });
 
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)

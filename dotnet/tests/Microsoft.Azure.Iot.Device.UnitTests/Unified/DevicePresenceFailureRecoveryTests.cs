@@ -119,6 +119,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             // SUBSCRIBE must be the last traffic on the wire once the presence flow has completed.
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
             Assert.NotNull(lastTraffic.Subscribe);
+            Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#");
             Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == ClassicTwinResponseTopicFilter);
         }
     }
