@@ -119,7 +119,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task GetTwinAsync_ThrowsAfterDisconnect()
         {
-            MockMqttClient mqttClient = new(false);
+            using MockConnectionMqttClient mqttClient = new();
             using ConnectionClient connection = new(new() { MqttClient = mqttClient });
             await connection.ConnectToHubAsync(
                 MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
