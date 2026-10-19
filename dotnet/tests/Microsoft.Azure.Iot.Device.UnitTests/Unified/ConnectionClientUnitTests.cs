@@ -197,6 +197,41 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public async Task DisposeCancelsPendingCertificateSigningOperations(bool useDisposeBool, bool acceptedFirst)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+            IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(
+                request, TestContext.Current.CancellationToken);
+            if (acceptedFirst)
+            {
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+            }
+
+            if (useDisposeBool)
+            {
+                client.Dispose(true);
+            }
+            else
+            {
+                client.Dispose();
+            }
+
+            Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
+            Assert.True(operation.Completed.IsCanceled);
+            if (!acceptedFirst)
+            {
+                Assert.True(operation.Accepted.IsCanceled);
+            }
+        }
+
+        [Theory]
         [InlineData(400, 400037, "CertificateSigningRequestInvalid", false)]
         [InlineData(400, 400037, "CertificateSigningRequestInvalid", true)]
         [InlineData(400, 400037, "CertificateSigningRequestSubjectMismatch", true)]

@@ -173,6 +173,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private Task HandleCertificateSigningDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            CancelPendingCertificateSigningOperations();
+
+            return Task.CompletedTask;
+        }
+
+        private void CancelPendingCertificateSigningOperations()
+        {
             foreach (var pendingOperation in _pendingCertificateSigningOperations.ToArray())
             {
                 if (_pendingCertificateSigningOperations.TryRemove(pendingOperation))
@@ -180,8 +187,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     pendingOperation.Value.SetCanceled(CancellationToken.None);
                 }
             }
-
-            return Task.CompletedTask;
         }
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
@@ -283,6 +288,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public override void Dispose(bool disposing)
         {
+            CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose(disposing);
@@ -293,6 +299,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         public override void Dispose()
         {
+            CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose();
