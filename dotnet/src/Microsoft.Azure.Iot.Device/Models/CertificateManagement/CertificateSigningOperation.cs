@@ -41,10 +41,11 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// The result contains the certificate chain and correlation ID.
         /// </summary>
         /// <exception cref="CertificateSigningRequestFailedException">
-        /// Thrown when the certificate issuance fails after acceptance, or when IoT hub's issued certificate response
-        /// could not be read. It can also be thrown if the request is rejected before <see cref="Accepted"/> completes.
-        /// If the <see cref="AbstractConnectionClient.HandleCertificateSigningCompleteAsync"/> callback throws, this
-        /// task fails with that exception instead.
+        /// Thrown when IoT Hub rejects certificate issuance. It can also be thrown if the request is rejected before
+        /// <see cref="Accepted"/> completes.
+        /// </exception>
+        /// <exception cref="DeviceException">
+        /// Thrown when the certificate signing response cannot be handled.
         /// </exception>
         public Task<CertificateSigningResponse> Completed => _completed.Task;
 
