@@ -190,11 +190,6 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            if (_underlyingMqttClient.IsConnected())
-            {
-                return;
-            }
-
             if (DisconnectedAsync != null)
             {
                 try

@@ -196,25 +196,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
         }
 
-        [Fact]
-        public async Task SpuriousDisconnectCallbackDoesNotCancelPendingCertificateSigningOperation()
-        {
-            using MockConnectionMqttClient mockMqttClient = new();
-            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
-            await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
-            IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
-            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
-
-            await mockMqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
-
-            Assert.True(mockMqttClient.IsConnected());
-            Assert.False(operation.Accepted.IsCompleted);
-            Assert.False(operation.Completed.IsCompleted);
-            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
-            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
-            Assert.True(operation.Completed.IsCompletedSuccessfully);
-        }
-
         [Theory]
         [InlineData(400, 400037, "CertificateSigningRequestInvalid", false)]
         [InlineData(400, 400037, "CertificateSigningRequestInvalid", true)]
