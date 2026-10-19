@@ -99,7 +99,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)
             {
-                anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
+                if (topicSuback.TopicFilter.Topic.Equals(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#"))
+                {
+                    anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1);
+                }
+                else
+                { 
+                    anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
+                }
             }
 
             if (anySubscribeFailed)
