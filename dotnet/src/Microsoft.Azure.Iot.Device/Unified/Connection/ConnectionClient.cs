@@ -236,13 +236,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                                 throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
                             }
 
+                            if (!_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation)))
+                            {
+                                return;
+                            }
+
                             // The authentication provider receives these on the next connection attempt to IoT hub.
                             if (CurrentConnectionContext != null)
                             {
                                 CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
                             }
 
-                            _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
                             pendingCertificateSigningOperation.SetCompleted(response);
                         }
                         else
