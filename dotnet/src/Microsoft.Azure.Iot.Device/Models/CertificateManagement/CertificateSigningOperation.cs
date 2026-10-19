@@ -15,8 +15,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
     /// <remarks>
     /// If the operation fails before <see cref="Accepted"/> completes successfully, both tasks fault with the
     /// operation's exception. If <see cref="Accepted"/> has already completed successfully, a later failure
-    /// affects only <see cref="Completed"/>. If the completion callback throws, <see cref="Completed"/> faults
-    /// with the callback's exception. Cancellation cancels each task that has not already completed.
+    /// affects only <see cref="Completed"/>. Cancellation cancels each task that has not already completed.
     /// </remarks>
     public class CertificateSigningOperation
     {
