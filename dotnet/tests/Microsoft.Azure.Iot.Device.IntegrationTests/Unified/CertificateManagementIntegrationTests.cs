@@ -53,7 +53,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
-        public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
+        public async Task CanProvisionWithX509AndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
