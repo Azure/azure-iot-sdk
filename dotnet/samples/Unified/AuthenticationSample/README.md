@@ -70,5 +70,6 @@ Certificate signing complete callback invoked for 'CN=<device id>' (...)
 Device <device id> connected to <hub>.azure-devices.net with the certificate IoT Hub issued: 'CN=<device id>' (...)
 ```
 
-The operational private keys in this sample live in memory and are lost when it exits. In production, keep them in
-hardware (an HSM or TPM); the SDK only asks a key to sign and never exports it.
+The operational private keys in this sample live in memory and are lost when it exits; the sample does not save keys for
+reuse across runs. On platforms whose TLS stack requires it, default certificate pairing round-trips exportable keys
+through an in-memory PKCS#12 blob. In production, keep non-exportable keys in hardware (an HSM or TPM).

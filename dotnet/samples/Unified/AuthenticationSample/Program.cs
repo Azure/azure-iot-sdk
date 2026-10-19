@@ -69,8 +69,9 @@ internal class Program
     /// </summary>
     private static async Task X509BootIssuedOperationalAsync(CancellationToken cancellationToken)
     {
-        // The private key that DPS and IoT Hub issue operational certificates for. In production, keep it in hardware
-        // (an HSM or TPM); the SDK only asks it to sign and never exports it.
+        // The private key that DPS and IoT Hub issue operational certificates for. This sample keeps it in memory and
+        // does not save it for reuse across runs. On platforms whose TLS stack requires it, default certificate pairing
+        // round-trips exportable keys through PKCS#12; in production, keep non-exportable keys in hardware (an HSM or TPM).
         using ECDsa operationalKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
         // Passing the operational key tells the provider to present issued certificates, paired with that key, to IoT Hub
