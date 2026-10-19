@@ -43,6 +43,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             options ??= new ConnectionClientOptions();
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -110,6 +111,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="request">The certificates to have IoT hub sign.</param>
         /// <param name="cancellationToken">The cancellation token</param>
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
+        /// <remarks>Any MQTT disconnection cancels all pending certificate signing operations.</remarks>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -146,6 +148,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             return operation;
+        }
+
+        private Task HandleCertificateSigningDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        {
+            foreach (var pendingOperation in _pendingCertificateSigningOperations.ToArray())
+            {
+                if (_pendingCertificateSigningOperations.TryRemove(pendingOperation))
+                {
+                    pendingOperation.Value.SetCanceled(CancellationToken.None);
+                }
+            }
+
+            return Task.CompletedTask;
         }
 
         private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
@@ -248,6 +263,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public override void Dispose(bool disposing)
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose(disposing);
         }
 
@@ -257,6 +273,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public override void Dispose()
         {
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose();
         }
 
