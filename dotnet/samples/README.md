@@ -37,11 +37,3 @@ dotnet run --project DirectMethodsSample  --property WarningLevel=0
 ```
 
 To see each way a device can authenticate with DPS and IoT Hub (X.509 certificates, symmetric keys, and certificates issued by DPS and renewed by IoT Hub), see the [AuthenticationSample](./Unified/AuthenticationSample/).
-
-### Connecting to preview nuget feed
-
-In this folder there is a `nuget.config.sample` file that can be used to connect and authenticate with the nuget feed that this project pushes preview bits to. Copy it to `nuget.config`, then fill in the `<packageSourceCredentials>` section with your github username and a PAT (classic) with "read:packages" permissions.
-
-The file is kept with a `.sample` extension because NuGet applies any `nuget.config` in this directory to every build under it, and the sample's placeholder credentials would make those builds fail. `dotnet/samples/nuget.config` is git-ignored, so your filled-in copy (which holds a PAT) is never committed.
-
-The samples in this repository build against the SDK by project reference and do not need this feed.
