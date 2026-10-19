@@ -293,9 +293,19 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            // The device ID is resolved on every attempt rather than once up front, because this operation may wait out a
+            // re-provisioning that assigns this device a different ID. The caller's publish is left untouched so that
+            // its topic template is still available to later attempts. The ID is only read once the attempt has been
+            // admitted for IoT hub, because switching away from IoT hub (and so re-provisioning) waits for admitted
+            // operations to finish; reading it any earlier could pair this device's old ID with a newer connection.
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, publish, cancellationToken);
+                return await ManagedMqttConnection.BuildAndPublishAsync(
+                    ConnectionEndpoint.IotHub,
+                    () => ContainsDeviceIdPlaceholder(publish.Topic)
+                        ? publish.WithTopic(ResolveDeviceIdPlaceholder(publish.Topic, GetDeviceIdForTopics()))
+                        : publish,
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -303,9 +313,26 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
+            // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, subscribe, cancellationToken);
+                return await ManagedMqttConnection.BuildAndSubscribeAsync(
+                    ConnectionEndpoint.IotHub,
+                    () =>
+                    {
+                        if (!subscribe.TopicFilters.Any(topicFilter => ContainsDeviceIdPlaceholder(topicFilter.Topic)))
+                        {
+                            return subscribe;
+                        }
+
+                        string deviceId = GetDeviceIdForTopics();
+                        return subscribe.WithTopicFilters(subscribe.TopicFilters
+                            .Select(topicFilter => ContainsDeviceIdPlaceholder(topicFilter.Topic)
+                                ? new MqttTopicFilter(ResolveDeviceIdPlaceholder(topicFilter.Topic, deviceId), topicFilter.QualityOfServiceLevel)
+                                : topicFilter)
+                            .ToList());
+                    },
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -313,12 +340,51 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
+            // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.UnsubscribeAsync(ConnectionEndpoint.IotHub, unsubscribe, cancellationToken);
+                return await ManagedMqttConnection.BuildAndUnsubscribeAsync(
+                    ConnectionEndpoint.IotHub,
+                    () =>
+                    {
+                        if (!unsubscribe.TopicFilters.Any(ContainsDeviceIdPlaceholder))
+                        {
+                            return unsubscribe;
+                        }
+
+                        string deviceId = GetDeviceIdForTopics();
+                        return unsubscribe.WithTopicFilters(unsubscribe.TopicFilters
+                            .Select(topicFilter => ResolveDeviceIdPlaceholder(topicFilter, deviceId))
+                            .ToList());
+                    },
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
+        }
+
+        private static bool ContainsDeviceIdPlaceholder(string topic)
+        {
+            return topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal);
+        }
+
+        private static string ResolveDeviceIdPlaceholder(string topic, string deviceId)
+        {
+            return topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The device ID to substitute into a feature client's topic for the attempt that is about to be sent.
+        /// </summary>
+        /// <exception cref="MqttClientNotConnectedException">
+        /// This client holds no IoT hub assignment, so it cannot be present on a hub. Reported as not-connected so that
+        /// the operation waits for the device to become present (or fails fast if nothing is going to make it present),
+        /// exactly as it would if it had found the connection gone.
+        /// </exception>
+        internal virtual string GetDeviceIdForTopics()
+        {
+            return CurrentConnectionContext?.DeviceId
+                ?? throw new MqttClientNotConnectedException("This device has no IoT hub assignment, so it has no device ID to send this operation with.");
         }
 
         /// <summary>

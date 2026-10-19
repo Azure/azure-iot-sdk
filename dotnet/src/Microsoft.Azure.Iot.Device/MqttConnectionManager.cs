@@ -967,12 +967,26 @@ namespace Microsoft.Azure.Iot.Device
         /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
         /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttPublishAck> PublishAsync(ConnectionEndpoint endpoint, MqttPublish publish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> PublishAsync(ConnectionEndpoint endpoint, MqttPublish publish, CancellationToken cancellationToken = default)
+        {
+            return BuildAndPublishAsync(endpoint, () => publish, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a PUBLISH only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildPublish"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
-                var puback = await _underlyingMqttClient.PublishAsync(publish, cancellationToken);
+                var puback = await _underlyingMqttClient.PublishAsync(buildPublish(), cancellationToken);
                 ThrowIfPubackHasErrorCode(puback);
                 return puback;
             }
@@ -1000,12 +1014,26 @@ namespace Microsoft.Azure.Iot.Device
         /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
         /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttSubscribeAck> SubscribeAsync(ConnectionEndpoint endpoint, MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public Task<MqttSubscribeAck> SubscribeAsync(ConnectionEndpoint endpoint, MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        {
+            return BuildAndSubscribeAsync(endpoint, () => subscribe, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a SUBSCRIBE only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildSubscribe"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
-                var suback = await _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
+                var suback = await _underlyingMqttClient.SubscribeAsync(buildSubscribe(), cancellationToken);
                 ThrowIfSubackHasErrorCode(suback);
                 return suback;
             }
@@ -1033,12 +1061,26 @@ namespace Microsoft.Azure.Iot.Device
         /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
         /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(ConnectionEndpoint endpoint, MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttUnsubscribeAck> UnsubscribeAsync(ConnectionEndpoint endpoint, MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        {
+            return BuildAndUnsubscribeAsync(endpoint, () => unsubscribe, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a UNSUBSCRIBE only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildUnsubscribe"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
-                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(buildUnsubscribe(), cancellationToken);
                 ThrowIfUnsubackHasErrorCode(unsuback);
                 return unsuback;
             }
