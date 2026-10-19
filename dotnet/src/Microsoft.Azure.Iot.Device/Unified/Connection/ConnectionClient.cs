@@ -128,7 +128,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             CertificateSigningOperation operation = new();
 
-            _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
+            if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
+            {
+                throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
+            }
 
             // The signing operation spans multiple messages from IoT hub, so the user's cancellation token must cancel
             // whichever of the operation's tasks are still pending even after this method has returned

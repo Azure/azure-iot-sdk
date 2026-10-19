@@ -205,6 +205,29 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task CertificateSigningRequestWithDuplicateRequestIdIsRejected()
+        {
+            var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync();
+            using (client)
+            {
+                int sentTrafficCount = mqtt.SentMqttTrafficInOrder.Count;
+                IotHubCertificateSigningRequest duplicateRequest = new("someDeviceId", "c29tZWNzcg==", requestId);
+
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    client.SendCertificateSigningRequestAsync(duplicateRequest, TestContext.Current.CancellationToken));
+
+                Assert.Equal(sentTrafficCount, mqtt.SentMqttTrafficInOrder.Count);
+                Assert.Equal(1, GetPendingOperationCount(client));
+
+                await DeliverCertificateSigningResponseAsync(mqtt, "202", requestId, AcceptedPayload);
+                await DeliverCertificateSigningResponseAsync(mqtt, "200", requestId, "{\"certificates\":[\"cert1\"],\"correlationId\":\"someCorrelationId\"}");
+                await operation.Completed.WaitAsync(s_certSigningTimeout, TestContext.Current.CancellationToken);
+                Assert.True(operation.Accepted.IsCompletedSuccessfully);
+                Assert.Equal(0, GetPendingOperationCount(client));
+            }
+        }
+
+        [Fact]
         public async Task CertificateSigningResponseForUnknownRequestIsIgnored()
         {
             var (client, mqtt, operation, requestId) = await StartCertificateSigningAsync();
