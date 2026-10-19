@@ -85,7 +85,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task SendTelemetryAsync_ThrowsAfterDisconnect()
         {
-            MockMqttClient mqttClient = new(false);
+            MockConnectionMqttClient mqttClient = new();
             using ConnectionClient connection = new(new() { MqttClient = mqttClient });
             await connection.ConnectToHubAsync(
                 MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
