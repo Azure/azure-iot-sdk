@@ -83,7 +83,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             MqttSubscribe mqttSubscribe = new();
             var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
-            mqttSubscribe.TopicFilters.Add(new(string.Format(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", CurrentConnectionContext.DeviceId), expectedQos));
+            mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
             mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
