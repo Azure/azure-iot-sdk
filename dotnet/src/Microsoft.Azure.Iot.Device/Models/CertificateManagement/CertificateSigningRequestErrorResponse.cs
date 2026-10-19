@@ -45,7 +45,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// Certificate management specific details about the error.
         /// </summary>
         [JsonPropertyName("info")]
-        public CertificateSigningRequestErrorInfo Info { get; set; } = new();
+        public CertificateSigningRequestErrorInfo? Info { get; set; }
 
         /// <summary>
         /// How long IoT hub asked this device to wait before trying again, if it asked at all.
