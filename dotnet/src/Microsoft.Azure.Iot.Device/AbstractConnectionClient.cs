@@ -404,9 +404,9 @@ namespace Microsoft.Azure.Iot.Device
         /// Disconnect this device from IoT hub.
         /// </summary>
         /// <remarks>
-        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect, as the C connection client's
-        /// close() keeps its IoT hub assignment. A later <see cref="ProvisionAndConnectAsync"/> therefore reconnects
-        /// directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set.
+        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
+        /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
+        /// the cached credentials expire.
         /// </remarks>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
