@@ -142,7 +142,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
 
                     // for example: "%24.mid=febd6d71-df05-474f-8a9b-fe90318c7eb8&%24.to=%2Fdevices%2Fb98a1b81-6b6b-4762-ae77-610fb8d6d3cd%2Fmessages%2FdeviceBound"
                     // Note that not all c2d messages have a property bag
-                    if (topicSegments.Length == 4)
+                    if (topicSegments.Length == 5)
                     {
                         string propertyBag = topicSegments[4];
 
