@@ -48,10 +48,6 @@ internal class Program
         await SymmetricKeyBootIssuedOperationalWithCallbackAsync(cts.Token);
     }
 
-    // ---------------------------------------------------------------------------------------------------------------
-    // X.509 certificate at boot
-    // ---------------------------------------------------------------------------------------------------------------
-
     /// <summary>
     /// The device presents its X.509 certificate to DPS and then the same certificate to IoT Hub.
     /// </summary>
@@ -111,10 +107,6 @@ internal class Program
         // its IoT Hub certificate signing request.
         await ProvisionWithIssuanceThenRenewWithIotHubAsync(provisioningSettings, authentication, credentialStore.CreateKey, "its X.509 certificate", cancellationToken);
     }
-
-    // ---------------------------------------------------------------------------------------------------------------
-    // Symmetric key at boot
-    // ---------------------------------------------------------------------------------------------------------------
 
     /// <summary>
     /// The device signs SAS tokens with its symmetric key to authenticate with DPS and then with IoT Hub.
