@@ -27,6 +27,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         ConnectionContext? GetCurrentConnectionContext();
 
         /// <summary>
+        /// Whether this client has selected a connection endpoint. This remains true while it is automatically
+        /// reconnecting and becomes false after an explicit disconnect.
+        /// </summary>
+        bool IsConnectionTargetSet => true;
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>

@@ -49,7 +49,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (_connection.GetCurrentConnectionContext() == null)
+            var currentConnectionContext = _connection.GetCurrentConnectionContext();
+            if (currentConnectionContext == null || !_connection.IsConnectionTargetSet)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
