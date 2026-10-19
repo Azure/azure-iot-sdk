@@ -15,7 +15,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
     {
         private bool _isDisposed = false;
 
-        private const string ClassicTelemetryTopicFormat = "devices/{0}/messages/events/";
+        private const string ClassicTelemetryTopic = "devices/" + IConnectionClient.DeviceIdPlaceholder + "/messages/events/";
 
         private IConnectionClient _connection;
 
@@ -55,17 +55,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            string deviceId = currentConnectionContext.DeviceId;
-
             if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
             {
                 throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
             }
 
             //TODO fill in content type, encoding, etc from message user properties
+            // The connection client substitutes this device's current ID for the placeholder in this topic when it sends
+            // this publish, so the publish still goes to the right topic if the device ID changes while it is pending.
             var mqttMessage = new MqttPublish
             {
-                Topic = string.Format(ClassicTelemetryTopicFormat, deviceId),
+                Topic = ClassicTelemetryTopic,
                 PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };

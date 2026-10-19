@@ -39,7 +39,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
 
             MqttPublish publish = Assert.Single(connection.PublishedMessages);
-            Assert.StartsWith($"devices/{DeviceId}/messages/events/", publish.Topic);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.StartsWith($"devices/{IConnectionClient.DeviceIdPlaceholder}/messages/events/", publish.Topic);
             Assert.Equal(MqttQualityOfServiceLevel.AtLeastOnce, publish.QualityOfServiceLevel);
             Assert.Equal(Encoding.UTF8.GetBytes("hello"), publish.Payload);
 
