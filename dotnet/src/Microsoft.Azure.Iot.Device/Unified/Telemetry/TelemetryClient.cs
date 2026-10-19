@@ -149,12 +149,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                         string[] keyValuePairs = propertyBag.Split('&');
                         foreach (var keyValuePair in keyValuePairs)
                         {
-                            string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
-                            string value = "";
-                            if (keyValuePair.Split("=").Length > 0)
-                            {
-                                value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
-                            }
+                            string[] parts = keyValuePair.Split('=', 2);
+                            string key = Uri.UnescapeDataString(parts[0]);
+                            string value = parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : "";
 
                             if (key.Equals(TelemetryClient.MessagePropertyMessageId))
                             {
