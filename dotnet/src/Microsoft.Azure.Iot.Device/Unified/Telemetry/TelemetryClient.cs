@@ -127,7 +127,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 return;
             }
 
-            var expectedDeviceBoundMessagesTopic = string.Format(CultureInfo.InvariantCulture, DeviceBoundMessagesTopicFormat, connectionContext.DeviceId);
+            var expectedDeviceBoundMessagesTopic = DeviceBoundMessagesTopicFormat.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal);
 
             if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
             {
