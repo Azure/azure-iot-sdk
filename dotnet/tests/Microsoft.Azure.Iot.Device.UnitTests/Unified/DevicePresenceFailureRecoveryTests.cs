@@ -30,6 +30,38 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
     {
         private const string ClassicTwinResponseTopicFilter = "$iothub/twin/res/#";
 
+        [Fact]
+        public async Task AnnounceDevicePresenceAcceptsDeviceBoundMessagesQos1Grant()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient
+            });
+
+            int disconnectCount = 0;
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck()
+            {
+                IsSessionPresent = false,
+                ResultCode = MqttConnectReasonCode.Success
+            });
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, disconnectCount);
+            var presenceSubscribe = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe;
+            Assert.NotNull(presenceSubscribe);
+            Assert.Contains(presenceSubscribe.TopicFilters, topicFilter =>
+                topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#"
+                && topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce);
+        }
+
         private static ConnectionContext GetMockConnectionContext()
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
@@ -43,12 +75,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
 
-        // The presence flow subscribes to the twin response (0), desired-property patch (1) and direct-method request (2)
-        // topics in a single SUBSCRIBE. A failed grant on any one of them, or on all of them, must trigger recovery.
+        // The presence flow subscribes to the device-bound messages topic (0), twin response (1), desired-property
+        // patch (2) and direct-method request (3) topics in a single SUBSCRIBE. A failed grant on any classic topic,
+        // or on all topics, must trigger recovery.
         [Theory]
-        [InlineData(0)]
         [InlineData(1)]
         [InlineData(2)]
+        [InlineData(3)]
         [InlineData(-1)] // -1 fails every topic in the presence subscribe
         public async Task AnnounceDevicePresenceRecoversWhenClassicPresenceSubscribeGrantIsUnsuccessful(int failingTopicIndex)
         {

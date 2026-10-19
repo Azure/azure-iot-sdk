@@ -84,9 +84,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            string deviceBoundMessagesTopic = string.Empty;
             var suback = await ManagedMqttConnection.BuildAndSubscribeAsync(ConnectionEndpoint.IotHub, () =>
             {
                 string deviceId = GetDeviceIdForTopics();
+                deviceBoundMessagesTopic = Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat
+                    .Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal) + "#";
                 return mqttSubscribe.WithTopicFilters(mqttSubscribe.TopicFilters
                     .Select(topicFilter => topicFilter.Topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal)
                         ? new MqttTopicFilter(
@@ -99,7 +102,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)
             {
-                if (topicSuback.TopicFilter.Topic.Equals(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#"))
+                if (topicSuback.TopicFilter.Topic.Equals(deviceBoundMessagesTopic, StringComparison.Ordinal))
                 {
                     anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1);
                 }
