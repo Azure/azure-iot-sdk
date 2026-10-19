@@ -116,7 +116,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (CurrentConnectionContext == null)
+            // The connection context survives a disconnect, so the endpoint is what says whether this client is connected.
+            if (CurrentConnectionContext == null || CurrentEndpoint != ConnectionEndpoint.IotHub)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }

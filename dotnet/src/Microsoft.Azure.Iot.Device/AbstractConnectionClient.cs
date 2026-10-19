@@ -115,6 +115,19 @@ namespace Microsoft.Azure.Iot.Device
             private set => _currentEndpoint = value;
         }
 
+        /// <summary>
+        /// Whether this client has selected a connection endpoint, or is automatically re-provisioning to select one.
+        /// </summary>
+        /// <remarks>
+        /// A failed re-provisioning attempt resets <see cref="CurrentEndpoint"/> to <see cref="ConnectionEndpoint.None"/>
+        /// while the retry loop waits out its backoff, but recovery is still active then, so operations must wait for it
+        /// rather than fail. The re-provisioning cancellation source is checked (rather than _isReprovisioning) because
+        /// an explicit disconnect clears it immediately, whereas _isReprovisioning stays set until cleanup finishes.
+        /// </remarks>
+        public bool IsConnectionTargetSet =>
+            CurrentEndpoint != ConnectionEndpoint.None
+            || Volatile.Read(ref _currentReprovisioningCancellation) != null;
+
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
 
@@ -390,6 +403,11 @@ namespace Microsoft.Azure.Iot.Device
         /// <summary>
         /// Disconnect this device from IoT hub.
         /// </summary>
+        /// <remarks>
+        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
+        /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
+        /// the cached credentials expire.
+        /// </remarks>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
@@ -400,7 +418,6 @@ namespace Microsoft.Azure.Iot.Device
             CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
             CurrentEndpoint = ConnectionEndpoint.None;

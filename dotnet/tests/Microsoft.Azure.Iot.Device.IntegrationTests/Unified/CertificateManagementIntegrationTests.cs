@@ -34,6 +34,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
+            await device.ConnectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = new(privateKey, CertificateUtilities.GenerateCsrWithPrivateKey(device.RegistrationId, privateKey)),
+            };
+            ConnectionContext reconnectedContext = await device.ConnectionClient.ProvisionAndConnectAsync(
+                provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken);
+
+            // Re-provisioning would return a new context, even if DPS assigned the same device and hub.
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+
             // A successful Hub connection with an issued certificate must not fall back to a SAS token.
             AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
                 connectionContext.IotHubHostName,
@@ -53,7 +67,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
-        public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
+        public async Task CanProvisionWithX509AndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
@@ -87,6 +101,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            await connectionClient.DisconnectAsync(cts.Token);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
+
+            ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
+                provisioningSettings, x509AuthenticationProvider, cancellationToken: cts.Token);
+
+            // Re-provisioning would return a new context, even if DPS assigned the same device and hub.
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
 
             var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, privateKey);
             var certificateSigningRequest = new IotHubCertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");
