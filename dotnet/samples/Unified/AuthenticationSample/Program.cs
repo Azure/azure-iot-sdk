@@ -232,7 +232,7 @@ internal class Program
         ConnectionContext renewedConnectionContext = await renewedConnectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
 
         string issuer = ReferenceEquals(renewedConnectionContext.IssuedClientCertificates, iotHubIssuedCertificates) ? "IoT Hub" : "DPS (after re-provisioning)";
-        Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with the certificate {issuer} issued: {DescribeCertificateChain(renewedConnectionContext.IssuedClientCertificates!)}");
+        Console.WriteLine($"Device {renewedConnectionContext.DeviceId} connected to {renewedConnectionContext.IotHubHostName} with the certificate {issuer} issued: {DescribeCertificateChain(renewedConnectionContext.IssuedClientCertificates!)}");
 
         await renewedConnectionClient.DisconnectAsync(cancellationToken);
     }
