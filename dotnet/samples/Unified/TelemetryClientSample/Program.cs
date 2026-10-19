@@ -31,6 +31,11 @@ internal class Program
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
 
+        telemetryClient.CloudToDeviceTelemetryReceivedAsync += async (args) =>
+        {
+            Console.WriteLine($"Received a cloud to device message with message id {args.MessageId}");
+        };
+
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
