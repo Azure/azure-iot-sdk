@@ -17,37 +17,8 @@ using System.Text;
 /// </summary>
 internal class Program
 {
-    private record Scenario(string Name, string Description, Func<CancellationToken, Task> RunAsync);
-
-    private static readonly Scenario[] s_scenarios =
-    [
-        new("x509", "X.509 certificate to DPS, the same X.509 certificate to IoT Hub", X509BootAndOperationalAsync),
-        new("x509-issued", "X.509 certificate to DPS, DPS-issued certificate to IoT Hub, renewed by IoT Hub", X509BootIssuedOperationalAsync),
-        new("x509-issued-callback", "As x509-issued, but the application prepares each issued certificate in a callback", X509BootIssuedOperationalWithCallbackAsync),
-        new("sas", "Symmetric key (SAS token) to DPS, symmetric key (SAS token) to IoT Hub", SymmetricKeyBootAndOperationalAsync),
-        new("sas-issued", "Symmetric key (SAS token) to DPS, DPS-issued certificate to IoT Hub, renewed by IoT Hub", SymmetricKeyBootIssuedOperationalAsync),
-        new("sas-issued-callback", "As sas-issued, but the application prepares each issued certificate in a callback", SymmetricKeyBootIssuedOperationalWithCallbackAsync),
-    ];
-
-    private static async Task<int> Main(string[] args)
+    private static async Task Main()
     {
-        Scenario? scenario = args.Length == 1
-            ? s_scenarios.FirstOrDefault(s => s.Name.Equals(args[0], StringComparison.OrdinalIgnoreCase))
-            : null;
-
-        if (scenario == null)
-        {
-            Console.WriteLine("Usage: dotnet run --project Unified/AuthenticationSample -- <scenario>");
-            Console.WriteLine();
-            Console.WriteLine("Scenarios:");
-            foreach (Scenario s in s_scenarios)
-            {
-                Console.WriteLine($"  {s.Name,-22}{s.Description}");
-            }
-
-            return 1;
-        }
-
         using CancellationTokenSource cts = new();
         cts.CancelAfter(TimeSpan.FromMinutes(2));
 
@@ -58,9 +29,23 @@ internal class Program
             eventArgs.Cancel = true;
         };
 
-        Console.WriteLine($"Running scenario '{scenario.Name}': {scenario.Description}");
-        await scenario.RunAsync(cts.Token);
-        return 0;
+        Console.WriteLine("Running scenario 'x509': X.509 certificate to DPS, the same X.509 certificate to IoT Hub");
+        await X509BootAndOperationalAsync(cts.Token);
+
+        Console.WriteLine("Running scenario 'x509-issued': X.509 certificate to DPS, DPS-issued certificate to IoT Hub, renewed by IoT Hub");
+        await X509BootIssuedOperationalAsync(cts.Token);
+
+        Console.WriteLine("Running scenario 'x509-issued-callback': As x509-issued, but the application prepares each issued certificate in a callback");
+        await X509BootIssuedOperationalWithCallbackAsync(cts.Token);
+
+        Console.WriteLine("Running scenario 'sas': Symmetric key (SAS token) to DPS, symmetric key (SAS token) to IoT Hub");
+        await SymmetricKeyBootAndOperationalAsync(cts.Token);
+
+        Console.WriteLine("Running scenario 'sas-issued': Symmetric key (SAS token) to DPS, DPS-issued certificate to IoT Hub, renewed by IoT Hub");
+        await SymmetricKeyBootIssuedOperationalAsync(cts.Token);
+
+        Console.WriteLine("Running scenario 'sas-issued-callback': As sas-issued, but the application prepares each issued certificate in a callback");
+        await SymmetricKeyBootIssuedOperationalWithCallbackAsync(cts.Token);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -77,7 +62,7 @@ internal class Program
 
         using ConnectionClient connectionClient = new();
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
-        PrintConnected(connectionContext, "its X.509 certificate");
+        Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with its X.509 certificate");
 
         await connectionClient.DisconnectAsync(cancellationToken);
     }
@@ -146,7 +131,7 @@ internal class Program
 
         using ConnectionClient connectionClient = new();
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
-        PrintConnected(connectionContext, "a SAS token signed with its symmetric key");
+        Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with a SAS token signed with its symmetric key");
 
         await connectionClient.DisconnectAsync(cancellationToken);
     }
@@ -226,7 +211,7 @@ internal class Program
 
             if (connectionContext.IssuedClientCertificates is not { Count: > 0 })
             {
-                PrintConnected(connectionContext, fallbackCredential);
+                Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with {fallbackCredential}");
                 Console.WriteLine(
                     "DPS did not issue a certificate, so this device cannot authenticate with an issued certificate. Link this " +
                     "device's enrollment to a certificate management credential policy, then run this scenario again.");
@@ -234,7 +219,7 @@ internal class Program
                 return;
             }
 
-            PrintConnected(connectionContext, $"the certificate DPS issued: {DescribeCertificateChain(connectionContext.IssuedClientCertificates)}");
+            Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with the certificate DPS issued: {DescribeCertificateChain(connectionContext.IssuedClientCertificates)}");
 
             iotHubIssuedCertificates = await RequestCertificateFromIotHubAsync(connectionClient, connectionContext, getIotHubCertificateSigningKey(), cancellationToken);
 
@@ -254,15 +239,7 @@ internal class Program
         ConnectionContext renewedConnectionContext = await renewedConnectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
 
         string issuer = ReferenceEquals(renewedConnectionContext.IssuedClientCertificates, iotHubIssuedCertificates) ? "IoT Hub" : "DPS (after re-provisioning)";
-        if (renewedConnectionContext.IssuedClientCertificates is { Count: > 0 } renewedCertificates)
-        {
-            PrintConnected(renewedConnectionContext, $"the certificate {issuer} issued: {DescribeCertificateChain(renewedCertificates)}");
-        }
-        else
-        {
-            PrintConnected(renewedConnectionContext, fallbackCredential);
-            Console.WriteLine("DPS did not issue a certificate after re-provisioning; connected with the boot credential instead.");
-        }
+        Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with the certificate {issuer} issued: {DescribeCertificateChain(renewedConnectionContext.IssuedClientCertificates!)}");
 
         await renewedConnectionClient.DisconnectAsync(cancellationToken);
     }
@@ -306,17 +283,10 @@ internal class Program
 
     private static string CreateCertificateSigningRequest(string commonName, ECDsa privateKey)
     {
-        X500DistinguishedNameBuilder subject = new();
-        subject.AddCommonName(commonName);
-        CertificateRequest request = new(subject.Build(), privateKey, HashAlgorithmName.SHA256);
+        CertificateRequest request = new($"CN={commonName}", privateKey, HashAlgorithmName.SHA256);
 
         // DPS and IoT Hub take the DER-encoded PKCS#10 request, Base64-encoded without PEM headers
         return Convert.ToBase64String(request.CreateSigningRequest());
-    }
-
-    private static void PrintConnected(ConnectionContext connectionContext, string credential)
-    {
-        Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with {credential}");
     }
 
     private static string DescribeCertificateChain(IReadOnlyList<string> certificateChain)

@@ -37,7 +37,7 @@ context.
    enrollment linked to a credential policy. Link the enrollments that SetupSampleDevice created to your policy (for
    example in the Azure portal), or point the sample at a symmetric key enrollment group that already has one (see
    below). Without a credential policy, DPS assigns the device but issues no certificate; the sample then reports that
-   and stops after connecting with the boot credential.
+   and ends that scenario after connecting with the boot credential.
 
 The symmetric key credentials can also come from environment variables, all Base64-encoded where they are keys:
 
@@ -52,10 +52,11 @@ The symmetric key credentials can also come from environment variables, all Base
 From the samples directory:
 
 ```bash
-dotnet run --project Unified/AuthenticationSample --property WarningLevel=0 -- sas-issued
+dotnet run --project Unified/AuthenticationSample --property WarningLevel=0
 ```
 
-Run without a scenario to list them. Example output of `sas-issued-callback`:
+The sample runs all six scenarios sequentially, with no scenario argument required. Example output from the
+`sas-issued-callback` scenario:
 
 ```
 Running scenario 'sas-issued-callback': As sas-issued, but the application prepares each issued certificate in a callback
