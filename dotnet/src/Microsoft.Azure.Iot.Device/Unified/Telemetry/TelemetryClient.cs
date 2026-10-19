@@ -140,33 +140,41 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                     //TODO is there a case where there is no property bag b/c no correlation id + no message id + no user properties?
 
                     // for example: "%24.mid=febd6d71-df05-474f-8a9b-fe90318c7eb8&%24.to=%2Fdevices%2Fb98a1b81-6b6b-4762-ae77-610fb8d6d3cd%2Fmessages%2FdeviceBound"
-                    string propertyBag = topicSegments[4];
-
-                    string[] keyValuePairs = propertyBag.Split('&');
-                    foreach (var keyValuePair in keyValuePairs)
+                    // Note that not all c2d messages have a property bag
+                    if (topicSegments.Length == 4)
                     {
-                        string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
-                        string value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
+                        string propertyBag = topicSegments[4];
 
-                        if (key.Equals(TelemetryClient.MessagePropertyMessageId))
+                        string[] keyValuePairs = propertyBag.Split('&');
+                        foreach (var keyValuePair in keyValuePairs)
                         {
-                            receivedCloudToDeviceMessage.MessageId = value;
-                        }
-                        else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
-                        {
-                            receivedCloudToDeviceMessage.CorrelationId = value;
-                        }
-                        else if (key.Equals(TelemetryClient.MessagePropertyContentType))
-                        {
-                            receivedCloudToDeviceMessage.ContentType = value;
-                        }
-                        else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
-                        {
-                            receivedCloudToDeviceMessage.ContentEncoding = value;
-                        }
-                        else
-                        {
-                            receivedCloudToDeviceMessage.UserProperties.Add(key, value);
+                            string key = Uri.UnescapeDataString(keyValuePair.Split("=")[0]);
+                            string value = "";
+                            if (keyValuePair.Split("=").Length > 0)
+                            {
+                                value = Uri.UnescapeDataString(keyValuePair.Split("=")[1]);
+                            }
+
+                            if (key.Equals(TelemetryClient.MessagePropertyMessageId))
+                            {
+                                receivedCloudToDeviceMessage.MessageId = value;
+                            }
+                            else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
+                            {
+                                receivedCloudToDeviceMessage.CorrelationId = value;
+                            }
+                            else if (key.Equals(TelemetryClient.MessagePropertyContentType))
+                            {
+                                receivedCloudToDeviceMessage.ContentType = value;
+                            }
+                            else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
+                            {
+                                receivedCloudToDeviceMessage.ContentEncoding = value;
+                            }
+                            else
+                            {
+                                receivedCloudToDeviceMessage.UserProperties.Add(key, value);
+                            }
                         }
                     }
 
