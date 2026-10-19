@@ -6,16 +6,13 @@ using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
-using Microsoft.Azure.Iot.Device.Provisioning;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
-using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -124,18 +121,29 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             CertificateSigningOperation operation = new();
 
-            _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
-
-            await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
-
-            MqttPublish certificateSigningRequestPublish = new()
+            if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
             {
-                Topic = CertificateSigningRequestTopic + request.RequestId,
-                Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-            };
+                throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
+            }
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            try
+            {
+                await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
+
+                MqttPublish certificateSigningRequestPublish = new()
+                {
+                    Topic = CertificateSigningRequestTopic + request.RequestId,
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                };
+
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            }
+            catch
+            {
+                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+                throw;
+            }
 
             return operation;
         }
@@ -144,50 +152,91 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
+                CertificateSigningOperation? pendingCertificateSigningOperation = null;
+                string? requestId = null;
+                string? status = null;
+
                 try
                 {
-                    string[] topicTokens = args.Publish.Topic.Split("/");
-                    if (topicTokens.Length != 5)
+                    try
                     {
-                        return;
-                    }
-
-                    string status = topicTokens[3];
-                    string requestId = topicTokens[4].Split(RequestId)[1];
-
-                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
-                    {
-                        return;
-                    }
-
-                    if (status.Equals("202"))
-                    {
-                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
-                        pendingCertificateSigningOperation.SetAccepted(accepted);
-                        return;
-                    }
-                    else if (status.Equals("200"))
-                    {
-                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                        // The authentication provider receives these on the next connection attempt to IoT hub.
-                        if (CurrentConnectionContext != null)
+                        string[] topicTokens = args.Publish.Topic.Split("/");
+                        if (topicTokens.Length != 5 || !topicTokens[4].StartsWith(RequestId, StringComparison.Ordinal))
                         {
-                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+                            Trace.TraceWarning("Received a certificate signing response with an invalid topic: {0}", args.Publish.Topic);
+                            return;
                         }
 
-                        pendingCertificateSigningOperation.SetCompleted(response);
-                        return;
+                        status = topicTokens[3];
+                        requestId = topicTokens[4][RequestId.Length..].Split('&')[0];
+
+                        if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
+                        {
+                            return;
+                        }
+
+                        if (status.Equals("202"))
+                        {
+                            CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
+                                ?? throw new JsonException("The certificate signing acceptance response was null.");
+                            if (accepted.CorrelationId == null)
+                            {
+                                throw new JsonException("The certificate signing acceptance response had a null correlation ID.");
+                            }
+
+                            pendingCertificateSigningOperation.SetAccepted(accepted);
+                        }
+                        else if (status.Equals("200"))
+                        {
+                            CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+                                ?? throw new JsonException("The certificate signing completion response was null.");
+                            if (response.Certificates == null || response.CorrelationId == null)
+                            {
+                                throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
+                            }
+
+                            // The authentication provider receives these on the next connection attempt to IoT hub.
+                            if (CurrentConnectionContext != null)
+                            {
+                                CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+                            }
+
+                            _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                            pendingCertificateSigningOperation.SetCompleted(response);
+                        }
+                        else
+                        {
+                            CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
+                                ?? throw new JsonException("The certificate signing error response was null.");
+                            _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                            pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException()
+                            {
+                                Error = error,
+                                RequestId = requestId,
+                            });
+                        }
                     }
-                    else
+                    finally
                     {
-                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
-                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
-                        return;
+                        await args.AcknowledgeAsync(CancellationToken.None);
                     }
                 }
-                finally
+                catch (Exception ex)
                 {
-                    await args.AcknowledgeAsync(CancellationToken.None);
+                    DeviceException failure = new(
+                        $"Failed to handle certificate signing response with status '{status}' for request '{requestId}'. Response payload: {Encoding.UTF8.GetString(args.Publish.Payload)}",
+                        ex)
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = true,
+                    };
+                    if (pendingCertificateSigningOperation != null && requestId != null)
+                    {
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                        pendingCertificateSigningOperation.SetFailed(failure);
+                    }
+
+                    Trace.TraceError("Failed to handle a certificate signing response. {0}", failure);
                 }
             }
         }
