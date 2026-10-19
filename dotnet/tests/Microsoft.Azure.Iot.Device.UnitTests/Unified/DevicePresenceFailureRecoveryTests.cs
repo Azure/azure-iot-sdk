@@ -79,6 +79,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         // patch (2) and direct-method request (3) topics in a single SUBSCRIBE. A failed grant on any classic topic,
         // or on all topics, must trigger recovery.
         [Theory]
+        [InlineData(0)]
         [InlineData(1)]
         [InlineData(2)]
         [InlineData(3)]
@@ -114,17 +115,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 // Only the presence flow subscribes in this test, so every subscribe here is the classic topic SUBSCRIBE.
                 if (Interlocked.Increment(ref presenceSubscribeCount) == 1)
                 {
-                    // Grant a QoS other than the requested QoS 0 on the targeted topic(s). GrantedQoS1 is not one of the
-                    // reason codes the connection manager rejects on its own, so the presence flow's own
-                    // "any grant that is not QoS 0" check is what detects the failure and disconnects.
+                    // Grant a QoS other than the requested QoS on the targeted topic(s). These reason codes are not
+                    // rejected by the connection manager on their own, so the presence flow's topic-specific check
+                    // is what detects the failure and disconnects.
                     List<MqttSubscribeAckItem> items = new();
                     int topicIndex = 0;
                     foreach (var topicFilter in subscribe.TopicFilters)
                     {
                         bool failThisTopic = failingTopicIndex < 0 || topicIndex == failingTopicIndex;
+                        MqttClientSubscribeReasonCode successfulGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS1
+                            : MqttClientSubscribeReasonCode.GrantedQoS0;
+                        MqttClientSubscribeReasonCode failedGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS0
+                            : MqttClientSubscribeReasonCode.GrantedQoS1;
                         items.Add(new MqttSubscribeAckItem()
                         {
-                            ReasonCode = failThisTopic ? MqttClientSubscribeReasonCode.GrantedQoS1 : MqttClientSubscribeReasonCode.GrantedQoS0,
+                            ReasonCode = failThisTopic ? failedGrant : successfulGrant,
                             TopicFilter = new(topicFilter.Topic, topicFilter.QualityOfServiceLevel),
                         });
                         topicIndex++;
