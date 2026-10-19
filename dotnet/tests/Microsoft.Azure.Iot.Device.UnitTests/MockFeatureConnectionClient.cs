@@ -65,11 +65,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>Deliver an inbound publish to whatever feature clients have subscribed to this connection.</summary>
-        public async Task SimulateReceiveAsync(MqttPublish publish)
+        public Task SimulateReceiveAsync(MqttPublish publish)
+            => SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+
+        public async Task SimulateReceiveAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
             {
-                await PublishReceivedAsync.Invoke(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+                await PublishReceivedAsync.Invoke(args);
             }
         }
 
