@@ -130,6 +130,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             return fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
         }
 
+        [Fact]
+        public async Task HttpClientIsRecreatedWhenDeviceIsReprovisionedToDifferentIotHub()
+        {
+            const string newHostName = "other-hub.azure-devices.net";
+            var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
+            var connection = new FakeConnectionClient(authentication);
+            var handlers = new List<CapturingHandler>();
+            using var fileUploadClient = new FileUploadClient(connection, _ =>
+            {
+                var handler = new CapturingHandler();
+                handlers.Add(handler);
+                return handler;
+            });
+
+            await GetSasUriAsync(fileUploadClient);
+
+            // Re-provisioning to the same IoT hub keeps the HTTP client
+            connection.Reprovision(HostName.ToUpperInvariant());
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Single(handlers);
+
+            connection.Reprovision(newHostName);
+            await fileUploadClient.CompleteFileUploadSasUriAsync(new FileUploadCompletionNotification { CorrelationId = "id", IsSuccess = true }, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, handlers.Count);
+            Assert.True(handlers[0].IsDisposed);
+            Assert.All(handlers[0].RequestUris, uri => Assert.Equal(HostName, uri.Host));
+            Assert.Equal(newHostName, Assert.Single(handlers[1].RequestUris).Host);
+        }
+
+        [Fact]
+        public async Task UserSuppliedHttpClientTargetsReprovisionedIotHub()
+        {
+            const string newHostName = "other-hub.azure-devices.net";
+            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() });
+            var handler = new CapturingHandler();
+            using var httpClient = new HttpClient(handler);
+            using var fileUploadClient = new FileUploadClient(connection, httpClient);
+
+            await GetSasUriAsync(fileUploadClient);
+            connection.Reprovision(newHostName);
+            await GetSasUriAsync(fileUploadClient);
+
+            Assert.Equal(new[] { HostName, newHostName }, handler.RequestUris.Select(uri => uri.Host));
+            Assert.False(handler.IsDisposed);
+        }
+
         private static X509Certificate2 CreateCertificate()
         {
             using RSA key = RSA.Create(2048);
@@ -166,6 +213,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             public List<string?> AuthorizationHeaders { get; } = new();
 
+            public List<Uri> RequestUris { get; } = new();
+
             public bool IsDisposed { get; private set; }
 
             public Task RequestStarted => _requestStarted.Task;
@@ -173,6 +222,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 AuthorizationHeaders.Add(request.Headers.TryGetValues("Authorization", out var values) ? values.Single() : null);
+                RequestUris.Add(request.RequestUri!);
                 _requestStarted.TrySetResult();
                 if (_gate != null)
                 {
@@ -197,22 +247,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
         private sealed class FakeConnectionClient : IConnectionClient
         {
-            private readonly ConnectionContext _context;
+            private readonly AuthenticationProvider _authentication;
 
             public FakeConnectionClient(AuthenticationProvider authentication)
             {
-                _context = new ConnectionContext
+                _authentication = authentication;
+                Reprovision(HostName);
+            }
+
+            public ConnectionContext Context { get; private set; } = null!;
+
+            // Re-provisioning produces a new connection context, as the real connection client does
+            public void Reprovision(string iotHubHostName)
+            {
+                Context = new ConnectionContext
                 {
                     DeviceId = DeviceId,
-                    IotHubHostName = HostName,
+                    IotHubHostName = iotHubHostName,
                     ConnectionProfile = IotHubConnectionType.Mqttv3,
-                    AuthenticationProvider = authentication,
+                    AuthenticationProvider = _authentication,
                 };
             }
 
             public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync { add { } remove { } }
 
-            public ConnectionContext? GetCurrentConnectionContext() => _context;
+            public ConnectionContext? GetCurrentConnectionContext() => Context;
 
             public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 

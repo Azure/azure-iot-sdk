@@ -48,13 +48,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// <para>
         /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate.
         /// When it authenticates with a SAS token, this client adds the token to each request's Authorization header. In either case, this client will set the base address of the http client
-        /// to target the IoT Hub endpoint correctly. Unlike the HTTP client this client creates for itself, a user-supplied HTTP client is not replaced when the device's client certificate changes.
+        /// to target the IoT Hub endpoint correctly, and requests always target the IoT hub the device is currently assigned to. Unlike the HTTP client this client creates for itself,
+        /// a user-supplied HTTP client is not replaced when the device's client certificate changes or the device is re-provisioned to a different IoT hub.
         /// </para>
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connection = connection;
-            _httpClient = new HttpClientLease(httpClient, clientCertificate: null, ownsClient: false);
+            _httpClient = new HttpClientLease(httpClient, clientCertificate: null, iotHubHostName: null, ownsClient: false);
             _createHttpMessageHandler = CreateHttpMessageHandler;
         }
 
@@ -97,18 +98,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 {
                     _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
                 }
-                else if (_httpClient.OwnsClient && !IsSameCertificate(_httpClient.ClientCertificate, credentials.ClientCertificate))
+                else if (_httpClient.OwnsClient
+                    && (!IsSameCertificate(_httpClient.ClientCertificate, credentials.ClientCertificate)
+                        || !string.Equals(_httpClient.IotHubHostName, currentConnectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase)))
                 {
                     // The client certificate is bound to the handler when the HTTP client is created, so present a changed certificate
-                    // (for example, one issued by certificate management) through a new HTTP client. The old one is disposed once its
-                    // in-flight requests complete since disposing an HTTP client cancels its pending requests.
+                    // (for example, one issued by certificate management) through a new HTTP client. Likewise, an HTTP client's base address
+                    // can't change once it has sent a request, so a device re-provisioned to a different IoT hub also needs a new HTTP client.
+                    // The old one is disposed once its in-flight requests complete since disposing an HTTP client cancels its pending requests.
                     _httpClient.Release();
                     _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
                 }
                 else if (!_httpClient.OwnsClient && !_isUserSuppliedHttpClientInitialized)
                 {
                     // If user supplied an HTTP client, just target its base address appropriately. We cannot load the client certificates into this client due to how the .NET HTTP client works, 
-                    // so it is the user's responsibility to set that up when creating the HTTP client that they passed in.
+                    // so it is the user's responsibility to set that up when creating the HTTP client that they passed in. The base address can't be updated after the first request,
+                    // so requests use absolute URIs to follow the device if it is re-provisioned to a different IoT hub.
                     _httpClient.Client.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
                     _isUserSuppliedHttpClientInitialized = true;
                 }
@@ -125,7 +130,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
             };
 
-            return new HttpClientLease(httpClient, clientCertificate, ownsClient: true);
+            return new HttpClientLease(httpClient, clientCertificate, currentConnectionContext.IotHubHostName, ownsClient: true);
         }
 
         private static HttpMessageHandler CreateHttpMessageHandler(X509Certificate2? clientCertificate)
@@ -163,16 +168,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             // Starts with the reference held by the file upload client while this is its current HTTP client.
             private int _references = 1;
 
-            public HttpClientLease(HttpClient client, X509Certificate2? clientCertificate, bool ownsClient)
+            public HttpClientLease(HttpClient client, X509Certificate2? clientCertificate, string? iotHubHostName, bool ownsClient)
             {
                 Client = client;
                 ClientCertificate = clientCertificate;
+                IotHubHostName = iotHubHostName;
                 OwnsClient = ownsClient;
             }
 
             public HttpClient Client { get; }
 
             public X509Certificate2? ClientCertificate { get; }
+
+            /// <summary>
+            /// The IoT hub that the base address of an HTTP client created by this file upload client targets.
+            /// </summary>
+            public string? IotHubHostName { get; }
 
             /// <summary>
             /// False for a user-supplied HTTP client, which is never replaced or disposed when released.
@@ -209,7 +220,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
-            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
+            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
@@ -242,7 +253,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
-            string requestUri = $"devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
+            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
