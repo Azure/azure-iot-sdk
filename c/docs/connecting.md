@@ -62,6 +62,8 @@ reconnection disabled.
 
 The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
 the application creates them, and destroys them after the connection client.
+Each sample that connects is also built on az_mqtt, from the same `main.c`
+([samples](../samples/README.md#build)).
 
 Teardown:
 

@@ -69,6 +69,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_c2d_receiv
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_c2d_receiver
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_unified_c2d_receiver_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -106,7 +109,7 @@ On an mqttv5 hub it prints
 
 | What | Code |
 | --- | --- |
-| Register the MQTT 3.1.1 adapter only | `az_iot_paho_factory_create_v3_1_1()` |
+| Register the MQTT 3.1.1 adapter only | `az_iot_paho_factory_create_v3_1_1()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()` |
 | Create the client and set the handler | `az_iot_mqttv3_c2d_client_init()`, `az_iot_mqttv3_c2d_client_set_handler()` |
 | Handle a message and its properties | `on_c2d()` |
 | Report an mqttv5 assignment | `on_conn_state()` |

@@ -20,7 +20,7 @@
  * hub.
  *
  * Real:      connection, update request/response, manifest receipt, JWS
- *            verification (OpenSSL), per-file SHA-256 hash check, status
+ *            verification (OpenSSL or mbedTLS), per-file SHA-256 hash check, status
  *            reporting.
  * Simulated: download_fn (synthesizes deterministic payload bytes),
  *            install/apply/backup/restore (log only, optional forced failure
@@ -65,8 +65,22 @@
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
+/* The crypto backend this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
 #include "az_iot_crypto_openssl.h"
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+#include "az_iot_crypto_mbedtls.h"
+#else
+#error "Define AZ_IOT_SAMPLE_CRYPTO_OPENSSL or AZ_IOT_SAMPLE_CRYPTO_MBEDTLS"
+#endif
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -133,8 +147,13 @@ static void sample_state_destroy(sample_state* s)
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(s->factory_v3);
   az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -303,7 +322,11 @@ static int initialize_connection_client(sample_state* state)
    * misconfiguration. */
   copts.dps.provision_only = true;
   /* Verifies update manifests and hashes downloaded files. */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
   copts.crypto = az_iot_crypto_openssl();
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+  copts.crypto = az_iot_crypto_mbedtls();
+#endif
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -315,8 +338,13 @@ static int initialize_connection_client(sample_state* state)
     return 1;
   }
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
   state->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(

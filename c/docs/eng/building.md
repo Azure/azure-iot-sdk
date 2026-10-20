@@ -65,8 +65,11 @@ with CMake and with pkg-config alone ([pkg-config-test.sh](../../tests/install/p
 
 ## Building without Paho
 
-`-DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON` builds the SDK and its tests on the az_mqtt
-adapter, with no Paho source, header or library. `AZ_IOT_BUILD_E2E` and
+`-DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON` builds the SDK, its tests and every sample that
+connects on the az_mqtt adapter, with no Paho source, header or library
+([samples](../../samples/README.md#build)). Without OpenSSL (`AZ_IOT_AZ_MQTT_TLS=mbedtls`,
+`AZ_IOT_WITH_CRYPTO_OPENSSL=OFF`, `AZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF`), the samples that need
+OpenSSL are not built. `AZ_IOT_BUILD_E2E` and
 `AZ_IOT_BUILD_PKCS11_TESTS` need Paho and fail the configure step without it, as do the
 `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`.
 

@@ -61,7 +61,10 @@ export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_tpm
 ```
 
-The target exists when the Paho adapter, the OpenSSL crypto backend and libcurl are found.
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_tpm_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
+The target exists when the OpenSSL crypto backend and libcurl are found.
 
 ## How it ends
 

@@ -22,9 +22,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
+/* The crypto backend this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
 #include "az_iot_crypto_openssl.h"
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+#include "az_iot_crypto_mbedtls.h"
+#else
+#error "Define AZ_IOT_SAMPLE_CRYPTO_OPENSSL or AZ_IOT_SAMPLE_CRYPTO_MBEDTLS"
+#endif
 
 #include "sample_utils.h"
 
@@ -247,7 +261,11 @@ int main(void)
   opts.dps.global_endpoint = config.endpoint;
   opts.dps_auth = sas;
   opts.hub_auth = sas;
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
   opts.crypto = az_iot_crypto_openssl(); /* HMAC-SHA256 for the tokens */
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+  opts.crypto = az_iot_crypto_mbedtls(); /* HMAC-SHA256 for the tokens */
+#endif
   /* SAS state lives in app memory: up to two distinct keys (DPS and the hub
    * share them) and a token for IDs (hub host + device ID) up to 256 characters. */
   static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
@@ -255,8 +273,13 @@ int main(void)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = config.ca;
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
   factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       /* v3.1.1 serves DPS and an mqttv3 hub; v5 serves an mqttv5 hub. */
@@ -296,8 +319,13 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
   az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   config_release(&config);
   return rc;
 }

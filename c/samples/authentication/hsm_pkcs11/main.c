@@ -8,7 +8,7 @@
  * Connect to whichever hub DPS assigns -- MQTTv3 or MQTTv5 -- with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
- * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
+ * id of the OpenSSL provider that owns it -- instead of a key, and the MQTT
  * adapter signs the TLS handshake through that token.
  *
  * The device certificate is still an ordinary PEM file: a certificate is public
@@ -31,7 +31,8 @@
  *     OPENSSL_MODULES pointing at it) and configured with the PKCS#11 module it
  *     should drive.
  *   - The Paho adapter built with OpenSSL 3.0+ (AZ_IOT_PAHO_KEY_CUSTODY, on by
- *     default when OpenSSL 3.0+ is found).
+ *     default when OpenSSL 3.0+ is found), or the az_mqtt adapter with OpenSSL
+ *     TLS (AZ_IOT_AZ_MQTT_TLS=openssl, Linux and macOS).
  *
  * A key reference that cannot be resolved fails at connect time with
  * AZ_IOT_ERR_TLS and a log line naming the URI, rather than in the middle of
@@ -53,7 +54,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 
 #include "sample_utils.h"
@@ -272,12 +280,20 @@ int main(void)
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
   {
     goto cleanup;
   }
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
   {
     goto cleanup;
@@ -372,8 +388,13 @@ cleanup:
     }
   }
   az_iot_connection_client_deinit(&connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
   az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   hsm_config_release(&config);
   return rc;
 }
