@@ -869,14 +869,8 @@ endif()
 # in-process cmocka suite (az_iot_tests_e2e) drives real-cloud scenarios against
 # an Azure IoT Hub/DPS instance, playing both the device (shipping SDK) and the
 # cloud (az_iot_e2e_service facade) halves. It needs a real MQTT adapter, so it
-# also requires AZ_IOT_WITH_PAHO.
+# also requires AZ_IOT_WITH_PAHO (checked in cmake/az_iot_options.cmake).
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E)
-    if(AZ_IOT_WITH_PAHO)
-        add_subdirectory(e2e)
-    else()
-        message(WARNING
-            "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e tests "
-            "(they require the Paho MQTT adapter).")
-    endif()
+    add_subdirectory(e2e)
 endif()
