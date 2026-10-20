@@ -220,7 +220,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
-            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
+            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{Uri.EscapeDataString(currentConnectionContext.DeviceId)}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {
@@ -253,7 +253,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
-            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
+            string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{Uri.EscapeDataString(currentConnectionContext.DeviceId)}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
             {

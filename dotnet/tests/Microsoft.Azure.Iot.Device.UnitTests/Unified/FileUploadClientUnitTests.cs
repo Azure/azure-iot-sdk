@@ -177,6 +177,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.False(handler.IsDisposed);
         }
 
+        [Fact]
+        public async Task RequestUrisEscapeDeviceIdAsPathSegment()
+        {
+            const string deviceId = "device?one";
+            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() });
+            connection.Reprovision(HostName, deviceId);
+            var handler = new CapturingHandler();
+            using var fileUploadClient = new FileUploadClient(connection, new HttpClient(handler));
+
+            await GetSasUriAsync(fileUploadClient);
+            await fileUploadClient.CompleteFileUploadSasUriAsync(new FileUploadCompletionNotification { CorrelationId = "id", IsSuccess = true }, TestContext.Current.CancellationToken);
+
+            Assert.Equal(
+                new[] { "devices/device%3Fone/files", "devices/device%3Fone/files/notifications" },
+                handler.RequestUris.Select(uri => uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped)));
+        }
+
         private static X509Certificate2 CreateCertificate()
         {
             using RSA key = RSA.Create(2048);
@@ -258,11 +275,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             public ConnectionContext Context { get; private set; } = null!;
 
             // Re-provisioning produces a new connection context, as the real connection client does
-            public void Reprovision(string iotHubHostName)
+            public void Reprovision(string iotHubHostName, string deviceId = DeviceId)
             {
                 Context = new ConnectionContext
                 {
-                    DeviceId = DeviceId,
+                    DeviceId = deviceId,
                     IotHubHostName = iotHubHostName,
                     ConnectionProfile = IotHubConnectionType.Mqttv3,
                     AuthenticationProvider = _authentication,
