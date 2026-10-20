@@ -79,7 +79,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             AuthenticationCredentials credentials = await currentConnectionContext.AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(
                 currentConnectionContext.IotHubHostName,
                 currentConnectionContext.DeviceId,
-                currentConnectionContext.IssuedClientCertificates).ConfigureAwait(false);
+                currentConnectionContext.IssuedClientCertificates,
+                cancellationToken).ConfigureAwait(false);
 
             // Providers that authenticate with a SAS token return it as the password; otherwise the client certificate authenticates the request.
             if (credentials.Password.Length > 0)

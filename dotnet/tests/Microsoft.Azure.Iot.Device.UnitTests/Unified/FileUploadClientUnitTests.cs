@@ -284,7 +284,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             public AuthenticationCredentials Credentials { get; set; } = new();
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
                 => Task.FromResult(Credentials);
 
             public override AuthenticationCredentials GetBootAuthenticationCredentials() => Credentials;

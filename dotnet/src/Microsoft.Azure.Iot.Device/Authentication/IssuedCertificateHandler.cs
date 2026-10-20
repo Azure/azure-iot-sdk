@@ -33,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Gets the certificate for this chain, invoking the callback if it has not already been handled.
         /// </summary>
-        public async Task<X509Certificate2> GetCertificateAsync(IReadOnlyList<string> issuedClientCertificates)
+        public async Task<X509Certificate2> GetCertificateAsync(IReadOnlyList<string> issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             HandledChain? lastHandled = _lastHandled;
             if (ReferenceEquals(lastHandled?.Chain, issuedClientCertificates))
@@ -41,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                 return lastHandled.Certificate;
             }
 
-            await _callbackLock.WaitAsync().ConfigureAwait(false);
+            await _callbackLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 lastHandled = _lastHandled;
