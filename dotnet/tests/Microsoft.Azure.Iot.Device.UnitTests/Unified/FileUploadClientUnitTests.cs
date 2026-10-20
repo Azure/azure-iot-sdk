@@ -10,6 +10,7 @@ using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
@@ -51,17 +52,143 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(new string?[] { null }, handler.AuthorizationHeaders);
         }
 
+        [Fact]
+        public async Task HttpClientIsRecreatedOnlyWhenClientCertificateChanges()
+        {
+            using X509Certificate2 firstCertificate = CreateCertificate();
+            using X509Certificate2 secondCertificate = CreateCertificate();
+            var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
+            var handlers = new List<(X509Certificate2? Certificate, CapturingHandler Handler)>();
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), certificate =>
+            {
+                var handler = new CapturingHandler();
+                handlers.Add((certificate, handler));
+                return handler;
+            });
+
+            // SAS tokens are renewed per request, so they don't need a new HTTP client
+            await GetSasUriAsync(fileUploadClient);
+            authentication.Credentials = CreateSasCredentials();
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Single(handlers);
+            Assert.Null(handlers[0].Certificate);
+
+            // An issued certificate replaces the SAS token
+            authentication.Credentials = new AuthenticationCredentials { ClientCertificate = firstCertificate };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(2, handlers.Count);
+            Assert.Same(firstCertificate, handlers[1].Certificate);
+            Assert.True(handlers[0].Handler.IsDisposed);
+            Assert.Equal(new string?[] { null }, handlers[1].Handler.AuthorizationHeaders);
+
+            // An equal certificate loaded into a different instance is not a change
+            using X509Certificate2 firstCertificateCopy = X509CertificateLoader.LoadCertificate(firstCertificate.RawData);
+            authentication.Credentials = new AuthenticationCredentials { ClientCertificate = firstCertificateCopy };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(2, handlers.Count);
+
+            // A rotated certificate replaces the previous one
+            authentication.Credentials = new AuthenticationCredentials { ClientCertificate = secondCertificate };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(3, handlers.Count);
+            Assert.Same(secondCertificate, handlers[2].Certificate);
+            Assert.True(handlers[1].Handler.IsDisposed);
+            Assert.False(handlers[2].Handler.IsDisposed);
+        }
+
+        [Fact]
+        public async Task ReplacedHttpClientIsDisposedOnlyAfterItsInFlightRequestCompletes()
+        {
+            using X509Certificate2 firstCertificate = CreateCertificate();
+            using X509Certificate2 secondCertificate = CreateCertificate();
+            var authentication = new SwitchableAuthenticationProvider { Credentials = new AuthenticationCredentials { ClientCertificate = firstCertificate } };
+            var firstRequestGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handlers = new List<CapturingHandler>();
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), certificate =>
+            {
+                var handler = new CapturingHandler(handlers.Count == 0 ? firstRequestGate.Task : null);
+                handlers.Add(handler);
+                return handler;
+            });
+
+            Task<FileUploadSasUriResponse> firstRequest = GetSasUriAsync(fileUploadClient);
+            await handlers[0].RequestStarted.WaitAsync(TestContext.Current.CancellationToken);
+
+            authentication.Credentials = new AuthenticationCredentials { ClientCertificate = secondCertificate };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(2, handlers.Count);
+            Assert.False(handlers[0].IsDisposed);
+
+            firstRequestGate.SetResult();
+            await firstRequest;
+            Assert.True(handlers[0].IsDisposed);
+            Assert.False(handlers[1].IsDisposed);
+        }
+
+        private static Task<FileUploadSasUriResponse> GetSasUriAsync(FileUploadClient fileUploadClient)
+        {
+            return fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
+        }
+
+        private static X509Certificate2 CreateCertificate()
+        {
+            using RSA key = RSA.Create(2048);
+            return new CertificateRequest($"CN={DeviceId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+                .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        }
+
+        private static AuthenticationCredentials CreateSasCredentials()
+        {
+            return new AuthenticationCredentials { Password = Encoding.UTF8.GetBytes($"SharedAccessSignature sr=x&sig={Guid.NewGuid()}&se=1") };
+        }
+
+        private sealed class SwitchableAuthenticationProvider : AuthenticationProvider
+        {
+            public AuthenticationCredentials Credentials { get; set; } = new();
+
+            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+                => Task.FromResult(Credentials);
+
+            public override AuthenticationCredentials GetBootAuthenticationCredentials() => Credentials;
+
+            public override string GetRegistrationId() => DeviceId;
+        }
+
         private sealed class CapturingHandler : HttpMessageHandler
         {
+            private readonly Task? _gate;
+            private readonly TaskCompletionSource _requestStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public CapturingHandler(Task? gate = null)
+            {
+                _gate = gate;
+            }
+
             public List<string?> AuthorizationHeaders { get; } = new();
 
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            public bool IsDisposed { get; private set; }
+
+            public Task RequestStarted => _requestStarted.Task;
+
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 AuthorizationHeaders.Add(request.Headers.TryGetValues("Authorization", out var values) ? values.Single() : null);
+                _requestStarted.TrySetResult();
+                if (_gate != null)
+                {
+                    await _gate.WaitAsync(cancellationToken);
+                }
+
                 bool isNotification = request.RequestUri!.AbsolutePath.EndsWith("/notifications", StringComparison.Ordinal);
-                return Task.FromResult(isNotification
+                return isNotification
                     ? new HttpResponseMessage(HttpStatusCode.NoContent)
-                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(SasUriResponseJson) });
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(SasUriResponseJson) };
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                IsDisposed = true;
+                base.Dispose(disposing);
             }
 
             private const string SasUriResponseJson =

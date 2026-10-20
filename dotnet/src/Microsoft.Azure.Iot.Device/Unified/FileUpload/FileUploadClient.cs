@@ -6,8 +6,8 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
-using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -16,16 +16,23 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
     public class FileUploadClient : IDisposable
     {
         private bool _isDisposed = false;
-        private bool _isInitialized = false;
-        private bool _isUserSuppliedHttpClient;
-        private HttpClient? _httpClient;
+        private bool _isUserSuppliedHttpClientInitialized = false;
+        private readonly object _httpClientLock = new();
+        private HttpClientLease? _httpClient;
         private readonly IConnectionClient _connection;
+        private readonly Func<X509Certificate2?, HttpMessageHandler> _createHttpMessageHandler;
 
         public FileUploadClient(IConnectionClient connection)
+            : this(connection, CreateHttpMessageHandler)
+        {
+        }
+
+        // Lets tests observe the HTTP clients this client creates for each client certificate.
+        internal FileUploadClient(IConnectionClient connection, Func<X509Certificate2?, HttpMessageHandler> createHttpMessageHandler)
         {
             _connection = connection;
             _httpClient = null;
-            _isUserSuppliedHttpClient = false;
+            _createHttpMessageHandler = createHttpMessageHandler;
         }
 
         /// <summary>
@@ -41,56 +48,23 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// <para>
         /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate.
         /// When it authenticates with a SAS token, this client adds the token to each request's Authorization header. In either case, this client will set the base address of the http client
-        /// to target the IoT Hub endpoint correctly.
+        /// to target the IoT Hub endpoint correctly. Unlike the HTTP client this client creates for itself, a user-supplied HTTP client is not replaced when the device's client certificate changes.
         /// </para>
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connection = connection;
-            _httpClient = httpClient;
-            _isUserSuppliedHttpClient = true;
+            _httpClient = new HttpClientLease(httpClient, clientCertificate: null, ownsClient: false);
+            _createHttpMessageHandler = CreateHttpMessageHandler;
         }
 
-        private void InitializeIfUninitialized(ConnectionContext currentConnectionContext, AuthenticationCredentials credentials)
+        private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext, CancellationToken cancellationToken)
         {
-            if (_isInitialized)
-            {
-                return;
-            }
-
-            if (_httpClient == null)
-            {
-                // If no user-supplied HTTP client, create one for them
-                var handler = new HttpClientHandler();
-                if (credentials.ClientCertificate != null)
-                {
-                    handler.ClientCertificates.Add(credentials.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
-                }
-
-                _httpClient = new(handler)
-                {
-                    BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
-                };
-            }
-            else
-            {
-                // If user supplied an HTTP client, just target its base address appropriately. We cannot load the client certificates into this client due to how the .NET HTTP client works, 
-                // so it is the user's responsibility to set that up when creating the HTTP client that they passed in.
-                _httpClient.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
-            }
-
-            _isInitialized = true;
-        }
-
-        private async Task<HttpClient> PrepareRequestAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext)
-        {
-            // Fetched per request so SAS tokens are renewed before they expire.
+            // Fetched per request so SAS tokens are renewed before they expire and newly issued client certificates are picked up.
             AuthenticationCredentials credentials = await currentConnectionContext.AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(
                 currentConnectionContext.IotHubHostName,
                 currentConnectionContext.DeviceId,
                 currentConnectionContext.IssuedClientCertificates).ConfigureAwait(false);
-
-            InitializeIfUninitialized(currentConnectionContext, credentials);
 
             // Providers that authenticate with a SAS token return it as the password; otherwise the client certificate authenticates the request.
             if (credentials.Password.Length > 0)
@@ -98,8 +72,123 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 requestMessage.Headers.TryAddWithoutValidation("Authorization", Encoding.UTF8.GetString(credentials.Password));
             }
 
-            Debug.Assert(_httpClient != null);
-            return _httpClient;
+            HttpClientLease lease = AcquireHttpClient(currentConnectionContext, credentials);
+            try
+            {
+                // The default completion option buffers the response content, so it stays readable after the lease is released.
+                return await lease.Client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_httpClientLock)
+                {
+                    lease.Release();
+                }
+            }
+        }
+
+        private HttpClientLease AcquireHttpClient(ConnectionContext currentConnectionContext, AuthenticationCredentials credentials)
+        {
+            lock (_httpClientLock)
+            {
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+                if (_httpClient == null)
+                {
+                    _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
+                }
+                else if (_httpClient.OwnsClient && !IsSameCertificate(_httpClient.ClientCertificate, credentials.ClientCertificate))
+                {
+                    // The client certificate is bound to the handler when the HTTP client is created, so present a changed certificate
+                    // (for example, one issued by certificate management) through a new HTTP client. The old one is disposed once its
+                    // in-flight requests complete since disposing an HTTP client cancels its pending requests.
+                    _httpClient.Release();
+                    _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
+                }
+                else if (!_httpClient.OwnsClient && !_isUserSuppliedHttpClientInitialized)
+                {
+                    // If user supplied an HTTP client, just target its base address appropriately. We cannot load the client certificates into this client due to how the .NET HTTP client works, 
+                    // so it is the user's responsibility to set that up when creating the HTTP client that they passed in.
+                    _httpClient.Client.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
+                    _isUserSuppliedHttpClientInitialized = true;
+                }
+
+                _httpClient.AddReference();
+                return _httpClient;
+            }
+        }
+
+        private HttpClientLease CreateHttpClient(ConnectionContext currentConnectionContext, X509Certificate2? clientCertificate)
+        {
+            HttpClient httpClient = new(_createHttpMessageHandler(clientCertificate))
+            {
+                BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
+            };
+
+            return new HttpClientLease(httpClient, clientCertificate, ownsClient: true);
+        }
+
+        private static HttpMessageHandler CreateHttpMessageHandler(X509Certificate2? clientCertificate)
+        {
+            var handler = new HttpClientHandler();
+            if (clientCertificate != null)
+            {
+                handler.ClientCertificates.Add(clientCertificate);
+            }
+
+            return handler;
+        }
+
+        private static bool IsSameCertificate(X509Certificate2? first, X509Certificate2? second)
+        {
+            if (ReferenceEquals(first, second))
+            {
+                return true;
+            }
+
+            if (first == null || second == null)
+            {
+                return false;
+            }
+
+            return first.RawDataMemory.Span.SequenceEqual(second.RawDataMemory.Span);
+        }
+
+        /// <summary>
+        /// Reference counts an HTTP client so that a replaced client is only disposed after its in-flight requests complete.
+        /// Callers must hold <see cref="_httpClientLock"/>.
+        /// </summary>
+        private sealed class HttpClientLease
+        {
+            // Starts with the reference held by the file upload client while this is its current HTTP client.
+            private int _references = 1;
+
+            public HttpClientLease(HttpClient client, X509Certificate2? clientCertificate, bool ownsClient)
+            {
+                Client = client;
+                ClientCertificate = clientCertificate;
+                OwnsClient = ownsClient;
+            }
+
+            public HttpClient Client { get; }
+
+            public X509Certificate2? ClientCertificate { get; }
+
+            /// <summary>
+            /// False for a user-supplied HTTP client, which is never replaced or disposed when released.
+            /// </summary>
+            public bool OwnsClient { get; }
+
+            public void AddReference() => _references++;
+
+            public void Release()
+            {
+                _references--;
+                if (_references == 0 && OwnsClient)
+                {
+                    Client.Dispose();
+                }
+            }
         }
 
         private ConnectionContext GetRequiredConnectionContext()
@@ -128,8 +217,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            HttpClient httpClient = await PrepareRequestAsync(requestMessage, currentConnectionContext);
-            var httpResponse = await httpClient.SendAsync(requestMessage, cancellationToken);
+            var httpResponse = await SendAsync(requestMessage, currentConnectionContext, cancellationToken);
 
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
@@ -162,8 +250,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            HttpClient httpClient = await PrepareRequestAsync(requestMessage, currentConnectionContext);
-            var httpResponse = await httpClient.SendAsync(requestMessage, cancellationToken);
+            var httpResponse = await SendAsync(requestMessage, currentConnectionContext, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 throw BuildServiceException(
@@ -205,21 +292,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         public void Dispose(bool disposing)
         {
             // Dispose the underlying HTTP client depending on if it was user-supplied and if the disposing flag is set
-            if (disposing)
-            {
-                _httpClient?.Dispose();
-            }
-            else if (!_isUserSuppliedHttpClient)
-            {
-                _httpClient?.Dispose();
-            }
+            DisposeHttpClient(disposeUserSuppliedHttpClient: disposing);
 
             if (disposing)
             {
                 _connection.Dispose();
             }
-
-            _isDisposed = true;
         }
 
         /// <summary>
@@ -227,11 +305,30 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// </summary>
         public void Dispose()
         {
-            _httpClient?.Dispose();
+            DisposeHttpClient(disposeUserSuppliedHttpClient: true);
 
             _connection.Dispose();
+        }
 
-            _isDisposed = true;
+        private void DisposeHttpClient(bool disposeUserSuppliedHttpClient)
+        {
+            lock (_httpClientLock)
+            {
+                if (_httpClient != null && !_isDisposed)
+                {
+                    if (_httpClient.OwnsClient)
+                    {
+                        // Disposed once any in-flight requests complete
+                        _httpClient.Release();
+                    }
+                    else if (disposeUserSuppliedHttpClient)
+                    {
+                        _httpClient.Client.Dispose();
+                    }
+                }
+
+                _isDisposed = true;
+            }
         }
     }
 }
