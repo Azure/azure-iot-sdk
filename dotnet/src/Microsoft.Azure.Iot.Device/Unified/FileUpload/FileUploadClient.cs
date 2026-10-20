@@ -13,6 +13,20 @@ using System.Text.Json;
 
 namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 {
+    /// <summary>
+    /// Retrieve and complete SAS URIs that allow you to upload files to Azure Storage accounts associated with your IoT Hub.
+    /// </summary>
+    /// <remarks>
+    /// This client does not directly support uploading files to Azure Storage. See the file upload sample for how to use this client
+    /// in conjunction with the Azure Storage SDK to do the actual file upload step.
+    /// 
+    /// Each request targets the IoT hub in the device's current <see cref="ConnectionContext"/>. If the device is re-provisioned to a
+    /// different IoT hub after <see cref="GetFileUploadSasUriAsync(FileUploadSasUriRequest, CancellationToken)"/> but before
+    /// <see cref="CompleteFileUploadSasUriAsync(FileUploadCompletionNotification, CancellationToken)"/>, the completion notification is sent
+    /// to the new IoT hub, which did not issue that SAS URI and will reject it. The SAS URI is then left outstanding on the previous IoT hub
+    /// and the upload is not reported there. These lingering SAS URIs are not released early, but they expire on their own once the
+    /// SAS token lifetime configured for file uploads on the previous IoT hub elapses.
+    /// </remarks>
     public class FileUploadClient : IDisposable
     {
         private bool _isDisposed = false;
@@ -266,6 +280,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// </summary>
         /// <param name="completion">The notification that includes the SAS URI from <see cref="FileUploadSasUriResponse"/>.</param>
         /// <param name="cancellationToken">the cancellation token</param>
+        /// <remarks>
+        /// If the device was re-provisioned to a different IoT hub since the SAS URI was retrieved, this notification is sent to the new IoT hub
+        /// and fails, leaving the SAS URI outstanding on the previous IoT hub until it expires. See the remarks on <see cref="FileUploadClient"/>.
+        /// </remarks>
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
