@@ -227,9 +227,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
@@ -258,14 +258,8 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->conn.factory_count > 0);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -393,8 +387,7 @@ static void finish_birth(fixture* fx)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -425,7 +418,16 @@ static void inject_dm(
     size_t payload_len,
     uint32_t expiry_seconds)
 {
-  az_iot_mqtt_user_property type_prop = { "type", type_value };
+  /* `type` comes after 20 other properties, past any fixed array an adapter
+   * used to hold, so every case here also proves it is found there. */
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type_value;
   az_iot_mqtt_message msg;
   memset(&msg, 0, sizeof(msg));
   msg.topic = topic;
@@ -436,11 +438,7 @@ static void inject_dm(
   msg.qos = AZ_IOT_MQTT_QOS_1;
   msg.content_type = "application/protobuf";
   msg.message_expiry_seconds = expiry_seconds;
-  if (type_value != NULL)
-  {
-    msg.user_properties = &type_prop;
-    msg.user_properties_count = 1;
-  }
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, type_value != NULL ? 21 : 20);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -569,9 +567,9 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
    * answered at init rather than deferred to connect. */
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -594,9 +592,9 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -621,6 +619,7 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_mqttv5_direct_method_client_deinit(&dm);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void init_does_not_subscribe_a_redundant_methods_filter(void** state)
@@ -1728,7 +1727,8 @@ static void a_full_shared_pool_leaves_results_tracked(void** state)
   inject_puback(fx, sent->packet_id, AZ_IOT_ERR_MQTT);
   az_iot_log_set_global_sink(NULL);
 
-  assert_int_equal(cap.count, 1);
+  /* The connection's line with the wire code, then this client's. */
+  assert_int_equal(cap.count, 2);
   assert_non_null(strstr(cap.last, "result:1"));
   assert_non_null(strstr(cap.last, "rejected"));
 }

@@ -119,7 +119,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }}
+        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
 
@@ -546,6 +546,88 @@ jobs:
           --track-origins=yes --errors-for-leak-kinds=definite,possible
           build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
 
+  # ---------------------------------------------------------------------------
+  # az_mqtt adapter conformance, every capability it implements: proxy (the
+  # suite's own), WebSockets (a Mosquitto WebSocket listener) and, on OpenSSL,
+  # the key-reference custody route (a SoftHSM token, as in coverage-c). The
+  # build job also runs these suites, without WebSockets or a token.
+  # ---------------------------------------------------------------------------
+  az-mqtt:
+    name: az_mqtt adapter / ${{ matrix.tls }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tls: openssl
+            mbedtls: ''
+          - tls: mbedtls
+            mbedtls: '4.1.1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev mosquitto
+          mosquitto-clients softhsm2 opensc meson pkg-config
+      - name: Start Mosquitto (TCP 1883, WebSocket 8080)
+        run: |
+          sudo systemctl stop mosquitto || true
+          printf 'listener 1883 127.0.0.1\nallow_anonymous true\nlistener 8080 127.0.0.1\nprotocol websockets\n' \
+            > "$RUNNER_TEMP/mosquitto.conf"
+          mosquitto -d -c "$RUNNER_TEMP/mosquitto.conf"
+          for _ in $(seq 1 20); do
+            mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok && break
+            sleep 1
+          done
+          mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok
+      - name: Build mbedTLS ${{ matrix.mbedtls }}
+        if: matrix.mbedtls != ''
+        run: |
+          bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$RUNNER_TEMP/mbedtls"
+          echo "CMAKE_PREFIX_PATH=$RUNNER_TEMP/mbedtls" >> "$GITHUB_ENV"
+      - name: Provision a PKCS#11 token
+        if: matrix.tls == 'openssl'
+        run: |
+          eval "$(eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          openssl list -providers -provider pkcs11 > /dev/null
+          {
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Configure
+        run: >
+          cmake -S . -B build/az-mqtt -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_BUILD_SAMPLES=OFF -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
+      - name: Build
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
+      - name: Conformance
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_WS_PORT: '8080'
+          AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
+        run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
+
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
   # static and shared: flags are probed per toolchain, and FORTIFY differs
@@ -624,6 +706,90 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
+  # Installed dependencies on MSVC: azure-sdk-for-c from eng/install-deps.sh
+  # (Release in lib, Debug in debug/lib) and Paho from vcpkg (c/vcpkg.json
+  # `installed-paho`, static triplet for /MT[d]). Debug and Release are each
+  # built, unit-tested, installed and consumed (c/tests/install).
+  # VCPKG_APPLOCAL_DEPS=OFF: a static triplet has no DLLs to copy, and the
+  # post-link copy step fails on locked files under parallel Ninja links.
+  installed-deps-windows:
+    name: windows-msvc / installed deps
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      # The runner's vcpkg clone must contain the manifest's builtin-baseline.
+      - name: Locate vcpkg
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
+          if ($LASTEXITCODE) {
+            $fetch = @('fetch', '--quiet', 'origin')
+            if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
+              $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
+            }
+            git -C $root @fetch
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          "AZ_IOT_VCPKG=$root" >> $env:GITHUB_ENV
+      - name: Set paths
+        run: |
+          tmp="$(cygpath -m "$RUNNER_TEMP")"
+          {
+            echo "AZ_IOT_DEPS=$tmp/deps"
+            echo "AZ_IOT_BUILD=$tmp/build"
+            echo "AZ_IOT_TOOLCHAIN=$(cygpath -m "$AZ_IOT_VCPKG")/scripts/buildsystems/vcpkg.cmake"
+          } >> "$GITHUB_ENV"
+      - name: Install azure-sdk-for-c
+        run: bash eng/install-deps.sh "$AZ_IOT_DEPS" azure-sdk-for-c
+      - name: Configure
+        run: >
+          cmake -S . -B "$AZ_IOT_BUILD" -G "Ninja Multi-Config"
+          -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_MANIFEST_FEATURES=installed-paho
+          -DVCPKG_APPLOCAL_DEPS=OFF
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_DEPS"
+          -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=ON
+          -DAZ_IOT_USE_INSTALLED_PAHO=ON
+          -DAZ_IOT_BUILD_TESTS=ON
+          -DAZ_IOT_BUILD_SAMPLES=OFF
+      - name: Build, test, install and consume
+        run: |
+          set -euo pipefail
+          # The consumer resolves the vcpkg packages (Paho, OpenSSL) per configuration.
+          vcpkg_args=(
+            -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static
+            -DVCPKG_INSTALLED_DIR="$AZ_IOT_BUILD/vcpkg_installed"
+            -DVCPKG_MANIFEST_MODE=OFF
+            -DVCPKG_APPLOCAL_DEPS=OFF
+          )
+          for cfg in Debug Release; do
+            cmake --build "$AZ_IOT_BUILD" --config "$cfg"
+            ctest --test-dir "$AZ_IOT_BUILD" -C "$cfg" --output-on-failure --no-tests=error
+            prefix="$AZ_IOT_BUILD-$cfg-prefix"
+            cmake --install "$AZ_IOT_BUILD" --config "$cfg" --prefix "$prefix"
+            cmake -S tests/install -B "$AZ_IOT_BUILD-$cfg-consumer" -G Ninja \
+              -DCMAKE_BUILD_TYPE="$cfg" "${vcpkg_args[@]}" \
+              -DCMAKE_PREFIX_PATH="$prefix;$AZ_IOT_DEPS" \
+              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;mqttv5;adapter_paho;crypto_openssl;certificate_provider_managed"
+            cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
+            ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
+          done
+
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
   #
@@ -635,6 +801,7 @@ jobs:
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
+  # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -648,22 +815,29 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+          # azure-sdk-for-c and Paho from an install prefix (eng/install-deps.sh), not fetched.
+          - os: ubuntu-24.04
+            name: linux-gcc-installed-deps
+            shared: 'OFF'
+            mbedtls: '3.6.7'
+            installed_deps: 'ON'
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -688,26 +862,36 @@ jobs:
           tmp="$(cygpath -m "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")"
           mbedtls=""
           if [ -n "${{ matrix.mbedtls }}" ]; then mbedtls="$tmp/mbedtls"; fi
+          deps=""
+          if [ "${{ matrix.installed_deps }}" = "ON" ]; then deps="$tmp/deps"; fi
           {
             echo "AZ_IOT_CONFIGURED_PREFIX=$tmp/az-iot-sdk-configured"
             echo "AZ_IOT_PREFIX=$tmp/az-iot-sdk"
             echo "AZ_IOT_CONSUMER=$tmp/install-test"
             echo "AZ_IOT_MBEDTLS=$mbedtls"
+            echo "AZ_IOT_DEPS=$deps"
           } >> "$GITHUB_ENV"
 
       - name: Build mbedTLS ${{ matrix.mbedtls }}
         if: matrix.mbedtls != ''
         run: bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$AZ_IOT_MBEDTLS"
 
+      - name: Install azure-sdk-for-c and Paho
+        if: matrix.installed_deps == 'ON'
+        run: bash eng/install-deps.sh "$AZ_IOT_DEPS"
+
       - name: Configure
         run: >
           cmake -S . -B build/install -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_INSTALL_PREFIX="$AZ_IOT_CONFIGURED_PREFIX"
-          -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS"
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS;$AZ_IOT_DEPS"
+          -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=${{ matrix.installed_deps || 'OFF' }}
+          -DAZ_IOT_USE_INSTALLED_PAHO=${{ matrix.installed_deps || 'OFF' }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
         run: cmake --build build/install
@@ -734,13 +918,23 @@ jobs:
             exit 1
           fi
           test ! -e "$AZ_IOT_CONFIGURED_PREFIX"
+          # Installed dependencies are used, not fetched.
+          if [ -n "$AZ_IOT_DEPS" ]; then
+            shopt -s nullglob
+            fetched=(build/install/_deps/azure_sdk_for_c-* build/install/_deps/paho_mqtt_c-*)
+            shopt -u nullglob
+            if [ "${#fetched[@]}" -ne 0 ]; then
+              echo "::error::fetched instead of using $AZ_IOT_DEPS: ${fetched[*]}"
+              exit 1
+            fi
+          fi
           rm -rf build/install
 
       - name: Configure the consumer
         run: >
           cmake -S tests/install -B "$AZ_IOT_CONSUMER" -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS"
+          -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS;$AZ_IOT_DEPS"
           -DAZ_IOT_EXPECTED_COMPONENTS="${{ matrix.components }}"
       - name: Build the consumer
         run: cmake --build "$AZ_IOT_CONSUMER"
@@ -838,6 +1032,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_RUST_MQTT=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build build/subproject
       - name: Test
@@ -868,7 +1063,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '49'
+      EXPECTED_TESTS: '58'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

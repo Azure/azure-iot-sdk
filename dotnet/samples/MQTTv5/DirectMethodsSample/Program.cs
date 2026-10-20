@@ -4,6 +4,7 @@
 using DirectMethodsClientSample;
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models;

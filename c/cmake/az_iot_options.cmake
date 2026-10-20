@@ -3,6 +3,10 @@
 
 option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON)
 option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
+option(AZ_IOT_WITH_AZ_MQTT     "Build the az_mqtt MQTT adapter (deps/az_mqtt)"  OFF)
+# TLS backend of the az_mqtt adapter on Linux/macOS (Windows: Schannel).
+set(AZ_IOT_AZ_MQTT_TLS "openssl" CACHE STRING "az_mqtt adapter TLS backend: openssl | mbedtls")
+set_property(CACHE AZ_IOT_AZ_MQTT_TLS PROPERTY STRINGS openssl mbedtls)
 # Non-extractable key custody (D8) in the Paho adapter: resolve a
 # "pkcs11:"/"tpm2:" key reference through an OpenSSL ENGINE or provider so the
 # TLS handshake signs inside the HSM. Needs the OSSL_STORE/OSSL_ENCODER APIs,
@@ -54,6 +58,9 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
+# The mqttv5 e2e suites need an mqttv5 hub configured for them (custom topic
+# templates), which only the ci-c-e2e-mqttv5 workflow has. Same rule as above.
+option(AZ_IOT_BUILD_E2E_MQTTV5 "Build the mqttv5 e2e tests (needs the mqttv5 e2e environment)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
 # OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
 # built when it is going to be run, not built-and-skipped. The token URI comes
@@ -62,8 +69,9 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # The custody e2e suite runs DPS issuance and hub traffic with a device key that
 # lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
-# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
-option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
+# AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
+option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -83,3 +91,9 @@ option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       O
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.
+#
+# Dependencies are built from source (FetchContent) by default. These use an
+# installed copy instead, found through CMAKE_PREFIX_PATH (e.g. a vcpkg or
+# package-feed prefix); see docs/client-configuration.md.
+option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (cmake/Findazure-sdk-for-c.cmake) instead of fetching it" OFF)
+option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)

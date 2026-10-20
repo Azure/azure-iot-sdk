@@ -4,9 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* sample_cert_provider - a COMPLETE, app-owned az_iot_certificate_provider for
- * the samples, using platform-native crypto to issue the CSR:
- *   - Linux / non-Windows: OpenSSL 3.0+ (sample_csr_openssl.c)
- *   - Windows:             CNG / NCrypt   (sample_csr_cng.c)
+ * the samples, issuing the CSR with OpenSSL 3.0+ (sample_csr_openssl.c).
  *
  * Unlike the shipped az_iot_certificate_provider_managed (which hides the crypto
  * inside the library), this lives in the samples tree so you can read and copy
@@ -16,8 +14,8 @@
  * Key/cert handling: the operational private key is written as a PEM file at
  * operational_key_path and the issued chain to operational_cert_path, because
  * the bundled Paho MQTT adapter's TLS is OpenSSL-based on every platform and
- * loads both from files. (A production Windows integration could instead keep a
- * non-extractable CNG key and wire the provider's sign() hook.)
+ * loads both from files. (A production integration with a non-extractable key
+ * would use client_key_uri or the provider's sign() hook instead.)
  */
 #ifndef SAMPLE_CERT_PROVIDER_H
 #define SAMPLE_CERT_PROVIDER_H

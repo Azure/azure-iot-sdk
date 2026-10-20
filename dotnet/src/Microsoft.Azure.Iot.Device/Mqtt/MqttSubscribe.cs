@@ -30,6 +30,16 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         }
 
         /// <summary>
+        /// Make a copy of this subscribe with different topic filters. Everything else is shared with this subscribe.
+        /// </summary>
+        internal MqttSubscribe WithTopicFilters(List<MqttTopicFilter> topicFilters)
+        {
+            var copy = (MqttSubscribe)MemberwiseClone();
+            copy.TopicFilters = topicFilters;
+            return copy;
+        }
+
+        /// <summary>
         /// Adds a user property with a pre-encoded UTF-8 byte value.
         /// This overload is more performant when the value is already available as bytes.
         /// </summary>

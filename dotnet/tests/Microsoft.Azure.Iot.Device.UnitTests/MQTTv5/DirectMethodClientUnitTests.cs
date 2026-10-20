@@ -2,10 +2,11 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Models;
 using System.Text;
 using Xunit;
 
@@ -15,14 +16,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
     {
         private const string DeviceId = "someDeviceId";
         private const string IncomingMethodsTopic = "ih/someDeviceId/dev/methods";
-        private const string OutgoingMethodsTopic = "ih/someDeviceId/srv/methods";
+        // The device ID is left for the connection client to fill in when it actually sends the publish.
+        private const string OutgoingMethodsTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
 
         [Fact]
         public async Task ProbeThenExec_InvokesHandlerAndPublishesResult()
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -73,7 +75,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -92,7 +94,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 

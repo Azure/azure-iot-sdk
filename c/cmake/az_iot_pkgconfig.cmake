@@ -21,6 +21,28 @@ if(MSVC)
     return()
 endif()
 
+# Sets <out> to the library file of imported target <tgt> for the build type.
+function(_az_iot_pc_imported_location tgt out)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _cfg)
+    get_target_property(_loc ${tgt} IMPORTED_LOCATION_${_cfg})
+    if(NOT _loc)
+        get_target_property(_loc ${tgt} IMPORTED_LOCATION)
+    endif()
+    if(NOT _loc)
+        get_target_property(_cfgs ${tgt} IMPORTED_CONFIGURATIONS)
+        foreach(_c IN LISTS _cfgs)
+            get_target_property(_loc ${tgt} IMPORTED_LOCATION_${_c})
+            if(_loc)
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(NOT _loc)
+        message(FATAL_ERROR "pkg-config: no library file for imported target '${tgt}'")
+    endif()
+    set(${out} "${_loc}" PARENT_SCOPE)
+endfunction()
+
 # Converts the link items of <tgt> to pkg-config fields in the caller's
 # _az_iot_pc_requires, _az_iot_pc_requires_private and _az_iot_pc_libs_private.
 # A target without a mapping is an error, so a new dependency cannot silently
@@ -45,6 +67,19 @@ function(_az_iot_pc_deps tgt openssl_req)
             list(APPEND _requires_private libssl)
         elseif(_item STREQUAL "OpenSSL::Crypto")
             list(APPEND _requires_private "libcrypto${openssl_req}")
+        elseif(_item MATCHES "^az_mqtt(v3|v5|_core)$")
+            # Bundled az_mqtt (deps/az_mqtt) libraries: link them and their own dependencies.
+            list(APPEND _libs_private "-l${_item}")
+            get_target_property(_az_mqtt_deps ${_item} LINK_LIBRARIES)
+            if(_az_mqtt_deps)
+                list(APPEND _queue ${_az_mqtt_deps})
+            endif()
+        elseif(_item STREQUAL "az::core")
+            list(APPEND _requires azure-iot-sdk-core)
+        elseif(_item STREQUAL "Threads::Threads")
+            list(APPEND _libs_private -pthread)
+        elseif(_item STREQUAL "MbedTLS::mbedtls")
+            list(APPEND _requires_private mbedtls)
         elseif(_item MATCHES "^MbedTLS::(mbedcrypto|tfpsacrypto)$")
             # mbedcrypto.pc links tfpsacrypto on mbedTLS 4.x.
             list(APPEND _requires_private mbedcrypto)
@@ -59,7 +94,18 @@ function(_az_iot_pc_deps tgt openssl_req)
             if(_paho_deps)
                 list(PREPEND _queue ${_paho_deps})
             endif()
-        elseif(TARGET "${_item}" OR IS_ABSOLUTE "${_item}" OR _item MATCHES "[$<>]")
+        elseif(TARGET "${_item}" AND _item MATCHES "^eclipse-paho-mqtt-c::")
+            # An installed Paho (AZ_IOT_USE_INSTALLED_PAHO): its library file and dependencies.
+            _az_iot_pc_imported_location(${_item} _loc)
+            list(APPEND _libs_private "${_loc}")
+            get_target_property(_paho_deps ${_item} INTERFACE_LINK_LIBRARIES)
+            if(_paho_deps)
+                list(PREPEND _queue ${_paho_deps})
+            endif()
+        elseif(IS_ABSOLUTE "${_item}" AND _item MATCHES "\\.(a|so|dylib)$")
+            # A library found by path (e.g. az_mqtt's mbedTLS without its config package).
+            list(APPEND _libs_private "${_item}")
+        elseif(TARGET "${_item}" OR IS_ABSOLUTE "${_item}" OR _item MATCHES "[$<>]|::")
             message(FATAL_ERROR "pkg-config: no mapping for ${tgt} link item '${_item}'")
         elseif(_item MATCHES "^-")
             list(APPEND _libs_private "${_item}")
@@ -85,20 +131,31 @@ endforeach()
 file(RELATIVE_PATH _az_iot_pc_sdk_for_c_inc "/${CMAKE_INSTALL_INCLUDEDIR}" "/${_az_iot_sdk_for_c_inc}")
 file(RELATIVE_PATH _az_iot_pc_adapter_inc "/${CMAKE_INSTALL_INCLUDEDIR}" "/${_az_iot_adapter_inc}")
 
-# Bundled azure-sdk-for-c libraries, dependents first. az_posix and az_core
+# azure-sdk-for-c libraries, dependents first. az_posix and az_core
 # reference each other; any az_core use pulls in what az_posix needs from it.
+# Bundled ones are in this package; an installed copy is used where it is.
 set(_az_iot_pc_sdk_for_c_libs "")
-foreach(_tgt IN ITEMS az_iot_provisioning az_iot_hub az_iot_common az_core az_posix az_win32 az_noplatform)
-    if(_tgt IN_LIST _az_iot_sdk_for_c_targets)
-        string(APPEND _az_iot_pc_sdk_for_c_libs " -l${_tgt}")
-    endif()
-endforeach()
+if(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    set(_az_iot_pc_sdk_for_c_cflags " -I${AZURE_SDK_FOR_C_INCLUDE_DIR}")
+    foreach(_tgt IN ITEMS az::iot::provisioning az::iot::hub az::iot::common az::core az::platform)
+        _az_iot_pc_imported_location(${_tgt} _loc)
+        string(APPEND _az_iot_pc_sdk_for_c_libs " ${_loc}")
+    endforeach()
+else()
+    set(_az_iot_pc_sdk_for_c_cflags " -I\${includedir}/${_az_iot_pc_sdk_for_c_inc}")
+    foreach(_tgt IN ITEMS az_iot_provisioning az_iot_hub az_iot_common az_core az_posix az_win32 az_noplatform)
+        if(_tgt IN_LIST _az_iot_sdk_for_c_targets)
+            string(APPEND _az_iot_pc_sdk_for_c_libs " -l${_tgt}")
+        endif()
+    endforeach()
+endif()
 
 set(_az_iot_pc_descriptions
     core                          "core: connection client and software updates"
     mqttv3                        "IoT Hub mqttv3 clients"
     mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
+    adapter_az_mqtt               "az_mqtt MQTT adapter"
     adapter_rust_mqtt             "Rust MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
@@ -123,14 +180,14 @@ foreach(_i RANGE 0 ${_last} 2)
     if(_tgt STREQUAL "az_iot_core")
         set(AZ_IOT_PC_REQUIRES "")
         set(AZ_IOT_PC_REQUIRES_PRIVATE "")
-        set(AZ_IOT_PC_CFLAGS "-I\${includedir} -I\${includedir}/${_az_iot_pc_sdk_for_c_inc}")
+        set(AZ_IOT_PC_CFLAGS "-I\${includedir}${_az_iot_pc_sdk_for_c_cflags}")
         set(AZ_IOT_PC_LIBS "-l${_tgt}${_az_iot_pc_sdk_for_c_libs}")
         set(AZ_IOT_PC_LIBS_PRIVATE "")
     else()
         set(_openssl_req "")
         get_target_property(_defs ${_tgt} COMPILE_DEFINITIONS)
         if(_tgt MATCHES "^az_iot_(crypto_openssl|certificate_provider_managed)$"
-           OR "AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs)
+           OR "AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs OR "AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _defs)
             set(_openssl_req " >= 3.0")
         endif()
         _az_iot_pc_deps(${_tgt} "${_openssl_req}")
@@ -161,6 +218,8 @@ unset(_var)
 unset(_az_iot_pc_sdk_for_c_inc)
 unset(_az_iot_pc_adapter_inc)
 unset(_az_iot_pc_sdk_for_c_libs)
+unset(_az_iot_pc_sdk_for_c_cflags)
+unset(_loc)
 unset(_az_iot_pc_descriptions)
 unset(_az_iot_pc_requires)
 unset(_az_iot_pc_requires_private)

@@ -1,9 +1,9 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
         public required string DeviceId { get; set; }
 
-        public required ConnectionProfile ConnectionProfile { get; set; }
+        public required IotHubConnectionType ConnectionProfile { get; set; }
 
         public required X509AuthenticationProvider AuthenticationProvider { get; set; }
 

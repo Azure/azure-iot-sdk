@@ -102,7 +102,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
-            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that MQTTv5 Hub allows.
                 return await _mqttv5HubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
@@ -162,7 +162,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
-            if (_connection.GetCurrentConnectionContext()!.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 ReportedPatchRequest mqttv5Request = new()
                 {
@@ -228,7 +228,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (connectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (connectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 // The other handler covers this scenario
                 return;
@@ -347,7 +347,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private ConnectionContext EnsureCorrectConnectionContext()
         {
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
-            if (currentConnectionContext == null)
+            if (currentConnectionContext == null || !_connection.IsConnectionTargetSet)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }

@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The adapter only ever stores the handle and hands it back to us, so any
@@ -51,9 +52,12 @@ static MQTTAsync_connectionLost* s_connection_lost;
 
 /* Scripted inbound v5 User Properties. Set up before any producer thread
  * starts and only read after that, so the table is never itself contended. */
-#define MOCK_PAHO_MAX_USER_PROPERTIES 8
+#define MOCK_PAHO_MAX_USER_PROPERTIES 32
 static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
 static int s_user_property_count;
+static int s_send_calls;
+static int s_properties_add_fail_at = -1;
+static int s_properties_add_calls;
 
 void mock_paho_reset(void)
 {
@@ -81,6 +85,9 @@ void mock_paho_reset(void)
   s_message_arrived = NULL;
   s_connection_lost = NULL;
   s_user_property_count = 0;
+  s_send_calls = 0;
+  s_properties_add_fail_at = -1;
+  s_properties_add_calls = 0;
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
@@ -299,6 +306,7 @@ int MQTTAsync_sendMessage(
     const MQTTAsync_message* msg,
     MQTTAsync_responseOptions* response)
 {
+  ++s_send_calls;
   (void)handle;
   (void)destinationName;
   (void)msg;
@@ -308,7 +316,16 @@ int MQTTAsync_sendMessage(
 
 void MQTTAsync_free(void* ptr) { (void)ptr; }
 
-void MQTTAsync_freeMessage(MQTTAsync_message** msg) { (void)msg; }
+/* Frees the struct only: tests allocate it with malloc() and point its payload
+ * and properties at storage they own, as mock_paho_inbound_properties() does. */
+void MQTTAsync_freeMessage(MQTTAsync_message** msg)
+{
+  if (msg != NULL)
+  {
+    free(*msg);
+    *msg = NULL;
+  }
+}
 
 void MQTTAsync_setTraceLevel(enum MQTTASYNC_TRACE_LEVELS level) { (void)level; }
 
@@ -319,36 +336,59 @@ void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_cal
 MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
 /* ------------------------------------------------------------------------- */
-/* MQTTProperties. Reached only by the v5 branch of connect(); the adapter    */
-/* just builds and frees them, so accepting and discarding is enough.         */
+/* MQTTProperties. The v5 connect() and publish() build and free them;      */
+/* accepting and discarding is enough, except a scripted add() failure.     */
 /* ------------------------------------------------------------------------- */
 
 int MQTTProperties_add(MQTTProperties* props, const MQTTProperty* prop)
 {
   (void)props;
   (void)prop;
-  return 0;
+  return (s_properties_add_calls++ == s_properties_add_fail_at) ? -1 : 0;
 }
+
+void mock_paho_set_properties_add_fail_at(int call)
+{
+  s_properties_add_fail_at = call;
+  s_properties_add_calls = 0;
+}
+
+int mock_paho_send_calls(void) { return s_send_calls; }
 
 void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 
-int MQTTProperties_propertyCount(MQTTProperties* props, enum MQTTPropertyCodes propid)
+/** @brief Getter argument type of the Paho headers in use (const since Paho 1.3.14). */
+#if defined(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
+#define MOCK_PAHO_GETTER_PROPERTIES const MQTTProperties
+#else
+#define MOCK_PAHO_GETTER_PROPERTIES MQTTProperties
+#endif
+
+/* The getters walk props->array as Paho's do, so an adapter reading a malformed set (count > 0,
+ * array NULL) crashes here as it would with Paho. */
+int MQTTProperties_propertyCount(MOCK_PAHO_GETTER_PROPERTIES* props, enum MQTTPropertyCodes propid)
 {
-  (void)props;
-  return (propid == MQTTPROPERTY_CODE_USER_PROPERTY) ? s_user_property_count : 0;
+  int n = 0;
+  for (int i = 0; i < props->count; ++i)
+  {
+    n += props->array[i].identifier == propid;
+  }
+  return n;
 }
 
 MQTTProperty* MQTTProperties_getPropertyAt(
-    MQTTProperties* props,
+    MOCK_PAHO_GETTER_PROPERTIES* props,
     enum MQTTPropertyCodes propid,
     int index)
 {
-  (void)props;
-  if (propid != MQTTPROPERTY_CODE_USER_PROPERTY || index < 0 || index >= s_user_property_count)
+  for (int i = 0; i < props->count; ++i)
   {
-    return NULL;
+    if (props->array[i].identifier == propid && index-- == 0)
+    {
+      return &props->array[i];
+    }
   }
-  return &s_user_properties[index];
+  return NULL;
 }
 
 void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
@@ -374,4 +414,13 @@ void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
     s_user_properties[i].value.value.len = (int)strlen(pairs[2 * i + 1]);
   }
   s_user_property_count = count;
+}
+
+MQTTProperties mock_paho_inbound_properties(void)
+{
+  MQTTProperties props = MQTTProperties_initializer;
+  props.count = s_user_property_count;
+  props.max_count = s_user_property_count;
+  props.array = s_user_properties;
+  return props;
 }

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -26,6 +27,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>The context returned to feature clients. Null simulates a client that has never connected.</summary>
         public ConnectionContext? CurrentConnectionContext { get; set; }
 
+        /// <summary>Whether the connection client is connected or reconnecting. False simulates an explicit disconnect.</summary>
+        public bool IsConnectionTargetSet { get; set; } = true;
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 
@@ -38,6 +42,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Optional override for how the "service" answers a subscribe. Defaults to granting every topic filter.</summary>
         public Func<MqttSubscribe, Task<MqttSubscribeAck>>? OnSubscribe { get; set; }
+
+        /// <summary>Optional override for how the "service" answers an unsubscribe. Defaults to succeeding for every topic filter.</summary>
+        public Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribe { get; set; }
 
         public bool IsDisposed { get; private set; }
 
@@ -67,10 +74,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             UnsubscribedMessages.Add(unsubscribe);
-            return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+
+            if (OnUnsubscribe != null)
+            {
+                return await OnUnsubscribe.Invoke(unsubscribe);
+            }
+
+            return MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
         }
 
         /// <summary>
@@ -80,13 +93,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public async Task<MockMqttPublishReceivedEventArgs> SimulateReceiveAsync(MqttPublish publish)
         {
             MockMqttPublishReceivedEventArgs args = new() { Publish = publish };
+            await SimulateReceiveAsync(args);
+            return args;
+        }
 
+        /// <summary>Deliver the given inbound publish event args to whatever feature clients have subscribed to this connection.</summary>
+        public async Task SimulateReceiveAsync(MqttPublishReceivedEventArgs args)
+        {
             if (PublishReceivedAsync != null)
             {
                 await PublishReceivedAsync.Invoke(args);
             }
-
-            return args;
         }
 
         public void Dispose()
@@ -96,7 +113,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Build a connection context for the given hub generation.</summary>
         public static ConnectionContext CreateConnectionContext(
-            ConnectionProfile connectionProfile,
+            IotHubConnectionType connectionProfile,
             string deviceId = "someDeviceId",
             string iotHubHostName = "someHostName")
         {

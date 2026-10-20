@@ -9,15 +9,45 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
     public interface IConnectionClient : IDisposable //TODO what is the disposal pattern like with feature clients + this client? Mimic HTTP pattern of "disposing" flag?
     {
         /// <summary>
+        /// The stand-in for this device's ID in any topic passed to <see cref="PublishAsync"/>,
+        /// <see cref="SubscribeAsync"/> or <see cref="UnsubscribeAsync"/>.
+        /// </summary>
+        /// <remarks>
+        /// A device's ID can change while an operation is pending (for example, when the device is re-provisioned and
+        /// assigned a different device ID), so feature clients must not bake the device ID into a topic themselves.
+        /// Instead, topics use this placeholder (for example, "ih/{deviceId}/srv/telemetry") and the connection
+        /// client substitutes the device's current ID each time it actually sends the operation.
+        /// </remarks>
+        public const string DeviceIdPlaceholder = Unified.Connection.IConnectionClient.DeviceIdPlaceholder;
+
+        /// <summary>
         /// Get the current connection context.
         /// </summary>
         /// <returns>Null if this connection client has not been connected yet. Otherwise, it returns the current connection context.</returns>
         ConnectionContext? GetCurrentConnectionContext();
 
+        /// <summary>
+        /// Whether this client has selected a connection endpoint. This remains true while it is automatically
+        /// reconnecting and becomes false after an explicit disconnect.
+        /// </summary>
+        bool IsConnectionTargetSet => true;
+
+        /// <summary>
+        /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
+        /// current ID when it is sent.
+        /// </summary>
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Send a SUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
+        /// device's current ID when it is sent.
+        /// </summary>
         Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Send an UNSUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
+        /// device's current ID when it is sent.
+        /// </summary>
         Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);
 
         event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;

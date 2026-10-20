@@ -53,7 +53,7 @@ build() {
 for comp in "$@"; do
     case "$comp" in
         crypto_openssl | crypto_mbedtls) source=crypto_test.c ;;
-        core | mqttv3 | mqttv5 | adapter_paho | adapter_rust_mqtt | certificate_provider_managed)
+        core | mqttv3 | mqttv5 | adapter_paho | adapter_az_mqtt | adapter_rust_mqtt | certificate_provider_managed)
             source="${comp}_test.c"
             ;;
         *)

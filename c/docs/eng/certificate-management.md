@@ -87,11 +87,11 @@ are the reference.
 
 | Slot | Since | Purpose |
 | --- | --- | --- |
-| `load(self, role, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3). |
-| `release`, `deinit` | v1 | Release material; tear down the provider. |
+| `load(self, role, index, out)` | v1 | Credential material for `AZ_IOT_CRED_BOOTSTRAP` or `AZ_IOT_CRED_OPERATIONAL` (D3), certificate `index` of the role (0 first; `AZ_IOT_ERR_NOT_FOUND` past the last). |
+| `release`, `deinit` | v1 | Release material: for a connection attempt, once the adapter's `connect()` has copied it (or the attempt ends first); for a validation or certificate-index probe, at once. The provider should then wipe any in-memory private key or password it handed out. Tear down the provider, wiping what it kept. |
 | `get_csr(self, subject_common_name, out)` | v2, optional | Build a CSR (base64 PKCS#10 DER) with `CN` = the registration id. NULL means enrollment is not supported. |
 | `release_csr` | v2, optional | Release what `get_csr` returned. |
-| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: base64 DER, leaf first, valid for the call only). |
+| `store_issued_certificate(self, issued)` | v2, optional | Persist an issued chain (`az_iot_issued_certificate`: each entry base64 of DER or of a whole PEM certificate, leaf first, valid for the call only; decode before persisting, PEM-wrapping DER). |
 | `sign(self, digest, ...)` | v2, optional | Sign for the TLS handshake with a non-extractable key (D8). |
 
 `az_iot_certificate_material` carries the credential as PEM strings, file paths, or a key
@@ -99,19 +99,37 @@ reference (`client_key_uri` + `crypto_engine_id`).
 
 Providers in the tree:
 
-- `az_iot_certificate_provider_pem` (core): a static loader. No CSR support.
+- `az_iot_certificate_provider_pem` (core): a static loader. Reads the private key at `load()`
+  and wipes it at the last `release()`; the key file stays on disk. No CSR support. Prefer a
+  non-extractable key (`client_key_uri` or `sign()`, D8) where the platform has one.
 - `az_iot_certificate_provider_managed` (optional OpenSSL 3.0+ adapter,
   [`adapters/cert_openssl/`](../../adapters/cert_openssl/az_iot_certificate_provider_managed.h)):
   bootstrap cert and key, optional trusted CA, operational key and operational cert paths, and
-  a key type. It generates the operational key and CSR, and persists the issued chain.
+  a key type (start from `az_iot_certificate_provider_managed_options_default()`). It generates
+  the operational key and CSR, and persists the issued chain. Every CSR is over the operational
+  key.
+
+**Key stability.** While the connection client is open, a provider's operational key does not
+change: `get_csr()` signs over it, and `store_issued_certificate()` refuses a chain whose leaf
+does not certify it. Resubmitting a renewal request therefore returns a chain that still fits.
+To rotate the key, close the client, change the key (provider-specific; a provider may be
+deinitialized and initialized again in place), then open it and enroll or renew. The client
+calls `load()` on every connect and keeps no key between connects.
+
+**Contract tests.** [`tests/support/cert_provider_contract.h`](../../tests/support/cert_provider_contract.h)
+holds a provider to this contract: vtable shape, usable `load()` credentials (a non-OK result is
+`AZ_IOT_ERR_NOT_FOUND`) and, with `get_csr()`, CSR validity, key stability, storing both wire forms, and refusing a chain
+for another key while keeping the previous one. A custom provider can run it by supplying a
+`cert_provider_contract_fixture`. `az_iot_tests_certificate_provider_contract` runs it against
+the PEM, managed and sample providers.
 
 ### Connection client
 
 | Item | Purpose |
 | --- | --- |
-| `dps.request_operational_certificate` | Send a CSR with the DPS registration (D2). `open()` returns `AZ_IOT_ERR_NOT_SUPPORTED` if the provider is below v2 or has no `get_csr`. |
+| `dps.request_operational_certificate` | Send a CSR with the DPS registration (D2). `open()` returns `AZ_IOT_ERR_NOT_SUPPORTED` if the provider is below v2 or lacks `get_csr`, `release_csr` or `store_issued_certificate`. |
 | `csr_payload_buffer` | Caller buffer for the registration body; must be non-empty when enrolling. `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` is enough for any CSR the service accepts. |
-| `az_iot_connection_client_set_operational_cert_callback()` | Called with a DPS-issued chain (D4): after `store_issued_certificate()` succeeds, or on its own when the provider has no storage hook. |
+| `az_iot_connection_client_set_operational_cert_callback()` | Called with a DPS-issued chain and the result of storing it with `store_issued_certificate()` (D4). |
 | `az_iot_connection_client_send_csr()` | Hub-side renewal (below). |
 | `az_iot_connection_client_cancel_csr()` | Abandon an in-flight renewal. |
 
@@ -122,10 +140,9 @@ Providers in the tree:
 When `dps.request_operational_certificate` is set, the connection client calls `get_csr()`,
 sends `{"csr":"<base64 DER>"}` in the registration body (the registration id travels in the
 DPS username and topic), and on assignment extracts `issuedCertificateChain`. The chain goes to
-`store_issued_certificate()` when the provider has it, then to the operational-certificate
-callback when set; at least one must be present, or registration fails with
-`AZ_IOT_ERR_NOT_SUPPORTED`. A failed store skips the callback and fails the registration with the
-provider's result. The hub connect then
+`store_issued_certificate()`, then, with the store result, to the operational-certificate
+callback when set. A failed store fails the registration with the provider's result. Only a
+complete JSON payload is stored. The hub connect then
 calls `load(AZ_IOT_CRED_OPERATIONAL)`, falling back to `AZ_IOT_CRED_BOOTSTRAP` when no
 operational credential is held.
 
@@ -136,6 +153,8 @@ operational credential is held.
 Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
 support it.
 
+- **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
+  carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
 - **Topics:** publish `$iothub/credentials/POST/issueCertificate/?$rid=<id>`, subscribe
   `$iothub/credentials/res/#`.
 - **Body:** `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|<request id>|null }`.
@@ -144,7 +163,10 @@ support it.
 - **Recovery:** pass a prior `request_id` to resubmit after a dropped connection; `replace`
   supersedes an active hub-side operation.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
-  is surfaced as `service_code`, and `retryAfter` as `retry_after_s`.
+  is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
+  `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
+  `tracking_id`. The strings are never NULL, empty when absent or too long, and valid only
+  during the callback.
 
   | Code | Meaning | Transient |
   |---|---|---|
@@ -158,23 +180,30 @@ support it.
 ```c
 az_iot_result az_iot_connection_client_send_csr(
     az_iot_connection_client* client,
-    const az_iot_certificate_signing_request* csr, /* from the application or get_csr() */
     const char* request_id,                         /* NULL: the SDK generates one */
     const char* replace,                            /* NULL, "*" or a request id */
     az_iot_csr_callback cb,
     void* user_ctx);
 ```
 
-The callback receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CSR_ISSUED` with
-the chain, or `AZ_IOT_CSR_FAILED` with `status`, `service_code` and `retry_after_s`. One
+The CSR always comes from the provider's `get_csr()` (subject: the device id), released with
+`release_csr()` once the request is built; a provider without `get_csr`, `release_csr` and
+`store_issued_certificate` gets `AZ_IOT_ERR_NOT_SUPPORTED` before anything is sent. The callback
+receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CSR_ISSUED` with the chain and
+`store_status`, or `AZ_IOT_CSR_FAILED` with `status`, `service_code`, `retry_after_s`,
+`credential_error`, `credential_message` and `tracking_id`. One
 renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
 internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
+Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout and a
+terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
 
-**The application owns the rest.** The SDK neither stores the renewed chain nor reconnects.
-On `AZ_IOT_CSR_ISSUED` the application copies or persists the chain (the chain is valid only
-for the callback), for example through its provider's `store_issued_certificate()`, then
-calls `close()` and `open()` to connect with it. The live session is not interrupted until
-then. [`samples/authentication/hub_renew`](../../samples/authentication/hub_renew/main.c)
+**Storing, then reconnecting.** On a complete `200` the SDK stores the chain with the
+provider's `store_issued_certificate()` before `AZ_IOT_CSR_ISSUED`, and reports the result in
+`store_status`. A truncated or malformed response is `AZ_IOT_CSR_FAILED` /
+`AZ_IOT_ERR_PROTOCOL` and stores nothing. The live session is kept: the next connect uses the
+stored chain, or the previous credential if the store failed. The SDK does not reconnect; the
+application calls `close()` and `open()` to use the new chain now. [`samples/authentication/hub_renew`](../../samples/authentication/hub_renew/main.c)
 shows the sequence.
 
 ---
@@ -251,14 +280,15 @@ model (D9).
    cert. Explicit flag; return `AZ_IOT_ERR_NOT_SUPPORTED` when the provider lacks
    `get_csr`.
 3. **`load()` — single method with an explicit role argument (not dual-return).**
-   `load(self, role, &out)` where `role` is `AZ_IOT_CRED_BOOTSTRAP` or
+   `load(self, role, index, &out)` where `role` is `AZ_IOT_CRED_BOOTSTRAP` or
    `AZ_IOT_CRED_OPERATIONAL`. Hidden phase-state forces every provider (incl. simple
    file/in-image ones) to track "which identity"; an explicit role keeps one slot and is
    stateless-friendly (a file provider maps both to the same material, or returns
   `AZ_IOT_ERR_NOT_FOUND` for OPERATIONAL until one is stored).
-4. **App callback — `az_iot_connection_client_set_operational_cert_callback()` (optional).** Needed where
-   the *app* owns persistence (OS keystore, remote key, data-in/out per D9) or must react
-   (inventory, trigger reconnect). Decoupled from provider storage.
+4. **App callback — `az_iot_connection_client_set_operational_cert_callback()` (optional).** Observes
+   an issued chain and the result of storing it in the provider (inventory, logging, an early
+   reconnect). Persistence is always the provider's (D9); the callback runs inside message
+   processing, so it must not call `close()` or `_deinit()`.
 5. **Reference provider — ship both: hooks in core, OpenSSL `managed` provider as an
    optional adapter.** The legacy SDK's lesson is that the fork-me reference is what gets
    used; ship a real one for a correctness baseline, but gate it on OpenSSL so
@@ -275,7 +305,7 @@ model (D9).
    managed provider runs without a bootstrap identity. TPM *attestation* is out of scope: DPS
    does not support it over MQTT.
 
-   **Multiple certificates per role (proposed).** `load()` gains an index:
+   **Multiple certificates per role (implemented).** `load()` takes an index:
    `load(self, role, index, out_material)`. Index 0 is today's certificate; a provider returns
    `AZ_IOT_ERR_NOT_FOUND` past its last one (or for a role it has no certificate for). The
    client remembers the index that connected, so the provider stays stateless. No count()
@@ -284,7 +314,8 @@ model (D9).
    provider that never returns it. Covers a
    `selfSigned` identity's primary and secondary thumbprints, and keeping the previous issued
    certificate as a rollback after renewal. The library is unreleased, so this changes the
-   existing signature; the vtable version is not bumped.
+   existing signature; the vtable version is not bumped. The built-in PEM and managed providers
+   offer one certificate per role (index 0); the managed provider does not keep a rollback yet.
 7. **Hub-side renewal.** DPS-only issuance forces a full re-provision for
    every rotation (often disallowed by the enrollment). Certs expire; long-lived devices
    must renew. Reuses the CSR/issued-cert types and provider hooks, so incremental cost is
@@ -312,12 +343,11 @@ model (D9).
    OpenSSL 3.0, and a key an ENGINE returns is a legacy object with no reference form, so
    it cannot be expressed as the PEM file that is the only thing Paho can be handed. An
    ENGINE-only stack gets `AZ_IOT_ERR_NOT_SUPPORTED` naming the id.
-9. **Ownership — support both, layered.** Core primitive = **app-owned data-in/data-out**
-   (`send_csr(csr_bytes)` → issued-cert callback; DPS accepts a caller CSR). The
-   **provider-owns-crypto** hooks (`get_csr` / `store_issued_certificate`) are a thin
-   custody layer on top of that primitive — best for bare-metal/HSM. DPS issuance uses the
-   hooks directly; hub renewal leaves storage and reconnect to the application. One model cannot span secure-elements to cloud keys
-   ergonomically; layering avoids duplicated logic.
+9. **Ownership — the provider is the only CSR source.** DPS issuance and hub renewal both
+   get the CSR from `get_csr()` and store the chain with `store_issued_certificate()`.
+   Custom key handling (external agents, secure elements, custom CSR content, rotation)
+   is a custom provider, so there is one path, and the chain always lands where the next
+   connect loads it. Revised from an earlier "app-owned CSR first" model.
 
 ---
 
@@ -364,8 +394,8 @@ Under [`samples/authentication/`](../../samples/authentication/README.md). Each 
 | Sample | Shows |
 | --- | --- |
 | `dps_csr_managed/` | D9 provider-owned: the `managed` provider, DPS issuance |
-| `hub_renew/` | D7 hub renewal: CSR from the provider, chain persisted through it, then `close()`/`open()` |
-| `custom_certificate_provider/` | D9 app-owned: the application builds the CSR (data-in/out) |
+| `hub_renew/` | D7 hub renewal: the SDK gets the CSR from the provider and stores the chain, then `close()`/`open()` |
+| `custom_certificate_provider/` | D9: an application-written provider that makes the CSR and stores the chain |
 | `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho, either hub generation |
 | `hsm_sign_callback/` | D8 provider `sign()` hook |
 | `custom_provider_template/` | A starting point for a custom provider |
@@ -379,7 +409,9 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | Group | Test | Build option |
 | --- | --- | --- |
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
+| SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
+| Storage / custody on an mqttv5 hub ([`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml)) | `e2e_mqttv5_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` + `AZ_IOT_BUILD_E2E_MQTTV5` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
 device key, deletes the on-disk copy and prints the key URI.

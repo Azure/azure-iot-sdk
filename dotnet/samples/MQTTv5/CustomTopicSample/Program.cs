@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
@@ -36,8 +37,10 @@ internal class Program
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub.");
         Console.WriteLine("Press 'Ctrl+C' to end the sample");
 
-        string customPublishingTopic = $"foo/{customTopicsClient.GetDeviceId()}";
-        string customReceivingTopic = $"bar/{customTopicsClient.GetDeviceId()}";
+        // "{deviceId}" (IConnectionClient.DeviceIdPlaceholder) is replaced with this device's current ID each time the
+        // SDK sends an operation, so these topics keep working if the device is re-provisioned with a different device ID.
+        string customPublishingTopic = $"foo/{IConnectionClient.DeviceIdPlaceholder}";
+        string customReceivingTopic = $"bar/{IConnectionClient.DeviceIdPlaceholder}";
 
 
         var subackReasonCode = await customTopicsClient.SubscribeAsync(customReceivingTopic, MqttQualityOfServiceLevel.AtLeastOnce, cts.Token);

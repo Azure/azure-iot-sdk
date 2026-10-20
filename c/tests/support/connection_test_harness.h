@@ -51,6 +51,7 @@ typedef struct az_iot_test_state_log
   az_iot_connection_error_source error_sources[AZ_IOT_TEST_MAX_STATES];
   int32_t error_codes[AZ_IOT_TEST_MAX_STATES];
   char error_message[AZ_IOT_TEST_MAX_STATES][128];
+  az_iot_auth_source auth_sources[AZ_IOT_TEST_MAX_STATES];
   /* event->recovery, copied; the endpoint string dies with the callback. */
   bool recovery_present[AZ_IOT_TEST_MAX_STATES];
   az_iot_connection_recovery_info recovery[AZ_IOT_TEST_MAX_STATES];
@@ -69,6 +70,7 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
     log->reasons[index] = event->reason;
     log->profile_present[index] = event->profile != NULL;
     log->is_retriable[index] = event->is_retriable;
+    log->auth_sources[index] = event->auth_source;
     log->error_present[index] = event->error != NULL;
     if (event->error)
     {
@@ -126,7 +128,6 @@ typedef struct az_iot_test_conn
   az_iot_connection_client client_storage;
   az_iot_connection_client* client;
   az_iot_mqtt_factory* factory;
-  bool factory_registered;
   az_iot_test_state_log log;
 } az_iot_test_conn;
 
@@ -235,9 +236,9 @@ static inline size_t az_iot_test_index_of(
 static inline az_iot_connection_client_options az_iot_test_mqtt_v3_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   return opts;
 }
 

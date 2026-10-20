@@ -4,7 +4,7 @@
 # Certificate renewal over IoT Hub
 
 Connects to the IoT Hub DPS assigns, requests a renewed operational certificate **from the hub**
-with a certificate signing request (CSR), saves the new chain, and reconnects with it. Renewal over
+with a certificate signing request (CSR), and reconnects with the new chain. Renewal over
 the hub is an **mqttv3** feature.
 
 ## Sample features
@@ -12,8 +12,8 @@ the hub is an **mqttv3** feature.
 - Hub generation: renewal needs an mqttv3 hub. On an mqttv5 hub the sample prints `runtime renewal is not available on this hub generation` and exits 1.
 - Uses the OpenSSL-backed managed certificate provider for the operational key, the CSR and the files.
 - Connects with the operational certificate when the files hold one (for example from a previous [`dps_csr_managed`](../dps_csr_managed/README.md) run with the same files), otherwise with the bootstrap certificate.
-- `az_iot_connection_client_send_csr()` is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
-- The SDK does not store the renewed chain or reconnect: the sample saves it through the provider, then calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
+- `az_iot_connection_client_send_csr()` gets the CSR from the provider and is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
+- The SDK stores the renewed chain in the provider before the callback, which reports the result in `store_status`. It does not reconnect: the sample calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -31,10 +31,10 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Bootstrap certificate chain (PEM file, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM file). |
+| `AZ_IOT_CLIENT_KEY` | yes | Bootstrap private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated. Default `operational_key.pem`. |
+| `AZ_IOT_OPERATIONAL_KEY` | no | Operational private key file; loaded if present, else generated. Default `operational_key.pem`. A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_OPERATIONAL_CERT` | no | Issued operational chain file. Default `operational_cert.pem`. |
 
 ```sh
@@ -93,7 +93,8 @@ Exit code 0 when the renewed certificate was issued and the client reconnected w
 [hub_renew] reconnected with the renewed operational certificate
 ```
 
-A refused renewal prints `[hub_renew] CSR failed: status=<code> service_code=<code> retry_after=<n>s`.
+A refused renewal prints `[hub_renew] CSR failed: status=<code> service_code=<code> retry_after=<n>s credential_error=<name> credential_message=<text> tracking_id=<id>`.
+Quote `tracking_id` in a support request.
 The chain length depends on the credential policy.
 
 ## Troubleshooting
@@ -113,7 +114,7 @@ The chain length depends on the credential policy.
 | --- | --- |
 | Provider setup | `az_iot_certificate_provider_managed_init()` |
 | Request the renewal | `az_iot_connection_client_send_csr()` |
-| Two-phase result; save the chain | `on_csr_event()` → `store_issued_certificate()` |
+| Two-phase result and store status | `on_csr_event()` |
 | Apply the new certificate | `az_iot_connection_client_close()` then `az_iot_connection_client_open()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md#hub-side-renewal-mqttv3).

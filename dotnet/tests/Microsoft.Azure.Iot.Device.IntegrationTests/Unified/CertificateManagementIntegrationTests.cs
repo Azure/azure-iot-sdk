@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Provisioning;
@@ -14,12 +15,59 @@ using static Microsoft.Azure.Iot.Device.IntegrationTests.Setup;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate()
+        {
+            using RSA privateKey = RSA.Create(2048);
+            await using UnifiedDeviceTestContext device = await CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                cancellationToken: TestContext.Current.CancellationToken,
+                issuedCertificatePrivateKey: privateKey);
+
+            SymmetricKeyAuthenticationProvider authentication = Assert.IsType<SymmetricKeyAuthenticationProvider>(device.AuthenticationProvider);
+            ConnectionContext connectionContext = device.ConnectionContext;
+            Assert.Null(device.IndividualEnrollment);
+            Assert.Equal(device.RegistrationId, connectionContext.DeviceId);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+            Assert.NotNull(connectionContext.IssuedClientCertificates);
+            Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            await device.ConnectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = new(privateKey, CertificateUtilities.GenerateCsrWithPrivateKey(device.RegistrationId, privateKey)),
+            };
+            ConnectionContext reconnectedContext = await device.ConnectionClient.ProvisionAndConnectAsync(
+                provisioningSettings, authentication, cancellationToken: TestContext.Current.CancellationToken);
+
+            // Re-provisioning would return a new context, even if DPS assigned the same device and hub.
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
+
+            // A successful Hub connection with an issued certificate must not fall back to a SAS token.
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+                connectionContext.IotHubHostName,
+                connectionContext.DeviceId,
+                connectionContext.IssuedClientCertificates);
+            using X509Certificate2 issuedCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(connectionContext.IssuedClientCertificates[0]));
+            Assert.NotNull(hubCredentials.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
+            Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
+            Assert.Empty(hubCredentials.Password);
+
+            AuthenticationCredentials dpsCredentials = authentication.GetBootAuthenticationCredentials();
+            Assert.Null(dpsCredentials.ClientCertificate);
+            Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
+        }
+
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
-        public async Task TestCertificateManagementWithDpsAndHub(bool testAgainstClassicHub)
+        public async Task CanProvisionWithX509AndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
@@ -35,25 +83,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             string privateKeyPem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_KEY");
 
             using X509Certificate2 deviceCertificate = CreateX509CertificateFromKeyAndCert(certificatePem, privateKeyPem);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate);
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, privateKey);
 
-            ConnectionClient connectionClient = new()
-            {
-                HandleCertificateSigningCompleteAsync = (IssuedCertificates) =>
-                {
-                    // Convert to PEM and save
-                    string pemChain = CertificateUtilities.ConvertToPem(IssuedCertificates);
-
-                    using X509Certificate2 deviceCertTemp = CertificateUtilities.CreateCertificateWithPrivateKey(IssuedCertificates, privateKey);
-
-                    // Export and reimport with Exportable flag
-                    byte[] pfxBytes = deviceCertTemp.Export(X509ContentType.Pfx);
-                    return Task.FromResult(new X509AuthenticationProvider(X509CertificateLoader.LoadPkcs12(pfxBytes, (string?)null, X509KeyStorageFlags.Exportable)));
-                }
-            };
+            ConnectionClient connectionClient = new();
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
@@ -66,6 +101,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            await connectionClient.DisconnectAsync(cts.Token);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
+
+            ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
+                provisioningSettings, x509AuthenticationProvider, cancellationToken: cts.Token);
+
+            // Re-provisioning would return a new context, even if DPS assigned the same device and hub.
+            Assert.Same(connectionContext, reconnectedContext);
+            Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
 
             var secondCsrBase64 = CertificateUtilities.GenerateCsrWithPrivateKey(connectionContext.DeviceId, privateKey);
             var certificateSigningRequest = new IotHubCertificateSigningRequest(connectionContext.DeviceId, secondCsrBase64, null, "*");

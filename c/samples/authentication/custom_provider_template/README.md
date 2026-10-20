@@ -10,7 +10,8 @@ does not connect: `main()` calls the provider interface so the wiring compiles a
 ## Sample features
 
 - Implements every slot of the provider interface with placeholder bodies to replace:
--   - `load()`: return the credential for the requested role (bootstrap or operational).
+-   - `load()`: return the credential for the requested role (bootstrap or operational) and
+      index: 0 for the first certificate, `AZ_IOT_ERR_NOT_FOUND` past the last one.
 -   - `get_csr()`: produce a PKCS#10 CSR (base64 DER) over the device key.
 -   - `store_issued_certificate()`: persist the issued chain.
 -   - `sign()`: sign with a non-extractable key. When you implement it, leave the PEM key fields empty in `load()`; see [`hsm_sign_callback`](../hsm_sign_callback/README.md) and [`hsm_pkcs11`](../hsm_pkcs11/README.md) for which route your adapter supports.
@@ -20,6 +21,12 @@ does not connect: `main()` calls the provider interface so the wiring compiles a
 ## Service requirements
 
 None. The sample does not connect.
+
+## Configure
+
+Nothing to configure: the sample reads no environment variables. The paths in `main()`
+(`bootstrap_cert.pem`, `bootstrap_key.pem`, `trusted_ca.pem`) are placeholders that the run never
+opens; replace them with your provider's own configuration.
 
 ## Build and run
 
@@ -54,6 +61,13 @@ Exit code 0.
 [custom] get_csr produced: PLACEHOLDER-BASE64-DER-CSR
 [custom] persisting issued chain: 1 cert(s)
 ```
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| Exit 1 with no output | `get_csr()` failed. In the template only an allocation failure does that; once you fill it in, check what `my_get_csr()` returns. |
+| Build error in `main.c` after an SDK update | The provider interface changed; compare `s_my_vtable` with [az_iot_certificate_provider.h](../../../inc/azure/iot/az_iot_certificate_provider.h). The sample is always built to catch this. |
 
 ## Where to look in `main.c`
 

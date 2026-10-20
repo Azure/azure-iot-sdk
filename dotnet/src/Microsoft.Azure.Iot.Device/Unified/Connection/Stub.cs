@@ -41,6 +41,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             return _unifiedConnectionClient.GetCurrentConnectionContext();
         }
 
+        public bool IsConnectionTargetSet => _unifiedConnectionClient.IsConnectionTargetSet;
+
         public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             return _unifiedConnectionClient.PublishAsync(publish, cancellationToken);

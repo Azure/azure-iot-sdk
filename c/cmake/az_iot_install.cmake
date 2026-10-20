@@ -16,6 +16,9 @@
 # include/azure-sdk-for-c). Paho installs its own eclipse-paho-mqtt-c package
 # into the same prefix; the config file loads that one.
 #
+# A dependency used from an installed copy (AZ_IOT_USE_INSTALLED_*) does not
+# ship: the config file finds it again, so consumers need its prefix too.
+#
 # Include once, after every target is defined.
 
 if(NOT AZ_IOT_INSTALL)
@@ -35,6 +38,7 @@ set(_az_iot_export_names
     az_iot_mqttv3                        mqttv3
     az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
+    az_iot_adapter_az_mqtt               adapter_az_mqtt
     az_iot_adapter_rust_mqtt             adapter_rust_mqtt
     az_iot_crypto_openssl                crypto_openssl
     az_iot_crypto_mbedtls                crypto_mbedtls
@@ -89,7 +93,16 @@ foreach(_tgt IN ITEMS az_core az_iot_common az_iot_hub az_iot_provisioning az_wi
     list(APPEND _az_iot_sdk_for_c_targets ${_tgt})
 endforeach()
 
-install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets}
+# az_mqtt (deps/az_mqtt) libraries the az_mqtt adapter links. Exported, not components.
+set(_az_iot_az_mqtt_targets "")
+foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3 az_mqttv5)
+    if(TARGET az_iot_adapter_az_mqtt AND TARGET ${_tgt})
+        set_target_properties(${_tgt} PROPERTIES EXPORT_NAME ${_tgt})
+        list(APPEND _az_iot_az_mqtt_targets ${_tgt})
+    endif()
+endforeach()
+
+install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets} ${_az_iot_az_mqtt_targets}
     EXPORT ${_az_iot_pkg}-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -100,10 +113,12 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/inc/"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
 )
-install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
-    DESTINATION ${_az_iot_sdk_for_c_inc}
-    FILES_MATCHING PATTERN "*.h"
-)
+if(NOT AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
+        DESTINATION ${_az_iot_sdk_for_c_inc}
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
 
 # Adapter headers that live next to their sources. Installed together, and the
 # directory is on each adapter's installed include path, so consumers keep the
@@ -131,8 +146,14 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/../LICENSE")
     install(FILES "${PROJECT_SOURCE_DIR}/../LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}")
 endif()
-install(FILES "${azure_sdk_for_c_SOURCE_DIR}/LICENSE" "${azure_sdk_for_c_SOURCE_DIR}/NOTICE.txt"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}/azure-sdk-for-c")
+if(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
+    # The config file finds it with this module.
+    install(FILES "${CMAKE_CURRENT_LIST_DIR}/Findazure-sdk-for-c.cmake" DESTINATION ${_az_iot_pkg_cmake_dir})
+    set(AZ_IOT_PACKAGE_AZURE_SDK_FOR_C_VERSION "${azure-sdk-for-c_VERSION}")
+else()
+    install(FILES "${azure_sdk_for_c_SOURCE_DIR}/LICENSE" "${azure_sdk_for_c_SOURCE_DIR}/NOTICE.txt"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/${_az_iot_pkg}/azure-sdk-for-c")
+endif()
 
 # Dependencies the config file must load before the exported targets.
 set(AZ_IOT_PACKAGE_NEEDS_PAHO OFF)
@@ -140,11 +161,23 @@ set(AZ_IOT_PACKAGE_NEEDS_OPENSSL OFF)
 set(AZ_IOT_PACKAGE_OPENSSL_MIN "")
 if(TARGET az_iot_adapter_paho)
     set(AZ_IOT_PACKAGE_NEEDS_PAHO ON)
-    if(TARGET paho-mqtt3as-static)
+    get_target_property(_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
+    if("AZ_IOT_PAHO_SSL=1" IN_LIST _defs)
         set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
     endif()
-    get_target_property(_defs az_iot_adapter_paho COMPILE_DEFINITIONS)
     if("AZ_IOT_PAHO_KEY_CUSTODY=1" IN_LIST _defs)
+        set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
+    endif()
+    unset(_defs)
+endif()
+set(AZ_IOT_PACKAGE_NEEDS_THREADS OFF)
+if(TARGET az_iot_adapter_az_mqtt)
+    if(NOT WIN32)
+        set(AZ_IOT_PACKAGE_NEEDS_THREADS ON)
+    endif()
+    get_target_property(_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    if("AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _defs)
+        set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
         set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
     endif()
     unset(_defs)
@@ -153,7 +186,17 @@ if(TARGET az_iot_crypto_openssl OR TARGET az_iot_certificate_provider_managed)
     set(AZ_IOT_PACKAGE_NEEDS_OPENSSL ON)
     set(AZ_IOT_PACKAGE_OPENSSL_MIN 3.0)
 endif()
-if(TARGET az_iot_crypto_mbedtls)
+# The az_mqtt adapter needs MbedTLS's config package only when az_mqtt linked its imported target;
+# a build that found the libraries by path links them by path.
+set(_az_iot_az_mqtt_mbedtls OFF)
+if(TARGET az_mqtt_core)
+    get_target_property(_az_mqtt_links az_mqtt_core LINK_LIBRARIES)
+    if("MbedTLS::mbedtls" IN_LIST _az_mqtt_links)
+        set(_az_iot_az_mqtt_mbedtls ON)
+    endif()
+    unset(_az_mqtt_links)
+endif()
+if(TARGET az_iot_crypto_mbedtls OR _az_iot_az_mqtt_mbedtls)
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS ON)
 else()
     set(AZ_IOT_PACKAGE_NEEDS_MBEDTLS OFF)

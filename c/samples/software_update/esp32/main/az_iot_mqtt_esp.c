@@ -249,8 +249,7 @@ static void extract_v5_props(queued_event* n, esp_mqtt_event_handle_t e)
       }
       n->user_props = out;
       n->user_props_count = kept;
-      n->msg.user_properties = out;
-      n->msg.user_properties_count = kept;
+      n->msg.user_properties = az_iot_mqtt_user_properties_from_array(out, kept);
       out = NULL;
     }
     if (items)
@@ -561,25 +560,85 @@ static az_iot_result esp_publish(
     pub.correlation_data_len = (uint16_t)msg->correlation_data_len;
 
     /* Build a user-property handle from the message's key/value pairs and
-     * hang it off the publish property config. */
-    if (msg->user_properties && msg->user_properties_count > 0)
+     * hang it off the publish property config. esp-mqtt takes NUL-terminated
+     * strings and at most 255 pairs; more is refused rather than cut. */
+    size_t up_count = 0;
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view v;
+    az_iot_result up_rc;
+    while ((up_rc = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v))
+           == AZ_IOT_OK)
+    {
+      if (v.key_len > UINT16_MAX || v.value_len > UINT16_MAX)
+      {
+        return AZ_IOT_ERR_INVALID_ARG; /* Over MQTT's string limit. */
+      }
+      ++up_count;
+    }
+    if (up_rc != AZ_IOT_ERR_NOT_FOUND || up_count > UINT8_MAX)
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (up_count > 0)
     {
       esp_mqtt5_user_property_item_t* items
-          = (esp_mqtt5_user_property_item_t*)calloc(msg->user_properties_count, sizeof(*items));
-      if (items)
+          = (esp_mqtt5_user_property_item_t*)calloc(up_count, sizeof(*items));
+      az_iot_result err = items != NULL ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
+      cursor = 0;
+      for (size_t i = 0; err == AZ_IOT_OK && i < up_count; ++i)
       {
-        for (size_t i = 0; i < msg->user_properties_count; ++i)
+        /* The view must yield what it yielded when counted. */
+        if (az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v) != AZ_IOT_OK
+            || v.key_len > UINT16_MAX || v.value_len > UINT16_MAX)
         {
-          items[i].key = msg->user_properties[i].key;
-          items[i].value = msg->user_properties[i].value;
+          err = AZ_IOT_ERR_INVALID_ARG;
+          break;
         }
-        if (esp_mqtt5_client_set_user_property(&up, items, (uint8_t)msg->user_properties_count)
-            == ESP_OK)
+        char* k = (char*)malloc(v.key_len + 1);
+        char* val = (char*)malloc(v.value_len + 1);
+        if (k && val)
         {
-          pub.user_property = up;
+          memcpy(k, v.key, v.key_len);
+          k[v.key_len] = '\0';
+          memcpy(val, v.value, v.value_len);
+          val[v.value_len] = '\0';
+          items[i].key = k;
+          items[i].value = val;
         }
-        free(items);
+        else
+        {
+          free(k);
+          free(val);
+          err = AZ_IOT_ERR_OUT_OF_MEMORY;
+        }
       }
+      /* Nor more than it yielded when counted. */
+      if (err == AZ_IOT_OK
+          && az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &v)
+              != AZ_IOT_ERR_NOT_FOUND)
+      {
+        err = AZ_IOT_ERR_INVALID_ARG;
+      }
+      if (err == AZ_IOT_OK
+          && esp_mqtt5_client_set_user_property(&up, items, (uint8_t)up_count) != ESP_OK)
+      {
+        err = AZ_IOT_ERR_MQTT;
+      }
+      for (size_t i = 0; items && i < up_count; ++i)
+      {
+        free((void*)items[i].key);
+        free((void*)items[i].value);
+      }
+      free(items);
+      if (err != AZ_IOT_OK)
+      {
+        if (up)
+        {
+          esp_mqtt5_client_delete_user_property(up);
+        }
+        return err;
+      }
+      pub.user_property = up;
     }
 
     esp_mqtt5_client_set_publish_property(m->handle, &pub);
@@ -710,7 +769,6 @@ static az_iot_mqtt_factory* make_factory(az_iot_mqtt_version version)
   f->version = version;
   f->create = esp_factory_create;
   f->factory_ctx = (void*)(intptr_t)version;
-  f->destroy = NULL;
   return f;
 }
 

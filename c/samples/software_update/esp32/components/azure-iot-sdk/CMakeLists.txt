@@ -30,9 +30,12 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/core/proto3.c"
         "${AZ_IOT_ROOT}/src/core/span_writer.c"
         "${AZ_IOT_ROOT}/src/core/json_string.c"
+        "${AZ_IOT_ROOT}/src/core/base64.c"
         "${AZ_IOT_ROOT}/src/core/message.c"
         "${AZ_IOT_ROOT}/src/core/certificate_provider_pem.c"
         "${AZ_IOT_ROOT}/src/core/crypto.c"
+        "${AZ_IOT_ROOT}/src/core/sas_token.c"
+        "${AZ_IOT_ROOT}/src/core/dps_tpm_client.c"
         "${AZ_IOT_ROOT}/src/features/su/su_client.c"
         "${AZ_IOT_ROOT}/src/features/su/su_device_properties.c"
         "${AZ_IOT_ROOT}/src/features/su/su_root_keys_microsoft.c"
@@ -48,6 +51,7 @@ idf_component_register(
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_client.c"
         "${AZ_IOT_ROOT}/src/mqttv5/direct_method_codec.c"
         "${AZ_IOT_ROOT}/src/mqttv5/twin_client.c"
+        "${AZ_IOT_ROOT}/src/mqttv5/custom_topic_client.c"
     INCLUDE_DIRS
         "${AZ_IOT_ROOT}/inc"
     PRIV_INCLUDE_DIRS

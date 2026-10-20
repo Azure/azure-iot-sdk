@@ -61,12 +61,22 @@ Rules:
 4. **`close()` settles both scopes.**
 5. **Under `dps.provision_only` (§4) `HUB` never leaves `IDLE`.**
 6. **`DPS:CONNECTED` is the provisioning SUBACK.** A normal DPS device reports
-   `DPS:CONNECTING → CONNECTED → DISCONNECTING → IDLE` around its registration. `profile` is NULL on
+   `DPS:SETTING_UP → CONNECTING → CONNECTED → DISCONNECTING → IDLE` around its registration. `profile` is NULL on
    `DPS:CONNECTED`; the hub generation comes from the assignment and is carried on `HUB:CONNECTED`.
 7. **Duplicate transitions are suppressed per scope.**
+8. **Every attempt starts in `SETTING_UP`**, before any step that can fail on the device, so a
+   failed attempt is always a transition and is never suppressed. A failure there goes straight to
+   `RETRY_PENDING`, `FAULTED` or `IDLE` (from `open()`, or a session a feature client asked for),
+   with no `DISCONNECTING` for a session that never existed. A registration on a provisioning
+   session that is already up reports `SETTING_UP → CONNECTED`.
+9. **`open()` validates its configuration before any attempt starts**: the state, the
+   credential setup, CSR support, and the registration payload and its buffer. A refusal there is
+   returned and raises no event. Every later `open()` failure (no factory, credential `load()`,
+   SAS signing, adapter `connect()`) belongs to the attempt: it reports `SETTING_UP`, then `IDLE`
+   with the reason and LOCAL detail, and is also returned.
 
 With two scopes, "a retry is pending" cannot be read from state alone: a hub failure whose recovery
-is a re-registration leaves `HUB` in `RECONNECTING` while the attempt runs on `DPS`.
+is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `DPS`.
 
 ---
 
@@ -147,13 +157,16 @@ never tried; with `max_attempts = N`, it means N retries were spent.
 | `AZ_IOT_CONN_ERR_SRC_TRANSPORT` | The adapter's own code (TLS, socket, DNS). Not comparable across adapters. | empty |
 | `AZ_IOT_CONN_ERR_SRC_MQTT` | A wire code: CONNACK, SUBACK, or a server-sent MQTT 5 DISCONNECT reason. | empty |
 | `AZ_IOT_CONN_ERR_SRC_DPS` | The provisioning service's `extended_error_code`, for example `401001`. | the service's text, up to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes |
+| `AZ_IOT_CONN_ERR_SRC_LOCAL` | The `az_iot_result` of a step that failed on the device: configuration, credential, feature-client bind, MQTT adapter API. | the step, for example `SAS token signing failed` |
 
 There is no hub source: a hub CONNACK and a DPS CONNACK are both `_MQTT`.
 
 A failure is usually recorded in an adapter callback and reported later from the pump, so the detail
 is staged per scope and attached when the transition runs. It rides every event of one failure's
-sequence (`DISCONNECTING` → `IDLE` → `RECONNECTING`/`FAULTED`) and is discarded when the scope next
-reaches `CONNECTING` or `CONNECTED`. A success stages nothing.
+sequence (`DISCONNECTING` → `IDLE` → `RETRY_PENDING`/`FAULTED`) and is discarded when the scope next
+reaches `SETTING_UP`, `CONNECTING` or `CONNECTED`. A success stages nothing. A DPS registration that
+fails on the SUBACK path keeps its detail across the deferred `DPS:CONNECTED` that precedes its
+settle.
 
 `code` 0 means "none supplied"; `source` disambiguates it.
 

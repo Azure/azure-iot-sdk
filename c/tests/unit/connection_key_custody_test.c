@@ -56,13 +56,26 @@ typedef struct custody_provider
    * forbidden from doing this; az_iot_mqtt_sign_callback is, which is what the
    * trampoline has to enforce. */
   bool scribbles_out_len_on_failure;
+  /* When set, load() hands out these buffers as the key PEM and password and
+   * release() wipes them, as az_iot_certificate_provider.h allows. */
+  bool wipes_on_release;
+  /* Set once the test deinits the provider; release() after it is counted. */
+  bool deinitialized;
+  int releases_after_deinit;
+  char key_pem[32];
+  char key_password[16];
 } custody_provider;
 
 static az_iot_result custody_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   custody_provider* p = (custody_provider*)s;
   p->load_calls++;
   if (role == AZ_IOT_CRED_OPERATIONAL && p->operational_result != AZ_IOT_OK)
@@ -70,6 +83,13 @@ static az_iot_result custody_load(
     return p->operational_result;
   }
   *out = p->material;
+  if (p->wipes_on_release)
+  {
+    snprintf(p->key_pem, sizeof(p->key_pem), "%s", "KEY-PEM");
+    snprintf(p->key_password, sizeof(p->key_password), "%s", "KEY-PW");
+    out->client_key_pem = p->key_pem;
+    out->client_key_password = p->key_password;
+  }
   if (p->degrade_after_calls > 0 && p->load_calls > p->degrade_after_calls)
   {
     out->client_key_pem = NULL;
@@ -85,6 +105,15 @@ static void custody_release(az_iot_certificate_provider* s, az_iot_certificate_m
   custody_provider* p = (custody_provider*)s;
   (void)m;
   p->release_calls++;
+  if (p->deinitialized)
+  {
+    p->releases_after_deinit++;
+  }
+  if (p->wipes_on_release)
+  {
+    memset(p->key_pem, 0, sizeof(p->key_pem));
+    memset(p->key_password, 0, sizeof(p->key_password));
+  }
 }
 
 static void custody_deinit(az_iot_certificate_provider* s) { (void)s; }
@@ -166,7 +195,6 @@ typedef struct fixture
 {
   az_iot_connection_client client;
   az_iot_mqtt_factory* factory;
-  bool factory_registered;
   custody_provider provider;
 } fixture;
 
@@ -187,10 +215,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_connection_client_deinit(&fx->client);
-    if (!fx->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -200,7 +225,7 @@ static int teardown(void** state)
 static void init_client(fixture* fx, bool with_dps)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
   if (with_dps)
   {
@@ -209,13 +234,12 @@ static void init_client(fixture* fx, bool with_dps)
   }
   else
   {
-    opts.host = "broker.example";
+    opts.iothub_hostname = "broker.example";
     opts.port = 8883;
   }
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
 }
 
 static const az_iot_mock_call* last_connect(const fixture* fx)
@@ -586,6 +610,123 @@ static void a_plain_pem_credential_is_unaffected(void** state)
   assert_false(c->connect.has_sign);
 }
 
+/* release() may wipe the key it handed out, so the client releases the material
+ * only after the adapter's connect() has read it, on both connect paths, and
+ * releases every successful load(). */
+static void material_is_released_after_the_adapter_connect(bool with_dps, void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  memset(&fx->provider.material, 0, sizeof(fx->provider.material));
+  fx->provider.material.client_cert_pem = "cert";
+  fx->provider.wipes_on_release = true;
+  init_client(fx, with_dps);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_string_equal(c->connect.client_key_pem, "KEY-PEM");
+  assert_string_equal(c->connect.client_key_password, "KEY-PW");
+  assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
+  assert_string_equal(fx->provider.key_pem, "");
+  assert_string_equal(fx->provider.key_password, "");
+}
+
+static void dps_material_is_released_after_the_adapter_connect(void** state)
+{
+  material_is_released_after_the_adapter_connect(true, state);
+}
+
+static void hub_material_is_released_after_the_adapter_connect(void** state)
+{
+  material_is_released_after_the_adapter_connect(false, state);
+}
+
+/* Arms a wiping provider whose material passes open()'s pre-flight. */
+static void init_wiping_provider(fixture* fx, bool with_dps)
+{
+  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  memset(&fx->provider.material, 0, sizeof(fx->provider.material));
+  fx->provider.material.client_cert_pem = "cert";
+  fx->provider.wipes_on_release = true;
+  init_client(fx, with_dps);
+}
+
+/* Every successful load() was released and the key left wiped. */
+static void assert_all_material_released(const fixture* fx)
+{
+  assert_true(fx->provider.load_calls > 0);
+  assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
+  assert_string_equal(fx->provider.key_pem, "");
+  assert_string_equal(fx->provider.key_password, "");
+}
+
+/* A failed adapter connect() still releases the attempt's material. */
+static void material_is_released_when_the_adapter_connect_fails(bool with_dps, void** state)
+{
+  fixture* fx = (fixture*)*state;
+  init_wiping_provider(fx, with_dps);
+  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_MQTT);
+  assert_all_material_released(fx);
+}
+
+static void dps_material_is_released_when_the_adapter_connect_fails(void** state)
+{
+  material_is_released_when_the_adapter_connect_fails(true, state);
+}
+
+static void hub_material_is_released_when_the_adapter_connect_fails(void** state)
+{
+  material_is_released_when_the_adapter_connect_fails(false, state);
+}
+
+/** @brief State observer that close()s the client on CONNECTING, then deinits
+ * the provider, as az_iot_certificate_provider.h allows once closed. */
+static void close_on_connecting(const az_iot_connection_state_event* e, void* ctx)
+{
+  fixture* fx = (fixture*)ctx;
+  if (e->state == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    (void)az_iot_connection_client_close(&fx->client);
+    fx->provider.deinitialized = true;
+  }
+}
+
+/* close() from the CONNECTING announcement abandons the attempt before
+ * connect(); close() releases its material, before the provider can go. */
+static void material_is_released_when_closed_before_connect(bool with_dps, void** state)
+{
+  fixture* fx = (fixture*)*state;
+  init_wiping_provider(fx, with_dps);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->client, close_on_connecting, fx), AZ_IOT_OK);
+  /* DPS reports the cancelled start; the hub attempt is simply abandoned. */
+  assert_int_equal(
+      az_iot_connection_client_open(&fx->client), with_dps ? AZ_IOT_ERR_NOT_CONNECTED : AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  if (m != NULL)
+  {
+    for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
+    {
+      assert_int_not_equal(az_iot_mock_mqtt_client_call_at(m, i)->kind, AZ_IOT_MOCK_CALL_CONNECT);
+    }
+  }
+  assert_all_material_released(fx);
+  assert_int_equal(fx->provider.releases_after_deinit, 0);
+}
+
+static void dps_material_is_released_when_closed_before_connect(void** state)
+{
+  material_is_released_when_closed_before_connect(true, state);
+}
+
+static void hub_material_is_released_when_closed_before_connect(void** state)
+{
+  material_is_released_when_closed_before_connect(false, state);
+}
+
 /* A provider that holds no material yet is not a configuration error: it may
  * have one by the time the connect attempt runs. open() proceeds. */
 static void a_provider_with_no_material_yet_is_not_refused(void** state)
@@ -626,7 +767,7 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   fx->provider.base.vtable = NULL;
 
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
@@ -634,7 +775,6 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
 
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
 }
@@ -661,6 +801,8 @@ static void a_credential_that_degrades_after_open_fails_the_connect(void** state
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  /* The rejected material is released too. */
+  assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
 }
 
 /* The same on the DPS path, which is a separate copy site. */
@@ -671,6 +813,7 @@ static void a_dps_credential_without_a_key_fails_the_connect(void** state)
   fx->provider.degrade_after_calls = 1;
   init_client(fx, true);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
+  assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
 }
 
 /* The new result code has to name itself; a log line reading
@@ -708,6 +851,18 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         material_without_a_client_certificate_is_not_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plain_pem_credential_is_unaffected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_material_is_released_after_the_adapter_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_material_is_released_after_the_adapter_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_material_is_released_when_the_adapter_connect_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_material_is_released_when_the_adapter_connect_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_material_is_released_when_closed_before_connect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_material_is_released_when_closed_before_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provider_with_no_material_yet_is_not_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_provider_without_load_is_rejected, setup, teardown),

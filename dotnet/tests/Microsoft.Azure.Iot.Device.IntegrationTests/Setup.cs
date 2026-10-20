@@ -13,7 +13,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
-using Microsoft.Azure.Devices;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
@@ -106,7 +106,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -148,7 +148,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             {
                 ConnectionClient = connectionClient,
                 DeviceId = deviceId,
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
                 AuthenticationProvider = x509AuthenticationProvider,
             };
         }
@@ -291,6 +291,73 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 AuthenticationProvider = x509AuthenticationProvider,
                 IndividualEnrollment = individualEnrollment,
             };
+        }
+
+        /// <summary>
+        /// Creates a symmetric-key device using an individual enrollment, or the configured certificate-management
+        /// enrollment group when a CSR private key is supplied. The caller owns the private key.
+        /// </summary>
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+            ConnectionClientOptions? options = null,
+            CancellationToken cancellationToken = default,
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+        {
+            string registrationId = Guid.NewGuid().ToString();
+            byte[] symmetricKey;
+            IndividualEnrollment? individualEnrollment = null;
+            if (issuedCertificatePrivateKey != null)
+            {
+                string? groupKey = Environment.GetEnvironmentVariable("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY");
+                if (string.IsNullOrWhiteSpace(groupKey))
+                {
+                    Assert.Skip("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
+                }
+
+                using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
+                symmetricKey = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(registrationId));
+            }
+            else
+            {
+                using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
+                symmetricKey = RandomNumberGenerator.GetBytes(32);
+                string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
+                Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
+                individualEnrollment = new(registrationId, attestation);
+                await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            }
+
+            SymmetricKeyAuthenticationProvider authentication = issuedCertificatePrivateKey == null
+                ? new(registrationId, DpsIdScope, symmetricKey)
+                : new(registrationId, DpsIdScope, symmetricKey, issuedCertificatePrivateKey);
+
+            ConnectionClient connectionClient = new(options);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = issuedCertificatePrivateKey == null
+                    ? null
+                    : new(issuedCertificatePrivateKey, CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, issuedCertificatePrivateKey)),
+            };
+
+            try
+            {
+                ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
+                    cancellationToken);
+
+                return new UnifiedDeviceTestContext()
+                {
+                    ConnectionClient = connectionClient,
+                    ConnectionContext = connectionContext,
+                    AuthenticationProvider = authentication,
+                    IndividualEnrollment = individualEnrollment,
+                };
+            }
+            catch
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
+                throw;
+            }
         }
 
         public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)

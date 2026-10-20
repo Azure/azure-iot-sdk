@@ -191,24 +191,23 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     f->malformed++;
     return;
   }
-  if (msg->user_properties_count != (size_t)K_PROPS_COUNT)
+  size_t cursor = 0;
+  az_iot_mqtt_user_property_view prop;
+  for (size_t i = 0; i < (size_t)K_PROPS_COUNT; ++i)
+  {
+    if (az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &prop) != AZ_IOT_OK
+        || prop.key_len != strlen(k_props[2 * i]) || prop.value_len != strlen(k_props[2 * i + 1])
+        || memcmp(prop.key, k_props[2 * i], prop.key_len) != 0
+        || memcmp(prop.value, k_props[2 * i + 1], prop.value_len) != 0)
+    {
+      f->malformed++;
+      return;
+    }
+  }
+  if (az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &prop)
+      != AZ_IOT_ERR_NOT_FOUND)
   {
     f->malformed++;
-    return;
-  }
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
-  {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (up->key == NULL || up->value == NULL)
-    {
-      f->malformed++;
-      return;
-    }
-    if (strcmp(up->key, k_props[2 * i]) != 0 || strcmp(up->value, k_props[2 * i + 1]) != 0)
-    {
-      f->malformed++;
-      return;
-    }
   }
 }
 
@@ -278,24 +277,29 @@ static void* consumer_main(void* arg)
 /* Deliver one PUBLISH exactly as Paho does: a heap message the callback takes
  * ownership of, and a topic passed with an explicit length.
  *
- * `properties.count` is set because extract_v5_props() returns immediately on
- * an empty property set -- leaving it zero would skip the very code whose
- * publication order is under test. The mock answers the property queries from
- * its scripted table, so the value only has to be non-zero. */
+ * The properties are the mock's scripted table. The adapter keeps the message
+ * and reads them in place, so it is on the heap: the mock's
+ * MQTTAsync_freeMessage() frees it once the event is delivered or dropped. */
 static void deliver_one_message(void)
 {
   static const char topic[] = "race/topic";
   static const uint8_t payload[] = { 'r', 'a', 'c', 'e' };
+  static const MQTTAsync_message initializer = MQTTAsync_message_initializer;
 
-  MQTTAsync_message msg = MQTTAsync_message_initializer;
-  msg.payload = (void*)(uintptr_t)payload;
-  msg.payloadlen = (int)sizeof(payload);
-  msg.qos = 0;
-  msg.retained = 0;
-  msg.properties.count = K_PROPS_COUNT;
+  MQTTAsync_message* msg = (MQTTAsync_message*)malloc(sizeof(*msg));
+  if (msg == NULL)
+  {
+    return;
+  }
+  *msg = initializer;
+  msg->payload = (void*)(uintptr_t)payload;
+  msg->payloadlen = (int)sizeof(payload);
+  msg->qos = 0;
+  msg->retained = 0;
+  msg->properties = mock_paho_inbound_properties();
 
   MQTTAsync_messageArrived* arrived = mock_paho_message_arrived();
-  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t)topic, (int)strlen(topic), &msg);
+  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t)topic, (int)strlen(topic), msg);
 }
 
 #if defined(_WIN32)
@@ -428,12 +432,155 @@ static void events_left_queued_at_destroy_are_freed(void** state)
   fixture_teardown(&f);
 }
 
+/* Collects the User Properties of the message delivered. */
+typedef struct props_seen
+{
+  size_t count;
+  size_t payload_len;
+  char payload[8];
+  az_iot_result end;
+  char keys[32][8];
+} props_seen;
+
+static void on_event_count_props(const az_iot_mqtt_event* evt, void* ctx)
+{
+  props_seen* s = (props_seen*)ctx;
+  if (evt->kind != AZ_IOT_MQTT_EVT_MESSAGE)
+  {
+    return;
+  }
+  s->payload_len = evt->message->payload_len;
+  if (s->payload_len > 0 && s->payload_len < sizeof(s->payload))
+  {
+    memcpy(s->payload, evt->message->payload, s->payload_len);
+  }
+  size_t cursor = 0;
+  az_iot_mqtt_user_property_view prop;
+  while ((s->end = az_iot_mqtt_user_properties_next(&evt->message->user_properties, &cursor, &prop))
+         == AZ_IOT_OK)
+  {
+    if (s->count < 32 && prop.key_len < sizeof(s->keys[0]))
+    {
+      memcpy(s->keys[s->count], prop.key, prop.key_len);
+      s->keys[s->count][prop.key_len] = '\0';
+    }
+    s->count++;
+  }
+}
+
+/* Every inbound User Property reaches the application, read in place from the
+ * message the adapter kept: 24, more than any former fixed array held. */
+static void inbound_user_properties_are_not_capped(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+
+  static const char* const many[] = {
+    "k00", "v", "k01", "v", "k02", "v", "k03", "v", "k04", "v", "k05", "v", "k06", "v", "k07", "v",
+    "k08", "v", "k09", "v", "k10", "v", "k11", "v", "k12", "v", "k13", "v", "k14", "v", "k15", "v",
+    "k16", "v", "k17", "v", "k18", "v", "k19", "v", "k20", "v", "k21", "v", "k22", "v", "k23", "",
+  };
+  mock_paho_set_inbound_user_properties(many, 24);
+  props_seen seen = { 0 };
+  f.client->iface->set_inbound_cb(f.client, on_event_count_props, &seen);
+
+  deliver_one_message();
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+
+  assert_int_equal(seen.count, 24);
+  /* The payload is read in place from the kept message. */
+  assert_int_equal(seen.payload_len, 4);
+  assert_memory_equal(seen.payload, "race", 4);
+  assert_int_equal(seen.end, AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(seen.keys[0], "k00");
+  assert_string_equal(seen.keys[23], "k23");
+
+  fixture_teardown(&f);
+  mock_paho_set_inbound_user_properties(k_props, K_PROPS_COUNT);
+}
+
+/* A property set claiming entries it does not have is reported, not read as empty. */
+static void malformed_inbound_properties_are_reported(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+  props_seen seen = { 0 };
+  f.client->iface->set_inbound_cb(f.client, on_event_count_props, &seen);
+
+  static const MQTTAsync_message initializer = MQTTAsync_message_initializer;
+  MQTTAsync_message* msg = (MQTTAsync_message*)malloc(sizeof(*msg));
+  assert_non_null(msg);
+  *msg = initializer;
+  msg->properties = mock_paho_inbound_properties(); /* the mock reports user properties */
+  msg->properties.array = NULL;
+  MQTTAsync_messageArrived* arrived = mock_paho_message_arrived();
+  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t) "race/topic", 10, msg);
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+
+  assert_int_equal(seen.count, 0);
+  assert_int_equal(seen.end, AZ_IOT_ERR_PROTOCOL);
+
+  /* More entries than the array holds: refused too, not read past. */
+  memset(&seen, 0, sizeof(seen));
+  msg = (MQTTAsync_message*)malloc(sizeof(*msg));
+  assert_non_null(msg);
+  *msg = initializer;
+  msg->properties = mock_paho_inbound_properties();
+  msg->properties.count = msg->properties.max_count + 1;
+  (void)arrived(mock_paho_callback_context(), (char*)(uintptr_t) "race/topic", 10, msg);
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+  assert_int_equal(seen.count, 0);
+  assert_int_equal(seen.end, AZ_IOT_ERR_PROTOCOL);
+  fixture_teardown(&f);
+}
+
+/* A failed MQTTProperties_add() fails the publish and sends nothing, whichever property it was. */
+static void a_failed_property_add_fails_the_publish(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+
+  static const az_iot_mqtt_user_property props[] = { { "a", "1" }, { "b", "2" } };
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "t";
+  msg.content_type = "text/plain";
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, 2);
+
+  /* 0: Content Type; 1, 2: the User Properties. */
+  for (int fail_at = 0; fail_at < 3; ++fail_at)
+  {
+    mock_paho_set_properties_add_fail_at(fail_at);
+    int const sent = mock_paho_send_calls();
+    assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_ERR_OUT_OF_MEMORY);
+    assert_int_equal(mock_paho_send_calls(), sent);
+  }
+  mock_paho_set_properties_add_fail_at(-1);
+  int const sent = mock_paho_send_calls();
+  assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_OK);
+  assert_int_equal(mock_paho_send_calls(), sent + 1);
+
+  /* Over the 2-byte MQTT length: refused, not truncated. Never read. */
+  static const uint8_t corr[1] = { 0 };
+  msg.correlation_data = corr;
+  msg.correlation_data_len = 65536;
+  assert_int_equal(f.client->iface->publish(f.client, &msg, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(mock_paho_send_calls(), sent + 1);
+
+  fixture_teardown(&f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(inbound_messages_do_not_race_with_process_loop),
     cmocka_unit_test(mixed_producers_do_not_race_with_process_loop),
     cmocka_unit_test(events_left_queued_at_destroy_are_freed),
+    cmocka_unit_test(inbound_user_properties_are_not_capped),
+    cmocka_unit_test(malformed_inbound_properties_are_reported),
+    cmocka_unit_test(a_failed_property_add_fails_the_publish),
   };
   return cmocka_run_group_tests_name("paho_event_queue_race_tests", tests, NULL, NULL);
 }

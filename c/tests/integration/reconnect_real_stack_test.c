@@ -115,7 +115,7 @@ static int pump_until_count(
       return 1;
     }
     (void)az_iot_connection_client_do_work(c, 50);
-    /* do_work returns immediately while RECONNECTING (no active client to pump),
+    /* do_work returns immediately while RETRY_PENDING (no active client to pump),
      * so sleep to let wall-clock cross the reconnect delay. */
     sleep_ms(20);
   }
@@ -163,10 +163,10 @@ static void reconnect_after_real_drop(void** state)
   /* MQTTv3 v3.1.1 over TLS to the proxy, with reconnect armed on a short
    * delay. */
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "127.0.0.1";
+  opts.iothub_hostname = "127.0.0.1";
   opts.port = proxy_port;
   opts.certificate_provider = &g_provider.base;
-  opts.client_id = "az-iot-recon-it";
+  opts.device_id = "az-iot-recon-it";
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
@@ -178,8 +178,7 @@ static void reconnect_after_real_drop(void** state)
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
   assert_non_null(factory);
-  /* The client adopts the factory and frees it from deinit(); do not free it
-   * here. */
+  /* Borrowed by the client: destroyed below, after deinit(). */
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
   /* First connection must come up (<= 5 s). */
@@ -187,15 +186,16 @@ static void reconnect_after_real_drop(void** state)
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_CONNECTED, 1, 100));
 
   /* Induce a real network drop; the adapter reports DISCONNECTED and the core
-   * must move to RECONNECTING then reconnect on its own. */
+   * must move to RETRY_PENDING then reconnect on its own. */
   az_iot_test_proxy_drop_now(proxy);
-  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RECONNECTING, 1, 100));
+  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RETRY_PENDING, 1, 100));
 
   /* A SECOND CONNECTED proves the automatic reconnect succeeded (<= 10 s). */
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_CONNECTED, 2, 200));
 
   (void)az_iot_connection_client_close(client);
   az_iot_connection_client_deinit(client);
+  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -242,16 +242,17 @@ static az_iot_connection_client* start_client_with_c2d(
     const char* client_id,
     uint32_t subscription_ack_timeout_seconds,
     az_iot_mqttv3_c2d_client* c2d,
-    state_log* log)
+    state_log* log,
+    az_iot_mqtt_factory** factory_out)
 {
   az_iot_connection_client* client = (az_iot_connection_client*)calloc(1, sizeof(*client));
   assert_non_null(client);
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "127.0.0.1";
+  opts.iothub_hostname = "127.0.0.1";
   opts.port = proxy_port;
   opts.certificate_provider = &g_provider.base;
-  opts.client_id = client_id;
+  opts.device_id = client_id;
   opts.subscription_ack_timeout_seconds = subscription_ack_timeout_seconds;
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
@@ -262,6 +263,7 @@ static az_iot_connection_client* start_client_with_c2d(
 
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
   assert_non_null(factory);
+  *factory_out = factory;
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
   assert_int_equal(az_iot_mqttv3_c2d_client_init(c2d, client), AZ_IOT_OK);
@@ -293,8 +295,9 @@ static void refused_subscription_faults_the_real_stack(void** state)
   state_log log = { 0 };
   az_iot_mqttv3_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
+  az_iot_mqtt_factory* factory = NULL;
   az_iot_connection_client* client
-      = start_client_with_c2d(proxy_port, "az-iot-subrefuse-it", 0, &c2d, &log);
+      = start_client_with_c2d(proxy_port, "az-iot-subrefuse-it", 0, &c2d, &log, &factory);
 
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_FAULTED, 1, 200));
   /* The session must never have claimed to be up... */
@@ -302,10 +305,11 @@ static void refused_subscription_faults_the_real_stack(void** state)
   /* ...and must have failed WITHOUT retrying. Without this the test would pass
    * just as well if the refusal were classified retryable, since exhausting the
    * policy's five attempts also ends in FAULTED. */
-  assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RECONNECTING), 0);
+  assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_RETRY_PENDING), 0);
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(client);
+  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -326,16 +330,18 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   state_log log = { 0 };
   az_iot_mqttv3_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
+  az_iot_mqtt_factory* factory = NULL;
   az_iot_connection_client* client
-      = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log);
+      = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log, &factory);
 
-  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RECONNECTING, 1, 200));
+  assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RETRY_PENDING, 1, 200));
   /* Silence is not a grant: CONNECTED must never have been announced. */
   assert_int_equal(count_state(&log, AZ_IOT_CONN_STATE_CONNECTED), 0);
 
   (void)az_iot_connection_client_close(client);
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(client);
+  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }

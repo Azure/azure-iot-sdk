@@ -2,8 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Models;
 using System.Text;
 using Xunit;
 
@@ -20,7 +21,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using CustomTopicsClient customTopicsClient = new(connection);
 
@@ -62,7 +63,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
                 OnSubscribe = subscribe =>
                 {
                     List<MqttSubscribeAckItem> items = new();
@@ -139,7 +140,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using CustomTopicsClient customTopicsClient = new(connection);
 
@@ -188,7 +189,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using CustomTopicsClient customTopicsClient = new(connection);
 
@@ -244,7 +245,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             TaskCompletionSource<MqttSubscribeAck> pendingSuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
                 OnSubscribe = _ => pendingSuback.Task,
             };
             using CustomTopicsClient customTopicsClient = new(connection);
@@ -264,6 +265,71 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(customTopicsClient.GetSubscribedTopics);
         }
 
+        [Fact]
+        public async Task OperationsThrowAfterDisconnect()
+        {
+            using MockConnectionMqttClient mqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                TestContext.Current.CancellationToken);
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.PublishAsync(new MqttPublish() { Topic = "topic" }, TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.UnsubscribeAsync("topic", TestContext.Current.CancellationToken));
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+        }
+
+        [Fact]
+        public async Task OperationsThrowWhenNeverConnected()
+        {
+            MockFeatureConnectionClient connection = new();
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.PublishAsync(new MqttPublish() { Topic = "topic" }, TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await customTopicsClient.UnsubscribeAsync("topic", TestContext.Current.CancellationToken));
+            Assert.Empty(connection.PublishedMessages);
+            Assert.Empty(connection.SubscribedMessages);
+            Assert.Empty(connection.UnsubscribedMessages);
+        }
+
+        // A subscription operation queued behind another must not be sent if the connection client is explicitly
+        // disconnected while it waits, since it would otherwise wait indefinitely for a reconnect that never comes.
+        [Fact]
+        public async Task QueuedSubscriptionOperationThrowsIfDisconnectedWhileWaiting()
+        {
+            TaskCompletionSource<MqttSubscribeAck> pendingSuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnSubscribe = _ => pendingSuback.Task,
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            Task<MqttClientSubscribeReasonCode> subscribeTask = customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            Task<MqttClientSubscribeReasonCode> queuedSubscribeTask = customTopicsClient.SubscribeAsync("other", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            Task<MqttClientUnsubscribeReasonCode> queuedUnsubscribeTask = customTopicsClient.UnsubscribeAsync("topic", TestContext.Current.CancellationToken);
+
+            connection.IsConnectionTargetSet = false;
+            pendingSuback.SetResult(MqttObjectHelpers.CreateSuccessfulSuback(Assert.Single(connection.SubscribedMessages)));
+
+            Assert.Equal(MqttClientSubscribeReasonCode.GrantedQoS1, await subscribeTask);
+            await Assert.ThrowsAsync<NotSupportedException>(async () => await queuedSubscribeTask);
+            await Assert.ThrowsAsync<NotSupportedException>(async () => await queuedUnsubscribeTask);
+            Assert.Single(connection.SubscribedMessages);
+            Assert.Empty(connection.UnsubscribedMessages);
+        }
+
         // The service may deliver a publish on a newly granted topic before this client processes the SUBACK. That publish
         // must still be delivered to the user and acknowledged rather than dropped.
         [Fact]
@@ -273,7 +339,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MockFeatureConnectionClient connection = null!;
             connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
                 OnSubscribe = async subscribe =>
                 {
                     earlyArgs = await connection.SimulateReceiveAsync(new MqttPublish()
@@ -310,7 +376,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             bool failSubscribe = false;
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
                 OnSubscribe = subscribe => failSubscribe
                     ? throw new InvalidOperationException("simulated failure")
                     : Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe)),
@@ -333,6 +399,88 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(new[] { "existing" }, customTopicsClient.GetSubscribedTopics);
         }
 
+        // Topics may hold the device ID placeholder, which the connection client replaces when it sends the operation (so the
+        // acks report the replaced topics). This client must keep tracking the topics as the user gave them, roll back the
+        // right ones, and match received publishes using whatever this device's ID currently is.
+        [Fact]
+        public async Task DeviceIdPlaceholderTopicsAreTrackedAsGivenAndMatchedWithCurrentDeviceId()
+        {
+            const string grantedTopic = "granted/" + IConnectionClient.DeviceIdPlaceholder;
+            const string rejectedTopic = "rejected/" + IConnectionClient.DeviceIdPlaceholder;
+
+            MockFeatureConnectionClient connection = null!;
+            connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnSubscribe = subscribe => Task.FromResult(new MqttSubscribeAck()
+                {
+                    Items = subscribe.TopicFilters.Select(filter => new MqttSubscribeAckItem()
+                    {
+                        ReasonCode = filter.Topic == rejectedTopic
+                            ? MqttClientSubscribeReasonCode.NotAuthorized
+                            : MqttClientSubscribeReasonCode.GrantedQoS1,
+                        TopicFilter = new(ResolveDeviceId(filter.Topic, connection), filter.QualityOfServiceLevel),
+                    }).ToList(),
+                }),
+                OnUnsubscribe = unsubscribe => Task.FromResult(new MqttUnsubscribeAck()
+                {
+                    Items = unsubscribe.TopicFilters.Select(filter => new MqttUnsubscribeAckItem()
+                    {
+                        ReasonCode = MqttClientUnsubscribeReasonCode.Success,
+                        TopicFilter = ResolveDeviceId(filter, connection),
+                    }).ToList(),
+                }),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            List<MqttPublish> receivedPublishes = new();
+            customTopicsClient.CustomTopicPublishReceivedAsync += args =>
+            {
+                receivedPublishes.Add(args.Publish);
+                return Task.CompletedTask;
+            };
+
+            MqttSubscribe subscribe = new()
+            {
+                TopicFilters = new()
+                {
+                    new MqttTopicFilter(grantedTopic, MqttQualityOfServiceLevel.AtLeastOnce),
+                    new MqttTopicFilter(rejectedTopic, MqttQualityOfServiceLevel.AtLeastOnce),
+                },
+            };
+            await customTopicsClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken);
+
+            // The placeholder is left for the connection client to fill in, and only the rejected topic is rolled back
+            Assert.Equal(new[] { grantedTopic, rejectedTopic }, Assert.Single(connection.SubscribedMessages).TopicFilters.Select(f => f.Topic));
+            Assert.Equal(new[] { grantedTopic }, customTopicsClient.GetSubscribedTopics);
+
+            MockMqttPublishReceivedEventArgs otherDeviceArgs = await connection.SimulateReceiveAsync(new MqttPublish() { Topic = "granted/otherDeviceId" });
+            Assert.Empty(receivedPublishes);
+            Assert.Equal(0, otherDeviceArgs.AcknowledgeCount);
+
+            MockMqttPublishReceivedEventArgs thisDeviceArgs = await connection.SimulateReceiveAsync(new MqttPublish() { Topic = $"granted/{DeviceId}" });
+            Assert.Single(receivedPublishes);
+            Assert.Equal(1, thisDeviceArgs.AcknowledgeCount);
+
+            // Re-provisioning assigned this device a different ID
+            connection.CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, "newDeviceId");
+
+            await connection.SimulateReceiveAsync(new MqttPublish() { Topic = $"granted/{DeviceId}" });
+            Assert.Single(receivedPublishes);
+
+            await connection.SimulateReceiveAsync(new MqttPublish() { Topic = "granted/newDeviceId" });
+            Assert.Equal(2, receivedPublishes.Count);
+
+            await customTopicsClient.UnsubscribeAsync(grantedTopic, TestContext.Current.CancellationToken);
+            Assert.Equal(grantedTopic, Assert.Single(Assert.Single(connection.UnsubscribedMessages).TopicFilters));
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+        }
+
+        private static string ResolveDeviceId(string topic, MockFeatureConnectionClient connection)
+        {
+            return topic.Replace(IConnectionClient.DeviceIdPlaceholder, connection.CurrentConnectionContext!.DeviceId, StringComparison.Ordinal);
+        }
+
         // When multiple handlers are attached to CustomTopicPublishReceivedAsync, all of them must run and complete before
         // the publish is acknowledged.
         [Fact]
@@ -340,7 +488,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using CustomTopicsClient customTopicsClient = new(connection);
 
@@ -386,7 +534,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             CustomTopicsClient customTopicsClient = new(connection);
 
@@ -433,7 +581,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             TaskCompletionSource<MqttSubscribeAck> pendingSuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
                 OnSubscribe = _ => pendingSuback.Task,
             };
             CustomTopicsClient customTopicsClient = new(connection);
