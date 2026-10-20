@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
@@ -38,7 +39,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// client may be provisioned to either a Gen 1 IoT Hub or a Gen 2 IoT Hub, the user-supplied HTTP client may not always be used.
         /// </para>
         /// <para>
-        /// When providing a custom HTTP client, you must configure it to present the same client certificates that the provided <see cref="IConnectionClient"/> uses. However, this client will set the base address of the http client
+        /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate.
+        /// When it authenticates with a SAS token, this client adds the token to each request's Authorization header. In either case, this client will set the base address of the http client
         /// to target the IoT Hub endpoint correctly.
         /// </para>
         /// </remarks>
@@ -49,25 +51,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             _isUserSuppliedHttpClient = true;
         }
 
-        private void InitializeIfUninitialized()
+        private void InitializeIfUninitialized(ConnectionContext currentConnectionContext, AuthenticationCredentials credentials)
         {
             if (_isInitialized)
             {
                 return;
             }
 
-            var currentConnectionContext = _connection.GetCurrentConnectionContext();
-
-            if (currentConnectionContext == null)
-            {
-                throw new NotSupportedException("Must connect device prior to using this method");
-            }
-
             if (_httpClient == null)
             {
                 // If no user-supplied HTTP client, create one for them
                 var handler = new HttpClientHandler();
-                handler.ClientCertificates.Add(currentConnectionContext.AuthenticationProvider.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
+                if (credentials.ClientCertificate != null)
+                {
+                    handler.ClientCertificates.Add(credentials.ClientCertificate); // TODO what about when this gets rotated by cert management APIs?
+                }
+
                 _httpClient = new(handler)
                 {
                     BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
@@ -83,6 +82,32 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             _isInitialized = true;
         }
 
+        private async Task<HttpClient> PrepareRequestAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext)
+        {
+            // Fetched per request so SAS tokens are renewed before they expire.
+            AuthenticationCredentials credentials = await currentConnectionContext.AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(
+                currentConnectionContext.IotHubHostName,
+                currentConnectionContext.DeviceId,
+                currentConnectionContext.IssuedClientCertificates).ConfigureAwait(false);
+
+            InitializeIfUninitialized(currentConnectionContext, credentials);
+
+            // Providers that authenticate with a SAS token return it as the password; otherwise the client certificate authenticates the request.
+            if (credentials.Password.Length > 0)
+            {
+                requestMessage.Headers.TryAddWithoutValidation("Authorization", Encoding.UTF8.GetString(credentials.Password));
+            }
+
+            Debug.Assert(_httpClient != null);
+            return _httpClient;
+        }
+
+        private ConnectionContext GetRequiredConnectionContext()
+        {
+            return _connection.GetCurrentConnectionContext()
+                ?? throw new NotSupportedException("Must connect device prior to using this method");
+        }
+
         /// <summary>
         /// Request a SAS URI that can be used to upload a file to a configured Azure Storage account.
         /// </summary>
@@ -92,14 +117,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         public async Task<FileUploadSasUriResponse> GetFileUploadSasUriAsync(FileUploadSasUriRequest request, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
-            InitializeIfUninitialized();
 
-            var currentConnectionContext = _connection.GetCurrentConnectionContext();
-
-            if (currentConnectionContext == null)
-            {
-                throw new NotSupportedException("Must connect device prior to using this method");
-            }
+            ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
             string requestUri = $"devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
@@ -109,7 +128,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var httpResponse = await _httpClient!.SendAsync(requestMessage, cancellationToken);
+            HttpClient httpClient = await PrepareRequestAsync(requestMessage, currentConnectionContext);
+            var httpResponse = await httpClient.SendAsync(requestMessage, cancellationToken);
 
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
@@ -131,14 +151,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         public async Task CompleteFileUploadSasUriAsync(FileUploadCompletionNotification completion, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
-            InitializeIfUninitialized();
 
-            var currentConnectionContext = _connection.GetCurrentConnectionContext();
-
-            if (currentConnectionContext == null)
-            {
-                throw new NotSupportedException("Must connect device prior to using this method");
-            }
+            ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
 
             string requestUri = $"devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
 
@@ -148,8 +162,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             };
             requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            Debug.Assert(_httpClient != null);
-            var httpResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+            HttpClient httpClient = await PrepareRequestAsync(requestMessage, currentConnectionContext);
+            var httpResponse = await httpClient.SendAsync(requestMessage, cancellationToken);
             if (httpResponse.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 throw BuildServiceException(

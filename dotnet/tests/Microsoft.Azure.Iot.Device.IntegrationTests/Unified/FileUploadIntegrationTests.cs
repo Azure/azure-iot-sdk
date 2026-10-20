@@ -8,6 +8,7 @@ using Xunit;
 using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
@@ -27,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 if (withProvidedHttpClient)
                 {
                     var handler = new HttpClientHandler();
-                    handler.ClientCertificates.Add(testDeviceContext.AuthenticationProvider.ClientCertificate);
+                    handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).ClientCertificate);
                     HttpClient userProvidedHttpClient = new(handler);
                     fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
                 }
@@ -41,17 +42,48 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
             }
 
+            await UploadFileAndCompleteAsync(fileUploadClient, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+            fileUploadClient.Dispose();
+        }
+
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task TestFileUpload_SymmetricKey(bool withProvidedHttpClient)
+        {
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            // Neither HTTP client is configured with a client certificate, so IoT Hub can only authenticate these requests with the SAS token
+            Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
+            Assert.Null(testDeviceContext.ConnectionContext.IssuedClientCertificates);
+            FileUploadClient fileUploadClient = withProvidedHttpClient
+                ? new FileUploadClient(testDeviceContext.ConnectionClient, new HttpClient())
+                : new FileUploadClient(testDeviceContext.ConnectionClient);
+
+            await UploadFileAndCompleteAsync(fileUploadClient, TestContext.Current.CancellationToken);
+
+            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+            fileUploadClient.Dispose();
+        }
+
+        /// <summary>
+        /// Gets a SAS URI from IoT Hub, uploads a small blob with it, and notifies IoT Hub that the upload completed.
+        /// </summary>
+        internal static async Task UploadFileAndCompleteAsync(FileUploadClient fileUploadClient, CancellationToken cancellationToken)
+        {
             FileUploadSasUriRequest sasUriRequest = new()
             {
                 BlobName = "TestFile.txt",
             };
 
-            var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, TestContext.Current.CancellationToken);
+            var sasUri = await fileUploadClient.GetFileUploadSasUriAsync(sasUriRequest, cancellationToken);
 
             // Use the Azure Storage SDK to upload a dummy file using the credentials provided by IoT Hub
             var blobClient = new BlockBlobClient(sasUri.GetBlobUri());
             MemoryStream dummyFileStream = new MemoryStream(Encoding.UTF8.GetBytes("Hello world"));
-            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), TestContext.Current.CancellationToken);
+            await blobClient.UploadAsync(dummyFileStream, new BlobUploadOptions(), cancellationToken);
 
             FileUploadCompletionNotification completionNotification = new()
             {
@@ -61,10 +93,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 StatusDescription = "OK",
             };
 
-            await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, TestContext.Current.CancellationToken);
-
-            await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
-            fileUploadClient.Dispose();
+            await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, cancellationToken);
         }
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]

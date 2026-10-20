@@ -6,6 +6,7 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Provisioning;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -62,6 +63,36 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             AuthenticationCredentials dpsCredentials = authentication.GetBootAuthenticationCredentials();
             Assert.Null(dpsCredentials.ClientCertificate);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task FileUploadUsesIssuedCertificateInsteadOfSymmetricKey()
+        {
+            using RSA privateKey = RSA.Create(2048);
+            UnifiedDeviceTestContext device = await CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                cancellationToken: TestContext.Current.CancellationToken,
+                issuedCertificatePrivateKey: privateKey);
+
+            ConnectionContext connectionContext = device.ConnectionContext;
+            Assert.NotNull(connectionContext.IssuedClientCertificates);
+            Assert.NotEmpty(connectionContext.IssuedClientCertificates);
+
+            // The provider can mint SAS tokens, but once a certificate is issued the file upload client must authenticate with it instead
+            AuthenticationCredentials hubCredentials = await device.AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(
+                connectionContext.IotHubHostName,
+                connectionContext.DeviceId,
+                connectionContext.IssuedClientCertificates);
+            using X509Certificate2 issuedCertificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(connectionContext.IssuedClientCertificates[0]));
+            Assert.NotNull(hubCredentials.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
+            Assert.Empty(hubCredentials.Password);
+
+            FileUploadClient fileUploadClient = new(device.ConnectionClient);
+
+            await FileUploadIntegrationTests.UploadFileAndCompleteAsync(fileUploadClient, TestContext.Current.CancellationToken);
+
+            await device.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+            fileUploadClient.Dispose();
         }
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
