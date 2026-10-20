@@ -10,7 +10,7 @@
  *        through the whole client.
  *
  * Everything under the test is shipping code: az_iot_su_client (engine), the
- * DPS device-update channel, the Paho adapter, X.509 auth and the OpenSSL
+ * DPS device-update channel, the MQTT adapter (Paho or az_mqtt), X.509 auth and the OpenSSL
  * crypto backend. Files are downloaded for real (libcurl) and hashed by the
  * engine. Install and apply only record that they ran, with failures injected
  * per scenario.
@@ -53,7 +53,14 @@
 
 #include <curl/curl.h>
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
@@ -678,7 +685,11 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   fx->have_conn = true;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   fx->factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
@@ -738,7 +749,11 @@ static void fixture_close(fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->have_conn = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(fx->factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory);
+#endif
   fx->factory = NULL;
   if (fx->have_certs)
   {
