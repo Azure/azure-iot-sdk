@@ -53,6 +53,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv3_file_upload_client file_upload_client;
 } sample_state;
 
@@ -60,6 +62,8 @@ static void sample_state_destroy(sample_state* s)
 {
   az_iot_mqttv3_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_deinit(&s->connection_client);
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -426,7 +430,9 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal). */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -437,15 +443,15 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -472,11 +478,6 @@ int main(void)
   if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
-  }
-  else if (state.config.mock_endpoint != NULL)
-  {
-    /* The mock bypass is MQTT v5 only. */
-    printf("File upload is not available on this hub generation.\n");
   }
   else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
   {

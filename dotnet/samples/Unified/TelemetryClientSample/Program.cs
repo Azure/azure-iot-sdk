@@ -1,7 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -30,6 +30,11 @@ internal class Program
         using ConnectionClient connectionClient = new ConnectionClient();
 
         TelemetryClient telemetryClient = new TelemetryClient(connectionClient);
+
+        telemetryClient.CloudToDeviceTelemetryReceivedAsync += async (args) =>
+        {
+            Console.WriteLine($"Received a cloud to device message with message id {args.MessageId}");
+        };
 
         ProvisioningSettings provisioningSettings = new(idScope);
         var connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);

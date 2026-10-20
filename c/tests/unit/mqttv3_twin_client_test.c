@@ -103,10 +103,6 @@ typedef struct fixture
   az_iot_mqttv3_twin_client twin;
   az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
-  /* Set once the factory has been handed to the connection, which adopts it.
-   * Read in teardown rather than the connection's own counter, because a test
-   * may already have destroyed the connection. */
-  bool factory_registered;
 } fixture;
 
 static int setup(void** state)
@@ -115,9 +111,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -136,12 +132,7 @@ static int teardown(void** state)
   {
     az_iot_mqttv3_twin_client_deinit(&fx->twin);
     az_iot_connection_client_deinit(&fx->conn);
-    /* A registered factory is adopted by the connection and freed from its
-     * deinit(); an unregistered one is still ours. */
-    if (!fx->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -151,7 +142,6 @@ static void open_to_connected(fixture* fx)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
@@ -161,10 +151,8 @@ static void open_to_connected(fixture* fx)
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
 }
 
-/* Start a second session on a client that is already back in IDLE. Deliberately
- * does NOT re-register the factory: registration appends, and deinit() calls
- * every registered entry's destroy hook, so registering the same factory twice
- * frees it twice. */
+/* Start a second session on a client that is already back in IDLE. The factory
+ * registered by open_to_connected() is still in the registry. */
 static void reopen_to_connected(fixture* fx)
 {
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
@@ -182,7 +170,6 @@ static void open_to_connected_keeping_history(fixture* fx)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
@@ -584,9 +571,9 @@ static void deinitializing_the_connection_does_not_complete_pending_requests(voi
 
   /* Rebuild what teardown() expects to tear down. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
 }
@@ -688,8 +675,8 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   /* A direct connection declares its generation up front, so the pin can be
    * answered at init rather than deferred to connect. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);

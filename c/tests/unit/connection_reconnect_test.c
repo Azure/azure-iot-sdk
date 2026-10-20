@@ -32,7 +32,7 @@
 #include "support/connection_test_harness.h"
 
 /* Backoff long enough that a single do_work() cannot cross the deadline in the
- * same call that schedules it (which would hide the RECONNECTING state), yet
+ * same call that schedules it (which would hide the RETRY_PENDING state), yet
  * short enough to keep the suite fast. No jitter: timing must be exact. */
 #define RETRY_DELAY_MS 20u
 
@@ -108,12 +108,8 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_deinit(&fx->client_storage);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -158,9 +154,9 @@ static void adapter_error_event_schedules_a_retry(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(
-      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_MQTT);
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_ERR_MQTT);
 }
 
 static void adapter_error_event_faults_without_a_policy(void** state)
@@ -186,11 +182,11 @@ static void keep_alive_drop_is_retried_like_any_disconnect(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   /* A DISCONNECTED carrying no status is reported as NOT_CONNECTED, not OK:
    * "the link went away" is a failure reason even when the frame was clean. */
   assert_int_equal(
-      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 static void user_close_disconnect_goes_idle_not_reconnecting(void** state)
@@ -204,7 +200,7 @@ static void user_close_disconnect_goes_idle_not_reconnecting(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING));
+  assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -219,7 +215,7 @@ static void retry_waits_for_the_backoff_deadline(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   /* Pumping before the deadline must not produce a new adapter/CONNECT. */
   for (int i = 0; i < 5; ++i)
@@ -227,7 +223,7 @@ static void retry_waits_for_the_backoff_deadline(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   az_iot_mock_mqtt_client* retry = advance_to_retry(fx);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(retry, AZ_IOT_MOCK_CALL_CONNECT), 1);
@@ -280,7 +276,7 @@ static void successful_reconnect_resets_the_attempt_counter(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 }
 
@@ -301,7 +297,7 @@ static void zero_max_attempts_never_gives_up(void** state)
     assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
-    assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+    assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   }
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
 }
@@ -483,7 +479,7 @@ static void lifecycle_is_logged_at_info(void** state)
   assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTING\n"));
   assert_non_null(strstr(cap.text, "connection: hub state=AZ_IOT_CONN_STATE_CONNECTED\n"));
   assert_non_null(strstr(
-      cap.text, "connection: hub state=AZ_IOT_CONN_STATE_RECONNECTING reason=AZ_IOT_ERR_MQTT"));
+      cap.text, "connection: hub state=AZ_IOT_CONN_STATE_RETRY_PENDING reason=AZ_IOT_ERR_MQTT"));
   assert_non_null(strstr(cap.text, "connection: hub retry 1 in "));
 }
 
@@ -786,7 +782,7 @@ static void a_transient_suback_failure_reconnects(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_false(az_iot_connection_client__is_connected(fx->client));
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 }
 
 /* A SUBSCRIBE that could not even be written never reached a broker, so it
@@ -808,7 +804,13 @@ static void a_failed_subscribe_call_reconnects(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_false(az_iot_connection_client__is_connected(fx->client));
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  /* No adapter event names the failure, so the detail is the step. */
+  size_t i = fx->log.count - 1u;
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_LOCAL);
+  assert_int_equal(fx->log.error_codes[i], (int32_t)AZ_IOT_ERR_MQTT);
+  assert_string_equal(fx->log.error_message[i], "re-subscribe() failed on connect");
 }
 
 /* A filter whose failure is scoped to itself still FAILS: its owner is told and
@@ -878,9 +880,9 @@ static void a_gate_that_is_never_acked_times_out(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_false(az_iot_connection_client__is_connected(fx->client));
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(
-      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_TIMEOUT);
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_ERR_TIMEOUT);
 }
 
 /* Packet id of the SUBSCRIBE issued for `topic`, or 0 when there was none. */
@@ -1094,7 +1096,7 @@ static void a_gate_deadline_does_not_fault_a_closing_client(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
-  assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 }
 
 /* The seam-driven test above proves the branch; this one proves the clock is
@@ -1116,9 +1118,9 @@ static void a_gate_deadline_expires_on_the_clock(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_false(az_iot_connection_client__is_connected(fx->client));
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(
-      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RECONNECTING), AZ_IOT_ERR_TIMEOUT);
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_ERR_TIMEOUT);
 }
 
 /* The gate belongs to the session. When that session dies its packet ids die
@@ -1584,16 +1586,15 @@ static void deinit_while_reconnect_is_scheduled(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 
   size_t transitions = fx->log.count;
   az_iot_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
-  /* Neutralize the fixture teardown: already destroyed, factory adopted. */
+  /* Neutralize the fixture teardown's deinit(): already destroyed. */
   memset(&fx->client_storage, 0, sizeof(fx->client_storage));
-  fx->factory = NULL;
 }
 
 /* deinit() is the one teardown that must stay silent: the application is
@@ -1610,9 +1611,8 @@ static void deinit_does_not_complete_pending_pubacks(void** state)
   az_iot_connection_client_deinit(fx->client);
   assert_int_equal(probe.calls, 0);
 
-  /* Neutralize the fixture teardown: already destroyed, factory adopted. */
+  /* Neutralize the fixture teardown's deinit(): already destroyed. */
   memset(&fx->client_storage, 0, sizeof(fx->client_storage));
-  fx->factory = NULL;
 }
 
 int main(void)

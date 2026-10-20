@@ -1,8 +1,8 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -104,7 +104,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
                 return;
             }
 
-            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 // The underlying MQTTv5 DirectMethodClient handles this flow
                 return;

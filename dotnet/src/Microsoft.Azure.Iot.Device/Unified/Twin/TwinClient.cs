@@ -228,7 +228,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (connectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
+            if (connectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
                 // The other handler covers this scenario
                 return;
@@ -347,7 +347,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private ConnectionContext EnsureCorrectConnectionContext()
         {
             var currentConnectionContext = _connection.GetCurrentConnectionContext();
-            if (currentConnectionContext == null)
+            if (currentConnectionContext == null || !_connection.IsConnectionTargetSet)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }

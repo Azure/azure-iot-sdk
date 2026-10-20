@@ -85,7 +85,11 @@ extern "C"
      * this mode: a CONNECT proxy dials whatever host the client asks for. It
      * still only ever receives connections a test aimed at its loopback port,
      * so it intercepts nothing; but it is no longer limited to one preset
-     * upstream. */
+     * upstream.
+     *
+     * A target whose dial fails is answered "502 Bad Gateway". Hosts in the
+     * RFC 6761 ".invalid" TLD get 502 without a DNS lookup, so a refusal case
+     * does not depend on the machine's resolver timing. */
     bool http_connect;
 
     /* Require HTTP Basic proxy authentication, and refuse with 407 when the
@@ -272,8 +276,9 @@ extern "C"
 #define AZ_IOT_TEST_PROXY_PKT_DISCONNECT 14
 #define AZ_IOT_TEST_PROXY_PKT_AUTH 15
 
-/* Injected packets are hand-built acknowledgements, not payloads. */
-#define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 64
+/* Injected packets are hand-built: acknowledgements, and PUBLISHes carrying
+ * many User Properties. */
+#define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 512
 #define AZ_IOT_TEST_PROXY_RULES_MAX 8
 
   typedef enum az_iot_test_proxy_action

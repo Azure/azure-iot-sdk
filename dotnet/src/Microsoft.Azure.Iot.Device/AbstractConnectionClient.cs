@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
@@ -19,17 +18,26 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device
 {
-
+    /// <summary>
+    /// A base class for all <see cref="ConnectionClient"/> classes to extend.
+    /// </summary>
+    /// <remarks>
+    /// Broadly, this class is responsible for connection management, managing when to try connecting to IoT Hub vs falling back to provisioning the device. It is also
+    /// responsible for locally queueing all feature client traffic while the device re-establishes its presence with IoT Hub.
+    /// 
+    /// Specific connection clients that inherit from this should only implement the specific connection needs for that client (for example, choosing CONNECT packet details, subscribing
+    /// to topics that are relevant for each Hub type, etc).
+    /// </remarks>
     public abstract class AbstractConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
-
-        public Func<IReadOnlyList<string>, Task<X509AuthenticationProvider>>? HandleCertificateSigningCompleteAsync;
 
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
@@ -53,7 +61,7 @@ namespace Microsoft.Azure.Iot.Device
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
         // The abstract methods cover all the differences between an MQTTv5 client and a unified client.
-        public abstract MqttConnect MqttConnectOverride(MqttConnect connect);
+        internal abstract MqttConnect IotHubMqttConnectOverride(MqttConnect connect);
 
         // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
@@ -109,13 +117,29 @@ namespace Microsoft.Azure.Iot.Device
             private set => _currentEndpoint = value;
         }
 
+        /// <summary>
+        /// Whether this client has selected a connection endpoint, or is automatically re-provisioning to select one.
+        /// </summary>
+        /// <remarks>
+        /// A failed re-provisioning attempt resets <see cref="CurrentEndpoint"/> to <see cref="ConnectionEndpoint.None"/>
+        /// while the retry loop waits out its backoff, but recovery is still active then, so operations must wait for it
+        /// rather than fail. The re-provisioning cancellation source is checked (rather than _isReprovisioning) because
+        /// an explicit disconnect clears it immediately, whereas _isReprovisioning stays set until cleanup finishes.
+        /// </remarks>
+        public bool IsConnectionTargetSet =>
+            CurrentEndpoint != ConnectionEndpoint.None
+            || Volatile.Read(ref _currentReprovisioningCancellation) != null;
+
         // The registration request to send on every connection to Device Provisioning Service. Only set while provisioning.
         private RegistrationRequestPayload? _provisioningRequestPayload;
+
+        // The authentication to present on every connection to Device Provisioning Service. Only set while provisioning.
+        private AuthenticationProvider? _provisioningAuthentication;
 
         // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
         // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
         private ProvisioningSettings? _lastProvisioningSettings;
-        private X509AuthenticationProvider? _lastProvisioningAuthentication;
+        private AuthenticationProvider? _lastProvisioningAuthentication;
 
         // Set while a re-provisioning attempt started by an identity fault is in flight. Only one such attempt may run
         // at a time because each one takes over this client's single connection.
@@ -244,14 +268,9 @@ namespace Microsoft.Azure.Iot.Device
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device connected to.</returns>
-        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            if (provisioningSettings.CertificateSigningRequest != null && HandleCertificateSigningCompleteAsync == null)
-            {
-                throw new InvalidOperationException("Must set \"HandleCertificateSigningCompleteAsync\" callback before doing any certificate signing operations");
-            }
 
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
@@ -289,9 +308,19 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            // The device ID is resolved on every attempt rather than once up front, because this operation may wait out a
+            // re-provisioning that assigns this device a different ID. The caller's publish is left untouched so that
+            // its topic template is still available to later attempts. The ID is only read once the attempt has been
+            // admitted for IoT hub, because switching away from IoT hub (and so re-provisioning) waits for admitted
+            // operations to finish; reading it any earlier could pair this device's old ID with a newer connection.
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+                return await ManagedMqttConnection.BuildAndPublishAsync(
+                    ConnectionEndpoint.IotHub,
+                    () => ContainsDeviceIdPlaceholder(publish.Topic)
+                        ? publish.WithTopic(ResolveDeviceIdPlaceholder(publish.Topic, GetDeviceIdForTopics()))
+                        : publish,
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -299,9 +328,26 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
+            // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.SubscribeAsync(subscribe, cancellationToken);
+                return await ManagedMqttConnection.BuildAndSubscribeAsync(
+                    ConnectionEndpoint.IotHub,
+                    () =>
+                    {
+                        if (!subscribe.TopicFilters.Any(topicFilter => ContainsDeviceIdPlaceholder(topicFilter.Topic)))
+                        {
+                            return subscribe;
+                        }
+
+                        string deviceId = GetDeviceIdForTopics();
+                        return subscribe.WithTopicFilters(subscribe.TopicFilters
+                            .Select(topicFilter => ContainsDeviceIdPlaceholder(topicFilter.Topic)
+                                ? new MqttTopicFilter(ResolveDeviceIdPlaceholder(topicFilter.Topic, deviceId), topicFilter.QualityOfServiceLevel)
+                                : topicFilter)
+                            .ToList());
+                    },
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
@@ -309,17 +355,61 @@ namespace Microsoft.Azure.Iot.Device
 
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
+            // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
             {
-                return await ManagedMqttConnection.UnsubscribeAsync(unsubscribe, cancellationToken);
+                return await ManagedMqttConnection.BuildAndUnsubscribeAsync(
+                    ConnectionEndpoint.IotHub,
+                    () =>
+                    {
+                        if (!unsubscribe.TopicFilters.Any(ContainsDeviceIdPlaceholder))
+                        {
+                            return unsubscribe;
+                        }
+
+                        string deviceId = GetDeviceIdForTopics();
+                        return unsubscribe.WithTopicFilters(unsubscribe.TopicFilters
+                            .Select(topicFilter => ResolveDeviceIdPlaceholder(topicFilter, deviceId))
+                            .ToList());
+                    },
+                    cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
 
+        private static bool ContainsDeviceIdPlaceholder(string topic)
+        {
+            return topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal);
+        }
+
+        private static string ResolveDeviceIdPlaceholder(string topic, string deviceId)
+        {
+            return topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The device ID to substitute into a feature client's topic for the attempt that is about to be sent.
+        /// </summary>
+        /// <exception cref="MqttClientNotConnectedException">
+        /// This client holds no IoT hub assignment, so it cannot be present on a hub. Reported as not-connected so that
+        /// the operation waits for the device to become present (or fails fast if nothing is going to make it present),
+        /// exactly as it would if it had found the connection gone.
+        /// </exception>
+        internal virtual string GetDeviceIdForTopics()
+        {
+            return CurrentConnectionContext?.DeviceId
+                ?? throw new MqttClientNotConnectedException("This device has no IoT hub assignment, so it has no device ID to send this operation with.");
+        }
+
         /// <summary>
         /// Disconnect this device from IoT hub.
         /// </summary>
+        /// <remarks>
+        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
+        /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
+        /// the cached credentials expire.
+        /// </remarks>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
@@ -330,7 +420,6 @@ namespace Microsoft.Azure.Iot.Device
             CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
-            CurrentConnectionContext = null;
 
             Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
             CurrentEndpoint = ConnectionEndpoint.None;
@@ -382,7 +471,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="authentication">The x509 authentication to use when connecting to both Device Provisioning Service and IoT hub.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device was assigned and connected to.</returns>
-        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken)
+        private async Task<ConnectionContext> ProvisionThenConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, CancellationToken cancellationToken)
         {
             var provisioningResult = await ProvisionAsync(provisioningSettings, authentication, cancellationToken);
 
@@ -417,7 +506,7 @@ namespace Microsoft.Azure.Iot.Device
 
             // An absent connection profile resolves to the documented default ("classic"); an unknown profile string
             // never reaches here because the registration response deserializer rejects values outside this enum.
-            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile ?? ConnectionProfile.Classic;
+            ConnectionProfile connectionProfile = provisioningResult.ConnectionProfile?.ToConnectionProfile() ?? ConnectionProfile.Classic;
 
             // Even a registration that reports "assigned" must actually carry the information this device needs to
             // connect: a hub hostname, a device id, and a connection profile this SDK can speak. Mirror the C
@@ -453,22 +542,8 @@ namespace Microsoft.Azure.Iot.Device
                 IotHubHostName = provisioningResult.AssignedHub!,
                 IssuedClientCertificates = provisioningResult.IssuedClientCertificateChain,
                 AuthenticationProvider = authentication,
-                ConnectionProfile = connectionProfile,
+                ConnectionProfile = connectionProfile.ToIotHubConnectionType(),
             };
-
-            // If CSR was a part of the provisioning request, then connect to IoT hub using the operational certificates (the ones signed by DPS) rather than the boot certificates (the ones used to authenticate with DPS).
-            if (provisioningResult.IssuedClientCertificateChain != null && provisioningResult.IssuedClientCertificateChain.Count > 0)
-            {
-                // Service should only return signed certificates if the provisioning request included a certificate signing request, and this HandleCertificateSigningCompleteAsync callback
-                // is null checked earlier if one was provided
-                Debug.Assert(HandleCertificateSigningCompleteAsync != null);
-                CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(provisioningResult.IssuedClientCertificateChain);
-            }
-            else
-            {
-                // Otherwise use the same certs when connecting to IoT hub that were used to connect to DPS
-                CurrentConnectionContext.AuthenticationProvider = authentication;
-            }
 
             await ConnectToHubAsync(CurrentConnectionContext, cancellationToken);
 
@@ -502,8 +577,9 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.CanReprovision = CanReprovision;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
-            // targets an IoT hub.
-            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.IotHub;
+            // targets an IoT hub. This also waits for any provisioning operation still in flight to finish, so that
+            // none of them can be sent over the hub connection established below.
+            await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.IotHub, cancellationToken);
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
@@ -537,9 +613,6 @@ namespace Microsoft.Azure.Iot.Device
                     HostName = hostname,
                     TcpPort = 8883,
                     WebsocketPort = 443,
-                    ClientCertificate = CurrentConnectionContext.AuthenticationProvider.ClientCertificate,
-                    RemoteCertificateValidationCallback = CurrentConnectionContext.AuthenticationProvider.RemoteCertificateValidationCallback,
-                    LocalCertificateSelectionCallback = CurrentConnectionContext.AuthenticationProvider.LocalCertificateSelectionCallback,
                     ClientId = deviceId,
 
                     // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
@@ -570,17 +643,47 @@ namespace Microsoft.Azure.Iot.Device
         /// <summary>
         /// Patch the CONNECT packet that is about to be sent, including on every reconnect attempt.
         /// </summary>
-        private Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit)
+        private async Task<MqttConnect> PatchConnectPacketAsync(MqttConnect connectPacketToEdit, CancellationToken cancellationToken)
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
-                // The CONNECT sent to DPS is fully formed before the first connect attempt and nothing about it changes
-                // between attempts or between the generation of Hub that the inheriting class uses, so there is nothing to inject here.
-                return Task.FromResult(connectPacketToEdit);
+                // The connection layer replays the same CONNECT on every retry, so fetch the boot credentials again for
+                // each attempt. Otherwise a SAS token signed for the first attempt would be presented until it expired
+                // and then on every attempt after that.
+                AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
+                if (provisioningAuthentication != null)
+                {
+                    connectPacketToEdit = ApplyAuthentication(provisioningAuthentication.GetBootAuthenticationCredentials(), connectPacketToEdit);
+                }
+
+                return connectPacketToEdit;
             }
 
+            // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
+            // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
+            // connect with the operational certificate DPS issued rather than its boot credentials.
+            ConnectionContext connectionContext = CurrentConnectionContext!;
+            AuthenticationProvider authentication = connectionContext.AuthenticationProvider;
+            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
+
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+                connectPacketToEdit.HostName,
+                connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
+                issuedClientCertificates).ConfigureAwait(false);
+            connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
+
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
-            return Task.FromResult(MqttConnectOverride(connectPacketToEdit));
+            return IotHubMqttConnectOverride(connectPacketToEdit);
+        }
+
+        // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
+        private static MqttConnect ApplyAuthentication(AuthenticationCredentials credentials, MqttConnect mqttConnect)
+        {
+            mqttConnect.Password = credentials.Password;
+            mqttConnect.ClientCertificate = credentials.ClientCertificate;
+            mqttConnect.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
+            mqttConnect.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback;
+            return mqttConnect;
         }
 
         /// <summary>
@@ -695,7 +798,7 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             ProvisioningSettings? provisioningSettings = _lastProvisioningSettings;
-            X509AuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
+            AuthenticationProvider? provisioningAuthentication = _lastProvisioningAuthentication;
 
             if (provisioningSettings == null || provisioningAuthentication == null)
             {
@@ -771,7 +874,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="cancellationToken">Cancels the whole retry loop when this client is disconnected or disposed.</param>
         private async Task ReprovisionWithRetryAsync(
             ProvisioningSettings provisioningSettings,
-            X509AuthenticationProvider provisioningAuthentication,
+            AuthenticationProvider provisioningAuthentication,
             CancellationToken cancellationToken)
         {
             uint attempt = 0;
@@ -951,10 +1054,10 @@ namespace Microsoft.Azure.Iot.Device
         /// <see cref="HandleConnectedToDpsAsync"/>, which is the provisioning counterpart of the device presence flow.
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields.</param>
-        /// <param name="authentication">The x509 authentication to use when connecting to Device Provisioning Service.</param>
+        /// <param name="authentication">The authentication to use when connecting to Device Provisioning Service.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The terminal registration result reported by Device Provisioning Service.</returns>
-        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, X509AuthenticationProvider authentication, CancellationToken cancellationToken = default)
+        internal async Task<DeviceRegistrationResult> ProvisionAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -982,11 +1085,14 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.CanReprovision = false;
 
             // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
-            // targets Device Provisioning Service.
-            ManagedMqttConnection.ConnectionEndpoint = ConnectionEndpoint.DeviceProvisioningService;
+            // targets Device Provisioning Service. This also waits for any feature operation meant for IoT hub that is
+            // still in flight to finish, so that none of them can be sent over the DPS connection established below.
+            await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, cancellationToken);
 
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
+
+            _provisioningAuthentication = authentication;
 
             MqttConnect connect = CreateProvisioningConnectPacket(
                 authentication,
@@ -1027,6 +1133,7 @@ namespace Microsoft.Azure.Iot.Device
                 // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
                 CancelCurrentProvisioningFlow();
                 _provisioningRequestPayload = null;
+                _provisioningAuthentication = null;
                 Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
                 CurrentEndpoint = ConnectionEndpoint.None;
 
@@ -1123,7 +1230,7 @@ namespace Microsoft.Azure.Iot.Device
         private async Task SubscribeToRegistrationResponseMessagesAsync(CancellationToken cancellationToken)
         {
             Trace.TraceInformation("Subscribing to DPS response topic {0}", ProvisioningSubscribeFilter);
-            MqttSubscribeAck subscribeResults = await ManagedMqttConnection.SubscribeAsync(new(ProvisioningSubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
+            MqttSubscribeAck subscribeResults = await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.DeviceProvisioningService, new(ProvisioningSubscribeFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken);
 
             if (subscribeResults.Items.FirstOrDefault()!.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
             {
@@ -1153,7 +1260,7 @@ namespace Microsoft.Azure.Iot.Device
             Trace.TraceInformation("Publishing to DPS on topic {0}", registrationTopic);
 
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(publish, cancellationToken);
+            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.DeviceProvisioningService, publish, cancellationToken);
 
             Trace.TraceInformation("Successfully published registration request to DPS with request Id {0}", _provisioningRequestId);
 
@@ -1203,7 +1310,7 @@ namespace Microsoft.Azure.Iot.Device
                 Trace.TraceInformation("Publishing to DPS on topic {0}", topic);
 
                 // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(message, cancellationToken);
+                MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.DeviceProvisioningService, message, cancellationToken);
 
                 RegistrationOperationStatus currentStatus;
                 try
@@ -1235,7 +1342,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private MqttConnect CreateProvisioningConnectPacket(X509AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
+        private MqttConnect CreateProvisioningConnectPacket(AuthenticationProvider authentication, string idScope, string globalDeviceEndpoint)
         {
             string hostName = globalDeviceEndpoint;
 
@@ -1247,25 +1354,22 @@ namespace Microsoft.Azure.Iot.Device
                 ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
-
-
-            return new MqttConnect()
+            var mqttConnect =  new MqttConnect()
             {
                 HostName = hostName,
                 TcpPort = 8883,
                 WebsocketPort = 443,
                 WebsocketUri = $"wss://{hostName}:443",
-                ClientCertificate = authentication.ClientCertificate,
-                RemoteCertificateValidationCallback = authentication.RemoteCertificateValidationCallback,
-                LocalCertificateSelectionCallback = authentication.LocalCertificateSelectionCallback,
                 CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
                 CleanStart = true,
                 SessionExpiryInterval = 0,
                 Username = username,
-                Password = Array.Empty<byte>(),
                 ClientId = authentication.GetRegistrationId(),
                 ProtocolVersion = MqttProtocolVersion.V311
             };
+
+            // The client certificate or SAS token is applied by PatchConnectPacketAsync, freshly for each connect attempt
+            return mqttConnect;
         }
 
         private Task HandleReceivedProvisioningPublishAsync(MqttPublishReceivedEventArgs receivedEventArgs)
@@ -1441,26 +1545,50 @@ namespace Microsoft.Azure.Iot.Device
                 }
             }
 
+            // Counts the connection events that release the latch, so that an event which fires after an attempt started
+            // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
+            int connectionEventCount = 0;
+
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
+                Interlocked.Increment(ref connectionEventCount);
                 ReleaseLatch();
                 return Task.CompletedTask;
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            Action HandleUnrecoverableFault = ReleaseLatch; // Stop waiting for a connection that is never coming back
+            Action HandleUnrecoverableFault = () =>
+            {
+                // Stop waiting for a connection that is never coming back
+                Interlocked.Increment(ref connectionEventCount);
+                ReleaseLatch();
+            };
             UnrecoverablyFaulted += HandleUnrecoverableFault;
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
                 {
+                    int connectionEventCountBeforeAttempt = Volatile.Read(ref connectionEventCount);
+
                     try
                     {
+                        // The connection layer only sends this over a connection to IoT hub. While it targets Device
+                        // Provisioning Service instead (for example, while re-provisioning) it throws
+                        // MqttClientNotConnectedException, so this operation waits for the device to be present on its
+                        // hub again rather than being sent over a DPS connection.
                         return await funcToRetry.Invoke(cancellationToken);
                     }
                     catch (MqttClientNotConnectedException)
                     {
                         latch.Reset(); // No-op if the HandleDisconnection already reset this latch. Only here because there is a chance that this method was called while MQTT client was disconnected
+
+                        if (Volatile.Read(ref connectionEventCount) != connectionEventCountBeforeAttempt)
+                        {
+                            // The device became present again (or this client faulted) after this attempt started, so
+                            // that release must not be waited for again. Re-evaluate straight away.
+                            ThrowIfUnrecoverablyFaulted();
+                            continue;
+                        }
 
                         // A fault that this client will not recover from must not be waited out, whether it happened
                         // before this operation started or while this operation was waiting.

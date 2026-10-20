@@ -12,7 +12,7 @@ identical, so the difference between the two `main.c` files is exactly the featu
 - Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
 - The whole feature is one option: `copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;`. The port follows the transport (443) as long as `copts.port` stays 0.
 - Applies to the DPS connect as well as the hub connect.
-- The resource path defaults to `/$iothub/websocket`, which IoT Hub and DPS serve.
+- The resource path defaults to `/$iothub/websocket` for DPS and an mqttv3 hub, and `/mqtt` for an mqttv5 hub.
 - Combine with [`proxy`](../proxy/README.md) for a network that needs a proxy **and** only passes 443.
 - Platforms: Linux and Windows.
 
@@ -32,10 +32,10 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Device certificate chain (PEM file, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
+| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_MQTT_WEBSOCKET_PATH` | no | WebSocket resource path. Set only for a gateway that serves WebSockets elsewhere. Default `/$iothub/websocket`. |
+| `AZ_IOT_MQTT_WEBSOCKET_PATH` | no | WebSocket resource path. Set only for a gateway that serves WebSockets elsewhere. Default `/$iothub/websocket` (DPS, mqttv3 hub) and `/mqtt` (mqttv5 hub); a set value applies to every session. |
 
 ```sh
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'

@@ -12,6 +12,7 @@ A device that must serve either hub generation should follow
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
 - Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
+- Message properties, all in one array: system properties use the `AZ_IOT_MSG_PROP_*` names (`$.ct` is sent as the MQTT v5 Content Type, `$.cid` as Correlation Data, the others as user properties); any other name is an application property, sent as a user property. No limit on their number. An mqttv5 hub sends no cloud-to-device messages, so there are no inbound properties to read; for mqttv3, see [`unified/c2d_receiver`](../../unified/c2d_receiver/README.md).
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -29,7 +30,7 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Device certificate chain (PEM file, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
+| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 

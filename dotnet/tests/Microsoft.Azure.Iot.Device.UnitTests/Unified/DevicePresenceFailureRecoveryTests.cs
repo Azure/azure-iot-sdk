@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
@@ -29,6 +30,38 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
     {
         private const string ClassicTwinResponseTopicFilter = "$iothub/twin/res/#";
 
+        [Fact]
+        public async Task AnnounceDevicePresenceAcceptsDeviceBoundMessagesQos1Grant()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient
+            });
+
+            int disconnectCount = 0;
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck()
+            {
+                IsSessionPresent = false,
+                ResultCode = MqttConnectReasonCode.Success
+            });
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, disconnectCount);
+            var presenceSubscribe = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe;
+            Assert.NotNull(presenceSubscribe);
+            Assert.Contains(presenceSubscribe.TopicFilters, topicFilter =>
+                topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#"
+                && topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce);
+        }
+
         private static ConnectionContext GetMockConnectionContext()
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
@@ -37,21 +70,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.Classic,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
 
-        // The presence flow subscribes to the twin response (0), desired-property patch (1) and direct-method request (2)
-        // topics in a single SUBSCRIBE. A failed grant on any one of them, or on all of them, must trigger recovery.
+        // The presence flow subscribes to the device-bound messages topic (0), twin response (1), desired-property
+        // patch (2) and direct-method request (3) topics in a single SUBSCRIBE. A failed grant on any classic topic,
+        // or on all topics, must trigger recovery.
         [Theory]
         [InlineData(0)]
         [InlineData(1)]
         [InlineData(2)]
+        [InlineData(3)]
         [InlineData(-1)] // -1 fails every topic in the presence subscribe
         public async Task AnnounceDevicePresenceRecoversWhenClassicPresenceSubscribeGrantIsUnsuccessful(int failingTopicIndex)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -63,33 +98,40 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // Sessions never resume, so every connect's presence flow re-sends the classic topic SUBSCRIBE that the
             // failure case targets.
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnect = connect =>
             {
                 Interlocked.Increment(ref connectCount);
-                return new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
             };
 
-            mockMqttClient.OnDisconnectAttempt += async (disconnect) =>
+            mockMqttClient.OnDisconnect = disconnect =>
             {
                 Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
             };
 
-            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+            mockMqttClient.OnSubscribe = async (subscribe) =>
             {
                 // Only the presence flow subscribes in this test, so every subscribe here is the classic topic SUBSCRIBE.
                 if (Interlocked.Increment(ref presenceSubscribeCount) == 1)
                 {
-                    // Grant a QoS other than the requested QoS 0 on the targeted topic(s). GrantedQoS1 is not one of the
-                    // reason codes the connection manager rejects on its own, so the presence flow's own
-                    // "any grant that is not QoS 0" check is what detects the failure and disconnects.
+                    // Grant a QoS other than the requested QoS on the targeted topic(s). These reason codes are not
+                    // rejected by the connection manager on their own, so the presence flow's topic-specific check
+                    // is what detects the failure and disconnects.
                     List<MqttSubscribeAckItem> items = new();
                     int topicIndex = 0;
                     foreach (var topicFilter in subscribe.TopicFilters)
                     {
                         bool failThisTopic = failingTopicIndex < 0 || topicIndex == failingTopicIndex;
+                        MqttClientSubscribeReasonCode successfulGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS1
+                            : MqttClientSubscribeReasonCode.GrantedQoS0;
+                        MqttClientSubscribeReasonCode failedGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS0
+                            : MqttClientSubscribeReasonCode.GrantedQoS1;
                         items.Add(new MqttSubscribeAckItem()
                         {
-                            ReasonCode = failThisTopic ? MqttClientSubscribeReasonCode.GrantedQoS1 : MqttClientSubscribeReasonCode.GrantedQoS0,
+                            ReasonCode = failThisTopic ? failedGrant : successfulGrant,
                             TopicFilter = new(topicFilter.Topic, topicFilter.QualityOfServiceLevel),
                         });
                         topicIndex++;
@@ -117,6 +159,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             // SUBSCRIBE must be the last traffic on the wire once the presence flow has completed.
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
             Assert.NotNull(lastTraffic.Subscribe);
+            Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#");
             Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == ClassicTwinResponseTopicFilter);
         }
     }

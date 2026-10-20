@@ -9,7 +9,7 @@ properties. C2D is an **mqttv3** IoT Hub feature; there is no mqttv5 counterpart
 ## Sample features
 
 - Hub generation: mqttv3 (MQTT 3.1.1) only. Registers only the MQTT 3.1.1 adapter.
-- The client subscribes to `devices/<id>/messages/devicebound/#`. Message properties travel in the topic; the client percent-decodes them before the handler runs.
+- The client subscribes to `devices/<id>/messages/devicebound/#`. Message properties travel percent-encoded in the topic. The handler reads them with `az_iot_c2d_properties_next()` and the typed accessors (`az_iot_c2d_message_get_message_id()` and others for `$.mid`, `$.cid`, `$.exp`, `$.ct`, `$.ce` and `$.uid`), which decode into buffers the application provides.
 - The client pins mqttv3 at `init()`, before `open()`. If DPS assigns an mqttv5 hub, on the first connect or after a move, the connection stops with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; the sample reports that and exits 1. A move to another mqttv3 hub needs nothing from the application.
 - Platforms: Linux and Windows.
 
@@ -34,7 +34,7 @@ The sample reads these environment variables:
 | `AZ_IOT_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | yes | Registration ID; must equal the device certificate's common name. |
 | `AZ_IOT_CLIENT_CERT` | yes | Device certificate chain (PEM file, leaf first). |
-| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). |
+| `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
 

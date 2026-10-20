@@ -157,6 +157,31 @@ static void decimal_matches_snprintf_at_the_extremes(void** state)
   }
 }
 
+static void u64_matches_snprintf_and_fails_whole(void** state)
+{
+  (void)state;
+  static const uint64_t k_values[] = { 0u, 9u, 10u, 4294967296u, UINT64_MAX };
+  for (size_t i = 0; i < sizeof(k_values) / sizeof(k_values[0]); ++i)
+  {
+    char expected[24];
+    char actual[24];
+    (void)snprintf(expected, sizeof(expected), "%llu", (unsigned long long)k_values[i]);
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(actual));
+    az_iot_span_writer_append_u64(&writer, k_values[i]);
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+    assert_string_equal(actual, expected);
+  }
+  /* 20 digits do not fit 19 bytes: nothing is written. */
+  char small[19];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(small));
+  az_iot_span_writer_append_u64(&writer, UINT64_MAX);
+  assert_int_equal(az_iot_span_writer_length(&writer), 0);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(small, "");
+}
+
 static void hex_pads_clamps_and_widens(void** state)
 {
   (void)state;
@@ -380,6 +405,26 @@ static az_iot_result decode_into(const char* in, char* out, size_t capacity)
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
+static void url_decoded_length_measures_and_optionally_rejects_nul(void** state)
+{
+  (void)state;
+  size_t n = 99;
+  assert_int_equal(az_iot_url_decoded_length("a%2Fb", 5, false, &n), AZ_IOT_OK);
+  assert_int_equal(n, 3);
+  assert_int_equal(az_iot_url_decoded_length("a%00b", 5, false, &n), AZ_IOT_OK);
+  assert_int_equal(n, 3);
+  /* A NUL would cut a C string, so readers that produce one reject it. */
+  n = 99;
+  assert_int_equal(az_iot_url_decoded_length("a%00b", 5, true, &n), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(n, 99);
+  assert_int_equal(az_iot_url_decoded_length("a%2", 3, false, &n), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(az_iot_url_decoded_length("%zz", 3, false, &n), AZ_IOT_ERR_PROTOCOL);
+
+  uint8_t out[3];
+  az_iot_url_decode_into("a%2Fb", 5, out);
+  assert_memory_equal(out, "a/b", 3);
+}
+
 static void url_decoding_reverses_the_encoder(void** state)
 {
   (void)state;
@@ -533,6 +578,74 @@ static void build_str_reports_its_failures(void** state)
   assert_int_equal(length, 0);
 }
 
+/* ---- base64 ---------------------------------------------------------------- */
+
+static void base64_matches_rfc4648_vectors(void** state)
+{
+  (void)state;
+  static const struct
+  {
+    const char* in;
+    const char* out;
+  } cases[] = {
+    { "f", "Zg==" },        { "fo", "Zm8=" },        { "foo", "Zm9v" },
+    { "foob", "Zm9vYg==" }, { "fooba", "Zm9vYmE=" }, { "foobar", "Zm9vYmFy" },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    char buffer[16];
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+    az_iot_span_writer_append_base64(&writer, (const uint8_t*)cases[i].in, strlen(cases[i].in));
+    assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+    assert_string_equal(buffer, cases[i].out);
+  }
+  /* The standard alphabet's last two characters. */
+  const uint8_t high[] = { 0xFB, 0xFF, 0xFF };
+  char buffer[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, high, sizeof(high));
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+  assert_string_equal(buffer, "+///");
+}
+
+static void base64_is_all_or_nothing_on_overflow(void** state)
+{
+  (void)state;
+  /* "foo" + "foobar" needs 4 + 8 bytes and a terminator; 11 cannot take the second. */
+  char buffer[11];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foo", 3);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foobar", 6);
+  assert_int_equal(az_iot_span_writer_length(&writer), 4);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_string_equal(buffer, "");
+
+  char exact[13];
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(exact));
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foo", 3);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"foobar", 6);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_OK);
+  assert_string_equal(exact, "Zm9vZm9vYmFy");
+}
+
+static void base64_rejects_null_and_skips_empty(void** state)
+{
+  (void)state;
+  char buffer[8];
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(buffer));
+  az_iot_span_writer_append_base64(&writer, NULL, 0);
+  az_iot_span_writer_append_base64(&writer, (const uint8_t*)"x", 0);
+  assert_int_equal(az_iot_span_writer_length(&writer), 0);
+  az_iot_span_writer_append_base64(&writer, NULL, 1);
+  assert_int_equal(az_iot_span_writer_end_str(&writer, NULL), AZ_IOT_ERR_INVALID_ARG);
+  /* A NULL writer is ignored. */
+  az_iot_span_writer_append_base64(NULL, (const uint8_t*)"x", 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -554,6 +667,7 @@ int main(void)
     cmocka_unit_test(url_encoding_follows_rfc3986_unreserved),
     cmocka_unit_test(url_encoding_is_all_or_nothing_on_overflow),
     cmocka_unit_test(url_encoding_rejects_null),
+    cmocka_unit_test(url_decoded_length_measures_and_optionally_rejects_nul),
     cmocka_unit_test(url_decoding_reverses_the_encoder),
     cmocka_unit_test(url_decoding_accepts_either_hex_case),
     cmocka_unit_test(url_decoding_rejects_a_malformed_escape),
@@ -565,6 +679,10 @@ int main(void)
     cmocka_unit_test(length_tracks_what_has_been_written),
     cmocka_unit_test(build_str_concatenates_parts),
     cmocka_unit_test(build_str_reports_its_failures),
+    cmocka_unit_test(u64_matches_snprintf_and_fails_whole),
+    cmocka_unit_test(base64_matches_rfc4648_vectors),
+    cmocka_unit_test(base64_is_all_or_nothing_on_overflow),
+    cmocka_unit_test(base64_rejects_null_and_skips_empty),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -101,22 +101,15 @@ static int alloc_pending(az_iot_mqttv5_twin_client* t)
 /** @brief True when the `type` user property is exactly "<want>:1". */
 static bool type_is(const az_iot_mqtt_message* msg, const char* want)
 {
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, TWIN_TYPE_KEY, &type) != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, TWIN_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(want);
-    return strncmp(up->value, want, n) == 0 && up->value[n] == ':'
-        && strcmp(up->value + n + 1, TWIN_SCHEMA_VERSION) == 0;
+    return false;
   }
-  return false;
+  size_t const n = strlen(want);
+  size_t const v = strlen(TWIN_SCHEMA_VERSION);
+  return type.value_len == n + 1 + v && memcmp(type.value, want, n) == 0 && type.value[n] == ':'
+      && memcmp(type.value + n + 1, TWIN_SCHEMA_VERSION, v) == 0;
 }
 
 /** @brief True when @p topic is exactly `ih/{id}/dev/twin` (dispatch matches by prefix). */
@@ -147,11 +140,16 @@ static int find_pending_by_correlation_id(
   return -1;
 }
 
-/** @brief True when a backend-initiated message belongs to the current connection. */
+/**
+ * @brief True when a backend-initiated message belongs to the current connection.
+ *
+ * Accepted from the birth on: the service sends the twin-push before the birth-ack. Both come
+ * from the same session open, so the birth-ack baseline matches what the push delivered.
+ */
 static bool matches_connection(const az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message* msg)
 {
   uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
-  return az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
+  return az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
       && correlation_is(msg, birth_nonce);
 }
 
@@ -222,8 +220,7 @@ static az_iot_result publish_twin(
   out.payload_len = body_len;
   out.qos = AZ_IOT_MQTT_QOS_0; /* answered by a response message, not a PUBACK */
   out.content_type = TWIN_CONTENT_TYPE;
-  out.user_properties = &type_prop;
-  out.user_properties_count = 1;
+  out.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   out.correlation_data = correlation_id;
   out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
 
@@ -736,9 +733,9 @@ static void adopt_session(az_iot_mqttv5_twin_client* t)
 /**
  * @brief Hub CONNECTED: requests can now be published, so catch up.
  *
- * `twin_push.push_desired` only replaces the birth-ack fetch. A replaced twin
- * not yet settled by a pushed snapshot, or a gap a patch or probe showed before
- * CONNECTED, is still fetched.
+ * With `twin_push.push_desired` the service pushes the snapshot, so the birth-ack
+ * fetch is skipped; a replaced twin not yet settled by a pushed snapshot, or a
+ * gap a patch or probe showed before CONNECTED, is still fetched.
  */
 static void on_hub_connected(az_iot_mqttv5_twin_client* t)
 {

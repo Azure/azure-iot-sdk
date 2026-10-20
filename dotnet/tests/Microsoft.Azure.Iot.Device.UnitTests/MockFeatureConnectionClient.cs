@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -96,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Build a connection context for the given hub generation.</summary>
         public static ConnectionContext CreateConnectionContext(
-            ConnectionProfile connectionProfile,
+            IotHubConnectionType connectionProfile,
             string deviceId = "someDeviceId",
             string iotHubHostName = "someHostName")
         {
