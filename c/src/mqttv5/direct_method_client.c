@@ -24,6 +24,7 @@
  * held in a ready slot until the matching exec arrives.
  */
 #include <stdbool.h>
+#include <limits.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -354,8 +355,7 @@ static az_iot_result publish_typed(
   out.payload_len = payload_len;
   out.qos = AZ_IOT_MQTT_QOS_1;
   out.retain = false;
-  out.user_properties = &type_prop;
-  out.user_properties_count = 1;
+  out.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   out.correlation_data = request_id;
   out.correlation_data_len = AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN;
   out.content_type = DM_CONTENT_TYPE;
@@ -495,25 +495,20 @@ static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
 /* inbound dispatch                                                          */
 /* ------------------------------------------------------------------------- */
 
-/* Value of the `type` user property, or NULL when the message carries none. */
-static const char* message_type(const az_iot_mqtt_message* msg)
+/* The `type` user property; false when the message carries none. */
+static bool message_type(const az_iot_mqtt_message* msg, az_iot_mqtt_user_property_view* out)
 {
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
-  {
-    if (msg->user_properties[i].key && strcmp(msg->user_properties[i].key, "type") == 0)
-    {
-      return msg->user_properties[i].value;
-    }
-  }
-  return NULL;
+  return az_iot_mqtt_user_properties_find(&msg->user_properties, "type", out) == AZ_IOT_OK;
 }
 
 /* True when `type_value` is exactly "{step}:1". */
-static bool dm_msg_type_is(const char* type_value, const char* step)
+static bool dm_msg_type_is(const az_iot_mqtt_user_property_view* type, const char* step)
 {
-  size_t step_len = strlen(step);
-  return strncmp(type_value, step, step_len) == 0 && type_value[step_len] == ':'
-      && strcmp(type_value + step_len + 1, DM_TYPE_VERSION) == 0;
+  size_t const step_len = strlen(step);
+  size_t const version_len = strlen(DM_TYPE_VERSION);
+  return type->value_len == step_len + 1 + version_len && memcmp(type->value, step, step_len) == 0
+      && type->value[step_len] == ':'
+      && memcmp(type->value + step_len + 1, DM_TYPE_VERSION, version_len) == 0;
 }
 
 static void handle_probe(
@@ -789,8 +784,8 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   ready_expire_stale(dm);
   requests_expire_stale(dm);
 
-  const char* type_value = message_type(msg);
-  if (type_value == NULL)
+  az_iot_mqtt_user_property_view type_value;
+  if (!message_type(msg, &type_value))
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
@@ -799,14 +794,15 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
     return;
   }
 
-  bool is_probe = dm_msg_type_is(type_value, "probe");
-  if (!is_probe && !dm_msg_type_is(type_value, "exec"))
+  bool is_probe = dm_msg_type_is(&type_value, "probe");
+  if (!is_probe && !dm_msg_type_is(&type_value, "exec"))
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "ignoring a method message of type '%s', which this client does not "
+        "ignoring a method message of type '%.*s', which this client does not "
         "implement",
-        type_value);
+        type_value.value_len > INT_MAX ? INT_MAX : (int)type_value.value_len,
+        type_value.value);
     return;
   }
 
@@ -816,7 +812,7 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "dropping a '%s' message whose correlation data is not a %u-byte "
         "request id",
-        type_value,
+        is_probe ? "probe" : "exec",
         (unsigned)AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN);
     return;
   }

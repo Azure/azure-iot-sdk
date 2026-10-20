@@ -112,7 +112,9 @@ int main(void)
   }
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &config);
+  copts.dps.id_scope = config.id_scope;
+  copts.dps.registration_id = config.reg_id;
+  copts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));

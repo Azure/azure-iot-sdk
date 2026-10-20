@@ -168,6 +168,33 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   copts.proxy.username = dev->proxy_username;
   copts.proxy.password = dev->proxy_password;
   copts.twin_push.push_desired = opts != NULL && opts->twin_push_desired;
+  if (opts != NULL)
+  {
+    if (opts->saved_hub != NULL)
+    {
+      copts.iothub_hostname = opts->saved_hub->hostname;
+      copts.device_id = opts->saved_hub->device_id;
+      copts.connection_profile = opts->saved_hub->profile;
+    }
+    if (opts->reconnection_policy != NULL)
+    {
+      copts.reconnection_policy = *opts->reconnection_policy;
+    }
+    if (opts->identity_recovery_mode != NULL)
+    {
+      copts.identity_recovery.mode = *opts->identity_recovery_mode;
+    }
+    if (opts->identity_recovery_policy != NULL)
+    {
+      copts.identity_recovery.policy = *opts->identity_recovery_policy;
+    }
+    if (opts->max_hub_connect_attempts_before_reprovision != 0)
+    {
+      copts.dps.max_hub_connect_attempts_before_reprovision
+          = opts->max_hub_connect_attempts_before_reprovision;
+    }
+  }
+  copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {
@@ -199,11 +226,16 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     return 1;
   }
 
+  const int timeout_s = opts != NULL && opts->connect_timeout_s > 0 ? opts->connect_timeout_s
+                                                                    : E2E_DEVICE_CONNECT_TIMEOUT_S;
   time_t start = time(NULL);
-  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_DEVICE_CONNECT_TIMEOUT_S)
+  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED && (time(NULL) - start) < timeout_s)
   {
     e2e_device_do_work(dev, 50);
+    if (opts != NULL && opts->during_connect != NULL)
+    {
+      opts->during_connect(opts->during_connect_ctx);
+    }
     if (dev->conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
@@ -215,6 +247,32 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     fprintf(stderr, "[e2e] device did not reach CONNECTED (state=%d)\n", (int)dev->conn_state);
     return 1;
   }
+  return 0;
+}
+
+int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out)
+{
+  if (!dev->conn_ok || dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    return 1;
+  }
+  /* @p out may be the saved hub the connection still borrows: read everything first. */
+  const char* host = az_iot_connection_client_get_iothub_address(&dev->conn);
+  const char* device_id = az_iot_connection_client_get_device_id(&dev->conn);
+  az_iot_hub_profile profile;
+  if (host == NULL || device_id == NULL
+      || az_iot_connection_client_get_hub_profile(&dev->conn, &profile) != AZ_IOT_OK
+      || profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_UNKNOWN
+      || strlen(host) >= sizeof(out->hostname) || strlen(device_id) >= sizeof(out->device_id))
+  {
+    return 1;
+  }
+  e2e_device_hub hub;
+  memset(&hub, 0, sizeof(hub));
+  snprintf(hub.hostname, sizeof(hub.hostname), "%s", host);
+  snprintf(hub.device_id, sizeof(hub.device_id), "%s", device_id);
+  hub.profile = profile.connection_profile;
+  *out = hub;
   return 0;
 }
 

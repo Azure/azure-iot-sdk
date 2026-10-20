@@ -72,6 +72,10 @@ nunit-*.xml
 /dotnet/samples/idscope.txt
 /dotnet/samples/certificate.cer
 /dotnet/samples/certificate.pfx
+/dotnet/samples/connectionprofile.txt
+/dotnet/samples/symmetrickeyregistrationid.txt
+/dotnet/samples/symmetrickey.txt
+/dotnet/samples/issuedcertificate.pem
 dotnet/iothub only samples/certificate.pfx
 dotnet/iothub only samples/certificate.cer
 dotnet/iothub only samples/deviceId.txt
@@ -80,6 +84,7 @@ dotnet/iothub only samples/thumbprint.txt
 
 deviceId.txt
 iothubhostname.txt
+hostname.txt
 idscope.txt
 certificate.pfx
 certificate.cer

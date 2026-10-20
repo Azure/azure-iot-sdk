@@ -101,22 +101,15 @@ static int alloc_pending(az_iot_mqttv5_twin_client* t)
 /** @brief True when the `type` user property is exactly "<want>:1". */
 static bool type_is(const az_iot_mqtt_message* msg, const char* want)
 {
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, TWIN_TYPE_KEY, &type) != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, TWIN_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(want);
-    return strncmp(up->value, want, n) == 0 && up->value[n] == ':'
-        && strcmp(up->value + n + 1, TWIN_SCHEMA_VERSION) == 0;
+    return false;
   }
-  return false;
+  size_t const n = strlen(want);
+  size_t const v = strlen(TWIN_SCHEMA_VERSION);
+  return type.value_len == n + 1 + v && memcmp(type.value, want, n) == 0 && type.value[n] == ':'
+      && memcmp(type.value + n + 1, TWIN_SCHEMA_VERSION, v) == 0;
 }
 
 /** @brief True when @p topic is exactly `ih/{id}/dev/twin` (dispatch matches by prefix). */
@@ -227,8 +220,7 @@ static az_iot_result publish_twin(
   out.payload_len = body_len;
   out.qos = AZ_IOT_MQTT_QOS_0; /* answered by a response message, not a PUBACK */
   out.content_type = TWIN_CONTENT_TYPE;
-  out.user_properties = &type_prop;
-  out.user_properties_count = 1;
+  out.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   out.correlation_data = correlation_id;
   out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
 

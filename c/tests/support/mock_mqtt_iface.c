@@ -132,6 +132,17 @@ static void copy_str(char* dst, size_t cap, const char* src)
   dst[n] = '\0';
 }
 
+/* As copy_str, for a string that is not NUL-terminated. */
+static void copy_view(char* dst, size_t cap, const char* src, size_t n)
+{
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, size_t* out_n)
 {
   /* A NULL source records nothing: reporting the caller's length would leave
@@ -301,18 +312,26 @@ static az_iot_result mock_publish(
     c->correlation_data_offered_len = msg->correlation_data ? msg->correlation_data_len : 0;
     copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
     c->message_expiry_seconds = msg->message_expiry_seconds;
-    for (size_t i = 0; i < msg->user_properties_count; ++i)
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view up;
+    while ((c->user_properties_end
+            = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
+           == AZ_IOT_OK)
     {
-      const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-      if (up->key && strcmp(up->key, "type") == 0)
+      c->user_properties_offered++;
+      if (up.key_len == 4 && memcmp(up.key, "type", 4) == 0)
       {
-        copy_str(c->user_type, sizeof(c->user_type), up->value);
+        copy_view(c->user_type, sizeof(c->user_type), up.value, up.value_len);
       }
       if (c->user_properties_count < AZ_IOT_MOCK_MAX_USER_PROPS)
       {
         size_t k = c->user_properties_count++;
-        copy_str(c->user_properties[k].key, sizeof(c->user_properties[k].key), up->key);
-        copy_str(c->user_properties[k].value, sizeof(c->user_properties[k].value), up->value);
+        copy_view(c->user_properties[k].key, sizeof(c->user_properties[k].key), up.key, up.key_len);
+        copy_view(
+            c->user_properties[k].value,
+            sizeof(c->user_properties[k].value),
+            up.value,
+            up.value_len);
       }
     }
   }

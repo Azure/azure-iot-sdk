@@ -17,6 +17,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -2259,8 +2260,7 @@ static void profile_finish_hub_leg(profile_fixture* pf, bool mqtt_v5)
   ack_msg.topic = "ih/assigned-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -2919,6 +2919,8 @@ static void a_half_usable_assignment_is_not_partially_adopted(void** state)
   }
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
   /* The hub half was NOT committed on the way to the fault. */
   assert_null(fx->client->opts.iothub_hostname);
 
@@ -5602,9 +5604,288 @@ static void a_cancelled_assignment_keeps_the_saved_profile(void** state)
   az_iot_mock_mqtt_factory_destroy(f5);
 }
 
+/* ------------------------------------------------------------------------- */
+/* assignment notification (persist / restore)                               */
+/* ------------------------------------------------------------------------- */
+
+typedef struct assignment_record
+{
+  int count;
+  char hub[128];
+  char device_id[128];
+  az_iot_connection_profile profile;
+  char profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
+  /* Set: the factory whose clients are counted at callback time. */
+  const az_iot_mqtt_factory* hub_factory;
+  bool hub_client_existed;
+  /* Set: close() the client from the callback. */
+  az_iot_connection_client* close_from_cb;
+} assignment_record;
+
+static void record_assignment(const az_iot_dps_assignment* a, void* user_ctx)
+{
+  assignment_record* rec = (assignment_record*)user_ctx;
+  assert_non_null(a);
+  assert_non_null(a->hub_hostname);
+  assert_non_null(a->device_id);
+  assert_non_null(a->profile);
+  rec->count++;
+  (void)snprintf(rec->hub, sizeof(rec->hub), "%s", a->hub_hostname);
+  (void)snprintf(rec->device_id, sizeof(rec->device_id), "%s", a->device_id);
+  rec->profile = a->profile->connection_profile;
+  (void)snprintf(
+      rec->profile_raw, sizeof(rec->profile_raw), "%s", a->profile->connection_profile_raw);
+  if (rec->hub_factory != NULL)
+  {
+    rec->hub_client_existed = az_iot_mock_mqtt_factory_last_client(rec->hub_factory) != NULL;
+  }
+  if (rec->close_from_cb != NULL)
+  {
+    (void)az_iot_connection_client_close(rec->close_from_cb);
+  }
+}
+
+/* The application learns hub, device id and profile once adopted, before the
+ * hub connect starts. */
+static void assignment_callback_reports_the_adopted_assignment(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  assignment_record rec = { 0 };
+  rec.hub_factory = pf.v5;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.hub, "myhub.azure-devices.net");
+  assert_string_equal(rec.device_id, "assigned-device");
+  assert_int_equal(rec.profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  assert_string_equal(rec.profile_raw, "mqttV5");
+  assert_false(rec.hub_client_existed);
+  assert_hub_leg_used(&pf, pf.v5);
+
+  profile_finish_hub_leg(&pf, true);
+  assert_int_equal(rec.count, 1);
+  profile_fixture_close(&pf);
+}
+
+/* A rejected assignment is not adopted, so it is not reported. */
+static void assignment_callback_is_not_fired_for_a_rejected_assignment(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_profile_unknown);
+
+  assert_true(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(rec.count, 0);
+  profile_fixture_close(&pf);
+}
+
+/* close() from the callback: no hub connect follows and the client is IDLE. */
+static void close_from_the_assignment_callback_skips_the_hub_connect(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  assignment_record rec = { 0 };
+  rec.close_from_cb = &pf.c;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_int_equal(rec.count, 1);
+  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+  /* The assignment was adopted, so the next open() goes to the hub. */
+  assert_string_equal(
+      az_iot_connection_client_get_iothub_address(&pf.c), "myhub.azure-devices.net");
+  profile_fixture_close(&pf);
+}
+
+typedef struct close_on_dps_state
+{
+  az_iot_connection_client* client;
+  az_iot_connection_state state;
+  bool closed;
+} close_on_dps_state;
+
+static void close_when_dps_reaches(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  close_on_dps_state* ctx = (close_on_dps_state*)user_ctx;
+  if (!ctx->closed && event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == ctx->state)
+  {
+    ctx->closed = true;
+    (void)az_iot_connection_client_close(ctx->client);
+  }
+}
+
+/* close() from the provisioning session's teardown announcements, which run
+ * before the assignment is adopted: no hub connect follows. */
+static void close_during_dps_teardown_skips_the_hub_connect(az_iot_connection_state teardown_state)
+{
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  close_on_dps_state ctx = { &pf.c, teardown_state, false };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&pf.c, close_when_dps_reaches, &ctx), AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_true(ctx.closed);
+  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v5));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&pf.c, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_CONN_STATE_IDLE);
+  profile_fixture_close(&pf);
+}
+
+static void close_from_dps_disconnecting_skips_the_hub_connect(void** state)
+{
+  (void)state;
+  close_during_dps_teardown_skips_the_hub_connect(AZ_IOT_CONN_STATE_DISCONNECTING);
+}
+
+static void close_from_dps_idle_skips_the_hub_connect(void** state)
+{
+  (void)state;
+  close_during_dps_teardown_skips_the_hub_connect(AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* A re-provision reports the new assignment too. */
+static void assignment_callback_fires_again_on_reprovision(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, record_assignment, &rec),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_int_equal(rec.count, 1);
+  assert_string_equal(rec.hub, "myhub.azure-devices.net");
+
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps2, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  static const char k_reassigned[]
+      = "{\"operationId\":\"op-2\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"otherhub.azure-devices.net\",\"deviceId\":\"moved-device\"}}";
+  assert_true(inject_dps_response(dps2, DPS_RESPONSE_TOPIC_ASSIGNED, k_reassigned));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(rec.count, 2);
+  assert_string_equal(rec.hub, "otherhub.azure-devices.net");
+  assert_string_equal(rec.device_id, "moved-device");
+  assert_int_equal(rec.profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
+  assert_string_equal(rec.profile_raw, "classic");
+}
+
+/* Restore: a saved hub, device id and profile connect straight to the hub with
+ * DPS still configured; no registration, no assignment callback. */
+static void a_restored_assignment_connects_without_registering(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = dps_options();
+  opts.iothub_hostname = "savedhub.azure-devices.net";
+  opts.device_id = "saved-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  profile_fixture pf = { 0 };
+  assert_int_equal(az_iot_test_connection_client_init(&pf.c, &opts), AZ_IOT_OK);
+  pf.v5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  pf.v3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&pf.c, pf.v5), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&pf.c, pf.v3), AZ_IOT_OK);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_open(&pf.c), AZ_IOT_OK);
+
+  assert_null(az_iot_mock_mqtt_factory_last_client(pf.v3));
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(pf.v5);
+  assert_non_null(hub);
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  assert_string_equal(c->connect.host, "savedhub.azure-devices.net");
+  assert_string_equal(c->connect.client_id, "saved-device");
+  assert_int_equal(rec.count, 0);
+  profile_fixture_close(&pf);
+}
+
+/* A NULL callback unregisters: an adopted assignment no longer reaches the old one. */
+static void a_null_assignment_callback_unregisters(void** state)
+{
+  (void)state;
+  profile_fixture pf = { 0 };
+  profile_fixture_open(&pf);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, record_assignment, &rec),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(&pf.c, NULL, NULL), AZ_IOT_OK);
+
+  profile_assign(&pf, k_assigned_mqtt_v5);
+
+  assert_int_equal(rec.count, 0);
+  assert_hub_leg_used(&pf, pf.v5);
+  profile_fixture_close(&pf);
+}
+
+static void set_dps_assignment_callback_rejects_a_null_client(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(NULL, record_assignment, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    /* assignment notification */
+    cmocka_unit_test(assignment_callback_reports_the_adopted_assignment),
+    cmocka_unit_test(assignment_callback_is_not_fired_for_a_rejected_assignment),
+    cmocka_unit_test(close_from_the_assignment_callback_skips_the_hub_connect),
+    cmocka_unit_test(close_from_dps_disconnecting_skips_the_hub_connect),
+    cmocka_unit_test(close_from_dps_idle_skips_the_hub_connect),
+    cmocka_unit_test_setup_teardown(
+        assignment_callback_fires_again_on_reprovision, setup_with_reconnect, teardown),
+    cmocka_unit_test(a_restored_assignment_connects_without_registering),
+    cmocka_unit_test(a_null_assignment_callback_unregisters),
+    cmocka_unit_test(set_dps_assignment_callback_rejects_a_null_client),
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(
         dps_connects_to_the_global_endpoint_by_default, setup, teardown),

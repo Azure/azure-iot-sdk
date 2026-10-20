@@ -221,8 +221,7 @@ static void connect_v5(az_iot_test_conn* fx)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;

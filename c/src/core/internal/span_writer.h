@@ -124,6 +124,14 @@ extern "C"
 
   void az_iot_span_writer_append_u8(az_iot_span_writer* writer, uint8_t value);
 
+  /** @brief Appends standard padded base64 of @p length bytes of @p data, all
+   * or nothing. NULL @p data with a nonzero @p length latches
+   * AZ_IOT_ERR_INVALID_ARG; 0 bytes append nothing. */
+  void az_iot_span_writer_append_base64(
+      az_iot_span_writer* writer,
+      const uint8_t* data,
+      size_t length);
+
   /* Bytes written so far. Useful when several NUL-terminated strings are built
    * back to back into one buffer and the caller needs to remember where each
    * one started. Returns the length even after a failure has latched, so an

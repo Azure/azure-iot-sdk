@@ -57,6 +57,66 @@ static az_iot_result build_topic(const char* device_id, char* topic, size_t topi
   return az_iot_span_writer_end_str(&writer, NULL);
 }
 
+/** @brief What telemetry_property_next() reads: the message and its resolved content type. */
+typedef struct telemetry_properties
+{
+  const az_iot_telemetry_message* message;
+  const char* content_type;
+} telemetry_properties;
+
+/** @brief Fills @p out from NUL-terminated @p key and @p value. */
+static void set_view(az_iot_mqtt_user_property_view* out, const char* key, const char* value)
+{
+  out->key = key;
+  out->key_len = strlen(key);
+  out->value = value;
+  out->value_len = strlen(value);
+}
+
+/**
+ * @brief az_iot_mqtt_user_properties_next_fn for telemetry: `type`, `content-type`, then every
+ * application property in order. Cursor 0 and 1 are the two SDK properties; 2 + i is application
+ * property i.
+ */
+static az_iot_result telemetry_property_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source_len;
+  const telemetry_properties* t = (const telemetry_properties*)source;
+  if (*cursor == 0)
+  {
+    *cursor = 1;
+    set_view(out, "type", "telemetry:1");
+    return AZ_IOT_OK;
+  }
+  if (*cursor == 1)
+  {
+    *cursor = 2;
+    set_view(out, "content-type", t->content_type);
+    return AZ_IOT_OK;
+  }
+  while (*cursor - 2 < t->message->properties_count)
+  {
+    const az_iot_telemetry_property* property = &t->message->properties[*cursor - 2];
+    (*cursor)++;
+    /* $.ct and $.cid travel in their native v5 fields; a copy under their own
+     * name would say the same thing in a spelling the service does not read.
+     * Every other system property has no v5 equivalent, so it travels verbatim
+     * -- which is what az_iot_message.h promises. */
+    if (!is_nonempty_cstr(property->key) || strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0
+        || strcmp(property->key, AZ_IOT_MSG_PROP_CORRELATION_ID) == 0)
+    {
+      continue;
+    }
+    set_view(out, property->key, property->value ? property->value : "");
+    return AZ_IOT_OK;
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
 AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     az_iot_mqttv5_telemetry_client* client,
     const az_iot_telemetry_message* message,
@@ -88,11 +148,6 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     return result;
   }
 
-  az_iot_mqtt_user_property user_properties[AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES];
-  size_t property_count = 0;
-  user_properties[property_count++]
-      = (az_iot_mqtt_user_property){ .key = "type", .value = "telemetry:1" };
-
   const char* content_type = "application/json";
   for (size_t i = 0; i < message->properties_count; ++i)
   {
@@ -104,8 +159,6 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
       break;
     }
   }
-  user_properties[property_count++]
-      = (az_iot_mqtt_user_property){ .key = "content-type", .value = content_type };
 
   /* The mqttv5 hub reads the correlation id only from native Correlation Data;
    * a $.cid user property would reach routing as an application property. */
@@ -126,47 +179,14 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_telemetry_client_send(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  for (size_t i = 0; i < message->properties_count; ++i)
-  {
-    const az_iot_telemetry_property* property = &message->properties[i];
-    if (!is_nonempty_cstr(property->key))
-    {
-      continue;
-    }
-    /* $.ct and $.cid travel in their native v5 fields; a copy under their own
-     * name would say the same thing in a spelling the service does not read.
-     * Every other system property has no v5 equivalent, so it travels verbatim
-     * -- which is what az_iot_message.h promises. */
-    if (strcmp(property->key, AZ_IOT_MSG_PROP_CONTENT_TYPE) == 0
-        || strcmp(property->key, AZ_IOT_MSG_PROP_CORRELATION_ID) == 0)
-    {
-      continue;
-    }
-    if (property_count >= AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES)
-    {
-      AZ_IOT_LOG_WARNF(
-          AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY,
-          "'%s' and any properties after it were not sent; the message needs "
-          "more "
-          "than the %d user properties this client can carry, two of which are the type and "
-          "content-type it adds. Send fewer, or raise AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES.",
-          property->key,
-          (int)AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES);
-      break;
-    }
-    user_properties[property_count++] = (az_iot_mqtt_user_property){
-      .key = property->key,
-      .value = property->value ? property->value : "",
-    };
-  }
-
+  telemetry_properties properties = { message, content_type };
   az_iot_mqtt_message mqtt_message = { 0 };
   mqtt_message.topic = topic;
   mqtt_message.payload = message->payload;
   mqtt_message.payload_len = message->payload_len;
   mqtt_message.qos = AZ_IOT_MQTT_QOS_1;
-  mqtt_message.user_properties = user_properties;
-  mqtt_message.user_properties_count = property_count;
+  mqtt_message.user_properties.next = telemetry_property_next;
+  mqtt_message.user_properties.source = &properties;
   mqtt_message.content_type = content_type;
   mqtt_message.correlation_data = (const uint8_t*)correlation_id;
   mqtt_message.correlation_data_len = correlation_id_len;

@@ -845,8 +845,9 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
       : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
 }
 
-/* Apply the caller's transport, WebSocket path and proxy to one connect, and
- * resolve the port: an explicit @p port wins, 0 means "derive from transport".
+/* Apply the caller's transport, WebSocket path and proxy to one connect for
+ * @p role, and resolve the port: an explicit @p port wins, 0 means "derive from
+ * transport".
  *
  * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
  * that needs a proxy or WebSockets to reach the hub needs them to reach DPS
@@ -855,10 +856,17 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
 static void resolve_connect_transport(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role,
     uint16_t port)
 {
   copts->transport = c->opts.transport;
   copts->websocket_path = c->opts.websocket_path;
+  /* The mqttv5 hub serves WebSockets on its own path; DPS and the mqttv3 hub keep
+   * the adapter default. */
+  if (copts->websocket_path == NULL && role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    copts->websocket_path = AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH;
+  }
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
@@ -3054,6 +3062,21 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Whether dps_apply_deferred() would adopt the parsed assignment: a
+ * supported profile the attached feature clients accept, and a hub and device id.
+ *
+ * @param[in] c Client, with dps_assigned_* already parsed.
+ * @return true if the assignment would be adopted.
+ */
+static bool dps_assignment_acceptable(const az_iot_connection_client* c)
+{
+  return (c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+          || c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+      && (c->required_profile_refs == 0 || c->required_profile == c->dps_assigned_profile)
+      && is_nonempty_cstr(c->dps_assigned_hub) && is_nonempty_cstr(c->dps_assigned_device_id);
+}
+
 /* Parse registrationState.issuedCertificateChain (an array of base64 DER or PEM
  * certs) from the DPS ASSIGNED payload and hand the chain to the
  * certificate_provider to persist as the operational identity. azure-sdk-for-c
@@ -3352,11 +3375,23 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             dps_finalize(c, pr, false);
             return;
           }
-          if (c->dps_enrolling)
+          /* An assignment dps_apply_deferred() will reject keeps the stored
+           * certificate: it must stay paired with the adopted assignment. */
+          if (c->dps_enrolling && !dps_assignment_acceptable(c))
           {
+            AZ_IOT_LOG_WARN(
+                AZ_IOT_LOG_COMPONENT_DPS,
+                "the assignment will be rejected; not storing its issued certificate");
+            c->dps_cert_withheld = true;
+          }
+          else if (c->dps_enrolling)
+          {
+            /* Before the store: it runs the operational-certificate callback. */
+            c->dps_cert_awaits_adoption = true;
             az_iot_result sc = dps_store_issued_cert(c, payload_span);
             if (sc != AZ_IOT_OK)
             {
+              c->dps_cert_awaits_adoption = false;
               dps_finalize(c, sc, false);
               return;
             }
@@ -3568,7 +3603,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, 0);
+  resolve_connect_transport(c, &copts, AZ_IOT_MQTT_ROLE_DPS, 0);
   resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   copts.username = dps_username;
@@ -3715,6 +3750,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
 
   c->dps_mqtt = mc;
   c->dps_phase = DPS_PHASE_CONNECTING;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -3866,6 +3903,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
  * would retry it. */
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
+  c->dps_cert_awaits_adoption = false;
   c->needs_reprovision = true;
   fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_DPS, reason);
 }
@@ -3891,7 +3929,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
   bool have_assignment = c->dps_pending_have_assignment;
+  bool cert_withheld = c->dps_cert_withheld;
+  c->dps_cert_withheld = false;
   az_iot_result status = c->dps_pending_status;
+  if (status != AZ_IOT_OK || !have_assignment)
+  {
+    c->dps_cert_awaits_adoption = false;
+  }
   uint32_t retry_after_secs = c->dps_pending_retry_after_secs;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
@@ -4139,6 +4183,20 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     reject_assignment(c, r);
     return;
   }
+
+  /* The issued chain was withheld for an assignment that was to be rejected;
+   * the profile pins changed since. Adopting it would pair the assignment
+   * with the previous certificate. */
+  if (cert_withheld)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "the attached feature clients changed while the assignment was pending; registering "
+        "again");
+    reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+    return;
+  }
+
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
@@ -4149,6 +4207,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       sizeof(c->provisioned_device_id),
       &c->opts.device_id,
       c->dps_assigned_device_id);
+  c->dps_cert_awaits_adoption = false;
   drop_subscriptions_from_other_generations(c);
   /* A hub token asked for, or held, before this assignment may be for
    * another hub or device: the next attempt asks again. */
@@ -4171,6 +4230,27 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  if (c->assignment_cb)
+  {
+    az_iot_hub_profile assigned_profile = {
+      .connection_profile = c->connection_profile,
+      .connection_profile_raw = c->connection_profile_raw,
+      .connection_profile_raw_truncated = c->connection_profile_raw_truncated,
+    };
+    az_iot_dps_assignment assignment = {
+      .hub_hostname = c->opts.iothub_hostname,
+      .device_id = c->opts.device_id,
+      .profile = &assigned_profile,
+    };
+    c->assignment_cb(&assignment, c->assignment_cb_ctx);
+  }
+  /* A state callback above, or the assignment callback, closed or reopened the
+   * client: the assignment stays adopted, but no hub connect starts for it. */
+  if (c->close_count != closes || c->open_seq != seq)
+  {
+    return;
+  }
 
   /* The assignment is kept, but no hub attempt starts past the bound. */
   if (identity_recovery_expired(c))
@@ -4678,8 +4758,7 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
   msg.payload = body;
   msg.payload_len = body_len;
   msg.qos = AZ_IOT_MQTT_QOS_0;
-  msg.user_properties = &type_prop;
-  msg.user_properties_count = 1;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   msg.correlation_data = c->presence.nonce;
   msg.correlation_data_len = PRESENCE_NONCE_LEN;
 
@@ -4726,23 +4805,16 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
     return false;
   }
 
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, PRESENCE_TYPE_KEY, &type)
+      != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, PRESENCE_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
-    /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
-    return strncmp(up->value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
-        && (up->value[n] == '\0' || up->value[n] == ':');
+    return false;
   }
-  return false;
+  size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
+  /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
+  return type.value_len >= n && memcmp(type.value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
+      && (type.value_len == n || type.value[n] == ':');
 }
 
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
@@ -5060,7 +5132,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.host = c->opts.iothub_hostname;
   copts.client_id = c->opts.device_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_connect_transport(c, &copts, c->session_role, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
   /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
@@ -6540,6 +6612,20 @@ az_iot_result az_iot_connection_client_set_registration_payload_callback(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+    az_iot_connection_client* client,
+    az_iot_dps_assignment_callback cb,
+    void* user_ctx)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->assignment_cb = cb;
+  client->assignment_cb_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
 /**
  * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
  *
@@ -6781,6 +6867,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
+  /* As in close(): an open() from a teardown observer abandons the stored
+   * chain's assignment. */
+  if (client->dps_cert_awaits_adoption)
+  {
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
+  }
+
   log_open_summary(client);
 
   /* No hub: bring the provisioning session up and stop there. No registration
@@ -6906,6 +7000,8 @@ static void dps_close_session(az_iot_connection_client* c)
   dps_teardown_mqtt(c);
   c->dps_registration_ref = false;
   c->dps_phase = DPS_PHASE_NONE;
+  c->dps_cert_awaits_adoption = false;
+  c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
   c->dps_pending_have_assignment = false;
   c->dps_pending_status = AZ_IOT_OK;
@@ -6927,6 +7023,13 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   client->close_count++;
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
+  /* A stored chain whose assignment was never adopted: the cached hub no
+   * longer matches the certificate, so the next open() registers again. */
+  if (client->dps_cert_awaits_adoption)
+  {
+    client->needs_reprovision = true;
+    client->dps_cert_awaits_adoption = false;
+  }
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_DPS);
   clear_sas_token_request(client, AZ_IOT_CONN_SCOPE_HUB);
   client->sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_DPS] = 0;
@@ -7829,6 +7932,11 @@ az_iot_result az_iot_connection_client__require_profile(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "a feature client for the other hub generation is already "
         "attached to this connection");
+    return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
+  }
+  /* A stored issued chain is committed to the pending assignment's profile. */
+  if (client->dps_cert_awaits_adoption && client->dps_assigned_profile != profile)
+  {
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
   if (client->connection_profile_resolved && client->connection_profile != profile)

@@ -94,6 +94,9 @@ AZ_NODISCARD az_result _az_mqtt_write_binary_data(az_span* dest, az_span data);
 /** @brief Write a Variable Byte Integer; advance @p dest. */
 AZ_NODISCARD az_result _az_mqtt_write_vbi(az_span* dest, int32_t value);
 
+/** @brief Largest value a Variable Byte Integer holds (MQTT 5.0 1.5.5). */
+#define _AZ_MQTT_VBI_MAX 268435455
+
 /** @brief Bytes a Variable Byte Integer of @p value takes (1-4). */
 AZ_NODISCARD int32_t _az_mqtt_vbi_size(int32_t value);
 

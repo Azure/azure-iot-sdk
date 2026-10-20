@@ -32,11 +32,13 @@ run it, and what to expect.
 | [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/README.md) | Direct methods answered later, on an mqttv5 hub. |
 | [mqttv5/custom_topic_publisher](mqttv5/custom_topic_publisher/README.md) | Publish to a custom topic on an mqttv5 hub. |
 | [authentication/dps_csr_managed](authentication/dps_csr_managed/README.md) | DPS issues an operational certificate from a CSR. |
+| [authentication/dps_persist_assignment](authentication/dps_persist_assignment/README.md) | Save the DPS assignment; later runs connect to the hub without registering. |
 | [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with the CSR built by application code. |
 | [authentication/hub_renew](authentication/hub_renew/README.md) | Renew the operational certificate over an mqttv3 hub. |
 | [authentication/hsm_pkcs11](authentication/hsm_pkcs11/README.md) | Private key in a PKCS#11 token or TPM. |
 | [authentication/hsm_sign_callback](authentication/hsm_sign_callback/README.md) | Private key reachable only through a `sign()` callback. |
 | [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Skeleton of a certificate provider. |
+| [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM. |
 | [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |

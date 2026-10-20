@@ -17,9 +17,14 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy
   E2E_SHARED_ID_SCOPE        DPS ID scope
   E2E_SHARED_SAS_GROUP_KEY   primary key of the DPS symmetric-key enrollment group
+  E2E_SHARED_DPS_CS          DPS service connection string (EnrollmentWrite, RegistrationStatusWrite),
+                             written as IOT_DPS_CONNECTION_STRING for the TPM suite's enrollments
+  E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
+                             IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
 
 -Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same variables under that prefix except
-SAS_GROUP_KEY (mqttv5 hubs accept X.509 only; no SAS key is written), and optionally
+SAS_GROUP_KEY, DPS_CS and IOTHUB_REGISTRY_CS (mqttv5 hubs accept X.509 only; no SAS key is
+written, and there is no TPM suite), and optionally
 E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
@@ -48,7 +53,7 @@ function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Va
 $Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
             elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
-            else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+            else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
@@ -123,6 +128,8 @@ $Lines = if ($Csr) {
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
         if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY') }
+        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS') }
+        if (-not $Mqttv5) { Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS') }
     )
 }
 $OutDir = Split-Path -Parent $OutFile

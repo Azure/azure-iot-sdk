@@ -636,8 +636,10 @@ extern "C"
     az_iot_mqtt_transport transport;
 
     /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), which
-     * is what IoT Hub and DPS expect; set it only for a gateway that terminates
+     * selects the service's path per session: AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH
+     * ("/$iothub/websocket") for DPS and an mqttv3 hub,
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
+     * here is used for every session; set it only for a gateway that terminates
      * WebSockets elsewhere. */
     const char* websocket_path;
 
@@ -1105,6 +1107,42 @@ extern "C"
    * inbound MQTT message, which is reused as soon as the callback returns.
    * Copy anything that must outlive the call. */
   typedef void (*az_iot_registration_payload_callback)(az_span payload, void* user_ctx);
+
+  /**
+   * @brief A DPS assignment the client adopted. Persist it to connect straight
+   * to the hub after a restart; see docs/connecting.md.
+   *
+   * Every pointer is valid only during the callback; copy what must be kept.
+   */
+  typedef struct az_iot_dps_assignment
+  {
+    /** @brief Assigned IoT Hub hostname; restore as opts.iothub_hostname. */
+    const char* hub_hostname;
+    /** @brief Assigned device id; restore as opts.device_id. */
+    const char* device_id;
+    /** @brief Assigned profile; restore profile->connection_profile as
+     * opts.connection_profile. Never AZ_IOT_CONNECTION_PROFILE_UNKNOWN. */
+    const az_iot_hub_profile* profile;
+  } az_iot_dps_assignment;
+
+  /**
+   * @brief Fired each time the client adopts a DPS assignment: after the first
+   * registration and after every re-provision, before the hub connect starts.
+   * Not fired for an assignment the client rejects; its issued certificate,
+   * if any, is not stored either.
+   *
+   * With dps.request_operational_certificate, the issued chain is already
+   * stored in the certificate provider.
+   *
+   * Runs from az_iot_connection_client_do_work(). It may call
+   * az_iot_connection_client_close(), and then no hub connect follows; it must
+   * not call az_iot_connection_client_deinit().
+   *
+   * @param assignment The adopted assignment; valid only during the call.
+   * @param user_ctx   As registered.
+   */
+  typedef void (
+      *az_iot_dps_assignment_callback)(const az_iot_dps_assignment* assignment, void* user_ctx);
 
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
@@ -1843,6 +1881,15 @@ extern "C"
     az_iot_connection_profile dps_assigned_profile;
     char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool dps_assigned_profile_raw_truncated;
+
+    az_iot_dps_assignment_callback assignment_cb;
+    void* assignment_cb_ctx;
+    /* A stored issued chain awaits adoption of its assignment: the other
+     * generation cannot be required until then. */
+    bool dps_cert_awaits_adoption;
+    /* The issued chain was not stored because the assignment was to be
+     * rejected; it must not be adopted. */
+    bool dps_cert_withheld;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
@@ -1981,6 +2028,20 @@ extern "C"
   az_iot_result az_iot_connection_client_set_registration_payload_callback(
       az_iot_connection_client* client,
       az_iot_registration_payload_callback cb,
+      void* user_ctx);
+
+  /**
+   * @brief Registers a callback fired when a DPS assignment is adopted. Optional;
+   * NULL @p cb unregisters.
+   *
+   * @param[in] client   Client.
+   * @param[in] cb       See az_iot_dps_assignment_callback.
+   * @param[in] user_ctx Passed to @p cb.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client.
+   */
+  az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+      az_iot_connection_client* client,
+      az_iot_dps_assignment_callback cb,
       void* user_ctx);
 
   /* Open a session to the configured host. Non-blocking; observe state via callback

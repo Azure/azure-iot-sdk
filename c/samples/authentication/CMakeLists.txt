@@ -23,6 +23,13 @@ if(AZ_IOT_WITH_PAHO AND TARGET az_iot_certificate_provider_managed)
         PRIVATE az_iot_mqttv3 az_iot_adapter_paho az_iot_certificate_provider_managed)
     az_iot_apply_warnings(az_iot_sample_auth_dps_csr_managed)
 
+    add_executable(az_iot_sample_auth_dps_persist_assignment
+        dps_persist_assignment/main.c ${_auth_common}/sample_utils.c)
+    target_include_directories(az_iot_sample_auth_dps_persist_assignment PRIVATE ${_auth_common})
+    target_link_libraries(az_iot_sample_auth_dps_persist_assignment
+        PRIVATE az_iot_core az_iot_adapter_paho az_iot_certificate_provider_managed)
+    az_iot_apply_warnings(az_iot_sample_auth_dps_persist_assignment)
+
     add_executable(az_iot_sample_auth_hub_renew
         hub_renew/main.c ${_auth_common}/sample_utils.c)
     target_include_directories(az_iot_sample_auth_hub_renew PRIVATE ${_auth_common})
@@ -109,4 +116,23 @@ if(AZ_IOT_WITH_PAHO AND TARGET OpenSSL::Crypto)
     target_link_libraries(az_iot_sample_auth_user_provided_sas_token
         PRIVATE az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho OpenSSL::Crypto)
     az_iot_apply_warnings(az_iot_sample_auth_user_provided_sas_token)
+endif()
+
+# DPS TPM attestation over HTTPS (libcurl), then the hub over the Paho adapter
+# with SAS tokens signed by a TPM simulated in software (OpenSSL).
+if(AZ_IOT_WITH_PAHO AND TARGET az_iot_crypto_openssl)
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        add_executable(az_iot_sample_auth_dps_tpm
+            dps_tpm/main.c
+            ${_auth_common}/sample_tpm_sim.c
+            ${_auth_common}/sample_dps_tpm.c
+            ${_auth_common}/sample_utils.c)
+        target_include_directories(az_iot_sample_auth_dps_tpm PRIVATE ${_auth_common})
+        target_link_libraries(az_iot_sample_auth_dps_tpm PRIVATE
+            az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl OpenSSL::Crypto CURL::libcurl)
+        az_iot_apply_warnings(az_iot_sample_auth_dps_tpm)
+    else()
+        message(STATUS "az_iot_sample_auth_dps_tpm: libcurl not found; not built.")
+    endif()
 endif()
