@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Null(bootCredentials.ClientCertificate);
             AssertSasToken(bootCredentials.Password, key, $"{idScope}/registrations/{registrationId}", "registration", dpsTimeToLive ?? TimeSpan.FromMinutes(10));
 
-            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, null);
+            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, null, TestContext.Current.CancellationToken);
             Assert.Null(operationalCredentials.ClientCertificate);
             AssertSasToken(operationalCredentials.Password, key, $"{hostName}/devices/{deviceId}", null, iotHubTimeToLive ?? TimeSpan.FromHours(1));
         }
@@ -95,7 +95,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key);
 
             var credentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
-                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" });
+                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken);
 
             Assert.Null(authentication.IssuedCertificatePrivateKey);
             Assert.Null(authentication.HandleCertificateSigningCompleteAsync);
@@ -122,7 +122,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Same(useCallback ? null : privateKey, authentication.IssuedCertificatePrivateKey);
             Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
             var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
-                "some-hub.azure-devices.net", "device-id", issuedChain);
+                "some-hub.azure-devices.net", "device-id", issuedChain, TestContext.Current.CancellationToken);
             Assert.NotNull(operationalCredentials.ClientCertificate);
             Assert.Equal(certificate.Thumbprint, operationalCredentials.ClientCertificate.Thumbprint);
             Assert.True(operationalCredentials.ClientCertificate.HasPrivateKey);
