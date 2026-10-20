@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
     {
         private bool _isDisposed = false;
 
-        private const string NewTelemetryTopicFormat = "ih/{0}/srv/telemetry";
+        private const string NewTelemetryTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/telemetry";
 
         private IConnectionClient _connection;
 
@@ -53,13 +53,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            var currentConnectionContext = _connection.GetCurrentConnectionContext();
-            if (currentConnectionContext == null)
+            if (_connection.GetCurrentConnectionContext() == null || !_connection.IsConnectionTargetSet)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
-
-            string deviceId = currentConnectionContext.DeviceId;
 
             if (message.Payload != null && message.Payload.Length > 255000)
             {
@@ -70,9 +67,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
             // message properties, instead of the classic MQTTv3 property-bag topic string.
             // The MQTTv5 namespace routes this topic to the hub's routing backend, which converts
             // and delivers it to configured routing endpoints (e.g. Event Hubs).
+            // The connection client substitutes this device's current ID for the placeholder in this topic when it sends
+            // this publish, so the publish still goes to the right topic if the device ID changes while it is pending.
             var mqttMessage = new MqttPublish
             {
-                Topic = string.Format(NewTelemetryTopicFormat, deviceId),
+                Topic = NewTelemetryTopic,
                 PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
 

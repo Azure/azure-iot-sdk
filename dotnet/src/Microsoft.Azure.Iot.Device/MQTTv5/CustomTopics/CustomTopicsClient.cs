@@ -14,9 +14,28 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     // QoS values supported by AEG? Just 1 and 0?
     // Are we just exposing MQTT semantics and types? Probably, but check with Usha
     // Should we allow delayed acks?
-    // Other variables besides {deviceId} ? No. And my assumption was correct that this SDK is expected to pass in the actual deviceId in the topic string, not the placeholder "{deviceId}" string
+    // Other variables besides {deviceId} ? No. Topics may contain the "{deviceId}" placeholder (IConnectionClient.DeviceIdPlaceholder), which the connection client replaces with the device's current ID each time it sends the operation
     // Does Iot Hub allow sending publishes to self? Would be useful for testing/samples but users probably wouldn't
 
+    /// <summary>
+    /// A feature client for publishing to and subscribing to custom (application-defined) MQTT topics.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Any topic or topic filter passed to this client may contain the <see cref="IConnectionClient.DeviceIdPlaceholder"/>
+    /// ("{deviceId}") placeholder, for example "foo/{deviceId}/bar". The connection client replaces the placeholder with
+    /// this device's current ID each time it actually sends the operation, so an operation that is pending while the device
+    /// is re-provisioned and assigned a different device ID is sent with the newly assigned ID.
+    /// </para>
+    /// <para>
+    /// Topics that hold the placeholder are tracked as given (see <see cref="GetSubscribedTopics"/>), and received publishes
+    /// are matched against them using this device's current ID. To unsubscribe from such a topic, pass the same placeholder
+    /// topic that was subscribed to.
+    /// </para>
+    /// <para>
+    /// To keep using a specific device ID even if the device is later assigned a different one, put that ID in the topic instead of the placeholder.
+    /// </para>
+    /// </remarks>
     public class CustomTopicsClient : IDisposable
     {
         // Volatile because it is read by the publish received handler and by in-flight operations on other threads. Only set
@@ -56,37 +75,40 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// </summary>
         /// <remarks>
         /// Topics in a subscribe request that is still in flight are included, since the service may begin delivering
-        /// publishes on them before the SUBACK is processed.
+        /// publishes on them before the SUBACK is processed. Topics are reported as they were passed to this client, so any
+        /// <see cref="IConnectionClient.DeviceIdPlaceholder"/> they contain is not replaced.
         /// </remarks>
         public IReadOnlyList<string> GetSubscribedTopics => _subscribedCustomTopics;
 
-        //TODO this gets weird if the device loses connection -> reprovisions -> gets assigned a new device Id. Need some kind of hook from connection client that allows for changing the re-subscribes after connecting to the new hub
-        // since the user conceptually just wants to use the deviceId wildcard, right? But the sender side would have no way of knowing that the recipient changed device ids? Maybe the developer would actually want the newly provisioned device to still
-        // subscribe using the old deviceId to catch the publishes intended for it prior to provisioning? Seems like both approaches could be useful to customer. Maybe just have a flag on the subscribe call that signals if the deviceId present should stay up-to-date
-        // with new deviceIds or if it should stay the same value once subscribed
-        public string GetDeviceId()
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            var connectionContext = _connection.GetCurrentConnectionContext();
-            if (connectionContext == null)
-            {
-                throw new NotSupportedException("Must be connected before calling this method.");
-            }
-
-            return connectionContext.DeviceId;
-        }
-
+        /// <summary>
+        /// Publish to a custom topic.
+        /// </summary>
+        /// <param name="publish">
+        /// The publish to send. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in its topic is replaced with this
+        /// device's current ID when it is sent.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureConnected();
 
             return await _connection.PublishAsync(publish, cancellationToken);
         }
 
-
         //TODO currently implementation loses all subscriptions upon losing connection. Fix later.
+        /// <summary>
+        /// Subscribe to a custom topic.
+        /// </summary>
+        /// <param name="topic">
+        /// The topic filter to subscribe to. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in it is replaced with
+        /// this device's current ID when it is sent.
+        /// </param>
+        /// <param name="qos">The maximum QoS level to receive publishes on this topic with.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
         public async Task<MqttClientSubscribeReasonCode> SubscribeAsync(string topic, MqttQualityOfServiceLevel qos, CancellationToken cancellationToken = default)
         {
             MqttSubscribe subscribe = new()
@@ -101,18 +123,32 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         }
 
         //TODO is the underlying connection client going to retry subscriptions if the user provides a malformed topic string? Probably don't want that. I think MQTT-level failures (suback with negative reason code) are just returned as-is, right?
+        /// <summary>
+        /// Subscribe to one or more custom topics.
+        /// </summary>
+        /// <param name="subscribe">
+        /// The subscribe to send. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in its topic filters is replaced
+        /// with this device's current ID when it is sent.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The SUBACK. Its topic filters are the ones that were sent, so any placeholder in them has been replaced.
+        /// </returns>
+        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             //TODO probably want some kind of client-side validation of some topic strings, but only if AEG-returned error is too hard for user to interpret
 
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureConnected();
 
             await _subscriptionOperationLock.WaitAsync(cancellationToken);
             try
             {
-                // This client may have been disposed while waiting for a prior operation to finish
+                // This client may have been disposed, or the connection client disconnected, while waiting for a prior operation to finish
                 ObjectDisposedException.ThrowIf(_isDisposed, this);
+                EnsureConnected();
 
                 // Track the requested topics before sending the SUBSCRIBE. The service may deliver publishes on a topic as soon
                 // as it grants the subscription, which can be before this client processes the SUBACK. Those publishes must
@@ -147,12 +183,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 // subscription to the same topic stays tracked.
                 UpdateSubscribedTopics(builder =>
                 {
+                    List<string> requestedTopics = subscribe.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
+                    int index = 0;
                     foreach (var subackItem in suback.Items)
                     {
                         if (subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS2)
                         {
-                            builder.Remove(subackItem.TopicFilter.Topic);
+                            builder.Remove(GetTrackedTopic(requestedTopics, suback.Items.Count, index, subackItem.TopicFilter.Topic));
                         }
+
+                        index++;
                     }
                 });
 
@@ -164,6 +204,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             }
         }
 
+        /// <summary>
+        /// Unsubscribe from a custom topic.
+        /// </summary>
+        /// <param name="topic">
+        /// The topic filter to unsubscribe from, exactly as it was subscribed to (including any
+        /// <see cref="IConnectionClient.DeviceIdPlaceholder"/>). Any placeholder is replaced with this device's current ID
+        /// when it is sent.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
         public async Task<MqttClientUnsubscribeReasonCode> UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
         {
             MqttUnsubscribe unsubscribe = new(topic);
@@ -173,29 +223,48 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             return unsuback.Items.FirstOrDefault()!.ReasonCode;
         }
 
+        /// <summary>
+        /// Unsubscribe from one or more custom topics.
+        /// </summary>
+        /// <param name="unsubscribe">
+        /// The unsubscribe to send. Its topic filters must be exactly as they were subscribed to (including any
+        /// <see cref="IConnectionClient.DeviceIdPlaceholder"/>). Any placeholder is replaced with this device's current ID
+        /// when it is sent.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The UNSUBACK. Its topic filters are the ones that were sent, so any placeholder in them has been replaced.
+        /// </returns>
+        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureConnected();
 
             await _subscriptionOperationLock.WaitAsync(cancellationToken);
             try
             {
-                // This client may have been disposed while waiting for a prior operation to finish
+                // This client may have been disposed, or the connection client disconnected, while waiting for a prior operation to finish
                 ObjectDisposedException.ThrowIf(_isDisposed, this);
+                EnsureConnected();
 
                 // Keep tracking the topics until the UNSUBACK so publishes the service sends before then are still delivered
                 var unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
 
                 UpdateSubscribedTopics(builder =>
                 {
+                    int index = 0;
                     foreach (var unsubackItem in unsuback.Items)
                     {
                         // NoSubscriptionExisted means the service no longer considers this client subscribed, so stop tracking it too
                         if (unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.Success || unsubackItem.ReasonCode == MqttClientUnsubscribeReasonCode.NoSubscriptionExisted)
                         {
-                            builder.RemoveAll(subscribedTopic => subscribedTopic == unsubackItem.TopicFilter);
+                            string trackedTopic = GetTrackedTopic(unsubscribe.TopicFilters, unsuback.Items.Count, index, unsubackItem.TopicFilter);
+                            builder.RemoveAll(subscribedTopic => subscribedTopic == trackedTopic);
                         }
+
+                        index++;
                     }
                 });
 
@@ -205,6 +274,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             {
                 _subscriptionOperationLock.Release();
             }
+        }
+
+        // The connection context survives a disconnect, so IsConnectionTargetSet is what says whether the connection client
+        // is still connected or reconnecting. Without it, operations after an explicit disconnect would wait indefinitely.
+        private void EnsureConnected()
+        {
+            if (_connection.GetCurrentConnectionContext() == null || !_connection.IsConnectionTargetSet)
+            {
+                throw new NotSupportedException("Must be connected before calling this method.");
+            }
+        }
+
+        /// <summary>
+        /// Get the topic, as this client tracks it, that the ack item at <paramref name="index"/> answers.
+        /// </summary>
+        /// <remarks>
+        /// The topic in an ack item is the one that was sent, so any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in
+        /// the requested topic has been replaced in it. MQTT acks answer each topic filter in the order it was requested, so
+        /// when the ack has one item per requested topic filter, the requested topic at the same index is the tracked one.
+        /// </remarks>
+        private static string GetTrackedTopic(IReadOnlyList<string> requestedTopics, int ackItemCount, int index, string ackedTopic)
+        {
+            return requestedTopics.Count == ackItemCount ? requestedTopics[index] : ackedTopic;
         }
 
         private void UpdateSubscribedTopics(Action<ImmutableList<string>.Builder> update)
@@ -276,13 +368,27 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 return;
             }
 
+            // Subscribed topics may hold the device ID placeholder, which must be matched using this device's current ID
+            string? deviceId = _connection.GetCurrentConnectionContext()?.DeviceId;
+
             // Need matching logic since subscribed topics may include wildcard but the actual sent publish will expand from that wildcard
             // Enumerating the immutable snapshot is safe even if a subscribe/unsubscribe replaces the list concurrently
             foreach (string subscribedCustomTopic in _subscribedCustomTopics)
             {
+                string subscribedCustomTopicFilter = subscribedCustomTopic;
+                if (subscribedCustomTopic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal))
+                {
+                    if (deviceId == null)
+                    {
+                        continue;
+                    }
+
+                    subscribedCustomTopicFilter = subscribedCustomTopic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+                }
+
                 // TODO probably want to test scenarios where user subscribes to two custom topics and receives a publish that satisfies both topics (due to wildcard rules)
                 //  This scenario should be fine for ACK'ing since we still only expose the publish to the user once even if they were subscribed to it in two ways
-                if (DoesTopicMatchFilter(args.Publish.Topic, subscribedCustomTopic))
+                if (DoesTopicMatchFilter(args.Publish.Topic, subscribedCustomTopicFilter))
                 {
                     // The snapshot above may predate a concurrent Dispose, so check again before calling into user code
                     if (_isDisposed)

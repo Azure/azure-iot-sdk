@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
@@ -35,7 +36,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5
+                ConnectionProfile = IotHubConnectionType.Mqttv5
             };
 #pragma warning restore SYSLIB0026 // Type or member is obsolete
         }
@@ -113,10 +114,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [Fact]
         public async Task InitialConnectThrowsWhenPresenceRecoveryRetryIsExhausted()
         {
-            MockMqttClient mockMqttClient = new(true);
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            mockMqttClient.OnConnect = async (connect) =>
                 new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
-            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+            mockMqttClient.OnSubscribe = async (subscribe) =>
                 new MqttSubscribeAck() { Items = new List<MqttSubscribeAckItem>() };
 
             ConnectionClient connectionClient = new(new()
@@ -148,7 +149,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Func<MqttPublish, int, MqttPublishAck?>? birthPublishInjector,
             CancellationToken cancellationToken)
         {
-            MockMqttClient mockMqttClient = new(true);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -161,18 +162,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             // Sessions never resume, so every connect's birth flow re-sends the presence SUBSCRIBE that the failure
             // cases target.
-            mockMqttClient.OnConnectAttempt += async (connect) =>
+            mockMqttClient.OnConnect = async (connect) =>
             {
                 Interlocked.Increment(ref connectCount);
                 return new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success };
             };
 
-            mockMqttClient.OnDisconnectAttempt += async (disconnect) =>
+            mockMqttClient.OnDisconnect = async (disconnect) =>
             {
                 Interlocked.Increment(ref disconnectCount);
             };
 
-            mockMqttClient.OnSubscribeAttempt += async (subscribe) =>
+            mockMqttClient.OnSubscribe = async (subscribe) =>
             {
                 // Only the birth flow subscribes in this test, so every subscribe here is a device presence subscribe.
                 int attempt = Interlocked.Increment(ref birthSubscribeCount);
@@ -180,7 +181,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 return injected ?? MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
             };
 
-            mockMqttClient.OnPublishAttempt += async (publish) =>
+            mockMqttClient.OnPublish = async (publish) =>
             {
                 // Only the birth message is published in this test, so every publish here is a device presence publish.
                 if (publish.Topic.EndsWith("/srv/presence") && birthPublishInjector != null)

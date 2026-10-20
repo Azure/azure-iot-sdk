@@ -5,7 +5,6 @@ using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using System.Text;
 using Xunit;
@@ -81,7 +80,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -96,7 +95,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", correlationData, probe.ToByteArray()));
 
             MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
-            Assert.Equal($"ih/{DeviceId}/srv/methods", probeAckPublish.Topic);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.Equal($"ih/{Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.DeviceIdPlaceholder}/srv/methods", probeAckPublish.Topic);
             Assert.Equal("probe-ack:1", GetType(probeAckPublish));
 
             ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);

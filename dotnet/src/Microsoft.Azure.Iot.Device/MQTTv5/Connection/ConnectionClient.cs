@@ -59,7 +59,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 try
                 {
-                    var suback = await connection.SubscribeAsync(new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
+                    var suback = await connection.SubscribeAsync(ConnectionEndpoint.IotHub, new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
                     var subackFirstItem = suback.Items.FirstOrDefault();
                     if (subackFirstItem == null)
                     {
@@ -156,7 +156,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             MqttPublishAck birthMessagePuback;
             try
             {
-                birthMessagePuback = await connection.PublishAsync(birthMessage);
+                birthMessagePuback = await connection.PublishAsync(ConnectionEndpoint.IotHub, birthMessage);
             }
             catch (Exception e)
             {
@@ -194,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             await RaiseDevicePresenceFlowCompletedAsync(new());
         }
 
-        public override MqttConnect MqttConnectOverride(MqttConnect connect)
+        internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
 
@@ -206,7 +206,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
             connect.Username = username;
-            connect.Password = Array.Empty<byte>();
             connect.ProtocolVersion = MqttProtocolVersion.V500;
 
             return connect;

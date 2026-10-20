@@ -19,6 +19,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         //TODO need to think more on connection loss scenario. If direct method is received and is mid-processing when connection is lost, what should happen? Is sending response publish upon reconnect enough?
         private const string ProtobufContentType = "application/protobuf";
 
+        // The connection client substitutes this device's current ID for the placeholder when it sends each response, so a
+        // response still goes to the right topic if the device ID changes (for example, after re-provisioning).
+        private const string DirectMethodsResponseTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
+        private const string DirectMethodsRequestTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/methods";
+
         // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to ready Id (also GUID). When this client receives an Exec message, it should only notify the user about it
         // if this map contains the exec's request Id and it maps to the ready Id in the Exec message.
         private ConcurrentDictionary<Guid, ByteString> _pendingExpectedDirectMethodReadyIds = new();
@@ -89,7 +94,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format("ih/{0}/dev/methods", currentConnectionContext.DeviceId)))
+            if (!args.Publish.Topic.Equals(DirectMethodsRequestTopic.Replace(IConnectionClient.DeviceIdPlaceholder, currentConnectionContext.DeviceId, StringComparison.Ordinal)))
             {
                 // Message isn't relevant to this device. Ignore it.
                 return;
@@ -156,7 +161,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 MqttPublish probeAckPublish = new()
                 {
-                    Topic = string.Format("ih/{0}/srv/methods", currentConnectionContext.DeviceId),
+                    Topic = DirectMethodsResponseTopic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = probeAck.ProbeAck.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
@@ -258,7 +263,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 MqttPublish resultPublish = new()
                 {
-                    Topic = string.Format("ih/{0}/srv/methods", currentConnectionContext.DeviceId),
+                    Topic = DirectMethodsResponseTopic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                     Payload = result.ToByteArray(),
                     CorrelationData = publish.CorrelationData,

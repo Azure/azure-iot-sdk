@@ -69,8 +69,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            string deviceId = currentConnectionContext.DeviceId;
-
             if (currentConnectionContext.ConnectionProfile == Models.IotHubConnectionType.Mqttv5)
             {
                 await _mqttv5TelemetryClient.SendTelemetryAsync(message, cancellationToken);
@@ -83,6 +81,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
             }
 
             //TODO fill in content type, encoding, etc from message user properties
+            // The connection client substitutes this device's current ID for the placeholder in this topic when it sends
+            // this publish, so the publish still goes to the right topic if the device ID changes while it is pending.
             var mqttMessage = new MqttPublish
             {
                 Topic = ClassicTelemetryTopic,

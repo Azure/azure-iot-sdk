@@ -380,12 +380,12 @@ namespace Microsoft.Azure.Iot.Device
 
         private static bool ContainsDeviceIdPlaceholder(string topic)
         {
-            return topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal);
+            return topic.Contains(Unified.Connection.IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal);
         }
 
         private static string ResolveDeviceIdPlaceholder(string topic, string deviceId)
         {
-            return topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+            return topic.Replace(Unified.Connection.IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
         }
 
         /// <summary>

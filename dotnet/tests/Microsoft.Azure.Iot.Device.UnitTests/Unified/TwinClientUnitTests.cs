@@ -5,7 +5,6 @@ using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text;
@@ -111,7 +110,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -140,7 +139,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
 
             MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
-            Assert.Equal($"ih/{DeviceId}/srv/twin", getPublish.Topic);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", getPublish.Topic);
             Assert.Equal(1ul, twin.DesiredVersion);
             Assert.Equal(2ul, twin.ReportedVersion);
         }

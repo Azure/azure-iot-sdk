@@ -73,7 +73,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             Debug.Assert(CurrentConnectionContext != null);
             if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                return _mqttv5ConnectionClient.MqttConnectOverride(connect);
+                return _mqttv5ConnectionClient.IotHubMqttConnectOverride(connect);
             }
 
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";

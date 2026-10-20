@@ -26,8 +26,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
         private IConnectionClient _connection;
 
-        private const string AzureEventGridOutgoingTwinPublishTopicFormat = "ih/{0}/srv/twin";
-        private const string AzureEventGridIncomingTwinPublishTopicFormat = "ih/{0}/dev/twin";
+        // The connection client substitutes this device's current ID for the placeholder when it sends each request, so a
+        // pending request still goes to the right topic if the device ID changes (for example, after re-provisioning).
+        private const string AzureEventGridOutgoingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
+        private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
 
         private readonly ConcurrentDictionary<Guid, PendingGetTwinRequest> _pendingGetTwinOperations = new();
         private readonly ConcurrentDictionary<Guid, PendingReportedPropertiesUpdateRequest> _pendingReportedPropertyUpdateOperations = new();
@@ -105,7 +107,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 throw new ArgumentException("At least one twin section must be requested.");
             }
 
-            var currentConnectionContext = EnsureCorrectConnectionContext();
+            EnsureConnected();
 
             Guid requestId = Guid.NewGuid();
 
@@ -122,7 +124,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
             MqttPublish publish = new MqttPublish()
             {
-                Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, currentConnectionContext.DeviceId),
+                Topic = AzureEventGridOutgoingTwinPublishTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
                 CorrelationData = requestId.ToByteArray(bigEndian: true),
                 Payload = new TwinGet()
@@ -167,7 +169,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            var currentConnectionContext = EnsureCorrectConnectionContext();
+            EnsureConnected();
 
             Guid requestId = Guid.NewGuid();
 
@@ -178,7 +180,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
             MqttPublish publish = new MqttPublish()
             {
-                Topic = string.Format(AzureEventGridOutgoingTwinPublishTopicFormat, currentConnectionContext.DeviceId),
+                Topic = AzureEventGridOutgoingTwinPublishTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
                 CorrelationData = requestId.ToByteArray(bigEndian: true),
                 Payload = new ReportedPatch()
@@ -210,15 +212,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
         }
 
-        private ConnectionContext EnsureCorrectConnectionContext()
+        private void EnsureConnected()
         {
-            var currentConnectionContext = _connection.GetCurrentConnectionContext();
-            if (currentConnectionContext == null)
+            if (_connection.GetCurrentConnectionContext() == null || !_connection.IsConnectionTargetSet)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
-
-            return currentConnectionContext;
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
@@ -240,7 +239,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(string.Format(AzureEventGridIncomingTwinPublishTopicFormat, connectionContext.DeviceId)))
+            if (!args.Publish.Topic.Equals(AzureEventGridIncomingTwinPublishTopic.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal)))
             {
                 // This message wasn't for this device so ignore it
                 return;
