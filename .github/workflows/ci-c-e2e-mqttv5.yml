@@ -93,7 +93,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custom_topic az_iot_tests_e2e_mqttv5_custom_topic_az_mqtt
 
       - name: Issue a device
@@ -165,7 +165,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_twin az_iot_tests_e2e_mqttv5_twin_az_mqtt
 
       - name: Issue a device
@@ -231,7 +231,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_connection az_iot_tests_e2e_mqttv5_connection_az_mqtt
 
       - name: Issue a device
@@ -297,8 +297,6 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          # az_mqtt's send buffer must hold the largest publish (just over 1 MiB), so the
-          # size cases test the hub's limit rather than the client's.
           cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_telemetry az_iot_tests_e2e_mqttv5_telemetry_az_mqtt
 
@@ -365,7 +363,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_direct_method az_iot_tests_e2e_mqttv5_direct_method_az_mqtt
 
       - name: Issue a device
@@ -462,7 +460,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_transport az_iot_tests_e2e_mqttv5_transport_az_mqtt
 
       - name: Issue a device
@@ -534,7 +532,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custody az_iot_tests_e2e_mqttv5_custody_az_mqtt
 
       - name: Issue a device

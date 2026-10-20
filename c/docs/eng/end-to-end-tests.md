@@ -57,7 +57,11 @@ real device: **DPS provisioning with an X.509 individual enrollment**
 factories are registered. Each suite that connects is built once per adapter in the build:
 `<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
 `AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
-`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. The connect flow + all four scenarios live in
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. On
+Windows, az_mqtt (Schannel) takes no client certificate, so there only its SAS suites (`sas`,
+`tpm`) are registered; the X.509 ones are built, not run. With az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5`
+needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
+over 1 MiB. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 
