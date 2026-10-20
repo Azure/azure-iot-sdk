@@ -274,7 +274,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             try
             {
                 var errorPayload = JsonSerializer.Deserialize<IotHubServiceError>(errorContent);
-                if (errorPayload != null)
+                if (errorPayload?.ErrorDetails != null)
                 {
                     var nestedErrorPayload = JsonSerializer.Deserialize<IotHubNestedServiceException>(errorPayload.ErrorDetails);
                     if (nestedErrorPayload != null)
