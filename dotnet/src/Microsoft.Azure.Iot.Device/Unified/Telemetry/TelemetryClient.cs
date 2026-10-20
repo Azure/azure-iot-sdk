@@ -28,6 +28,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public const string MessagePropertyContentType = "$.ct";
         public const string MessagePropertyContentEncoding = "$.ce";
 
+        /// <summary>
+        /// Listen for cloud-to-device messages
+        /// </summary>
+        /// <remarks>
+        /// WARNING - this feature only works for MQTTv3 IoT Hubs currently
+        /// </remarks>
         public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync;
 
         /// <summary>
