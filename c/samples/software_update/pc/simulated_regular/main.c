@@ -20,8 +20,9 @@
  * checks and status reports still run on the provisioning session, which the
  * SDK reopens on demand after registration.
  *
- * It checks once at startup, then every AZ_IOT_SU_POLL_INTERVAL_S while no
- * deployment is in flight. After an update succeeds it reports the applied
+ * It checks once at startup, again at once after each update succeeds (until
+ * the service answers "no update"), and every AZ_IOT_SU_POLL_INTERVAL_S while
+ * no deployment is in flight. After an update succeeds it reports the applied
  * update as installed, so the next check asks for what comes after it.
  *
  * Real:      connection, update request/response, manifest receipt, JWS
@@ -51,9 +52,10 @@
  *
  * Other knobs (environment variables, all optional):
  *   AZ_IOT_SU_POLL_INTERVAL_S=<s>  seconds between update checks (default
- *                                   60); 0 checks once, at startup. A
- *                                   check not answered within half the
- *                                   interval (at most 60 s) is abandoned.
+ *                                   14400, 4 h); 0 checks only at startup
+ *                                   and after an update. A check not
+ *                                   answered within half the interval (at
+ *                                   most 60 s) is abandoned.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -389,10 +391,13 @@ int main(void)
     return 1;
   }
 
-  long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 60);
+  /* Every check and report of every device shares one per-instance request
+   * budget on the provisioning service, which plans for one check per device
+   * every 4 hours. */
+  long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (poll_interval_s < 0)
   {
-    poll_interval_s = 60;
+    poll_interval_s = 14400;
   }
   /* Each check is bounded to half the poll interval: a new request resets the
    * deadline, so a longer bound would let an unanswered check outlive every
@@ -543,6 +548,7 @@ int main(void)
   }
 
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
+  int check_now = 0; /* an update was applied: ask again for what comes after it */
 
   rc = 0; /* interrupted or asked to reboot is a normal exit */
   while (!g_stop)
@@ -590,6 +596,7 @@ int main(void)
           fprintf(stderr, "Could not record the applied update as installed.\n");
         }
       }
+      check_now = state.su_workflow_succeeded;
       state.su_workflow_succeeded = 0;
       printf("Deployment workflow complete.\n");
     }
@@ -627,9 +634,12 @@ int main(void)
       state.su_retry_after_ms = 0;
     }
 
-    /* Poll, while no deployment is in flight. */
-    if (poll_interval_s > 0 && !state.su_workflow_active && sample_now_ms() >= next_check_ms)
+    /* Poll, and ask again after each applied update, while no deployment is in
+     * flight. */
+    if (!state.su_workflow_active
+        && (check_now || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
+      check_now = 0;
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
       if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
       {
