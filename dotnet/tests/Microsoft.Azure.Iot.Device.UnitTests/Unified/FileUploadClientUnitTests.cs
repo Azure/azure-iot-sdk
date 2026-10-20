@@ -8,6 +8,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -59,10 +60,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             using X509Certificate2 secondCertificate = CreateCertificate();
             var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
             var handlers = new List<(X509Certificate2? Certificate, CapturingHandler Handler)>();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), certificate =>
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), credentials =>
             {
                 var handler = new CapturingHandler();
-                handlers.Add((certificate, handler));
+                handlers.Add((credentials.ClientCertificate, handler));
                 return handler;
             });
 
@@ -104,7 +105,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var authentication = new SwitchableAuthenticationProvider { Credentials = new AuthenticationCredentials { ClientCertificate = firstCertificate } };
             var firstRequestGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handlers = new List<CapturingHandler>();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), certificate =>
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), _ =>
             {
                 var handler = new CapturingHandler(handlers.Count == 0 ? firstRequestGate.Task : null);
                 handlers.Add(handler);
@@ -123,6 +124,79 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await firstRequest;
             Assert.True(handlers[0].IsDisposed);
             Assert.False(handlers[1].IsDisposed);
+        }
+
+        [Fact]
+        public async Task HttpClientIsRecreatedOnlyWhenTlsCallbacksChange()
+        {
+            RemoteCertificateValidationCallback firstValidation = (_, _, _, _) => true;
+            RemoteCertificateValidationCallback secondValidation = (_, _, _, _) => true;
+            LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
+            var authentication = new SwitchableAuthenticationProvider
+            {
+                Credentials = new AuthenticationCredentials { RemoteCertificateValidationCallback = firstValidation },
+            };
+            var handlerCredentials = new List<AuthenticationCredentials>();
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), credentials =>
+            {
+                handlerCredentials.Add(credentials);
+                return new CapturingHandler();
+            });
+
+            await GetSasUriAsync(fileUploadClient);
+            authentication.Credentials = new AuthenticationCredentials { RemoteCertificateValidationCallback = firstValidation };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Single(handlerCredentials);
+
+            authentication.Credentials = new AuthenticationCredentials { RemoteCertificateValidationCallback = secondValidation };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(2, handlerCredentials.Count);
+            Assert.Same(secondValidation, handlerCredentials[1].RemoteCertificateValidationCallback);
+
+            authentication.Credentials = new AuthenticationCredentials { RemoteCertificateValidationCallback = secondValidation, LocalCertificateSelectionCallback = selection };
+            await GetSasUriAsync(fileUploadClient);
+            Assert.Equal(3, handlerCredentials.Count);
+            Assert.Same(selection, handlerCredentials[2].LocalCertificateSelectionCallback);
+        }
+
+        [Fact]
+        public void HttpMessageHandlerAppliesCredentialTlsSettings()
+        {
+            using X509Certificate2 certificate = CreateCertificate();
+            RemoteCertificateValidationCallback validation = (_, _, _, _) => true;
+            LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
+
+            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials
+            {
+                ClientCertificate = certificate,
+                RemoteCertificateValidationCallback = validation,
+                LocalCertificateSelectionCallback = selection,
+            }));
+
+            Assert.Same(validation, handler.SslOptions.RemoteCertificateValidationCallback);
+            Assert.Same(selection, handler.SslOptions.LocalCertificateSelectionCallback);
+            Assert.Same(certificate, Assert.Single(handler.SslOptions.ClientCertificates!));
+        }
+
+        [Fact]
+        public void HttpMessageHandlerPresentsClientCertificateWithoutSelectionCallback()
+        {
+            using X509Certificate2 certificate = CreateCertificate();
+
+            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials { ClientCertificate = certificate }));
+
+            Assert.Null(handler.SslOptions.RemoteCertificateValidationCallback);
+            Assert.NotNull(handler.SslOptions.LocalCertificateSelectionCallback);
+            Assert.Same(certificate, handler.SslOptions.LocalCertificateSelectionCallback(this, HostName, new X509CertificateCollection(), null, Array.Empty<string>()));
+        }
+
+        [Fact]
+        public void HttpMessageHandlerHasNoClientCertificateForSasCredentials()
+        {
+            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(CreateSasCredentials()));
+
+            Assert.Null(handler.SslOptions.ClientCertificates);
+            Assert.Null(handler.SslOptions.LocalCertificateSelectionCallback);
         }
 
         private static Task<FileUploadSasUriResponse> GetSasUriAsync(FileUploadClient fileUploadClient)

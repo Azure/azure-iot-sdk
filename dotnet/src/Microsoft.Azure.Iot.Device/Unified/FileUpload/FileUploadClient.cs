@@ -20,15 +20,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private readonly object _httpClientLock = new();
         private HttpClientLease? _httpClient;
         private readonly IConnectionClient _connection;
-        private readonly Func<X509Certificate2?, HttpMessageHandler> _createHttpMessageHandler;
+        private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHttpMessageHandler;
 
         public FileUploadClient(IConnectionClient connection)
             : this(connection, CreateHttpMessageHandler)
         {
         }
 
-        // Lets tests observe the HTTP clients this client creates for each client certificate.
-        internal FileUploadClient(IConnectionClient connection, Func<X509Certificate2?, HttpMessageHandler> createHttpMessageHandler)
+        // Lets tests observe the HTTP clients this client creates for each set of credentials.
+        internal FileUploadClient(IConnectionClient connection, Func<AuthenticationCredentials, HttpMessageHandler> createHttpMessageHandler)
         {
             _connection = connection;
             _httpClient = null;
@@ -46,16 +46,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// client may be provisioned to either a Gen 1 IoT Hub or a Gen 2 IoT Hub, the user-supplied HTTP client may not always be used.
         /// </para>
         /// <para>
-        /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate.
+        /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate,
+        /// and to apply any <see cref="AuthenticationProvider.RemoteCertificateValidationCallback"/> or <see cref="AuthenticationProvider.LocalCertificateSelectionCallback"/> the device uses.
         /// When it authenticates with a SAS token, this client adds the token to each request's Authorization header. In either case, this client will set the base address of the http client
         /// to target the IoT Hub endpoint correctly, and requests always target the IoT hub the device is currently assigned to. Unlike the HTTP client this client creates for itself,
-        /// a user-supplied HTTP client is not replaced when the device's client certificate changes or the device is re-provisioned to a different IoT hub.
+        /// a user-supplied HTTP client is not replaced when the device's TLS credentials change or the device is re-provisioned to a different IoT hub.
         /// </para>
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connection = connection;
-            _httpClient = new HttpClientLease(httpClient, clientCertificate: null, iotHubHostName: null, ownsClient: false);
+            _httpClient = new HttpClientLease(httpClient, credentials: null, iotHubHostName: null, ownsClient: false);
             _createHttpMessageHandler = CreateHttpMessageHandler;
         }
 
@@ -96,18 +97,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
                 if (_httpClient == null)
                 {
-                    _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
+                    _httpClient = CreateHttpClient(currentConnectionContext, credentials);
                 }
                 else if (_httpClient.OwnsClient
-                    && (!IsSameCertificate(_httpClient.ClientCertificate, credentials.ClientCertificate)
+                    && (!HasSameTlsSettings(_httpClient.Credentials!, credentials)
                         || !string.Equals(_httpClient.IotHubHostName, currentConnectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase)))
                 {
-                    // The client certificate is bound to the handler when the HTTP client is created, so present a changed certificate
-                    // (for example, one issued by certificate management) through a new HTTP client. Likewise, an HTTP client's base address
+                    // The client certificate and TLS callbacks are bound to the handler when the HTTP client is created, so apply changed ones
+                    // (for example, a certificate issued by certificate management) through a new HTTP client. Likewise, an HTTP client's base address
                     // can't change once it has sent a request, so a device re-provisioned to a different IoT hub also needs a new HTTP client.
                     // The old one is disposed once its in-flight requests complete since disposing an HTTP client cancels its pending requests.
                     _httpClient.Release();
-                    _httpClient = CreateHttpClient(currentConnectionContext, credentials.ClientCertificate);
+                    _httpClient = CreateHttpClient(currentConnectionContext, credentials);
                 }
                 else if (!_httpClient.OwnsClient && !_isUserSuppliedHttpClientInitialized)
                 {
@@ -123,25 +124,41 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             }
         }
 
-        private HttpClientLease CreateHttpClient(ConnectionContext currentConnectionContext, X509Certificate2? clientCertificate)
+        private HttpClientLease CreateHttpClient(ConnectionContext currentConnectionContext, AuthenticationCredentials credentials)
         {
-            HttpClient httpClient = new(_createHttpMessageHandler(clientCertificate))
+            HttpClient httpClient = new(_createHttpMessageHandler(credentials))
             {
                 BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
             };
 
-            return new HttpClientLease(httpClient, clientCertificate, currentConnectionContext.IotHubHostName, ownsClient: true);
+            return new HttpClientLease(httpClient, credentials, currentConnectionContext.IotHubHostName, ownsClient: true);
         }
 
-        private static HttpMessageHandler CreateHttpMessageHandler(X509Certificate2? clientCertificate)
+        internal static HttpMessageHandler CreateHttpMessageHandler(AuthenticationCredentials credentials)
         {
-            var handler = new HttpClientHandler();
+            // SocketsHttpHandler is used rather than HttpClientHandler because only it exposes a local certificate selection callback.
+            var handler = new SocketsHttpHandler();
+            handler.SslOptions.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
+
+            X509Certificate2? clientCertificate = credentials.ClientCertificate;
             if (clientCertificate != null)
             {
-                handler.ClientCertificates.Add(clientCertificate);
+                handler.SslOptions.ClientCertificates = new X509CertificateCollection { clientCertificate };
             }
 
+            // Per the AuthenticationCredentials contract, present the client certificate when there is no selection callback rather than leaving
+            // the choice to the TLS stack, which may present nothing if the certificate's issuer isn't one IoT hub asked for.
+            handler.SslOptions.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback
+                ?? (clientCertificate == null ? null : (_, _, _, _, _) => clientCertificate);
+
             return handler;
+        }
+
+        private static bool HasSameTlsSettings(AuthenticationCredentials first, AuthenticationCredentials second)
+        {
+            return IsSameCertificate(first.ClientCertificate, second.ClientCertificate)
+                && Equals(first.RemoteCertificateValidationCallback, second.RemoteCertificateValidationCallback)
+                && Equals(first.LocalCertificateSelectionCallback, second.LocalCertificateSelectionCallback);
         }
 
         private static bool IsSameCertificate(X509Certificate2? first, X509Certificate2? second)
@@ -168,17 +185,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             // Starts with the reference held by the file upload client while this is its current HTTP client.
             private int _references = 1;
 
-            public HttpClientLease(HttpClient client, X509Certificate2? clientCertificate, string? iotHubHostName, bool ownsClient)
+            public HttpClientLease(HttpClient client, AuthenticationCredentials? credentials, string? iotHubHostName, bool ownsClient)
             {
                 Client = client;
-                ClientCertificate = clientCertificate;
+                Credentials = credentials;
                 IotHubHostName = iotHubHostName;
                 OwnsClient = ownsClient;
             }
 
             public HttpClient Client { get; }
 
-            public X509Certificate2? ClientCertificate { get; }
+            /// <summary>
+            /// The credentials whose TLS settings an HTTP client created by this file upload client was configured with.
+            /// </summary>
+            public AuthenticationCredentials? Credentials { get; }
 
             /// <summary>
             /// The IoT hub that the base address of an HTTP client created by this file upload client targets.
