@@ -165,7 +165,7 @@ static void result_step_failure(
 {
   az_iot_su_client_install_result* r = &SU_I(client).install_result;
   int32_t extended = AZ_IOT_SU_EXTENDED_RESULT(facility, (uint32_t)sub_code);
-  int32_t code = (int32_t)(700 - facility); /* a non-success software updates code (< 700) */
+  int32_t code = -(int32_t)facility; /* non-positive marks a failure; names the failing phase */
 
   if ((int32_t)step < SU_I(client).step_results_count)
   {
