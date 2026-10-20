@@ -78,7 +78,8 @@ internal class Program
         };
 
         Console.WriteLine("Notifying IoT Hub that the SAS URI is no longer in use.");
-        await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, cts.Token);
+        using CancellationTokenSource completionCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, completionCts.Token);
 
         await connectionClient.DisconnectAsync();
     }
