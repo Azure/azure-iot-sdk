@@ -147,13 +147,13 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>>? HandleCertificateSigningCompleteAsync { get; }
 
-        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (issuedClientCertificates is { Count: > 0 })
             {
                 if (_issuedCertificateHandler != null)
                 {
-                    X509Certificate2 certificate = await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates).ConfigureAwait(false);
+                    X509Certificate2 certificate = await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates, cancellationToken).ConfigureAwait(false);
                     return new AuthenticationCredentials()
                     {
                         ClientCertificate = certificate,

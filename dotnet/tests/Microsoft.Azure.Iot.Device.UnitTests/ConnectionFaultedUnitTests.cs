@@ -1933,7 +1933,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
             }
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes("operational") });
             }
