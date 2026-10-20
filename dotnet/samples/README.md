@@ -37,3 +37,6 @@ dotnet run --project DirectMethodsSample  --property WarningLevel=0
 ```
 
 To see each way a device can authenticate with DPS and IoT Hub (X.509 certificates, symmetric keys, and certificates issued by DPS and renewed by IoT Hub), see the [AuthenticationSample](./Unified/AuthenticationSample/).
+
+To capture SDK diagnostics and optional MQTTnet logs to the console and a file, see the
+[LoggingSample](./Unified/LoggingSample/).
