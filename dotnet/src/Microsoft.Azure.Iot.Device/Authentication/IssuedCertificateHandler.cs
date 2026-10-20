@@ -42,6 +42,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             }
 
             await _callbackLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            bool callbackOwnsLock = false;
             try
             {
                 lastHandled = _lastHandled;
@@ -50,6 +51,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                     return lastHandled.Certificate;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
+                Task<X509Certificate2> callbackTask = HandleCallbackAsync(issuedClientCertificates);
+                callbackOwnsLock = true;
+                return await callbackTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!callbackOwnsLock)
+                {
+                    _callbackLock.Release();
+                }
+            }
+        }
+
+        private async Task<X509Certificate2> HandleCallbackAsync(IReadOnlyList<string> issuedClientCertificates)
+        {
+            try
+            {
                 X509Certificate2 certificate = await _callback(issuedClientCertificates).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("The certificate signing complete callback returned a null certificate.");
 
