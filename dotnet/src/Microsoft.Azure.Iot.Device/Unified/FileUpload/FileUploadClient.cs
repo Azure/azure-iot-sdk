@@ -19,14 +19,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private bool _isUserSuppliedHttpClient;
         private HttpClient? _httpClient;
         private readonly IConnectionClient _connection;
-        private MQTTv5.FileUpload.FileUploadClient _mqttv5FileUploadClient;
 
         public FileUploadClient(IConnectionClient connection)
         {
             _connection = connection;
             _httpClient = null;
             _isUserSuppliedHttpClient = false;
-            _mqttv5FileUploadClient = new(new Stub(_connection));
         }
 
         /// <summary>
@@ -49,7 +47,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             _connection = connection;
             _httpClient = httpClient;
             _isUserSuppliedHttpClient = true;
-            _mqttv5FileUploadClient = new(new Stub(_connection));
         }
 
         private void InitializeIfUninitialized()
@@ -104,11 +101,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 throw new NotSupportedException("Must connect device prior to using this method");
             }
 
-            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
-            {
-                return await _mqttv5FileUploadClient.GetFileUploadSasUriAsync(request, cancellationToken);
-            }
-
             string requestUri = $"devices/{currentConnectionContext.DeviceId}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
             HttpRequestMessage requestMessage = new(HttpMethod.Post, requestUri)
@@ -146,12 +138,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             if (currentConnectionContext == null)
             {
                 throw new NotSupportedException("Must connect device prior to using this method");
-            }
-
-            if (currentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5)
-            {
-                await _mqttv5FileUploadClient.CompleteFileUploadSasUriAsync(completion, cancellationToken);
-                return;
             }
 
             string requestUri = $"devices/{currentConnectionContext.DeviceId}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";

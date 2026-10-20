@@ -6,7 +6,6 @@ using Azure.Storage.Blobs.Specialized;
 using System.Text;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Unified.FileUpload;
-using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
 using Microsoft.Azure.Iot.Device.Exceptions;
 

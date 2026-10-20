@@ -3,7 +3,6 @@
 
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
-using Microsoft.Azure.Iot.Device;
 using SetupSampleDevice;
 using System.Text;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
