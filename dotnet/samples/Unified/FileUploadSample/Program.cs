@@ -10,6 +10,7 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 internal class Program
 {
