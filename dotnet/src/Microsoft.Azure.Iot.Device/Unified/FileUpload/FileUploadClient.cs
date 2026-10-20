@@ -111,10 +111,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 }
                 else if (!_httpClient.OwnsClient && !_isUserSuppliedHttpClientInitialized)
                 {
-                    // If user supplied an HTTP client, just target its base address appropriately. We cannot load the client certificates into this client due to how the .NET HTTP client works, 
-                    // so it is the user's responsibility to set that up when creating the HTTP client that they passed in. The base address can't be updated after the first request,
-                    // so requests use absolute URIs to follow the device if it is re-provisioned to a different IoT hub.
-                    _httpClient.Client.BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName);
+                    // Requests use absolute URIs, so preserve the caller's HTTP client configuration.
                     _isUserSuppliedHttpClientInitialized = true;
                 }
 
