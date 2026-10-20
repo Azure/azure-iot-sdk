@@ -64,6 +64,13 @@ function(az_iot_add_adapter_sample target)
         target_include_directories(${t} PRIVATE ${AZ_IOT_SAMPLES_COMMON_DIR} ${arg_INCLUDES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_SAMPLE_ADAPTER_${ADAPTER} ${arg_DEFINES})
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
+        # Windows finds DLLs next to the executable: the SDK's stay in the shared bin/.
+        if(WIN32 AND BUILD_SHARED_LIBS AND NOT adapter STREQUAL "paho")
+            add_custom_command(TARGET ${t} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_RUNTIME_DLLS:${t}> $<TARGET_FILE_DIR:${t}>
+                COMMAND_EXPAND_LISTS)
+        endif()
         if(arg_CRYPTO)
             string(TOUPPER "${AZ_IOT_SAMPLE_CRYPTO}" CRYPTO)
             target_compile_definitions(${t} PRIVATE AZ_IOT_SAMPLE_CRYPTO_${CRYPTO})
