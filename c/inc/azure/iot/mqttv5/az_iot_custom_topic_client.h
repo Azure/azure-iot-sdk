@@ -47,7 +47,8 @@ extern "C"
     const char* topic;
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
-    az_iot_mqtt_qos qos; /**< AZ_IOT_MQTT_QOS_0 (default) or AZ_IOT_MQTT_QOS_1. */
+    az_iot_mqtt_qos qos; /**< AZ_IOT_MQTT_QOS_0 (default) or AZ_IOT_MQTT_QOS_1. Refusals are
+                              reported at QoS 1 only. */
     const char* content_type; /**< MQTT v5 Content Type. NULL: none. */
     /** Sent verbatim. Keys must be non-empty; values non-NULL. */
     const az_iot_mqtt_user_property* user_properties;
@@ -58,10 +59,14 @@ extern "C"
   /**
    * @brief Completion of az_iot_mqttv5_custom_topic_client_publish().
    *
-   * @param status   Outcome; see az_iot_mqttv5_custom_topic_client_publish().
+   * @param result   Outcome, with the hub's reason code and Reason String when it refused the
+   *                 message; see az_iot_mqttv5_custom_topic_client_publish(). Valid only during
+   *                 the call.
    * @param user_ctx Context passed to az_iot_mqttv5_custom_topic_client_publish().
    */
-  typedef void (*az_iot_mqttv5_custom_topic_publish_callback)(az_iot_result status, void* user_ctx);
+  typedef void (*az_iot_mqttv5_custom_topic_publish_callback)(
+      const az_iot_publish_result* result,
+      void* user_ctx);
 
   /** @brief Custom topic client. Caller-allocated; opaque. */
   typedef struct az_iot_mqttv5_custom_topic_client
@@ -120,13 +125,18 @@ extern "C"
   /**
    * @brief Publish @p message.
    *
-   * @param callback Required. Called once, only if this returns AZ_IOT_OK. QoS 0: before this
-   *                 returns, with AZ_IOT_OK. QoS 1: with the hub's acknowledgement, or with
-   *                 AZ_IOT_ERR_NOT_CONNECTED if the session ends first; the message may then not
-   *                 have arrived. AZ_IOT_ERR_PUBLISH_REFUSED: refused, for example a topic no
-   *                 template allows; it will be again if resent unchanged. AZ_IOT_ERR_BUSY: over
-   *                 the hub's quota. AZ_IOT_ERR_MQTT: failed, reason unknown (not every MQTT
-   *                 adapter reports one). Not called after az_iot_connection_client_deinit().
+   * @param callback Required. Called once, only if this returns AZ_IOT_OK; result->status is:
+   *                 - QoS 0: AZ_IOT_OK, before this returns. The hub does not acknowledge QoS 0,
+   *                   so a message it refuses (for example, a topic no template allows) is
+   *                   dropped without any error reaching the device. Use QoS 1 to learn of
+   *                   refusals.
+   *                 - QoS 1: the hub's verdict. AZ_IOT_OK: accepted.
+   *                   AZ_IOT_ERR_PUBLISH_REFUSED: refused, for example a topic no template allows;
+   *                   it will be again if resent unchanged. AZ_IOT_ERR_BUSY: over the hub's quota.
+   *                   AZ_IOT_ERR_MQTT: failed for another reason. AZ_IOT_ERR_NOT_CONNECTED: the
+   *                   session ended first; the message may not have arrived. On a refusal,
+   *                   result->reason_code and result->reason_string say why.
+   *                 Not called after az_iot_connection_client_deinit().
    *
    * @return AZ_IOT_OK if handed to the transport.
    * @retval AZ_IOT_ERR_INVALID_ARG A NULL argument, an invalid topic (see

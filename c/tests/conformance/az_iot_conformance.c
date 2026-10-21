@@ -294,6 +294,9 @@ typedef struct conf_recorder
   uint8_t correlations[CONF_EVENTS_MAX][CONF_CORRELATION_MAX];
   size_t correlation_lens[CONF_EVENTS_MAX];
   uint32_t message_expiries[CONF_EVENTS_MAX];
+  /* The event's reason string, copied; NULL is recorded as -1. */
+  char reason_strings[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
+  int reason_string_lens[CONF_EVENTS_MAX];
 } conf_recorder;
 
 /* Copy a NUL-terminated string the adapter exposed into a fixed slot. */
@@ -376,6 +379,13 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
   r->protocol_codes[i] = evt->protocol_code;
   r->packet_ids[i] = evt->packet_id;
   r->session_present[i] = evt->session_present;
+  r->reason_string_lens[i] = -1;
+  if (evt->reason_string != NULL)
+  {
+    r->reason_string_lens[i] = (int)evt->reason_string_len;
+    conf_copy_n(
+        r->reason_strings[i], CONF_PROP_STR_MAX, evt->reason_string, evt->reason_string_len);
+  }
   if (evt->message)
   {
     if (evt->message->topic)
@@ -525,6 +535,18 @@ static int saw_message(const conf_recorder* r)
   for (size_t i = 0; i < r->count; ++i)
   {
     if (r->kinds[i] == AZ_IOT_MQTT_EVT_MESSAGE)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int saw_unsubscribe_ack(const conf_recorder* r)
+{
+  for (size_t i = 0; i < r->count; ++i)
+  {
+    if (r->kinds[i] == AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK)
     {
       return 1;
     }
@@ -774,9 +796,19 @@ static void publish_subscribe_roundtrip(void** state)
   }
   assert_true(found);
 
-  /* tidy up */
+  /* An accepted unsubscribe is acknowledged, under its packet id. */
   uint16_t unsub_pid = 0;
   assert_int_equal(c->iface->unsubscribe(c, topic, &unsub_pid), AZ_IOT_OK);
+  assert_int_not_equal(unsub_pid, 0);
+  assert_true(wait_until(c, &rec, saw_unsubscribe_ack, k_step_timeout_ms));
+  for (size_t i = 0; i < rec.count; ++i)
+  {
+    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK)
+    {
+      assert_int_equal(rec.packet_ids[i], unsub_pid);
+      assert_int_equal(rec.statuses[i], AZ_IOT_OK);
+    }
+  }
   (void)c->iface->disconnect(c);
   destroy_client(c);
 }
@@ -1759,6 +1791,17 @@ static void server_disconnect_is_reported(void** state)
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
   assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
 
+  /* The reason code is reported verbatim, classified by az_iot_mqtt_disconnect_result(). */
+  size_t i = 0;
+  while (i < rec.count && rec.kinds[i] != AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    ++i;
+  }
+  assert_true(i < rec.count);
+  assert_int_equal(rec.protocol_codes[i], bye.bytes[2]);
+  assert_int_equal(
+      rec.statuses[i], az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, bye.bytes[2]));
+
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
@@ -2512,24 +2555,25 @@ static void a_missing_client_cert_is_rejected(void** state)
 #endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* A publish the broker refuses must surface as a failed PUBLISH_ACK. The proxy
- * swallows the PUBLISH and answers it with a PUBACK carrying a failure reason,
- * echoing the client's packet id so the ack is matched to the publish rather
- * than discarded as unsolicited.
+ * swallows the PUBLISH and answers it with a PUBACK carrying @p code (and
+ * @p reason_string unless NULL), echoing the client's packet id so the ack is
+ * matched to the publish rather than discarded as unsolicited.
+ *
+ * The adapter must report the code verbatim, classified by
+ * az_iot_mqtt_puback_result(), and the Reason String verbatim: they are all an
+ * application has to tell a refusal from a failure, and why it was refused.
  *
  * MQTT 3.1.1 has no reason code in a PUBACK, so a v3 publish can only fail by
- * losing the connection -- a different path with a different meaning. The case
- * is therefore registered in the v5 suite alone rather than checking the
- * version and skipping at run time.
- *
- * This closes the last documented gap in the adapter's publish-failure
- * callbacks. */
-static void a_refused_publish_is_reported(void** state)
+ * losing the connection -- a different path with a different meaning. These
+ * cases are therefore registered in the v5 suite alone rather than checking the
+ * version and skipping at run time. */
+static void assert_refused_publish_is_reported(uint8_t code, const char* reason_string)
 {
-  (void)state;
   uint16_t proxy_port = 0;
   az_iot_test_proxy* proxy = start_proxy(&proxy_port);
 
-  az_iot_test_mqtt_packet puback = conf_puback(AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED);
+  az_iot_test_mqtt_packet puback = az_iot_test_mqtt_puback_v5_raw(code, reason_string);
+  assert_int_not_equal(puback.len, 0);
 
   az_iot_test_proxy_rule swallow = { 0 };
   swallow.dir = AZ_IOT_TEST_PROXY_C2B;
@@ -2565,22 +2609,46 @@ static void a_refused_publish_is_reported(void** state)
   assert_true(wait_until(c, &rec, saw_publish_ack_error, k_step_timeout_ms));
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
-  /* An adapter that reports the code (0: not reported) reports it verbatim, classified by
-   * az_iot_mqtt_puback_result(). */
+  size_t acks = 0;
   for (size_t i = 0; i < rec.count; ++i)
   {
-    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_PUBLISH_ACK && rec.protocol_codes[i] != 0)
+    if (rec.kinds[i] != AZ_IOT_MQTT_EVT_PUBLISH_ACK)
     {
-      assert_int_equal(rec.packet_ids[i], pub_pid);
-      assert_int_equal(rec.protocol_codes[i], puback.bytes[4]);
-      assert_int_equal(
-          rec.statuses[i], az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, rec.protocol_codes[i]));
+      continue;
+    }
+    ++acks;
+    assert_int_equal(rec.packet_ids[i], pub_pid);
+    assert_int_equal(rec.protocol_codes[i], code);
+    assert_int_equal(rec.statuses[i], az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, code));
+    if (reason_string == NULL)
+    {
+      assert_int_equal(rec.reason_string_lens[i], -1);
+    }
+    else
+    {
+      assert_int_equal(rec.reason_string_lens[i], (int)strlen(reason_string));
+      assert_string_equal(rec.reason_strings[i], reason_string);
     }
   }
+  assert_int_equal(acks, 1);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
+}
+
+/* Not authorized, with the broker's explanation. */
+static void a_refused_publish_is_reported(void** state)
+{
+  (void)state;
+  assert_refused_publish_is_reported(0x87, "no topic template allows this topic");
+}
+
+/* Quota exceeded, without a Reason String: AZ_IOT_ERR_BUSY, so the caller retries later. */
+static void a_publish_over_quota_is_reported_as_busy(void** state)
+{
+  (void)state;
+  assert_refused_publish_is_reported(0x97, NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -4224,6 +4292,7 @@ int az_iot_conformance_run_with_options(
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(server_disconnect_is_reported),
             cmocka_unit_test(a_refused_publish_is_reported),
+            cmocka_unit_test(a_publish_over_quota_is_reported_as_busy),
             cmocka_unit_test(v5_message_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_properties_from_the_server_are_surfaced_intact),
             cmocka_unit_test(v5_many_properties_survive_a_roundtrip),

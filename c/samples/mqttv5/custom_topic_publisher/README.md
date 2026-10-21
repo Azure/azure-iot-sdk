@@ -15,7 +15,8 @@ and closes.
   given and does not expand `{deviceId}`: on a hub with a template such as `contoso/+/alerts`, a
   topic still holding `{deviceId}` is accepted as is.
 - Publishes at QoS 1 with a content type and one user property. The client adds no properties of
-  its own.
+  its own. At QoS 1 a refused message completes with the hub's reason code and Reason String;
+  at QoS 0 the hub sends no acknowledgement, so a refused message is dropped without an error.
 - Custom topics are publish only.
 - Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
 - Platforms: Linux and Windows.
@@ -118,8 +119,9 @@ SDK warnings and errors go to stderr. On an mqttv3 hub it prints
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | `Cannot build a topic from '<template>': AZ_IOT_ERR_INVALID_ARG` | The template has a `{` or `}` that is not part of `{deviceId}`. The variable is case-sensitive. |
 | `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
-| `The hub refused '<topic>'.` | No topic template on the hub matches the topic. Shown only with an MQTT adapter that reports PUBACK reason codes, such as az_mqtt; the Paho adapter registered here does not yet. |
-| `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed and the MQTT adapter did not report why. With the Paho adapter this includes a topic no template matches. |
+| `The hub refused '<topic>' (reason code 0x87: "<text>").` | No topic template on the hub matches the topic. The quoted text is the hub's Reason String, empty when it sent none. |
+| `Publish to '<topic>' failed: AZ_IOT_ERR_BUSY` | Over the hub's quota (reason code 0x97). Retry later. |
+| `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed for another reason; the SDK log line `publish with packet id ... failed` gives the code. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_NOT_CONNECTED` | The connection ended before the hub acknowledged; the hub may also close the connection on a refused publish. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |

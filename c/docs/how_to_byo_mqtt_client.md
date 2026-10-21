@@ -103,6 +103,10 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 
 **On any acknowledgement that carries a code** — also set `protocol_code` on the `az_iot_mqtt_event` to that verbatim wire value, and leave it 0 only when there is none. A non-zero value is always the wire code, including the granted QoS on a SUBACK that succeeded. `status` is what the SDK branches on; `protocol_code` is what a log line and a support engineer read, and it is the only way a code newer than this SDK survives the trip into C. Do not substitute your own numbering for it.
 
+**On a v5 PUBACK with a Reason String** — set `reason_string` and `reason_string_len` to it, verbatim. It must stay valid until the callback returns; an adapter that delivers from another thread copies it (Paho's adapter does). Applications receive it in their publish callback: it is often the only account of why the hub refused a message. Conformance: `a_refused_publish_is_reported`.
+
+**On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned, in both versions. Conformance: `publish_subscribe_roundtrip`.
+
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
 ### The single-thread contract (important)

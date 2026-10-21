@@ -194,7 +194,11 @@ static void _azm_emit(_azm_client* m, az_iot_mqtt_event const* event)
   }
   else if (m->pending_count < AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX)
   {
-    m->pending[m->pending_count++] = *event;
+    m->pending[m->pending_count] = *event;
+    // The reason string points into the receive buffer, which a held event outlives.
+    m->pending[m->pending_count].reason_string = NULL;
+    m->pending[m->pending_count].reason_string_len = 0;
+    m->pending_count++;
   }
   else
   {
@@ -481,6 +485,13 @@ static void _azm_emit_publish_ack(_azm_client* m, _AZM(ack_data) const* ack)
   {
     event.status = AZ_IOT_ERR_MQTT;
   }
+#if AZ_IOT_AZ_MQTT_V == 5
+  if (az_span_size(ack->reason_string) > 0)
+  {
+    event.reason_string = (char const*)az_span_ptr(ack->reason_string);
+    event.reason_string_len = (size_t)az_span_size(ack->reason_string);
+  }
+#endif
   _azm_emit(m, &event);
 }
 
