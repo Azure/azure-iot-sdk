@@ -83,8 +83,9 @@ Final report for workflow <id>: FAILED, resultCode -5, extendedResultCodes 50000
   step_1: FAILED, resultCode -5, facility 0x5, sub-code 0x102, details "install: payload rejected by the target component"
 ```
 
-A failed workflow is offered again with the same id. The device retries it only after the
-wait the service requires (1 hour, doubling up to 24 hours).
+A failed workflow is offered again with the same id; the client ignores it as a duplicate
+(`AZ_IOT_SU_EVENT_UPDATE_DUPLICATE`), so this process does not retry it. Another attempt needs a
+new deployment, which has a new workflow id.
 
 ## Where to look in `main.c`
 

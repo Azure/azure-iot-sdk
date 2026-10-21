@@ -314,7 +314,7 @@ static void print_report(const az_iot_su_report* report)
         (unsigned)(ext >> 28),
         (unsigned)(ext & 0x0FFFFFFFu),
         (int)az_span_size(s->result_details),
-        (const char*)az_span_ptr(s->result_details));
+        az_span_size(s->result_details) > 0 ? (const char*)az_span_ptr(s->result_details) : "");
   }
 }
 
