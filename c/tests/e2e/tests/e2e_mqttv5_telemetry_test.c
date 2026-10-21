@@ -240,6 +240,25 @@ static void watch_begin(fixture* fx)
   assert_true(watching);
 }
 
+/** @brief Sends @p message, retrying while the client is busy; returns the final result. */
+static az_iot_result try_send(
+    fixture* fx,
+    const az_iot_telemetry_message* message,
+    publish_record* record)
+{
+  az_iot_result rc = AZ_IOT_ERR_BUSY;
+  for (time_t start = time(NULL); (time(NULL) - start) < E2E_ACK_TIMEOUT_S;)
+  {
+    rc = az_iot_mqttv5_telemetry_client_send(&fx->telemetry, message, on_publish, record);
+    if (rc != AZ_IOT_ERR_BUSY)
+    {
+      break;
+    }
+    pump_both(fx);
+  }
+  return rc;
+}
+
 /** @brief Sends one message, retrying while every PUBACK slot is in use. */
 static publish_record* send_message(
     fixture* fx,
@@ -254,16 +273,7 @@ static publish_record* send_message(
   message.payload_len = payload_len;
   message.properties = properties;
   message.properties_count = properties_count;
-  az_iot_result rc = AZ_IOT_ERR_BUSY;
-  for (time_t start = time(NULL); (time(NULL) - start) < E2E_ACK_TIMEOUT_S;)
-  {
-    rc = az_iot_mqttv5_telemetry_client_send(&fx->telemetry, &message, on_publish, record);
-    if (rc != AZ_IOT_ERR_BUSY)
-    {
-      break;
-    }
-    pump_both(fx);
-  }
+  az_iot_result rc = try_send(fx, &message, record);
   if (rc != AZ_IOT_OK)
   {
     fail_msg("send of %zu bytes returned %s", payload_len, az_iot_result_to_string(rc));
@@ -697,7 +707,23 @@ static void payload_past_limit_is_refused(void** state)
   watch_begin(fx);
   /* Latched on arrival, so an oversized delivery evicted from the capture ring still counts. */
   assert_true(az_iot_e2e_service_telemetry_watch_needle(fx->service, marker));
-  publish_record* record = send_message(fx, payload, E2E_PAYLOAD_PAST_LIMIT, NULL, 0);
+  publish_record* record = new_record(fx);
+  az_iot_telemetry_message message = { 0 };
+  message.payload = payload;
+  message.payload_len = E2E_PAYLOAD_PAST_LIMIT;
+  /* An adapter that honours the Maximum Packet Size the hub sent in CONNACK refuses it before
+   * sending (az_mqtt). The send buffer is sized above the payload, so this is the hub's limit. */
+  az_iot_result const send_rc = try_send(fx, &message, record);
+  if (send_rc == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    record->done = 1;
+    record->status = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  else if (send_rc != AZ_IOT_OK)
+  {
+    fail_msg(
+        "send of %d bytes returned %s", E2E_PAYLOAD_PAST_LIMIT, az_iot_result_to_string(send_rc));
+  }
   wait_done(fx, record, E2E_ACK_TIMEOUT_S);
   bool seen = wait_seen(fx, marker, E2E_NOT_ROUTED_WINDOW_S);
   bool latched = az_iot_e2e_service_telemetry_needle_seen(fx->service, marker);
@@ -725,6 +751,10 @@ static void payload_past_limit_is_refused(void** state)
   else if (record->status == AZ_IOT_ERR_NOT_CONNECTED)
   {
     printf("[e2e] observed: the hub dropped the session\n");
+  }
+  else if (record->status == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    printf("[e2e] observed: refused before sending (over the hub's Maximum Packet Size)\n");
   }
   else
   {
