@@ -920,6 +920,31 @@ static void a_far_saved_deadline_restores_the_capped_wait(void** state)
   assert_int_equal(r._internal.due_unix_s, now + 60u + 1u);
 }
 
+/* A wait beyond UINT32_MAX ms reads as UINT32_MAX and saves without wrapping;
+ * a restore with the time unknown takes the caller's cap. */
+static void a_wait_beyond_uint32_saturates_and_restores_capped(void** state)
+{
+  (void)state;
+  az_iot_retry_policy p = { .initial_delay_ms = 1000, .max_delay_ms = 1000 };
+  uint64_t rng = 1;
+  az_iot_retry_state s = { 0 };
+  assert_true(az_iot_retry_state__schedule(&s, &p, &rng));
+  az_iot_retry_state__defer(&s, az_iot_time_mono_ms() + (uint64_t)UINT32_MAX + 86400000u);
+  assert_int_equal(az_iot_retry_state__remaining_ms(&s), UINT32_MAX);
+
+  uint8_t rec[AZ_IOT_RETRY_STATE_RECORD_SIZE];
+  az_iot_retry_state__save(&s, rec);
+  uint32_t left_s = (uint32_t)rec[4] | ((uint32_t)rec[5] << 8) | ((uint32_t)rec[6] << 16)
+      | ((uint32_t)rec[7] << 24);
+  assert_int_equal(left_s, (UINT32_MAX / 1000u) + 1u);
+
+  az_iot_retry_state r = { 0 };
+  az_iot_retry_state__restore(&r, rec, 0u, 86400000u);
+  assert_true(az_iot_retry_state__pending(&r));
+  uint32_t left = az_iot_retry_state__remaining_ms(&r);
+  assert_true(left > 86399000u && left <= 86400000u);
+}
+
 /* After a restore with the time unknown, defer() drops the kept deadline, so a
  * later restore with a known time keeps the whole deferred wait. */
 static void a_deferred_retry_restored_without_time_keeps_its_wait(void** state)
@@ -1109,6 +1134,7 @@ int main(void)
     cmocka_unit_test(a_deferred_retry_restores_its_deferred_wait),
     cmocka_unit_test(a_pause_before_scheduling_does_not_shorten_the_deadline),
     cmocka_unit_test(a_far_saved_deadline_restores_the_capped_wait),
+    cmocka_unit_test(a_wait_beyond_uint32_saturates_and_restores_capped),
     cmocka_unit_test(a_deferred_retry_restored_without_time_keeps_its_wait),
     cmocka_unit_test(a_deferred_retry_restored_with_time_keeps_its_wait),
     cmocka_unit_test(a_capped_deadline_does_not_creep_across_restarts),
