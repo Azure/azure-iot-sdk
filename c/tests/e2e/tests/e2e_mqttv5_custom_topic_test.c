@@ -57,6 +57,8 @@ typedef struct
   /* Hub transitions out of CONNECTED; a refusal must not cause one. */
   int hub_drops;
   bool hub_connected;
+  /* Provisioning sessions that reached CONNECTED after group setup. */
+  int dps_sessions;
 } fixture;
 
 static fixture g_fx;
@@ -71,6 +73,10 @@ static void on_publish(az_iot_result status, void* user_ctx)
 static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   fixture* fx = (fixture*)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    fx->dps_sessions++;
+  }
   if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
   {
     return;
@@ -589,6 +595,59 @@ static void user_properties_are_routed(void** state)
   assert_routed(seen);
 }
 
+/* After a re-provision the topic is built again from the template and is accepted. The
+ * enrollment fixes the device id, so DPS assigns the same one; the unit tests cover a change.
+ * Last: it closes the connection, which the drop counts of earlier cases must not see. */
+static void a_topic_rebuilt_after_a_reprovision_is_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  const int dps_sessions = fx->dps_sessions;
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(&fx->dev.conn), AZ_IOT_OK);
+  (void)az_iot_connection_client_close(&fx->dev.conn);
+  for (time_t start = time(NULL); fx->dev.conn_state != AZ_IOT_CONN_STATE_IDLE
+       && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S;)
+  {
+    pump(fx);
+  }
+  assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_IDLE);
+
+  char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}/reprovisioned", topic, sizeof(topic), NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
+
+  assert_int_equal(az_iot_connection_client_open(&fx->dev.conn), AZ_IOT_OK);
+  assert_true(wait_connected(fx));
+  assert_true(fx->dps_sessions > dps_sessions);
+
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "e2e/{deviceId}/reprovisioned", topic, sizeof(topic), NULL),
+      AZ_IOT_OK);
+  const char* device_id = az_iot_connection_client_get_device_id(&fx->dev.conn);
+  assert_non_null(device_id);
+  char expected[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
+  snprintf(expected, sizeof(expected), "e2e/%s/reprovisioned", device_id);
+  assert_string_equal(topic, expected);
+
+  /* Only the PUBACK is asserted; routing is covered by the cases above. */
+  const az_iot_mqtt_user_property properties[] = { { "e2e", "custom-topic" } };
+  publish_record* record;
+  (void)publish_topic_and_watch(
+      fx,
+      topic,
+      AZ_IOT_MQTT_QOS_1,
+      properties,
+      sizeof(properties) / sizeof(properties[0]),
+      1,
+      &record);
+  assert_true(record->done);
+  assert_int_equal(record->status, AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -603,6 +662,7 @@ int main(void)
     cmocka_unit_test(topic_at_max_levels_is_accepted),
     cmocka_unit_test(topic_past_limits_is_rejected_locally),
     cmocka_unit_test(user_properties_are_routed),
+    cmocka_unit_test(a_topic_rebuilt_after_a_reprovision_is_accepted),
   };
   return cmocka_run_group_tests_name("e2e_mqttv5_custom_topic", tests, group_setup, group_teardown);
 }

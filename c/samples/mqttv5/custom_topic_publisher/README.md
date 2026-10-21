@@ -10,7 +10,9 @@ and closes.
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails.
 - Builds the topic from a template with `az_iot_mqttv5_custom_topic_client_format_topic()`, which
-  replaces `{deviceId}` with the device's id.
+  replaces `{deviceId}` with the device's id. Provisioning again can change that id, so a device
+  that publishes repeatedly builds the topic before each publish; `publish()` sends the topic as
+  given and does not expand `{deviceId}`.
 - Publishes at QoS 1 with a content type and one user property. The client adds no properties of
   its own.
 - Custom topics are publish only.
