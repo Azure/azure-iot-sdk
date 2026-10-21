@@ -58,8 +58,8 @@ typedef struct
   bool needs_read;
   /** @brief The handshake's last token is queued: only out remains to send. */
   bool handshake_done;
-  /** @brief The server's optional certificate request was answered with none. */
-  bool cert_request_declined;
+  /** @brief The server's certificate request was answered (client certificate, or none). */
+  bool cert_request_answered;
   uint8_t stage;
   /** @brief close_notify sent (or tried) on this connection. */
   bool closing;
@@ -496,25 +496,19 @@ static az_result _read_file(
     err = ERROR_FILE_TOO_LARGE;
   }
   int32_t len = 0;
-  while (err == ERROR_SUCCESS)
+  DWORD got = 1;
+  while (err == ERROR_SUCCESS && got > 0 && len < size)
   {
-    DWORD got = 0;
     if (!ReadFile(h, buf + len, (DWORD)(size - len), &got, NULL))
     {
       err = GetLastError();
     }
-    else if (got == 0)
-    {
-      break;
-    }
-    else
-    {
-      len += (int32_t)got;
-      if (len == size)
-      {
-        err = ERROR_FILE_TOO_LARGE; // Grew since GetFileSizeEx().
-      }
-    }
+    len += (int32_t)got;
+  }
+  char extra;
+  if (err == ERROR_SUCCESS && len == size && ReadFile(h, &extra, 1, &got, NULL) && got > 0)
+  {
+    err = ERROR_FILE_TOO_LARGE; // Grew since GetFileSizeEx().
   }
   CloseHandle(h);
   *out_len = len;
@@ -919,7 +913,7 @@ static void _tls_free(_tls_transport* transport)
   transport->has_cred = false;
   transport->needs_read = false;
   transport->handshake_done = false;
-  transport->cert_request_declined = false;
+  transport->cert_request_answered = false;
   transport->in_len = 0;
   transport->plain_pos = 0;
   transport->plain_len = 0;
@@ -944,6 +938,26 @@ static az_result _check_tls_options(az_mqtt_tls_options const* tls_options)
   return AZ_OK;
 }
 
+/**
+ * @brief Schannel credentials into @p out, with the client certificate if @p with_cert. Schannel's
+ * own server check is off (SCH_CRED_MANUAL_CRED_VALIDATION): _validate_server_certificate().
+ */
+static SECURITY_STATUS _acquire_cred(_tls_transport* transport, bool with_cert, CredHandle* out)
+{
+  SCHANNEL_CRED cred;
+  memset(&cred, 0, sizeof(cred));
+  cred.dwVersion = SCHANNEL_CRED_VERSION;
+  cred.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_USE_STRONG_CRYPTO | SCH_CRED_NO_DEFAULT_CREDS;
+  if (with_cert)
+  {
+    cred.cCreds = 1;
+    cred.paCred = &transport->client_cert;
+  }
+  TimeStamp expiry;
+  return AcquireCredentialsHandleA(
+      NULL, UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, out, &expiry);
+}
+
 /** @brief Acquire credentials and keep what the handshake needs; reads @p tls_options only here. */
 static az_result _tls_prepare(
     _tls_transport* transport,
@@ -966,18 +980,8 @@ static az_result _tls_prepare(
     return rc;
   }
 
-  SCHANNEL_CRED cred;
-  memset(&cred, 0, sizeof(cred));
-  cred.dwVersion = SCHANNEL_CRED_VERSION;
-  cred.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_USE_STRONG_CRYPTO | SCH_CRED_NO_DEFAULT_CREDS;
-  if (transport->client_cert != NULL)
-  {
-    cred.cCreds = 1;
-    cred.paCred = &transport->client_cert;
-  }
-  TimeStamp expiry;
-  SECURITY_STATUS const sec = AcquireCredentialsHandleA(
-      NULL, UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &transport->cred, &expiry);
+  // Without the client certificate: it is given only to a server that passed validation.
+  SECURITY_STATUS const sec = _acquire_cred(transport, false, &transport->cred);
   if (sec != SEC_E_OK)
   {
     return _setup_failure(transport, (DWORD)sec);
@@ -1085,6 +1089,54 @@ static void _keep_extra(_tls_transport* transport, unsigned long extra)
  * @brief Drive the handshake until done, failed or @p deadline; resumable.
  * Failures below were reported there (as AZ_MQTT_ERROR_TLS_HANDSHAKE).
  */
+/**
+ * @brief The server certificate received so far, validated; on failure reported, and NULL.
+ * CertFreeCertificateContext() it.
+ */
+static az_result _received_server_certificate(_tls_transport* transport, PCCERT_CONTEXT* out)
+{
+  *out = NULL;
+  SECURITY_STATUS const sec = QueryContextAttributesA(
+      &transport->context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (PVOID)out);
+  if (sec != SEC_E_OK || *out == NULL)
+  {
+    _report(transport, AZ_MQTT_NATIVE_ERROR_TLS, (DWORD)sec, AZ_MQTT_ERROR_TLS_HANDSHAKE);
+    return AZ_MQTT_ERROR_TLS_HANDSHAKE;
+  }
+  az_result const rc = _validate_server_certificate(transport, *out);
+  if (az_result_failed(rc))
+  {
+    CertFreeCertificateContext(*out);
+    *out = NULL;
+  }
+  return rc;
+}
+
+/**
+ * @brief Answer the server's certificate request with the client certificate: validate the server
+ * first (nothing about the client is sent to an untrusted one), then use credentials holding it.
+ */
+static az_result _present_client_certificate(_tls_transport* transport)
+{
+  PCCERT_CONTEXT server_cert = NULL;
+  az_result const rc = _received_server_certificate(transport, &server_cert);
+  if (az_result_failed(rc))
+  {
+    return rc;
+  }
+  CertFreeCertificateContext(server_cert);
+  CredHandle cred;
+  SECURITY_STATUS const sec = _acquire_cred(transport, true, &cred);
+  if (sec != SEC_E_OK)
+  {
+    _report(transport, AZ_MQTT_NATIVE_ERROR_TLS, (DWORD)sec, AZ_MQTT_ERROR_TLS_HANDSHAKE);
+    return AZ_MQTT_ERROR_TLS_HANDSHAKE;
+  }
+  FreeCredentialsHandle(&transport->cred);
+  transport->cred = cred;
+  return AZ_OK;
+}
+
 static az_result _tls_handshake(_tls_transport* transport, int64_t deadline)
 {
   for (;;)
@@ -1148,11 +1200,20 @@ static az_result _tls_handshake(_tls_transport* transport, int64_t deadline)
       transport->needs_read = true;
       continue;
     }
-    // The server requested a client certificate and there is none: call again, with the same
-    // input, to continue without one. A server that requires one then refuses the handshake.
-    if (status == SEC_I_INCOMPLETE_CREDENTIALS && !transport->cert_request_declined)
+    // The server requested a client certificate: call again, with the same input, holding it (if
+    // any). Without one, a server that requires one then refuses the handshake.
+    if (status == SEC_I_INCOMPLETE_CREDENTIALS && transport->has_context
+        && !transport->cert_request_answered)
     {
-      transport->cert_request_declined = true;
+      transport->cert_request_answered = true;
+      if (transport->client_cert != NULL)
+      {
+        rc = _present_client_certificate(transport);
+        if (az_result_failed(rc))
+        {
+          return rc;
+        }
+      }
       continue;
     }
     if (status != SEC_E_OK && status != SEC_I_CONTINUE_NEEDED)
@@ -1173,21 +1234,19 @@ static az_result _tls_handshake(_tls_transport* transport, int64_t deadline)
     transport->needs_read = status == SEC_I_CONTINUE_NEEDED && transport->in_len == 0;
   }
 
-  SECURITY_STATUS sec
+  SECURITY_STATUS const sec
       = QueryContextAttributesA(&transport->context, SECPKG_ATTR_STREAM_SIZES, &transport->sizes);
-  PCCERT_CONTEXT server_cert = NULL;
-  if (sec == SEC_E_OK)
-  {
-    sec = QueryContextAttributesA(
-        &transport->context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (PVOID)&server_cert);
-  }
-  if (sec != SEC_E_OK || server_cert == NULL)
+  if (sec != SEC_E_OK)
   {
     _report(transport, AZ_MQTT_NATIVE_ERROR_TLS, (DWORD)sec, AZ_MQTT_ERROR_TLS_HANDSHAKE);
     return AZ_MQTT_ERROR_TLS_HANDSHAKE;
   }
-  az_result const rc = _validate_server_certificate(transport, server_cert);
-  CertFreeCertificateContext(server_cert);
+  PCCERT_CONTEXT server_cert = NULL;
+  az_result const rc = _received_server_certificate(transport, &server_cert);
+  if (server_cert != NULL)
+  {
+    CertFreeCertificateContext(server_cert);
+  }
   return rc;
 }
 
