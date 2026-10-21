@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -46,6 +47,8 @@ static void a_write_to_a_closed_peer_fails_without_sigpipe(void** state)
 {
   (void)state;
   assert_true(signal(SIGPIPE, SIG_DFL) != SIG_ERR);
+  /* The peer is local: a configured service proxy could not reach it. */
+  assert_int_equal(unsetenv("AZ_IOT_E2E_SERVICE_PROXY_HOST"), 0);
 
   uint16_t port = 0;
   int listener = listen_loopback(&port);
