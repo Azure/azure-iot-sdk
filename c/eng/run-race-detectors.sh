@@ -30,6 +30,9 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="$(cd "${2:-${root_dir}/build/linux-gcc-debug}" && pwd)"
 supp="${root_dir}/eng/sanitizers/${tool}.supp"
 valgrind="${VALGRIND:-valgrind}"
+# DRD skips stack variables by default; tests share them across threads.
+tool_opts=()
+[ "${tool}" != "drd" ] || tool_opts=(--check-stack-var=yes)
 log_dir="${build_dir}/race-logs/${tool}"
 mkdir -p "${log_dir}"
 
@@ -65,7 +68,7 @@ for t in "${tests[@]}"; do
     (
         [ -z "${wd}" ] || cd "${wd}"
         "${valgrind}" --tool="${tool}" --error-exitcode=42 -s --num-callers=40 \
-            --suppressions="${supp}" "${cmd[@]}"
+            "${tool_opts[@]}" --suppressions="${supp}" "${cmd[@]}"
     ) >"${log}" 2>&1 || rc=$?
     cat "${log}"
     echo "::endgroup::"
