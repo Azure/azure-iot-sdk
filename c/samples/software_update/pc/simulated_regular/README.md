@@ -14,7 +14,8 @@ safe to run on a dev box or in CI — it never touches real firmware.
 - Shows regular updates only (requestSoftwareUpdates), for a device that has
   registered and so has a device record. For a day-0 device, see
   [simulated_onboarding](../simulated_onboarding/README.md).
-- Checks at startup, then every `AZ_IOT_SU_POLL_INTERVAL_S` (default 60 s)
+- Checks at startup, again after each applied update recorded as installed until there is none, and
+  every `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 h)
 - Reports the applied update as installed, so the next check asks for what
   comes after it
 - Simulated download and install steps
@@ -145,7 +146,7 @@ Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MIS
 | `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample **exits** once the state is persisted (while the write fails the client retries it; if it gives up, the update is rolled back and reported FAILED). Re-run it (without this knob) to `resume()` and finish the workflow; that run skips the startup check (a new workflow would supersede the resumed one); the next poll asks |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_regular_state.blob`, distinct from the onboarding sample's) |
-| `AZ_IOT_SU_POLL_INTERVAL_S=<s>` | Seconds between update checks (default `60`); `0` checks once, at startup. A check not answered within half the interval (at most 60 s) is abandoned and asked again at the next poll |
+| `AZ_IOT_SU_POLL_INTERVAL_S=<s>` | Seconds between update checks (default `14400`, 4 h); `0` checks only at startup and after an applied update. Checks and reports from all devices share the provisioning service's request budget, which plans for one check per device every 4 hours, so keep short intervals for testing. A check not answered within half the interval (at most 60 s) is abandoned and asked again at the next poll |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=<level>` | Enable the Paho MQTT library's trace logging (`error`, `protocol`, `min`, `medium`, `max`; any other value means `min`). The lines are logged at `TRACE` by the `paho` component, so also set `AZ_IOT_SU_LOG_LEVEL=trace`. Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
 
@@ -282,8 +283,8 @@ cd /azure-iot-sdk/c/build/linux-gcc-debug/samples/software_update
 </details>
 
 Leave it running. It asks for an update on its first provisioning session,
-registers, connects to its hub, and then asks again every
-`AZ_IOT_SU_POLL_INTERVAL_S` — see
+registers, connects to its hub, and then asks again after each applied update
+and every `AZ_IOT_SU_POLL_INTERVAL_S` — see
 [Why is an IoT Hub required?](#why-is-an-iot-hub-required).
 
 ### When an update is offered
@@ -294,8 +295,9 @@ flight.
 
 If an update is waiting, the sample verifies the manifest signature, runs the
 simulated download/install/apply workflow and reports the result, all on stdout.
-On success it prints `Update applied. Installed: <provider>/<name>/<version>`
-and sends that id on later checks.
+On success it prints `Update applied. Installed: <provider>/<name>/<version>`,
+sends that id on later checks, and checks again at once, so a chain of
+updates is applied without waiting for the next poll.
 
 **A 200 response carrying no `updateMetadata` means "nothing for me on this
 route" — it is not an error.** An update is only offered on the route that matches

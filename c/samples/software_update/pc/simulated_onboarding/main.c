@@ -136,6 +136,7 @@ typedef struct
   int check_su_request_abandoned; /* the update check gave up; see on_su_event */
   int su_workflow_active; /* a deployment is in flight */
   int su_workflow_completed; /* one finished and returned to Idle */
+  int su_workflow_succeeded; /* ...and it was applied successfully */
 
   /* Sized by the SDK's own default so raising it really does grow this cache;
    * the values it holds come from the environment. */
@@ -229,6 +230,8 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       if (!state->su_workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
         state->su_workflow_completed = 1;
+        /* Idle from ApplyStarted only when the last step applied. */
+        state->su_workflow_succeeded = (event->previous_state == AZ_IOT_SU_STATE_APPLY_STARTED);
       }
       break;
 
@@ -553,13 +556,42 @@ int main(void)
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);
 
-    /* A workflow ran to completion and returned to Idle. The process stays
-     * alive, but it asked once: nothing further arrives on this run. */
+    /* A workflow ran to completion and returned to Idle. After an applied
+     * update, report it as installed and ask again: another update may follow
+     * it. Otherwise nothing further arrives on this run. */
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      printf("Deployment workflow complete. Restart the sample to ask again.\n");
       (void)remove(state.simulation_control.state_file); /* clear the resume blob */
+      if (state.su_workflow_succeeded && state.simulation_control.applied_valid)
+      {
+        az_iot_su_device_properties next = { 0 };
+        next.manufacturer = state.su_device_properties.manufacturer;
+        next.model = state.su_device_properties.model;
+        next.installed_update_id.provider = state.simulation_control.applied_provider;
+        next.installed_update_id.name = state.simulation_control.applied_name;
+        next.installed_update_id.version = state.simulation_control.applied_version;
+        if (az_iot_su_client_update_device_properties(&state.su_client, &next) == AZ_IOT_OK
+            && az_iot_su_client_request_onboarding_update(
+                   &state.su_client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
+                == AZ_IOT_OK)
+        {
+          printf(
+              "Update applied. Installed: %s/%s/%s. Checking for the next one.\n",
+              next.installed_update_id.provider,
+              next.installed_update_id.name,
+              next.installed_update_id.version);
+        }
+        else
+        {
+          fprintf(stderr, "Could not record the applied update or ask again.\n");
+        }
+      }
+      else
+      {
+        printf("Deployment workflow complete. Restart the sample to ask again.\n");
+      }
+      state.su_workflow_succeeded = 0;
     }
 
     /* A (simulated) reboot was requested. Exit so the operator can "reboot"

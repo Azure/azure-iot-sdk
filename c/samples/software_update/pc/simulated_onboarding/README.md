@@ -14,6 +14,7 @@ safe to run on a dev box or in CI — it never touches real firmware.
 - Shows onboarding updates only (requestOnboardingUpdates), for a device with no
   device record yet. For a registered device, see
   [simulated_regular](../simulated_regular/README.md).
+- Asks again after each applied update, until there is none
 - Simulated download and install steps
 - Requires Azure Device Provisioning service
 - Does not require an Azure IoT Hub service
@@ -279,10 +280,11 @@ update on that session, and waits there. It never registers — see
 
 ### When an update is offered
 
-**Have the update deployed before you start the sample.** It asks once, on the
-onboarding route, when its provisioning session comes up — it does not poll. A
-deployment created after that check has run is not picked up; restart the sample
-to ask again.
+**Have the update deployed before you start the sample.** It asks on the
+onboarding route when its provisioning session comes up, and again after each
+applied update (reporting it as installed) until the service has no further
+update. It does not poll: a deployment created after that is not picked up;
+restart the sample to ask again.
 
 If an update is waiting, the sample verifies the manifest signature, runs the
 simulated download/install/apply workflow and reports the result, all on stdout.

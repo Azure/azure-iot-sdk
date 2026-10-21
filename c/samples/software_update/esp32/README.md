@@ -103,7 +103,7 @@ Set with `idf.py menuconfig` → *Software Updates ESP32 Sample Configuration*
 | `SU_WIFI_PASSWORD` | yes | Wi-Fi password. |
 | `SU_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `SU_DPS_REGISTRATION_ID` | yes | Registration id / device id; must equal the certificate CN. |
-| `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `60`, range 10–86400. |
+| `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `14400` (4 h), range 10–86400. All devices share the provisioning service's request budget, which plans for one check per device every 4 hours; use a shorter interval only for testing. |
 
 **Matched against a deployed update.** A value that does not match the imported
 update is answered "nothing for me", which looks exactly like "nothing deployed".
