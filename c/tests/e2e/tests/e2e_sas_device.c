@@ -65,12 +65,15 @@ static const char* auth_source_name(az_iot_auth_source source)
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   sas_ctx* c = (sas_ctx*)user_ctx;
-  if (event->error != NULL && event->error->source == AZ_IOT_CONN_ERR_SRC_DPS)
+  /* Every source: a transport code (the TLS stack's own, e.g. a SECURITY_STATUS) says why. */
+  if (event->error != NULL && event->error->source != AZ_IOT_CONN_ERR_SRC_NONE)
   {
     fprintf(
         stderr,
-        "[e2e-sas] DPS error %ld: %.*s\n",
+        "[e2e-sas] error source %d code %ld (0x%08lx): %.*s\n",
+        (int)event->error->source,
         (long)event->error->code,
+        (unsigned long)(uint32_t)event->error->code,
         (int)az_span_size(event->error->message),
         az_span_size(event->error->message) > 0 ? (const char*)az_span_ptr(event->error->message)
                                                 : "");
