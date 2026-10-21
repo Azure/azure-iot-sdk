@@ -56,6 +56,8 @@ typedef struct
   bool needs_read;
   /** @brief The handshake's last token is queued: only out remains to send. */
   bool handshake_done;
+  /** @brief The server's optional certificate request was answered with none. */
+  bool cert_request_declined;
   uint8_t stage;
   /** @brief close_notify sent (or tried) on this connection. */
   bool closing;
@@ -79,10 +81,14 @@ typedef struct
 #define _T(t) ((_tls_transport*)(t))
 #define _LOWER_T(transport) (&(transport)->lower->base)
 
-/** @brief ISC_REQ_* of every InitializeSecurityContext() call. */
+/**
+ * @brief ISC_REQ_* of every InitializeSecurityContext() call. USE_SUPPLIED_CREDS: no client
+ * certificate is ever picked from the user's store; a server that requests one gets none.
+ */
 #define _REQUEST_FLAGS                                                       \
   (ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY \
-   | ISC_REQ_EXTENDED_ERROR | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM)
+   | ISC_REQ_EXTENDED_ERROR | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM       \
+   | ISC_REQ_USE_SUPPLIED_CREDS)
 
 static az_result _span_to_cstr(az_span src, char* buf, int32_t buf_size)
 {
@@ -414,6 +420,7 @@ static void _tls_free(_tls_transport* transport)
   transport->has_cred = false;
   transport->needs_read = false;
   transport->handshake_done = false;
+  transport->cert_request_declined = false;
   transport->in_len = 0;
   transport->plain_pos = 0;
   transport->plain_len = 0;
@@ -459,7 +466,7 @@ static az_result _tls_prepare(
   SCHANNEL_CRED cred;
   memset(&cred, 0, sizeof(cred));
   cred.dwVersion = SCHANNEL_CRED_VERSION;
-  cred.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_USE_STRONG_CRYPTO;
+  cred.dwFlags = SCH_CRED_MANUAL_CRED_VALIDATION | SCH_USE_STRONG_CRYPTO | SCH_CRED_NO_DEFAULT_CREDS;
   TimeStamp expiry;
   SECURITY_STATUS const sec = AcquireCredentialsHandleA(
       NULL, UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &transport->cred, &expiry);
@@ -631,6 +638,13 @@ static az_result _tls_handshake(_tls_transport* transport, int64_t deadline)
     if (status == SEC_E_INCOMPLETE_MESSAGE)
     {
       transport->needs_read = true;
+      continue;
+    }
+    // The server requested a client certificate and there is none: call again, with the same
+    // input, to continue without one. A server that requires one then refuses the handshake.
+    if (status == SEC_I_INCOMPLETE_CREDENTIALS && !transport->cert_request_declined)
+    {
+      transport->cert_request_declined = true;
       continue;
     }
     if (status != SEC_E_OK && status != SEC_I_CONTINUE_NEEDED)
