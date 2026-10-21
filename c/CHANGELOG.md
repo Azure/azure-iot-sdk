@@ -153,6 +153,8 @@
 
 ### Bugs Fixed
 
+- Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
+  e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.

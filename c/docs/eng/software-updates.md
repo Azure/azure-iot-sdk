@@ -340,14 +340,13 @@ The state mapping above tells the service *what phase* the agent is in; the
 `result_code` (high-level) and `extended_result_code` (diagnostic). The client
 MUST populate them as follows.
 
-**`result_code`.** Follows software updates agent convention: the success value reported by
-the agent is **`700`** (the value used throughout azure-sdk-for-c examples). The
-client MUST report:
+**`result_code`.** The service contract reads a positive value as success and a
+non-positive one as failure; the value is diagnostic only. The client MUST report:
 
 | Outcome | `result_code` |
 |---|---|
 | Step/overall success | `700` |
-| Any failure | A non-success software updates code (`< 700`) indicating the failing phase |
+| Any failure | `-facility` (see below), e.g. `-5` for an Install failure |
 
 **`extended_result_code`.** A 32-bit diagnostic value the client MUST compose so
 the failing layer and raw cause are recoverable from the cloud report. The SDK
