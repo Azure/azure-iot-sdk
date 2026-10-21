@@ -49,7 +49,14 @@
 
 #include "azure/iot/az_iot.h"
 #include "support/test_env.h"
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "az_iot_certificate_provider_managed.h"
 
 #include "e2e_log.h"
@@ -427,7 +434,11 @@ static void run_csr_enrollment(
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_init(&conn, &copts));
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx);
   az_iot_connection_client_set_operational_cert_callback(&conn, on_operational_cert, &ctx);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_register_mqtt_factory(&conn, factory));
   assert_int_equal(AZ_IOT_OK, az_iot_mqttv3_telemetry_client_init(&telemetry, &conn));
 
@@ -488,7 +499,11 @@ static void run_csr_enrollment(
 
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory);
+#endif
   az_iot_certificate_provider_managed_deinit(&provider);
 
   remove(op_key);

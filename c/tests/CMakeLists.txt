@@ -868,8 +868,8 @@ endif()
 # Built only when AZ_IOT_BUILD_E2E is ON (the e2e CI workflow sets it). The
 # in-process cmocka suite (az_iot_tests_e2e) drives real-cloud scenarios against
 # an Azure IoT Hub/DPS instance, playing both the device (shipping SDK) and the
-# cloud (az_iot_e2e_service facade) halves. It needs a real MQTT adapter, so it
-# also requires AZ_IOT_WITH_PAHO (checked in cmake/az_iot_options.cmake).
+# cloud (az_iot_e2e_service facade) halves. It needs Paho or az_mqtt (checked in
+# cmake/az_iot_options.cmake); each suite that connects is built for each one.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E)
     add_subdirectory(e2e)

@@ -30,7 +30,14 @@
 
 #include <azure/core/az_base64.h>
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 #include "az_iot_crypto_openssl.h"
 #include "az_iot_e2e_service.h"
@@ -247,7 +254,11 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     opts.trusted_ca.path = ca;
     az_iot_connection_client client = { 0 };
     az_iot_mqttv3_telemetry_client telemetry = { 0 };
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
     az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+    az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
     client_ok = factory != NULL && az_iot_connection_client_init(&client, &opts) == AZ_IOT_OK
         && az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) == AZ_IOT_OK
         && az_iot_connection_client_register_mqtt_factory(&client, factory) == AZ_IOT_OK
@@ -285,7 +296,11 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     }
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
     az_iot_connection_client_deinit(&client);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
     az_iot_paho_factory_destroy(factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+    az_iot_az_mqtt_factory_destroy(factory);
+#endif
   }
 
   /* Clean up before asserting, so a failure leaves nothing behind. */

@@ -168,11 +168,13 @@
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.
 - Builds without Paho (`AZ_IOT_WITH_PAHO=OFF`): an MQTT adapter's header is installed only with
-  the adapter. `AZ_IOT_BUILD_E2E` and `AZ_IOT_BUILD_PKCS11_TESTS` without Paho, and the
-  `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`, fail the configure step instead of
-  building nothing.
+  the adapter. `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, `AZ_IOT_BUILD_PKCS11_TESTS` without
+  Paho, and the `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`, fail the configure step
+  instead of building nothing.
 - Samples: each sample that connects is built once per MQTT adapter, Paho (`az_iot_sample_<...>`)
   and az_mqtt (`az_iot_sample_<...>_az_mqtt`, in `az_mqtt/`); `main.c` selects the adapter with
   `AZ_IOT_SAMPLE_ADAPTER_PAHO` or `AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`. Samples no longer drop out
   without Paho; `AZ_IOT_BUILD_SAMPLES=ON` with neither adapter fails the configure step. The
   SAS-key and Software Update samples use mbedTLS when the OpenSSL crypto backend is not built.
+- End-to-end tests: each suite that connects is built and run over Paho and over az_mqtt
+  (`<suite>_az_mqtt`).

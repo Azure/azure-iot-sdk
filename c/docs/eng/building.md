@@ -69,9 +69,10 @@ with CMake and with pkg-config alone ([pkg-config-test.sh](../../tests/install/p
 connects on the az_mqtt adapter, with no Paho source, header or library
 ([samples](../../samples/README.md#build)). Without OpenSSL (`AZ_IOT_AZ_MQTT_TLS=mbedtls`,
 `AZ_IOT_WITH_CRYPTO_OPENSSL=OFF`, `AZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF`), the samples that need
-OpenSSL are not built. `AZ_IOT_BUILD_E2E` and
-`AZ_IOT_BUILD_PKCS11_TESTS` need Paho and fail the configure step without it, as do the
-`AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`.
+OpenSSL are not built. The end-to-end suites run over az_mqtt too
+([end-to-end tests](end-to-end-tests.md)). `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, and
+`AZ_IOT_BUILD_PKCS11_TESTS` (Paho's key-custody tests) without Paho, fail the configure step, as
+do the `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`.
 
 ### Dependency check
 

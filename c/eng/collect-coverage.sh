@@ -58,7 +58,10 @@ fi
 
 mkdir -p "$(dirname "${out_file}")"
 
+# separate: the az_mqtt adapter compiles its client header once per MQTT version,
+# so one function can sit on different lines in the two instantiations.
 gcovr --root "${repo_c_root}" "${build_dir}" \
+      --merge-mode-functions=separate \
       --filter "${repo_c_root}/src/" --filter "${repo_c_root}/adapters/" \
       --exclude '.*/_deps/.*' \
       --exclude '.*/tests/.*' \

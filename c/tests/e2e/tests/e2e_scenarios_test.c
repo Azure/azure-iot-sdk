@@ -6,7 +6,7 @@
 /* In-process end-to-end scenarios against a real Azure IoT Hub / DPS instance.
  *
  * ONE process plays both halves of every scenario:
- *   - Device: the shipping SDK over the Paho MQTT adapter (provisioned via DPS
+ *   - Device: the shipping SDK over Paho or az_mqtt (provisioned via DPS
  *     with an X.509 individual enrollment, exactly like a real device).
  *   - Service (cloud): the az_iot_e2e_service facade, which receives telemetry,
  *     sends C2D, invokes direct methods and reads/patches twins. That facade

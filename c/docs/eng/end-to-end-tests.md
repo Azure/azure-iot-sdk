@@ -37,7 +37,7 @@ no dotnet, no subprocess, and no cross-process handshake.
 ```mermaid
 flowchart LR
     subgraph Proc["az_iot_tests_e2e — one process (Windows or Linux)"]
-        Device["device half<br/>shipping SDK + Paho MQTT<br/>(DPS x509 provision)"]
+        Device["device half<br/>shipping SDK + Paho or az_mqtt<br/>(DPS x509 provision)"]
         Service["cloud half<br/>az_iot_e2e_service facade<br/>(AMQP + HTTPS/SAS, hidden)"]
     end
     Device -- "MQTT: telemetry / c2d / method / twin" --> Azure[("Azure IoT Hub / DPS")]
@@ -51,10 +51,17 @@ single-threaded and non-blocking.
 
 ### Device half — the shipping SDK
 
-The device is the public SDK over the Paho adapter, connected exactly like a
+The device is the public SDK over an MQTT adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both Paho MQTT v3.1.1 and v5
-factories are registered. The connect flow + all four scenarios live in
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both the MQTT v3.1.1 and v5
+factories are registered. Each suite that connects is built once per adapter in the build:
+`<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
+`AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. On
+Windows, az_mqtt (Schannel) takes no client certificate, so there only its SAS suites (`sas`,
+`tpm`) are registered; the X.509 ones are built, not run. With az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5`
+needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
+over 1 MiB. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 
@@ -196,7 +203,7 @@ Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hu
 
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
-> The device uses Paho's own independent TLS stack, so the two never collide.
+> The device uses its adapter's own independent TLS stack, so the two never collide.
 
 ---
 
@@ -205,8 +212,8 @@ Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hu
 - CMake option `AZ_IOT_BUILD_E2E` (default **OFF**) in
   [`c/cmake/az_iot_options.cmake`](../../cmake/az_iot_options.cmake).
 - [`c/tests/CMakeLists.txt`](../../tests/CMakeLists.txt) adds the `e2e`
-  subdirectory only when `AZ_IOT_BUILD_E2E` **and** `AZ_IOT_WITH_PAHO` are ON
-  (the device half needs a real MQTT adapter).
+  subdirectory when `AZ_IOT_BUILD_E2E` is ON; the configure step fails unless Paho or
+  az_mqtt is built (the device half needs a real MQTT adapter).
 - [`c/tests/e2e/CMakeLists.txt`](../../tests/e2e/CMakeLists.txt) builds the
   vendored `az_amqp` (under `c/tests/deps/amqp`, test-only), the
   `az_iot_e2e_service` facade, and the `az_iot_tests_e2e` cmocka executable
@@ -216,8 +223,8 @@ Build & run locally (needs provisioned Azure + the env vars above):
 
 ```pwsh
 # from c/  (Windows needs a VS dev shell; Linux needs ninja)
-cmake --preset windows-msvc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-cmake --build --preset windows-msvc-debug --config Debug --target az_iot_tests_e2e
+cmake --preset windows-msvc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+cmake --build --preset windows-msvc-debug --config Debug --target az_iot_tests_e2e az_iot_tests_e2e_az_mqtt
 ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 ```
 
@@ -337,7 +344,8 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 ## Software updates e2e
 
 Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` (not on Windows) and selected by
-`ctest -R e2e_su`. Both run the shipping SDK over Paho and X.509 against the real service.
+`ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
+the real service.
 
 | Suite | What it drives |
 | --- | --- |

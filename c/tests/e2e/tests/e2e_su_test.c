@@ -9,7 +9,7 @@
  *
  * Everything beneath the test is the shipping SDK: the connection client, its
  * DPS flow and the pre-registration hold, the device-update channel, the
- * codecs, the Paho MQTT adapter, and X.509 authentication. Nothing here
+ * codecs, the MQTT adapter (Paho or az_mqtt), and X.509 authentication. Nothing here
  * implements a transport or a credential of its own.
  *
  * The scenarios drive the channel vtable directly rather than going through
@@ -61,7 +61,14 @@
 #include "su_channel_internal.h"
 #include "su_protocol_internal.h"
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 
 /* --- environment --------------------------------------------------------- */
@@ -163,8 +170,12 @@ static void fixture_open(e2e_fixture* fx)
       az_iot_su_channel_dps_init(&fx->channel_state, &fx->conn, &dp, &fx->channel), AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
 
-  /* The shipping Paho adapter. DPS is v3.1.1 only, so one factory is enough. */
+  /* The shipping MQTT adapter. DPS is v3.1.1 only, so one factory is enough. */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   fx->factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
@@ -177,7 +188,11 @@ static void fixture_close(e2e_fixture* fx)
     fx->channel.vtable->close(fx->channel.ctx);
   }
   az_iot_connection_client_deinit(&fx->conn);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(fx->factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory);
+#endif
   fx->factory = NULL;
   az_iot_certificate_provider_pem_deinit(&fx->certs);
 }
