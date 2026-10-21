@@ -1447,6 +1447,7 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 | [`pc/simulated_regular`](../../samples/software_update/pc/simulated_regular/README.md) | The operational route, polled, on a registered device, with simulated install. |
 | [`pc/http_download`](../../samples/software_update/pc/http_download/README.md) | The application-owned download: libcurl, non-blocking, through the connection's proxy; real hash check; chunked simulated install. |
 | [`pc/multi_step`](../../samples/software_update/pc/multi_step/README.md) | A multi-step update: per-step backup/install/apply/restore, reverse rollback, device failure codes, `az_iot_su_client_set_step_result_details()` and the final report from `REPORT_ACCEPTED`. |
+| [`pc/reboot_resume`](../../samples/software_update/pc/reboot_resume/README.md) | `REBOOT_REQUIRED` from install or apply, atomic `persist_state_fn` / `load_state_fn`, `resume()` before the first check, persist failures, and `UPDATE_DEFERRED` after a last-apply reboot. |
 | [`esp32`](../../samples/software_update/esp32/README.md) | A real OTA install on ESP32: onboarding route until registered, operational after. |
 
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
