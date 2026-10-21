@@ -2233,6 +2233,137 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   az_iot_connection_client_deinit(&conn);
 }
 
+typedef struct layout_log
+{
+  char last_error[256];
+  int errors;
+} layout_log;
+
+static void layout_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  layout_log* log = (layout_log*)user_ctx;
+  (void)component;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR)
+  {
+    log->errors++;
+    snprintf(log->last_error, sizeof(log->last_error), "%s", msg);
+  }
+}
+
+/* The application allocates az_iot_su_client with its own capacity macros. A
+ * value that differs from the SDK build is refused before the client is
+ * written, since the SDK's view of it may be larger than the allocation. */
+static void public_initialize_rejects_a_client_layout_mismatch(void** state)
+{
+  (void)state;
+
+  hook_log log = { 0 };
+  mock_crypto crypto = make_mock_crypto(&log);
+
+  az_iot_connection_client conn;
+  az_iot_connection_client_options copts = { 0 };
+  copts.iothub_hostname = "broker.example";
+  copts.port = 8883;
+  copts.device_id = "ut-su-layout";
+  copts.crypto = &crypto.base;
+  assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
+
+  az_iot_su_platform_hooks hooks = { 0 };
+  hooks.install_fn = mock_install;
+  hooks.apply_fn = mock_apply;
+  hooks.user_ctx = &log;
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1.0";
+
+  uint8_t buf[256];
+  az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
+  o.hooks = &hooks;
+  o.device_properties = &dp;
+  o.device_properties_buffer = buf;
+  o.device_properties_buffer_size = sizeof(buf);
+
+  layout_log captured = { 0 };
+  az_iot_log_sink sink = { layout_log_sink, &captured, AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+
+  static az_iot_su_client su;
+  static uint8_t untouched[sizeof(az_iot_su_client)];
+  memset(untouched, 0xA5, sizeof(untouched));
+
+  const az_iot_su_client_layout good = {
+    sizeof(az_iot_su_client_layout),        sizeof(az_iot_su_client),
+    (size_t)AZ_IOT_SU_REQUEST_BUFFER_SIZE,  (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,
+    (size_t)AZ_IOT_SU_STATE_BLOB_MAX_SIZE,  (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
+    (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE, (size_t)AZ_IOT_MAX_SU_OBSERVERS,
+  };
+  const struct
+  {
+    size_t offset;
+    const char* named;
+  } fields[] = {
+    { offsetof(az_iot_su_client_layout, layout_size), "az_iot_su_client_layout" },
+    { offsetof(az_iot_su_client_layout, client_size), "sizeof(az_iot_su_client)" },
+    { offsetof(az_iot_su_client_layout, request_buffer_size), "AZ_IOT_SU_REQUEST_BUFFER_SIZE" },
+    { offsetof(az_iot_su_client_layout, max_root_keys), "AZ_IOT_SU_MAX_ROOT_KEYS" },
+    { offsetof(az_iot_su_client_layout, state_blob_max_size), "AZ_IOT_SU_STATE_BLOB_MAX_SIZE" },
+    { offsetof(az_iot_su_client_layout, workflow_id_size), "AZ_IOT_SU_WORKFLOW_ID_SIZE" },
+    { offsetof(az_iot_su_client_layout, retry_timestamp_size), "AZ_IOT_SU_RETRY_TIMESTAMP_SIZE" },
+    { offsetof(az_iot_su_client_layout, max_observers), "AZ_IOT_MAX_SU_OBSERVERS" },
+  };
+  const long deltas[] = { -1, 1 };
+
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i)
+  {
+    for (size_t d = 0; d < sizeof(deltas) / sizeof(deltas[0]); ++d)
+    {
+      az_iot_su_client_layout bad = good;
+      size_t* field = (size_t*)((uint8_t*)&bad + fields[i].offset);
+      *field = (size_t)((long)*field + deltas[d]);
+
+      memset(&su, 0xA5, sizeof(su));
+      captured.errors = 0;
+      captured.last_error[0] = '\0';
+      assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, &bad), AZ_IOT_ERR_INVALID_ARG);
+      assert_memory_equal(&su, untouched, sizeof(su));
+      assert_int_equal(captured.errors, 1);
+      assert_non_null(strstr(captured.last_error, fields[i].named));
+    }
+  }
+
+  /* NULL layout, and a layout checked even when the other arguments are NULL. */
+  captured.last_error[0] = '\0';
+  assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_non_null(strstr(captured.last_error, "az_iot_su_client_layout"));
+  az_iot_su_client_layout bad_req = good;
+  bad_req.request_buffer_size++;
+  captured.last_error[0] = '\0';
+  assert_int_equal(
+      az_iot_su_client_init_checked(NULL, NULL, NULL, &bad_req), AZ_IOT_ERR_INVALID_ARG);
+  assert_non_null(strstr(captured.last_error, "AZ_IOT_SU_REQUEST_BUFFER_SIZE"));
+
+  captured.errors = 0;
+  assert_int_equal(az_iot_su_client_init_checked(&su, &conn, &o, &good), AZ_IOT_OK);
+  assert_int_equal(captured.errors, 0);
+  assert_int_equal(az_iot_su_client_get_state(&su), AZ_IOT_SU_STATE_IDLE);
+  az_iot_su_client_deinit(&su);
+
+  az_iot_log_set_global_sink(NULL);
+  az_iot_connection_client_deinit(&conn);
+}
+
 /* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
  * NO "0x" prefix, no fixed width, case-insensitive. Pinned here because nothing
  * else asserts the wire form, and a prefixed or zero-padded value is accepted by
@@ -7131,6 +7262,8 @@ int main(void)
         custom_device_properties_are_accepted_and_serialized, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_initialize_takes_a_connection_and_builds_its_own_channel, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        public_initialize_rejects_a_client_layout_mismatch, setup, teardown),
     cmocka_unit_test_setup_teardown(extended_result_codes_are_bare_hex, setup, teardown),
     cmocka_unit_test_setup_teardown(device_properties_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_properties_buffer_size_matches_need, setup, teardown),
