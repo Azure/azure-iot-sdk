@@ -590,13 +590,14 @@ int main(void)
               state.su_device_properties.installed_provider,
               state.su_device_properties.installed_name,
               state.su_device_properties.installed_version);
+          /* Only with the new id: the old one would be offered the same update again. */
+          check_now = 1;
         }
         else
         {
-          fprintf(stderr, "Could not record the applied update as installed.\n");
+          fprintf(stderr, "Could not record the applied update as installed; not checking now.\n");
         }
       }
-      check_now = state.su_workflow_succeeded;
       state.su_workflow_succeeded = 0;
       printf("Deployment workflow complete.\n");
     }

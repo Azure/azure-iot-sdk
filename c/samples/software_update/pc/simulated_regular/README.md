@@ -14,7 +14,7 @@ safe to run on a dev box or in CI — it never touches real firmware.
 - Shows regular updates only (requestSoftwareUpdates), for a device that has
   registered and so has a device record. For a day-0 device, see
   [simulated_onboarding](../simulated_onboarding/README.md).
-- Checks at startup, again after each applied update until there is none, and
+- Checks at startup, again after each applied update recorded as installed until there is none, and
   every `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 h)
 - Reports the applied update as installed, so the next check asks for what
   comes after it
