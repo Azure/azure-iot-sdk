@@ -18,6 +18,9 @@ MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/
     `4315eba`).
   - Schannel continues without a client certificate when the server requests one
     (ewertons/az_mqtt#47, merged in `d630f9b`).
+- Patched with this upstream change, not yet merged (`src/platform/tls_schannel.c`,
+  `inc/az_mqtt/az_mqtt_transport.h`, `CMakeLists.txt`: links `ncrypt`):
+  - Schannel: client certificates and in-memory CA certificates (ewertons/az_mqtt#48).
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`.
 - Not imported: samples, tests, CI, and the `deps/azure-sdk-for-c` submodule. The SDK's
   azure-sdk-for-c is used instead, and samples and tests are off when built from here.

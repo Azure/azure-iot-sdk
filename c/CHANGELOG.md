@@ -24,8 +24,8 @@
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
-  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows; WebSockets, HTTP CONNECT proxy, and
-  key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
+  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
+  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
   without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
   config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines

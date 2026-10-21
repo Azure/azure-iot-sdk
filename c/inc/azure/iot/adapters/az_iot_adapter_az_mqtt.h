@@ -18,9 +18,11 @@
  *
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows. Non-extractable keys:
  * az_iot_mqtt_tls_options.client_key_uri + crypto_engine_id (an OpenSSL 3 provider), OpenSSL
- * builds only. Not supported (connect() returns AZ_IOT_ERR_NOT_SUPPORTED): the sign callback,
- * client_key_password, and, on Windows, a client certificate or an in-memory CA
- * (trusted_ca_pem without trusted_ca_path).
+ * builds only. Not supported (connect() returns AZ_IOT_ERR_NOT_SUPPORTED): the sign callback and
+ * client_key_password. On Windows the client key (unencrypted PKCS#8, PKCS#1 RSA, or SEC1 EC on
+ * P-256, P-384 or P-521) is imported into the user's CNG key store for each connection, and
+ * deleted when that connection closes; chain certificates after the client certificate are added
+ * to the user's intermediate CA store (Schannel sends only those it finds there), and stay.
  */
 #ifndef AZ_IOT_ADAPTER_AZ_MQTT_H
 #define AZ_IOT_ADAPTER_AZ_MQTT_H

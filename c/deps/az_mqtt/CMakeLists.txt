@@ -168,7 +168,7 @@ endif()
 # Wire the selected TLS backend.
 if(WIN32)
   target_compile_definitions(az_mqtt_core PRIVATE AZ_MQTT_TLS_SCHANNEL)
-  target_link_libraries(az_mqtt_core PRIVATE secur32 crypt32 ws2_32 bcrypt)
+  target_link_libraries(az_mqtt_core PRIVATE secur32 crypt32 ncrypt ws2_32 bcrypt)
   set(AZ_MQTT_TLS_BACKEND_RESOLVED "schannel")
   message(STATUS "az_mqtt: TLS backend = Schannel")
 elseif(AZ_MQTT_TLS_BACKEND STREQUAL "mbedtls")
