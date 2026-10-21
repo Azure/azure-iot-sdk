@@ -426,11 +426,12 @@ otherwise.
 it MUST be a copy into a client-owned buffer (no pointer into hook-owned memory), consistent with
 the no-shared-ownership rule used elsewhere. Per step, the application sets it with
 `az_iot_su_client_set_step_result_details()`, from a hook or between `do_work()` calls, once the
-manifest is verified and until the workflow ends. The text is copied into the workspace
+manifest is verified (`is_installed_fn` included) and until the workflow ends. The text is copied into the workspace
 (`az_iot_su_limits::result_details_size` bytes per step, default 128; a longer one is refused with
 `AZ_IOT_ERR_NOT_ENOUGH_SPACE`), persisted with the step's result, and reported with the terminal
-result. A report that does not fit `max_message_size` is sent without step details. The client
-sets no details itself.
+result. A report that does not fit `max_message_size` is sent without step details. The terminal
+`AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
+the channel. The client sets no details itself.
 
 ### Multi-Step Support
 

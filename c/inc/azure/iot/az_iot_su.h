@@ -746,8 +746,9 @@ extern "C"
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
-    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report, step results
-     * included. NULL otherwise. Valid only during the callback. */
+    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report as sent, step results
+     * included; its installed_update_id is NULL when longer than
+     * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. NULL otherwise. Valid only during the callback. */
     const az_iot_su_report* report;
   } az_iot_su_event;
 
@@ -761,6 +762,21 @@ extern "C"
    * restored from persistence during az_iot_su_client_resume(). Do not assume
    * any one of them. */
   typedef void (*az_iot_su_observer_callback)(const az_iot_su_event* event, void* user_ctx);
+
+  /** @brief Internal: a copy of a terminal report handed to the channel. */
+  typedef struct az_iot_su_sent_report_internal
+  {
+    bool valid;
+    az_iot_su_outcome outcome;
+    az_iot_su_failure_origin failure_origin;
+    int32_t result_code;
+    char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+    char extended_result_codes[16];
+    bool has_installed;
+    char installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE]; /**< provider, name, version; NUL each */
+    az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+    int32_t step_results_count;
+  } az_iot_su_sent_report_internal;
 
   typedef struct az_iot_su_client
   {
@@ -853,6 +869,7 @@ extern "C"
       size_t persist_blob_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE(request_buffer_size). */
       uint8_t* terminal_blob; /**< Terminal record. */
       uint8_t* step_details; /**< result_details_size bytes per step. */
+      uint8_t* sent_details; /**< Two sent_terminal slots of result_details_size bytes per step. */
       size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
       uint8_t* scratch; /**< Decode and verification scratch. */
       size_t scratch_size; /**< az_iot_su_limits::scratch_size. */
@@ -955,6 +972,12 @@ extern "C"
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
+      /** Terminal reports handed to the channel, for the REPORT_ACCEPTED event:
+       * the engine state may move on before the verdict arrives. Slot
+       * sent_terminal_slot is the latest; the other is restored if the channel
+       * refuses a newer one. */
+      az_iot_su_sent_report_internal sent_terminal[2];
+      uint8_t sent_terminal_slot; /**< Index of the latest sent_terminal entry. */
     } _internal;
   } az_iot_su_client;
 
@@ -1011,7 +1034,7 @@ extern "C"
     max_update_size, scratch_size, max_message_size, device_properties_size, result_details_size) \
   ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)                \
    + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                   \
-   + 3u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
+   + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
 
 /** @brief Workspace bytes for az_iot_su_limits_default(). */
 #define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE       \

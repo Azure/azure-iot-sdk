@@ -92,9 +92,9 @@
 - Software updates: `az_iot_su_client_set_step_result_details()` sets the `resultDetails` reported
   for a step, from a hook or between `do_work()` calls. The text is copied into the workspace
   (`az_iot_su_limits::result_details_size`, default 128 bytes per step, at most 1024), persisted with
-  the step (persisted-state format 2; a format-1 record is ignored) and reported with the terminal
+  the step (persisted-state format 3; earlier-format records are ignored) and reported with the terminal
   result; a report over `max_message_size` is sent without step details.
-  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries the accepted terminal report in `event->report`.
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries the accepted terminal report, as sent, in `event->report`.
   `AZ_IOT_SU_WORKSPACE_SIZE()` and `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `result_details_size`.
 - Breaking: software updates memory comes from one application-provided workspace.
   `az_iot_su_client_config_options` replaces `device_properties_buffer` /

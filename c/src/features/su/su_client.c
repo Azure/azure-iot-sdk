@@ -2120,10 +2120,12 @@ static void on_channel_result(
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
       bool terminal = SU_I(client).report_sent_terminal;
-      /* Built before settling, which may retire what the report is built from. */
-      az_iot_su__report_view accepted;
-      bool have_view
-          = result == AZ_IOT_OK && terminal && az_iot_su__build_report_view(client, &accepted);
+      /* The report as sent: the engine state may have moved on since. */
+      az_iot_su_report accepted;
+      az_iot_su_report_update_id accepted_installed;
+      bool have_view = result == AZ_IOT_OK && terminal
+          && az_iot_su__sent_terminal_report(client, &accepted, &accepted_installed);
+      SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
       if (result == AZ_IOT_OK)
       {
@@ -2132,7 +2134,7 @@ static void on_channel_result(
             AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
             operation,
             terminal,
-            have_view ? &accepted.report : NULL);
+            have_view ? &accepted : NULL);
       }
       return;
     }
@@ -2417,12 +2419,13 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
     return 0;
   }
   size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
-  size_t parts[6] = { limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+  size_t parts[7] = { limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       limits->scratch_size,
                       limits->max_message_size,
                       limits->device_properties_size,
-                      details };
+                      details,
+                      2u * details };
   size_t total = 0;
   for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i)
   {
@@ -2451,6 +2454,7 @@ typedef struct
   uint8_t* body;
   uint8_t* device_properties;
   uint8_t* step_details;
+  uint8_t* sent_details;
 } su_workspace_layout;
 
 /**
@@ -2492,6 +2496,8 @@ static az_iot_result su_workspace_lay_out(
   out->device_properties = p;
   p += options->limits.device_properties_size;
   out->step_details = p;
+  p += details;
+  out->sent_details = p;
   return AZ_IOT_OK;
 }
 
@@ -2560,6 +2566,7 @@ static az_iot_result su_client_init_core(
   SU_I(client).request_buffer_size = options->limits.max_update_size;
   SU_I(client).terminal_blob = layout.terminal_blob;
   SU_I(client).step_details = layout.step_details;
+  SU_I(client).sent_details = layout.sent_details;
   SU_I(client).step_details_size = options->limits.result_details_size;
   SU_I(client).scratch = layout.scratch;
   SU_I(client).scratch_size = options->limits.scratch_size;
@@ -3897,12 +3904,12 @@ AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
   {
     return AZ_IOT_ERR_DETACHED;
   }
-  /* Step results exist from the end of manifest verification until the
-   * workflow ends; outside that, a slot may hold another workflow's result. */
+  /* A delivery empties the step results and verification fills them, so a
+   * step exists from then (is_installed_fn included) until the workflow ends. */
   az_iot_su_state st = SU_I(client).state;
   if (st == AZ_IOT_SU_STATE_IDLE || st == AZ_IOT_SU_STATE_FAILED
-      || st == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || st == AZ_IOT_SU_STATE_VERIFYING_MANIFEST
-      || (int32_t)step_index >= SU_I(client).step_results_count || step_index > INT32_MAX)
+      || step_index >= (uint32_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || (int32_t)step_index >= SU_I(client).step_results_count)
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
