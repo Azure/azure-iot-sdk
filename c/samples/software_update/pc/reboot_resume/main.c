@@ -49,6 +49,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
@@ -196,7 +200,11 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   char tmp[512];
-  (void)snprintf(tmp, sizeof(tmp), "%s.tmp", c->state_file);
+  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", c->state_file);
+  if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
+  {
+    return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
+  }
   FILE* f = sample_fopen_private(tmp);
   if (f == NULL)
   {
@@ -210,10 +218,13 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 #ifdef _WIN32
-  (void)remove(c->state_file); /* rename() does not replace on Windows */
-#endif
+  /* rename() does not replace on Windows. */
+  if (!MoveFileExA(tmp, c->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+#else
   if (rename(tmp, c->state_file) != 0)
+#endif
   {
+    (void)remove(tmp);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   printf("[persist] %zu bytes -> %s\n", len, c->state_file);
@@ -251,6 +262,11 @@ typedef struct
   int workflow_active;
   int final_report; /* 0 none yet, 1 succeeded, 2 another outcome */
   int connection_faulted;
+  /* A succeeded report's installed update id, not yet in the device properties. */
+  int installed_pending;
+  char installed_provider[SU_SIM_ID_PART_SIZE];
+  char installed_name[SU_SIM_ID_PART_SIZE];
+  char installed_version[SU_SIM_ID_PART_SIZE];
 } sample_flags;
 
 typedef struct
@@ -285,6 +301,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
       o->flags->workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
+      if (event->state == AZ_IOT_SU_STATE_FAILED)
+      {
+        o->reboot->reboot_requested = 0; /* nothing left to activate */
+      }
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
       /* The workflow is held at the reboot boundary until a write succeeds. */
@@ -318,9 +338,24 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
               (int)s->outcome,
               (int)s->result_code,
               (int)az_span_size(s->result_details),
-              (const char*)az_span_ptr(s->result_details));
+              az_span_size(s->result_details) > 0 ? (const char*)az_span_ptr(s->result_details)
+                                                  : "");
         }
         o->flags->final_report = (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED) ? 1 : 2;
+        /* Copied: the report is valid only during the callback. */
+        const az_iot_su_report_update_id* id = event->report->installed_update_id;
+        if (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED && id != NULL)
+        {
+          o->flags->installed_pending
+              = sample_copy_str(
+                    o->flags->installed_provider,
+                    sizeof(o->flags->installed_provider),
+                    id->provider)
+              && sample_copy_str(
+                    o->flags->installed_name, sizeof(o->flags->installed_name), id->name)
+              && sample_copy_str(
+                    o->flags->installed_version, sizeof(o->flags->installed_version), id->version);
+        }
       }
       break;
     case AZ_IOT_SU_EVENT_OPERATION_ABANDONED:
@@ -509,6 +544,30 @@ int main(void)
           "Rebooting: the workflow is saved in %s. Run the sample again to resume.\n",
           reboot.state_file);
       break;
+    }
+    /* After a succeeded update, checks advertise what it installed. */
+    if (flags.installed_pending)
+    {
+      flags.installed_pending = 0;
+      az_iot_su_device_properties next = dp;
+      next.installed_update_id.provider = flags.installed_provider;
+      next.installed_update_id.name = flags.installed_name;
+      next.installed_update_id.version = flags.installed_version;
+      if (az_iot_su_client_update_device_properties(&su, &next) != AZ_IOT_OK)
+      {
+        fprintf(stderr, "Could not record the applied update as installed; not checking again.\n");
+        poll_interval_s = 0;
+      }
+      else
+      {
+        /* Same capacity, so the copies fit. */
+        (void)sample_copy_str(
+            installed_provider, sizeof(installed_provider), flags.installed_provider);
+        (void)sample_copy_str(installed_name, sizeof(installed_name), flags.installed_name);
+        (void)sample_copy_str(
+            installed_version, sizeof(installed_version), flags.installed_version);
+        printf("Installed: %s/%s/%s\n", installed_provider, installed_name, installed_version);
+      }
     }
     if (exit_after_workflow && flags.final_report != 0 && !flags.workflow_active)
     {
