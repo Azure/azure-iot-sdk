@@ -143,8 +143,8 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-`esp-mqtt` is fetched from the ESP Component Registry (`espressif/mqtt`) on the
-first build.
+`esp-mqtt` is fetched from the ESP Component Registry (`espressif/mqtt`, pinned
+to 1.1.0) on the first build.
 
 ### Build and flash
 
@@ -157,6 +157,20 @@ idf.py build flash monitor
 ```
 
 Leave the monitor running; see [Expected output](#expected-output).
+
+### CI builds
+
+CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
+esp32c6, with the default and the [production security](#production-security-profile-optional)
+profiles, plus the esp32 legacy and virtual eFuse profiles. Any compiler
+warning fails the build. To run one build the same way, from `c/`:
+
+```sh
+eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure
+```
+
+Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`.
+Secure builds are signed with a throwaway key and must not be flashed.
 
 ### Deploy an update
 

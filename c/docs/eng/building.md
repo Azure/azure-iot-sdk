@@ -20,6 +20,10 @@ docs/               customer documentation; docs/eng for engineering documentati
 cmake/, eng/        build helpers and CI scripts
 ```
 
+`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the ESP-IDF
+component of the [ESP32 sample](../../samples/software_update/esp32/README.md#ci-builds)
+both include it, so a source added there is built by both.
+
 ## Install and consume
 
 Building `c/` as the top-level CMake project installs static libraries, headers and the
