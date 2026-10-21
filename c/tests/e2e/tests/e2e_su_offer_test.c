@@ -466,8 +466,7 @@ static void spy_on_update(const uint8_t* payload, size_t len, void* ctx)
 static bool verdict_is_final(az_iot_result result, az_iot_su_error_action action)
 {
   return result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_NONE
-      || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-      || action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+      || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
 }
 
 static void spy_on_result(

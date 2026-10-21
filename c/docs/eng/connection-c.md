@@ -721,8 +721,10 @@ reports include complete per-step outcomes when steps are available — see
   honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
   report is a durable write and must not be lost.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
-  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
-  it; an unlinked update account means "no update service configured", which is not a failure.
+  `agentInfoEtag` means resend the full `agentInfo`. A missing or stale `serviceConfigEtag` is not
+  an error: the 200 response carries the current configuration. An update account the service
+  cannot use (not linked, or no access to the namespace) is not retried, is reported, and does
+  not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates follows the DPS scope, not the hub one.** The channel records both scopes but acts only on
   `AZ_IOT_CONN_SCOPE_DPS`, so it works whatever the hub state and under `provision_only`. It never opens, closes or reconnects
