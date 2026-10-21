@@ -31,6 +31,9 @@
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
+- Breaking: software updates has no device-side cancel. `az_iot_su_is_cancelled()` and
+  `AZ_IOT_SU_RESULT_CANCELLED` are removed; a cancel is service-side only.
+  `AZ_IOT_SU_OUTCOME_CANCELED` stays as a reported value.
 - Breaking: log calls and sinks take a component. `AZ_IOT_LOG_*(component, msg)`,
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
   `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).

@@ -49,7 +49,6 @@ extern "C"
 #define AZ_IOT_SU_RESULT_IN_PROGRESS 1
 #define AZ_IOT_SU_RESULT_REBOOT_REQUIRED 2
 #define AZ_IOT_SU_RESULT_ALREADY_INSTALLED 3
-#define AZ_IOT_SU_RESULT_CANCELLED 4
 #define AZ_IOT_SU_RESULT_FAILURE (-1)
 
 /* The agent "success" result code reported to the software updates service (software updates agent
@@ -171,8 +170,7 @@ extern "C"
  * A later write is still attempted once when needed; a tracked success resets
  * the count (the best-effort erase of a stale record does not).
  * While a workflow is held at a reboot boundary, a new workflow is deferred
- * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and a cancel waits; a cancel of an
- * installed step not yet applied rolls it back.
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED).
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
@@ -219,7 +217,6 @@ extern "C"
     /**
      * Download one file (called once per file, once per do_work iteration).
      * Return IN_PROGRESS to continue on the next do_work, SUCCESS when complete.
-     * The hook SHOULD check az_iot_su_is_cancelled() periodically.
      * Hash verification is performed by core with the connection client's
      * crypto backend.
      */
@@ -457,7 +454,7 @@ extern "C"
     AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
     AZ_IOT_SU_OUTCOME_SUCCEEDED,
     AZ_IOT_SU_OUTCOME_FAILED,
-    AZ_IOT_SU_OUTCOME_CANCELED,
+    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service; the client never reports it. */
     AZ_IOT_SU_OUTCOME_SKIPPED,
   } az_iot_su_outcome;
 
@@ -792,7 +789,6 @@ extern "C"
       bool have_request;
       uint32_t current_step;
       uint32_t current_file;
-      bool cancel_requested;
       /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
       bool checkpoint_pending;
       /* Storage is believed to hold a checkpoint this client wrote or resumed
@@ -897,7 +893,7 @@ extern "C"
 
       /* Terminal outcome for the active workflow, latched at the transition
        * that ends it. Reporting is keyed on workflowId, so the engine must be
-       * able to distinguish SUCCEEDED / CANCELED / SKIPPED after the workflow
+       * able to distinguish SUCCEEDED / SKIPPED after the workflow
        * state itself has returned to Idle. */
       az_iot_su_outcome pending_outcome;
 
@@ -1051,9 +1047,6 @@ extern "C"
    * AZ_NODISCARD: a pump whose result is typically observed via state, not return.
    */
   az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
-
-  /** Check if cancellation has been requested (called from within platform hooks). */
-  bool az_iot_su_is_cancelled(const az_iot_su_client* client);
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
