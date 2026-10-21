@@ -36,12 +36,15 @@ tool_opts=()
 log_dir="${build_dir}/race-logs/${tool}"
 mkdir -p "${log_dir}"
 
-# One JSON object per test: name, command (array), working directory.
-mapfile -t tests < <(
+# One JSON object per test: name, command (array), working directory. Assigned
+# first so a failing ctest or jq stops the run (set -e, pipefail).
+discovered="$(
     ctest --test-dir "${build_dir}" -L '^race$' --show-only=json-v1 |
         jq -c '.tests[] | {name, command,
                 wd: ([(.properties // [])[] | select(.name == "WORKING_DIRECTORY") | .value][0] // "")}'
-)
+)"
+tests=()
+[ -z "${discovered}" ] || mapfile -t tests <<<"${discovered}"
 if [ "${#tests[@]}" -eq 0 ]; then
     echo "::error::no test labelled 'race' in ${build_dir}"
     exit 1
