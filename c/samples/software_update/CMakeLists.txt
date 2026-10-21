@@ -12,7 +12,7 @@ endif()
 
 # pc/<name> builds target az_iot_sample_software_update_<name>, binary
 # az_iot_sample_<name>, like az_iot_add_sample().
-foreach(name simulated_onboarding simulated_regular multi_step)
+foreach(name simulated_onboarding simulated_regular multi_step reboot_resume)
     az_iot_add_adapter_sample(az_iot_sample_software_update_${name} CRYPTO
         OUTPUT_NAME az_iot_sample_${name}
         SOURCES pc/${name}/main.c pc/common/su_sim.c ${AZ_IOT_SAMPLES_COMMON_DIR}/sample_utils.c
