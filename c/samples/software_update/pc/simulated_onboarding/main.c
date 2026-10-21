@@ -138,11 +138,12 @@ typedef struct
   int su_workflow_completed; /* one finished and returned to Idle */
   int su_workflow_succeeded; /* ...and it was applied successfully */
 
-  /* The software updates client's memory: update copy, persisted-state record,
-   * scratch, message body and device-property strings. Sized for the limits
-   * main() sets. */
-  uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 } sample_state;
+
+/* The software updates client's memory: update copy, persisted-state record,
+ * scratch, message body and device-property strings. Sized for the limits
+ * main() sets; static, as it is too large for a stack frame. */
+static uint8_t g_su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 
 static void sample_state_destroy(sample_state* s)
 {
@@ -482,8 +483,8 @@ int main(void)
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
-  su_opts.workspace = state.su_workspace;
-  su_opts.workspace_size = sizeof(state.su_workspace);
+  su_opts.workspace = g_su_workspace;
+  su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");
