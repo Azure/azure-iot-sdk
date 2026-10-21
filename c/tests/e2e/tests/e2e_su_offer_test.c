@@ -968,7 +968,7 @@ static void install_failure_is_rolled_back_and_reported_failed(void** state)
   assert_true(ops_in_order(&fx->plat, k_order, sizeof(k_order) / sizeof(k_order[0])));
   assert_false(op_seen(&fx->plat, OP_APPLY));
   assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_FAILED);
-  assert_int_equal(r->result_code, 700 - (int32_t)AZ_IOT_SU_FACILITY_INSTALL);
+  assert_int_equal(r->result_code, -(int32_t)AZ_IOT_SU_FACILITY_INSTALL);
   assert_int_not_equal(r->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
   assert_true(r->step_count >= 1);
   assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_FAILED);
@@ -1007,7 +1007,7 @@ static void untrusted_manifest_is_reported_failed(void** state)
   assert_false(op_seen(&fx->plat, OP_DOWNLOAD));
   assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_FAILED);
   /* The failure is the signature check, not anything else before download. */
-  assert_int_equal(r->result_code, 700 - (int32_t)AZ_IOT_SU_FACILITY_MANIFEST);
+  assert_int_equal(r->result_code, -(int32_t)AZ_IOT_SU_FACILITY_MANIFEST);
   assert_int_equal(r->result, AZ_IOT_OK);
 }
 

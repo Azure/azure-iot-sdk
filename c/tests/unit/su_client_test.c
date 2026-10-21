@@ -4862,7 +4862,7 @@ static void multi_step_report_preserves_progress_and_failure(void** state)
   assert_int_equal(report->step_results[0].extended_result_code, 0);
   assert_int_equal(report->step_results[1].outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(report->step_results[1].failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
-  assert_int_equal(report->step_results[1].result_code, 700 - AZ_IOT_SU_FACILITY_INSTALL);
+  assert_int_equal(report->step_results[1].result_code, -(int32_t)AZ_IOT_SU_FACILITY_INSTALL);
   assert_int_equal(
       report->step_results[1].extended_result_code,
       AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_INSTALL, (uint32_t)AZ_IOT_SU_RESULT_FAILURE));
@@ -4885,7 +4885,7 @@ static void multi_step_failure_preserves_unexecuted_step_results(void** state)
   assert_int_equal(report->step_results_count, 2);
   assert_int_equal(report->step_results[0].outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(report->step_results[0].failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
-  assert_int_equal(report->step_results[0].result_code, 700 - AZ_IOT_SU_FACILITY_DOWNLOAD);
+  assert_int_equal(report->step_results[0].result_code, -(int32_t)AZ_IOT_SU_FACILITY_DOWNLOAD);
   assert_int_equal(
       report->step_results[0].extended_result_code,
       AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DOWNLOAD, (uint32_t)AZ_IOT_SU_RESULT_FAILURE));
@@ -4959,7 +4959,7 @@ static void download_failure_is_reported_and_does_not_install(void** state)
   assert_true(fx->chan.report_count > 0);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
-  assert_true(fx->chan.last_report.result_code != 700);
+  assert_true(fx->chan.last_report.result_code <= 0);
   assert_true(fx->chan.last_workflow_id[0] != '\0');
   assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
 }
