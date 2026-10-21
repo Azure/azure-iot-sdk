@@ -557,6 +557,17 @@ if(TARGET az_iot_certificate_provider_managed)
     endif()
 endif()
 
+# The hand-off queue of samples/unified/multithreaded_telemetry: application
+# code that must itself be race-free. RACE: also run under helgrind and DRD.
+set(_mt_sample ${CMAKE_CURRENT_SOURCE_DIR}/../samples/unified/multithreaded_telemetry)
+az_iot_add_cmocka_test(az_iot_tests_sample_reading_queue RACE
+    unit/sample_reading_queue_race_test.c
+    ${_mt_sample}/reading_queue.c)
+target_include_directories(az_iot_tests_sample_reading_queue PRIVATE ${_mt_sample})
+if(UNIX)
+    target_link_libraries(az_iot_tests_sample_reading_queue PRIVATE pthread)
+endif()
+
 # The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)

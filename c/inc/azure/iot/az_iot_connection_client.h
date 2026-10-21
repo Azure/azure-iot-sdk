@@ -2156,10 +2156,19 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_connection_client_request_reprovision(az_iot_connection_client* client);
 
-  /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
-   * callbacks fire synchronously from inside this call. Not AZ_NODISCARD: this is a
-   * pump, commonly called in a loop where the per-call result is observed via the
-   * state callback rather than the return value. */
+  /**
+   * @brief Pump network I/O and dispatch callbacks.
+   *
+   * Single-threaded: user callbacks fire synchronously inside this call. The SDK does
+   * not lock its state against other threads: make every SDK call, for every client
+   * in the process, from one thread, or serialize the calls (docs/architecture.md).
+   * Not AZ_NODISCARD: it is called in a loop, and results surface on the state callback.
+   *
+   * @param[in,out] client     The client.
+   * @param[in]     timeout_ms Longest wait for network activity when idle.
+   * @return AZ_IOT_ERR_INVALID_ARG for a NULL client; otherwise the MQTT adapter's
+   *         process_loop() result.
+   */
   az_iot_result az_iot_connection_client_do_work(
       az_iot_connection_client* client,
       uint32_t timeout_ms);

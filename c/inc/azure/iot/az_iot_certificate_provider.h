@@ -161,7 +161,8 @@ extern "C"
     /* v2 non-extractable key custody (optional; D8). When present the TLS
      * adapter calls sign() instead of reading a private key: signs the
      * caller-provided digest, writing up to out_sig_cap bytes and setting
-     * *out_sig_len.
+     * *out_sig_len. Called only from inside connection client calls, on the thread
+     * making them (az_iot_mqtt_sign_callback).
      *
      * The connection client forwards this to the adapter (through
      * az_iot_mqtt_tls_options::sign) when vtable->version >= 2 and the slot is

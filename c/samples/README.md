@@ -26,6 +26,7 @@ run it, and what to expect.
 | [unified/file_upload](unified/file_upload/README.md) | File upload to Azure Storage (mqttv3 only). |
 | [unified/websockets](unified/websockets/README.md) | Telemetry over MQTT over WebSockets (port 443). |
 | [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
+| [unified/multithreaded_telemetry](unified/multithreaded_telemetry/README.md) | Telemetry with readings from other threads, handed to the one thread that calls the SDK. |
 | [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
 | [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
