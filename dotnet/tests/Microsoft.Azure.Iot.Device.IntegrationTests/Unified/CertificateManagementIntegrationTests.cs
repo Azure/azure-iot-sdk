@@ -72,11 +72,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("No MQTTv5 hub to test against yet");
-            }
-
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
                 ?? throw new InvalidOperationException("Missing IOT_DPS_GROUP_X509_REGISTRATION_ID environment variable.");
             string certificatePem = DecodeBase64EnvironmentVariable("IOT_DPS_GROUP_X509_CERTIFICATE");
@@ -99,6 +94,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
+            Assert.Equal(testAgainstClassicHub ? IotHubConnectionType.Mqttv3 : IotHubConnectionType.Mqttv5, connectionContext.ConnectionProfile);
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
