@@ -96,6 +96,7 @@ typedef struct
 
   /**
    * @brief Client certificate file (PEM), then any chain certificates, for mutual TLS.
+   * Schannel: TLS 1.2 only (the server is validated before the certificate is sent).
    * Schannel sends only chain certificates it finds in the system stores: the chain certificates
    * given (not self-issued ones) are added to the current user's intermediate CA store (CA), and
    * stay there.

@@ -22,7 +22,8 @@
  * client_key_password. On Windows the client key (unencrypted PKCS#8, PKCS#1 RSA, or SEC1 EC on
  * P-256, P-384 or P-521) is imported into the user's CNG key store for each connection, and
  * deleted when that connection closes; chain certificates after the client certificate are added
- * to the user's intermediate CA store (Schannel sends only those it finds there), and stay.
+ * to the user's intermediate CA store (Schannel sends only those it finds there), and stay. With a
+ * client certificate, TLS 1.2 only: the server is validated before the certificate is sent.
  */
 #ifndef AZ_IOT_ADAPTER_AZ_MQTT_H
 #define AZ_IOT_ADAPTER_AZ_MQTT_H
