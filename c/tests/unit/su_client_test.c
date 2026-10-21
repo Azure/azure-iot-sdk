@@ -308,6 +308,11 @@ typedef struct
   size_t verify_exp_len;
   uint8_t verify_sig[8];
   size_t verify_sig_len;
+
+  /* When set, is_installed sets these details on step 0 of su_client. */
+  az_iot_su_client* su_client;
+  const char* is_installed_details;
+  az_iot_result is_installed_details_result;
 } hook_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
@@ -406,6 +411,11 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   (void)m;
   hook_log* l = (hook_log*)ctx;
   log_op(l, OP_IS_INSTALLED, 0);
+  if (l->su_client != NULL && l->is_installed_details != NULL)
+  {
+    l->is_installed_details_result = az_iot_su_client_set_step_result_details(
+        l->su_client, 0, az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
+  }
   return l->is_installed_result;
 }
 
@@ -909,6 +919,8 @@ typedef struct
   int refused_count;
   int accepted_report_count; /* REPORT_ACCEPTED events that carried the report */
   az_iot_su_outcome accepted_report_outcome;
+  int32_t accepted_report_result_code;
+  char accepted_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
   int32_t accepted_report_steps;
   char accepted_step_details[64];
   az_iot_result last_refused_reason;
@@ -992,6 +1004,9 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     {
       fx->accepted_report_count++;
       fx->accepted_report_outcome = event->report->outcome;
+      fx->accepted_report_result_code = event->report->result_code;
+      copy_str(
+          fx->accepted_workflow_id, sizeof(fx->accepted_workflow_id), event->report->workflow_id);
       fx->accepted_report_steps = event->report->step_results_count;
       fx->accepted_step_details[0] = '\0';
       if (event->report->step_results_count > 0)
@@ -2566,6 +2581,7 @@ static void a_report_too_large_is_sent_without_step_details(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
   fx->chan.report_details_do_not_fit = true;
   inject_patch(fx, signed_patch());
   pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
@@ -2578,6 +2594,61 @@ static void a_report_too_large_is_sent_without_step_details(void** state)
   assert_int_equal(az_span_size(fx->chan.last_report.step_results[0].result_details), 0);
   assert_int_equal(
       fx->chan.last_report.step_results[0].result_code, AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS);
+  /* The event carries the report as sent: without the details. */
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_int_equal(fx->accepted_report_steps, 1);
+  assert_string_equal(fx->accepted_step_details, "");
+}
+
+/* Details set from is_installed_fn are reported with the SKIPPED outcome. */
+static void details_set_from_is_installed_are_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.is_installed_result = AZ_IOT_SU_RESULT_ALREADY_INSTALLED;
+  fx->log.su_client = &fx->su;
+  fx->log.is_installed_details = "version 1.0 found";
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->log.is_installed_details_result, AZ_IOT_OK);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("version 1.0 found")));
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_string_equal(fx->accepted_step_details, "version 1.0 found");
+}
+
+/* A refused report leaves an earlier one awaiting its verdict as the one the
+ * verdict reports. */
+static void a_refused_report_keeps_the_pending_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  int32_t sent_code = fx->chan.last_report.result_code;
+
+  /* A newer terminal report, with another result, is refused. */
+  fx->su._internal.pending_outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
+  fx->su._internal.install_result.result_code = -77;
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  assert_int_equal(az_iot_su__report_state(&fx->su), AZ_IOT_ERR_BUSY);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->accepted_report_result_code, sent_code);
 }
 
 static void workspace_size_follows_the_limits(void** state)
@@ -2601,7 +2672,7 @@ static void workspace_size_follows_the_limits(void** state)
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
       1350 + AZ_IOT_SU_MIN_MESSAGE_SIZE + 2u * AZ_IOT_SU_PERSIST_OVERHEAD
-          + 30u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+          + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
       AZ_IOT_SU_WORKSPACE_SIZE(1000, 300, AZ_IOT_SU_MIN_MESSAGE_SIZE, 50, 10));
@@ -6722,6 +6793,7 @@ static void accepted_reports_are_raised(void** state)
   inject_patch(fx, build_patch("dddddddd-0000-0000-0000-000000000004"));
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  int reports = fx->accepted_report_count;
   inject_patch(fx, build_patch("eeeeeeee-0000-0000-0000-000000000005"));
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
   fx->chan.result_cb(
@@ -6732,6 +6804,9 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 2);
   assert_int_equal(fx->accepted_terminal_count, 3);
+  assert_int_equal(fx->accepted_report_count, reports + 1);
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->accepted_workflow_id, "dddddddd-0000-0000-0000-000000000004");
 }
 
 /* A LATE verdict must not resurrect an operation after the slot was abandoned.
@@ -8148,6 +8223,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(step_result_details_survive_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_too_large_is_sent_without_step_details, setup, teardown),
+    cmocka_unit_test_setup_teardown(details_set_from_is_installed_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_report_keeps_the_pending_one, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_string_over_the_scratch_is_refused_as_too_large, setup, teardown),

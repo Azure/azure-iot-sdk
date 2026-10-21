@@ -53,6 +53,19 @@ extern "C"
    */
   bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__report_view* v);
 
+  /**
+   * @brief The terminal report last handed to the channel, rebuilt from its snapshot.
+   *
+   * @param[in] client The client.
+   * @param[out] out The report; its strings point into the client.
+   * @param[out] installed Storage for its installed update id.
+   * @return false when no terminal report is kept.
+   */
+  bool az_iot_su__sent_terminal_report(
+      const az_iot_su_client* client,
+      az_iot_su_report* out,
+      az_iot_su_report_update_id* installed);
+
   /* Assemble the current engine state into a structured az_iot_su_report and
    * hand it to the bound channel. Reporting is keyed on the active workflow id
    * and is idempotent on it; with no active workflow this is a no-op success,

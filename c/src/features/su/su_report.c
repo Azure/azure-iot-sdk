@@ -175,6 +175,125 @@ bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__rep
   return true;
 }
 
+/**
+ * @brief Append @p src and its NUL at @p dst + *used, truncating to fit.
+ *
+ * @return false when @p src was truncated.
+ */
+static bool pack_cstr(char* dst, size_t cap, size_t* used, const char* src)
+{
+  if (src == NULL)
+  {
+    src = "";
+  }
+  size_t n = strlen(src);
+  bool fits = n + 1 <= cap - *used;
+  if (!fits)
+  {
+    n = cap - *used - 1;
+  }
+  if (n > 0)
+  {
+    memcpy(dst + *used, src, n);
+  }
+  dst[*used + n] = '\0';
+  *used += n + 1;
+  return fits;
+}
+
+/**
+ * @brief Keep @p report in sent_terminal slot @p slot, copying what it points at.
+ *
+ * The engine sets no overall result details, so none are kept. An installed
+ * update id longer than AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is not kept.
+ */
+static void keep_sent_terminal(
+    az_iot_su_client* client,
+    uint8_t slot,
+    const az_iot_su_report* report)
+{
+  az_iot_su_sent_report_internal* t = &SU_I(client).sent_terminal[slot];
+  t->valid = true;
+  t->outcome = report->outcome;
+  t->failure_origin = report->failure_origin;
+  t->result_code = report->result_code;
+  size_t used = 0;
+  (void)pack_cstr(t->workflow_id, sizeof(t->workflow_id), &used, report->workflow_id);
+  used = 0;
+  (void)pack_cstr(
+      t->extended_result_codes,
+      sizeof(t->extended_result_codes),
+      &used,
+      report->extended_result_codes);
+  t->has_installed = false;
+  if (report->installed_update_id != NULL)
+  {
+    used = 0;
+    t->has_installed
+        = pack_cstr(
+              t->installed, sizeof(t->installed), &used, report->installed_update_id->provider)
+        && pack_cstr(t->installed, sizeof(t->installed), &used, report->installed_update_id->name)
+        && pack_cstr(
+              t->installed, sizeof(t->installed), &used, report->installed_update_id->version);
+  }
+  size_t d = SU_I(client).step_details_size;
+  uint8_t* region = SU_I(client).sent_details
+      + (size_t)slot * (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * d;
+  int32_t count = report->step_results_count;
+  if (count < 0 || count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  {
+    count = 0;
+  }
+  t->step_results_count = count;
+  for (int32_t i = 0; i < count; ++i)
+  {
+    t->step_results[i] = report->step_results[i];
+    int32_t len = az_span_size(report->step_results[i].result_details);
+    if (len > 0 && (size_t)len <= d)
+    {
+      memcpy(
+          region + (size_t)i * d, az_span_ptr(report->step_results[i].result_details), (size_t)len);
+      t->step_results[i].result_details = az_span_create(region + (size_t)i * d, len);
+    }
+    else
+    {
+      t->step_results[i].result_details = AZ_SPAN_EMPTY;
+    }
+  }
+}
+
+bool az_iot_su__sent_terminal_report(
+    const az_iot_su_client* client,
+    az_iot_su_report* out,
+    az_iot_su_report_update_id* installed)
+{
+  const az_iot_su_sent_report_internal* t
+      = &SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot];
+  if (!t->valid)
+  {
+    return false;
+  }
+  memset(out, 0, sizeof(*out));
+  out->workflow_id = t->workflow_id;
+  out->outcome = t->outcome;
+  out->failure_origin = t->failure_origin;
+  out->result_code = t->result_code;
+  out->extended_result_codes = t->extended_result_codes;
+  if (t->has_installed)
+  {
+    installed->provider = t->installed;
+    installed->name = installed->provider + strlen(installed->provider) + 1;
+    installed->version = installed->name + strlen(installed->name) + 1;
+    out->installed_update_id = installed;
+  }
+  if (t->step_results_count > 0)
+  {
+    out->step_results = t->step_results;
+    out->step_results_count = t->step_results_count;
+  }
+  return true;
+}
+
 /* Assemble the structured result and hand it to the channel. The engine emits
  * no wire format: how this becomes a request body is the channel's business
  * alone. Reporting is per-workflow and idempotent on the workflow id. */
@@ -207,8 +326,17 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
    * report still awaiting its verdict. */
   bool was_sent_terminal = SU_I(client).report_sent_terminal;
   bool was_in_flight = SU_I(client).terminal_report_in_flight;
-  SU_I(client).terminal_report_in_flight = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
-  SU_I(client).report_sent_terminal = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  bool terminal = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  SU_I(client).terminal_report_in_flight = terminal;
+  SU_I(client).report_sent_terminal = terminal;
+  /* Its verdict may arrive inside report(): keep it first, in the other slot,
+   * so a refusal leaves an earlier report still awaiting its verdict intact. */
+  uint8_t was_slot = SU_I(client).sent_terminal_slot;
+  if (terminal)
+  {
+    SU_I(client).sent_terminal_slot = (uint8_t)(was_slot ^ 1u);
+    keep_sent_terminal(client, SU_I(client).sent_terminal_slot, &v.report);
+  }
   az_iot_result sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
   if (sent == AZ_IOT_ERR_NOT_ENOUGH_SPACE && v.report.step_results_count > 0)
   {
@@ -224,12 +352,17 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
         AZ_IOT_LOG_COMPONENT_SU,
         "report does not fit az_iot_su_limits::max_message_size; sent without step details");
     v.report.step_results = plain;
+    if (terminal)
+    {
+      keep_sent_terminal(client, SU_I(client).sent_terminal_slot, &v.report);
+    }
     sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
   }
   if (sent != AZ_IOT_OK)
   {
     SU_I(client).terminal_report_in_flight = was_in_flight;
     SU_I(client).report_sent_terminal = was_sent_terminal;
+    SU_I(client).sent_terminal_slot = was_slot;
     /* Re-arm so do_work re-offers it. Most callers discard this result -- they
      * are state transitions, not report calls -- so without this a report the
      * channel could not take right now (no session yet, or a retry-after still
