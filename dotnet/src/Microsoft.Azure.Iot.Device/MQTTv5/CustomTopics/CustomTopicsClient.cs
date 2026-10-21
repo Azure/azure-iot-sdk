@@ -537,8 +537,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                     subscribedCustomTopicFilter = subscribedCustomTopic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
                 }
 
-                // TODO probably want to test scenarios where user subscribes to two custom topics and receives a publish that satisfies both topics (due to wildcard rules)
-                //  This scenario should be fine for ACK'ing since we still only expose the publish to the user once even if they were subscribed to it in two ways
+                // Overlapping subscriptions (for example, through wildcards) can match one publish more than once, but the
+                // publish is still only exposed to the user, and acknowledged, once
                 if (DoesTopicMatchFilter(args.Publish.Topic, subscribedCustomTopicFilter))
                 {
                     // The snapshot above may predate a concurrent Dispose, so check again before calling into user code

@@ -56,6 +56,52 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, deliveredArgs.AcknowledgeCount);
         }
 
+        // Overlapping subscriptions can also come from a "{deviceId}" placeholder filter (resolved only when matching) and
+        // single-level wildcards. MQTT 5 additionally lets the service send a separate copy of the publish for each matching
+        // subscription, so each copy must reach the user exactly once and be acknowledged exactly once.
+        [Fact]
+        public async Task EachCopyOfPublishMatchingOverlappingPlaceholderAndWildcardTopicsIsDeliveredAndAcknowledgedOnce()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            List<MqttPublish> receivedPublishes = new();
+            customTopicsClient.CustomTopicPublishReceivedAsync += args =>
+            {
+                receivedPublishes.Add(args.Publish);
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync($"commands/{IConnectionClient.DeviceIdPlaceholder}/+", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("commands/+/reboot", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("commands/#", MqttQualityOfServiceLevel.AtMostOnce, TestContext.Current.CancellationToken);
+
+            MqttPublish firstCopy = new()
+            {
+                Topic = $"commands/{DeviceId}/reboot",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                Payload = Encoding.UTF8.GetBytes("reboot"),
+            };
+            MqttPublish secondCopy = new()
+            {
+                Topic = firstCopy.Topic,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                Payload = firstCopy.Payload,
+            };
+
+            MockMqttPublishReceivedEventArgs firstDelivery = await connection.SimulateReceiveAsync(firstCopy);
+            MockMqttPublishReceivedEventArgs secondDelivery = await connection.SimulateReceiveAsync(secondCopy);
+
+            Assert.Equal(2, receivedPublishes.Count);
+            Assert.Same(firstCopy, receivedPublishes[0]);
+            Assert.Same(secondCopy, receivedPublishes[1]);
+            Assert.Equal(1, firstDelivery.AcknowledgeCount);
+            Assert.Equal(1, secondDelivery.AcknowledgeCount);
+        }
+
         // If a user subscribes to multiple topics at once, and only some of them are successful, this client should still track those topics as subscribed. This client should also still receive and delegate publishes to those topics to the user
         [Fact]
         public async Task SubscribeAsyncAllowsPartialSuccessCase()
