@@ -87,6 +87,20 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Breaking: software updates memory comes from one application-provided workspace.
+  `az_iot_su_client_config_options` replaces `device_properties_buffer` /
+  `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
+  `scratch_size`, `max_message_size`, `device_properties_size`) and `workspace` / `workspace_size`,
+  sized with `az_iot_su_workspace_size()` or `AZ_IOT_SU_WORKSPACE_SIZE()`. The update copy, the
+  persisted-state records, the verification scratch (was the client's persist scratch), the
+  message body and the property strings live there; `az_iot_su_client` drops from
+  about 39 KiB to about 3.5 KiB and no longer depends on them. `max_update_size` defaults to
+  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). The workflow
+  record is serialized in place around the update copy, so the separate persist scratch is gone.
+  Removed: `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_PERSIST_BLOB_SIZE`,
+  `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()`. `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` takes the
+  limit. `az_iot_su_client_resume()` returns `AZ_IOT_ERR_BUSY` while a workflow is in progress. A
+  file URL longer than `scratch_size` is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 - Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
   4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
   decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
