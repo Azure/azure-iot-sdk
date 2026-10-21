@@ -156,3 +156,7 @@
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.
+- Builds without Paho (`AZ_IOT_WITH_PAHO=OFF`): an MQTT adapter's header is installed only with
+  the adapter. `AZ_IOT_BUILD_E2E` and `AZ_IOT_BUILD_PKCS11_TESTS` without Paho, and the
+  `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`, fail the configure step instead of
+  building nothing.

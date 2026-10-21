@@ -11,7 +11,7 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 ```
 inc/azure/iot/      public headers
 src/                core, mqttv3 and mqttv5 feature clients, software updates
-adapters/           MQTT adapters (Paho, Rust shell), OpenSSL certificate provider,
+adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certificate provider,
                     crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
@@ -37,8 +37,8 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
-  `certificate_provider_managed`).
+  `adapter_az_mqtt`, `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
+  `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
@@ -62,6 +62,32 @@ Yocto: [platforms/yocto/meta-azure-iot-sdk](../../platforms/yocto/meta-azure-iot
 [tests/install](../../tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
 with CMake and with pkg-config alone ([pkg-config-test.sh](../../tests/install/pkg-config-test.sh)).
 [tests/subproject](../../tests/subproject/CMakeLists.txt) builds the same sources with this tree added via `add_subdirectory()`.
+
+## Building without Paho
+
+`-DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON` builds the SDK and its tests on the az_mqtt
+adapter, with no Paho source, header or library. `AZ_IOT_BUILD_E2E` and
+`AZ_IOT_BUILD_PKCS11_TESTS` need Paho and fail the configure step without it, as do the
+`AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`.
+
+### Dependency check
+
+`eng/check-dependencies.cmake` fails when a build tree depends on a library it was configured
+without (`paho`, `az_mqtt`, `rust_mqtt`, `openssl`, `mbedtls`, `curl`). It checks every first-party
+target's sources, include directories, definitions, link inputs and target dependencies (CMake File
+API), the headers compiled in (Ninja), the binaries' needed libraries and symbols, fetched copies
+under `_deps/`, and optionally an install prefix. CI runs it on every build leg.
+
+```sh
+cmake -DBUILD_DIR=build/x -DMODE=prepare -P eng/check-dependencies.cmake   # before configuring
+cmake -S . -B build/x -G Ninja -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON
+cmake --build build/x
+cmake -DBUILD_DIR=build/x -DFORBID=paho -P eng/check-dependencies.cmake
+```
+
+Options: `CONFIG` (multi-config generators), `INSTALL_PREFIX`, `EXPECT_SAMPLES` (adapters every
+sample must be built for) and `EXPECT_SAMPLES_EXCEPT`, `EXPECT_FAIL=ON` (a negative control that
+must find a violation). Needs a Ninja generator; on Windows, `dumpbin` on `PATH`.
 
 ## Build hardening
 

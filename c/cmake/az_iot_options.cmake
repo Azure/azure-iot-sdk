@@ -97,3 +97,20 @@ option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       O
 # package-feed prefix); see docs/client-configuration.md.
 option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (cmake/Findazure-sdk-for-c.cmake) instead of fetching it" OFF)
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
+
+# Options that would otherwise create nothing without saying so.
+foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11)
+    if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
+        message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")
+    endif()
+endforeach()
+unset(_opt)
+foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS)
+    if(${_opt} AND NOT AZ_IOT_BUILD_TESTS)
+        message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_TESTS=ON")
+    endif()
+    if(${_opt} AND NOT AZ_IOT_WITH_PAHO)
+        message(FATAL_ERROR "${_opt}=ON needs the Paho adapter (AZ_IOT_WITH_PAHO=ON)")
+    endif()
+endforeach()
+unset(_opt)
