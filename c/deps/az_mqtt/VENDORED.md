@@ -3,7 +3,7 @@
 MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/az_mqtt`).
 
 - Source: az_mqtt commit `58a0799` (main).
-- Patched with these merged upstream changes, as of az_mqtt main `4315eba` (files
+- Patched with these merged upstream changes, as of az_mqtt main `d630f9b` (files
   `inc/az_mqtt5/az_mqtt5_types.h`, `inc/az_mqtt5/az_mqtt5_codec.h`, `inc/az_mqtt5/az_mqtt5_client.h`,
   `src/mqtt5/az_mqtt5_codec.c`, `src/mqtt5/az_mqtt5_client.c`, `src/core/az_mqtt_codec_internal.h`,
   `src/platform/tls_schannel.c`, `inc/az_mqtt/az_mqtt_transport.h`; the rest of upstream main since
@@ -16,9 +16,8 @@ MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/
     (ewertons/az_mqtt#45, merged in `2f470cb`).
   - Schannel trusts every certificate of a CA file, of any size (ewertons/az_mqtt#46, merged in
     `4315eba`).
-- Patched with this upstream change, not yet merged (`src/platform/tls_schannel.c`):
   - Schannel continues without a client certificate when the server requests one
-    (ewertons/az_mqtt#47).
+    (ewertons/az_mqtt#47, merged in `d630f9b`).
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`.
 - Not imported: samples, tests, CI, and the `deps/azure-sdk-for-c` submodule. The SDK's
   azure-sdk-for-c is used instead, and samples and tests are off when built from here.
