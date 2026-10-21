@@ -65,6 +65,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_sas_key_i
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_sas_key_issued_cert
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_sas_key_issued_cert_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -73,9 +76,8 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_auth_dps_sas_ke
 .\build\windows-msvc-debug\samples\authentication\Debug\az_iot_sample_auth_dps_sas_key_issued_cert.exe
 ```
 
-The target exists when the Paho adapter is enabled and the OpenSSL crypto backend and the managed
-certificate provider are built (`AZ_IOT_WITH_PAHO`, `AZ_IOT_WITH_CRYPTO_OPENSSL`,
-`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, OpenSSL 3.0+).
+The target exists when the OpenSSL crypto backend and the managed certificate provider are built
+(`AZ_IOT_WITH_CRYPTO_OPENSSL`, `AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, OpenSSL 3.0+).
 
 ## How it ends
 

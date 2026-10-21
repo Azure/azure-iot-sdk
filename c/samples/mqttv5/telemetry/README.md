@@ -10,7 +10,7 @@ A device that must serve either hub generation should follow
 ## Sample features
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
-- Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
 - Message properties, all in one array: system properties use the `AZ_IOT_MSG_PROP_*` names (`$.ct` is sent as the MQTT v5 Content Type, `$.cid` as Correlation Data, the others as user properties); any other name is an application property, sent as a user property. No limit on their number. An mqttv5 hub sends no cloud-to-device messages, so there are no inbound properties to read; for mqttv3, see [`unified/c2d_receiver`](../../unified/c2d_receiver/README.md).
 - Platforms: Linux and Windows.
@@ -65,6 +65,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_mqttv5_telemetry
 ./build/linux-gcc-debug/samples/mqttv5/az_iot_sample_telemetry
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_mqttv5_telemetry_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -96,6 +99,6 @@ On an mqttv3 hub it prints
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Create the client before `open()` | `az_iot_mqttv5_telemetry_client_init()` |
 | Send and wait for completion | `az_iot_mqttv5_telemetry_client_send()`, `on_send_done()` |

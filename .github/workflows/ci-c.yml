@@ -128,7 +128,9 @@ jobs:
         # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
         # fails the configure step outright when OpenSSL is missing instead of
         # dropping the certificate-validation tests.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+        # libcurl: the samples that use it (dps_tpm, file_upload's upload path)
+        # are expected to build.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
       - name: Configure
         run: |
@@ -136,10 +138,14 @@ jobs:
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
+      # Every connecting sample is built for every adapter. Windows: no libcurl
+      # (dps_tpm), and az_mqtt has no OpenSSL TLS there for key references (hsm_pkcs11).
       - name: Check dependencies
         run: >
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
           "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
+          "-DEXPECT_SAMPLES=${{ matrix.with_paho == 'OFF' && 'az_mqtt' || 'paho;az_mqtt' }}"
+          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;hsm_pkcs11:az_mqtt' || '' }}"
           -P eng/check-dependencies.cmake
       - name: Check dependencies (negative control)
         if: matrix.with_paho == 'ON'
@@ -650,6 +656,69 @@ jobs:
           AZ_IOT_CONFORMANCE_WS_PORT: '8080'
           AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
         run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
+
+  # ---------------------------------------------------------------------------
+  # No Paho, no OpenSSL, no libcurl: the whole tree (tests, samples) on az_mqtt
+  # over mbedTLS, with the mbedTLS crypto backend, must build, pass and install
+  # without referencing any of them. The az_mqtt suites run against Mosquitto;
+  # their TLS case needs the OpenSSL test proxy, so it is proven by
+  # az-mqtt / mbedtls instead (AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN).
+  # ---------------------------------------------------------------------------
+  deps-isolation:
+    name: deps-isolation / az_mqtt + mbedTLS (no Paho, OpenSSL, libcurl)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build mosquitto mosquitto-clients
+      - name: Start Mosquitto (TCP 1883, WebSocket 8080)
+        run: |
+          sudo systemctl stop mosquitto || true
+          printf 'listener 1883 127.0.0.1\nallow_anonymous true\nlistener 8080 127.0.0.1\nprotocol websockets\n' \
+            > "$RUNNER_TEMP/mosquitto.conf"
+          mosquitto -d -c "$RUNNER_TEMP/mosquitto.conf"
+          for _ in $(seq 1 20); do
+            mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok && break
+            sleep 1
+          done
+          mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok
+      - name: Build mbedTLS 4.1.1
+        run: bash eng/install-mbedtls.sh 4.1.1 "$RUNNER_TEMP/mbedtls"
+      - name: Configure
+        run: >
+          cmake -DBUILD_DIR=build/isolation -DMODE=prepare -P eng/check-dependencies.cmake &&
+          cmake -S . -B build/isolation -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
+          -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON -DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON
+          -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=mbedtls
+          -DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF -DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_BUILD_SAMPLES=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
+      - name: Build
+        run: cmake --build build/isolation
+      - name: Test
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_WS_PORT: '8080'
+          AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+        run: ctest --test-dir build/isolation --output-on-failure --no-tests=error
+      - name: Install
+        run: cmake --install build/isolation --prefix "$RUNNER_TEMP/az-iot-sdk"
+      # Not built: the samples that need OpenSSL (managed provider, CSR, PKCS#11
+      # custody, OpenSSL-signed tokens, simulated TPM).
+      - name: Check dependencies
+        run: >
+          cmake -DBUILD_DIR=build/isolation -DINSTALL_PREFIX="$RUNNER_TEMP/az-iot-sdk"
+          "-DFORBID=paho;rust_mqtt;openssl;curl"
+          -DEXPECT_SAMPLES=az_mqtt
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11"
+          -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,

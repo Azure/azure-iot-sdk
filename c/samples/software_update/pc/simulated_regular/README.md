@@ -176,8 +176,8 @@ signature verification.
 ## Build and run
 
 The sample target is `az_iot_sample_software_update_simulated_regular` (built
-when `AZ_IOT_WITH_PAHO=ON` and the OpenSSL crypto backend is
-available — both are on by default).
+when a crypto backend is available: OpenSSL, or mbedTLS without it — on by
+default).
 
 ### Prerequisites
 
@@ -230,6 +230,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_software_update_si
 # Set the environment variables above, then run the binary:
 ./build/linux-gcc-debug/samples/software_update/az_iot_sample_simulated_regular
 ```
+
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_software_update_simulated_regular_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../../README.md#build)).
 
 On Windows (the same sources, the simulation knobs work identically):
 

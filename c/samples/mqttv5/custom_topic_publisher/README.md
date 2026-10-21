@@ -14,7 +14,7 @@ and closes.
 - Publishes at QoS 1 with a content type and one user property. The client adds no properties of
   its own.
 - Custom topics are publish only.
-- Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
+- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -83,6 +83,9 @@ cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_sample_mqttv5_custom_topic_publisher
 ./build/linux-gcc-debug/samples/mqttv5/az_iot_sample_custom_topic_publisher
 ```
+
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_mqttv5_custom_topic_publisher_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
 
 Windows (*Developer PowerShell for VS 2022*):
 

@@ -75,6 +75,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_direct_met
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_direct_method_responder
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_unified_direct_method_responder_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -112,7 +115,7 @@ prints `method '<name>' is not implemented here`.
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Build or rebuild the method client for a generation | `clients_build()`, `clients_destroy()` |
 | mqttv3: one handler, route by name, local timeout | `az_iot_mqttv3_direct_method_client_set_handler()`, `on_method_mqttv3()`, `az_iot_mqttv3_direct_method_client_set_response_timeout()` |
 | mqttv5: declare the method, probe handler | `az_iot_mqttv5_direct_method_client_register_method()`, `az_iot_mqttv5_direct_method_client_set_probe_handler()`, `on_echo_mqttv5()` |
