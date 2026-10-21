@@ -42,7 +42,8 @@ extern "C"
    */
   typedef struct az_iot_mqttv5_custom_topic_message
   {
-    /** Concrete topic: UTF-8, no `+` or `#`, first level not `ih`. */
+    /** Concrete topic: UTF-8, no `+` or `#`, first level not `ih`. Sent as given: `{deviceId}` is
+     * not expanded here; see az_iot_mqttv5_custom_topic_client_format_topic(). */
     const char* topic;
     const uint8_t* payload; /**< May be NULL when @p payload_len is 0. */
     size_t payload_len;
@@ -95,7 +96,9 @@ extern "C"
    * @brief Build a topic from @p topic_template, replacing each `{deviceId}` with this device's id.
    *
    * The variable is case-sensitive, as on the hub. The device id can change when the device is
-   * provisioned again, so build the topic for each publish rather than once.
+   * provisioned again, so build the topic for each publish rather than once: a topic built earlier
+   * keeps the old id, and az_iot_mqttv5_custom_topic_client_publish() sends it unchanged. A device
+   * id with `+` or `#` yields a topic that publish() rejects: MQTT forbids them in topic names.
    *
    * @param[out] out_len Optional. Length written, excluding the terminator.
    *

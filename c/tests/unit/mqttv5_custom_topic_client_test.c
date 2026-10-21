@@ -18,6 +18,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/mqttv5/az_iot_custom_topic_client.h"
 
+#include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -678,6 +679,192 @@ static void format_topic_needs_a_connection(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+#define REPROVISION_DELAY_MS 20u
+
+/** @brief A DPS connection whose assignments land on an mqttv5 hub. */
+typedef struct dps_fixture
+{
+  az_iot_connection_client connection;
+  az_iot_mqttv5_custom_topic_client custom;
+  az_iot_mqtt_factory* v3; /**< Carries DPS. */
+  az_iot_mqtt_factory* v5; /**< Carries the hub. */
+} dps_fixture;
+
+static int setup_dps(void** state)
+{
+  dps_fixture* fx = (dps_fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options options = { 0 };
+  options.device_id = "registration";
+  options.dps.id_scope = "0ne00000000";
+  options.dps.registration_id = "registration";
+  options.reconnection_policy.initial_delay_ms = REPROVISION_DELAY_MS;
+  options.reconnection_policy.max_delay_ms = REPROVISION_DELAY_MS;
+  options.reconnection_policy.max_attempts = 3;
+  assert_int_equal(az_iot_test_connection_client_init(&fx->connection, &options), AZ_IOT_OK);
+
+  fx->v3 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  fx->v5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
+  assert_non_null(fx->v3);
+  assert_non_null(fx->v5);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->v5), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->v3), AZ_IOT_OK);
+  *state = fx;
+  return 0;
+}
+
+static int teardown_dps(void** state)
+{
+  dps_fixture* fx = (dps_fixture*)*state;
+  if (fx)
+  {
+    az_iot_mqttv5_custom_topic_client_deinit(&fx->custom);
+    az_iot_connection_client_deinit(&fx->connection);
+    az_iot_mock_mqtt_factory_destroy(fx->v3);
+    az_iot_mock_mqtt_factory_destroy(fx->v5);
+    free(fx);
+  }
+  return 0;
+}
+
+/** @brief Drives the newest DPS session to an mqttv5 assignment of @p device_id. */
+static void dps_assign(dps_fixture* fx, const char* device_id)
+{
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->v3);
+  assert_non_null(dps);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+
+  char body[256];
+  int n = snprintf(
+      body,
+      sizeof(body),
+      "{\"operationId\":\"op\",\"status\":\"assigned\",\"registrationState\":{"
+      "\"registrationId\":\"registration\",\"assignedHub\":\"hub.example\","
+      "\"connectionProfile\":\"mqttV5\",\"deviceId\":\"%s\"}}",
+      device_id);
+  assert_true(n > 0 && (size_t)n < sizeof(body));
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      dps,
+      "$dps/registrations/res/200/?$rid=1",
+      (const uint8_t*)body,
+      (size_t)n,
+      AZ_IOT_MQTT_QOS_1));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&fx->connection, 0);
+  }
+}
+
+/** @brief Drives the newest hub session for @p device_id through the birth handshake. */
+static void dps_hub_connect(dps_fixture* fx, const char* device_id)
+{
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->v5);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(hub, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+
+  char topic[64];
+  (void)snprintf(topic, sizeof(topic), "ih/%s/srv/presence", device_id);
+  const az_iot_mock_call* birth = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(birth);
+  assert_string_equal(birth->topic, topic);
+  assert_int_equal(birth->correlation_data_len, 16);
+
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  (void)snprintf(topic, sizeof(topic), "ih/%s/dev/presence", device_id);
+  az_iot_mqtt_user_property type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message message = { 0 };
+  message.topic = topic;
+  message.correlation_data = nonce;
+  message.correlation_data_len = sizeof(nonce);
+  message.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
+  az_iot_mqtt_event ack = { 0 };
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &message;
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &ack));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->connection, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* A re-provision that assigns another device id changes what format_topic() builds; a topic
+ * built before it keeps the old id, and publish() sends it as given. */
+static void format_topic_follows_a_reprovisioned_device_id(void** state)
+{
+  dps_fixture* fx = (dps_fixture*)*state;
+  assert_int_equal(az_iot_mqttv5_custom_topic_client_init(&fx->custom, &fx->connection), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->connection), AZ_IOT_OK);
+  dps_assign(fx, "device-a");
+  dps_hub_connect(fx, "device-a");
+
+  char before[64];
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "c/{deviceId}/t", before, sizeof(before), NULL),
+      AZ_IOT_OK);
+  assert_string_equal(before, "c/device-a/t");
+
+  az_iot_mock_mqtt_client* first_hub = az_iot_mock_mqtt_factory_last_client(fx->v5);
+  assert_int_equal(az_iot_connection_client_request_reprovision(&fx->connection), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(first_hub));
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+
+  char out[64];
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "c/{deviceId}/t", out, sizeof(out), NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
+
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(&fx->connection, 0);
+  /* The retry goes to DPS, not to the hub it had. */
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->connection, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_CONNECTING);
+  dps_assign(fx, "device-b");
+  dps_hub_connect(fx, "device-b");
+
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_format_topic(
+          &fx->custom, "c/{deviceId}/t", out, sizeof(out), NULL),
+      AZ_IOT_OK);
+  assert_string_equal(out, "c/device-b/t");
+
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->v5);
+  az_iot_mqttv5_custom_topic_message message = { .topic = before };
+  send_record record = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_custom_topic_client_publish(&fx->custom, &message, on_send, &record),
+      AZ_IOT_OK);
+  const az_iot_mock_call* sent = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(sent);
+  assert_string_equal(sent->topic, "c/device-a/t");
+}
+
+/* publish() does not expand `{deviceId}`: a template passed as a topic is sent verbatim. */
+static void publish_does_not_expand_the_device_id_variable(void** state)
+{
+  fixture* test = (fixture*)*state;
+  connect_and_init(test);
+
+  assert_int_equal(publish_topic(test, "c/{deviceId}/t"), AZ_IOT_OK);
+  assert_non_null(find_publish(test, "c/{deviceId}/t"));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -702,6 +889,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(format_topic_reports_a_short_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(format_topic_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(format_topic_needs_a_connection, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        format_topic_follows_a_reprovisioned_device_id, setup_dps, teardown_dps),
+    cmocka_unit_test_setup_teardown(
+        publish_does_not_expand_the_device_id_variable, setup, teardown),
   };
   return cmocka_run_group_tests_name("mqttv5_custom_topic_client", tests, NULL, NULL);
 }
