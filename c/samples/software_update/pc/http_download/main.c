@@ -163,7 +163,7 @@ static int32_t download_file(
     url_text[az_span_size(url)] = '\0';
 
     file_path(d, file, d->path, sizeof(d->path));
-    d->file = fopen(d->path, "wb");
+    d->file = sample_fopen_private(d->path);
     if (d->file == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
