@@ -59,7 +59,8 @@ static void raise_simple(
     az_iot_su_client* client,
     az_iot_su_event_kind kind,
     az_iot_su_operation operation,
-    bool report_terminal);
+    bool report_terminal,
+    const az_iot_su_report* report);
 
 /* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
  * after pending_fetch, so adding them left the caller-allocated client's size and offsets
@@ -1665,7 +1666,7 @@ static void process_update_metadata(
   if (retry && !workflow_retryable(client))
   {
     AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "update redelivers the current workflowId; ignored");
-    raise_simple(client, AZ_IOT_SU_EVENT_UPDATE_DUPLICATE, AZ_IOT_SU_OP_GET_UPDATE, false);
+    raise_simple(client, AZ_IOT_SU_EVENT_UPDATE_DUPLICATE, AZ_IOT_SU_OP_GET_UPDATE, false, NULL);
     return;
   }
   if (retry)
@@ -1903,12 +1904,14 @@ static void raise_retry_wait(az_iot_su_client* client, uint32_t retry_after_ms)
  * @param kind            AZ_IOT_SU_EVENT_NO_UPDATE, _UPDATE_DUPLICATE or _REPORT_ACCEPTED.
  * @param operation       The operation the event refers to.
  * @param report_terminal REPORT_ACCEPTED: the accepted report was terminal.
+ * @param report          REPORT_ACCEPTED with report_terminal: that report; else NULL.
  */
 static void raise_simple(
     az_iot_su_client* client,
     az_iot_su_event_kind kind,
     az_iot_su_operation operation,
-    bool report_terminal)
+    bool report_terminal,
+    const az_iot_su_report* report)
 {
   az_iot_su_event event = {
     .kind = kind,
@@ -1918,6 +1921,7 @@ static void raise_simple(
     .reason = AZ_IOT_OK,
     .service_error = k_no_service_error,
     .report_terminal = report_terminal,
+    .report = report,
   };
   dispatch_event(client, &event);
 }
@@ -2116,10 +2120,19 @@ static void on_channel_result(
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
       bool terminal = SU_I(client).report_sent_terminal;
+      /* Built before settling, which may retire what the report is built from. */
+      az_iot_su__report_view accepted;
+      bool have_view
+          = result == AZ_IOT_OK && terminal && az_iot_su__build_report_view(client, &accepted);
       settle_terminal_report(client, result);
       if (result == AZ_IOT_OK)
       {
-        raise_simple(client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal);
+        raise_simple(
+            client,
+            AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
+            operation,
+            terminal,
+            have_view ? &accepted.report : NULL);
       }
       return;
     }
@@ -2133,7 +2146,7 @@ static void on_channel_result(
     }
     if (result == AZ_IOT_OK && !SU_I(client).fetch_delivered)
     {
-      raise_simple(client, AZ_IOT_SU_EVENT_NO_UPDATE, operation, false);
+      raise_simple(client, AZ_IOT_SU_EVENT_NO_UPDATE, operation, false, NULL);
     }
     return;
   }
@@ -2379,6 +2392,7 @@ AZ_NODISCARD az_iot_su_limits az_iot_su_limits_default(void)
   limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   return limits;
 }
 
@@ -2390,7 +2404,8 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   if (limits == NULL || limits->max_update_size < AZ_IOT_SU_MIN_LIMIT
       || limits->scratch_size < AZ_IOT_SU_MIN_LIMIT
       || limits->max_message_size < AZ_IOT_SU_MIN_MESSAGE_SIZE
-      || limits->device_properties_size == 0)
+      || limits->device_properties_size == 0
+      || limits->result_details_size > AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE)
   {
     return 0;
   }
@@ -2401,11 +2416,13 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   {
     return 0;
   }
-  size_t parts[5] = { limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD,
-                      (size_t)AZ_IOT_SU_PERSIST_OVERHEAD,
+  size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
+  size_t parts[6] = { limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+                      (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       limits->scratch_size,
                       limits->max_message_size,
-                      limits->device_properties_size };
+                      limits->device_properties_size,
+                      details };
   size_t total = 0;
   for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i)
   {
@@ -2433,6 +2450,7 @@ typedef struct
   uint8_t* scratch;
   uint8_t* body;
   uint8_t* device_properties;
+  uint8_t* step_details;
 } su_workspace_layout;
 
 /**
@@ -2460,16 +2478,20 @@ static az_iot_result su_workspace_lay_out(
         (unsigned)need);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
+  size_t details
+      = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * options->limits.result_details_size;
   uint8_t* p = options->workspace;
   out->persist_blob = p;
-  p += options->limits.max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD;
+  p += options->limits.max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details;
   out->terminal_blob = p;
-  p += (size_t)AZ_IOT_SU_PERSIST_OVERHEAD;
+  p += (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details;
   out->scratch = p;
   p += options->limits.scratch_size;
   out->body = p;
   p += options->limits.max_message_size;
   out->device_properties = p;
+  p += options->limits.device_properties_size;
+  out->step_details = p;
   return AZ_IOT_OK;
 }
 
@@ -2532,10 +2554,13 @@ static az_iot_result su_client_init_core(
   SU_I(client).crypto = crypto;
   SU_I(client).persist_max_attempts = (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS;
   SU_I(client).persist_blob = layout.persist_blob;
-  SU_I(client).persist_blob_size = AZ_IOT_SU_STATE_BLOB_MAX_SIZE(options->limits.max_update_size);
+  SU_I(client).persist_blob_size = AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
+      options->limits.max_update_size, options->limits.result_details_size);
   SU_I(client).request_buffer = layout.persist_blob + AZ_IOT_SU_PERSIST_HEADER_SIZE;
   SU_I(client).request_buffer_size = options->limits.max_update_size;
   SU_I(client).terminal_blob = layout.terminal_blob;
+  SU_I(client).step_details = layout.step_details;
+  SU_I(client).step_details_size = options->limits.result_details_size;
   SU_I(client).scratch = layout.scratch;
   SU_I(client).scratch_size = options->limits.scratch_size;
   SU_I(client).device_properties_buffer = layout.device_properties;
@@ -2698,6 +2723,7 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
  *          u32 len + active workflow id
  *          u32 len + applied update id ("provider\0name\0version\0"; 0 = none)
  *          u32 len + opaque channel state (save_state())
+ *          step_results_count * { u32 len + step result details }
  *          retry schedule { u32 consecutive FAILED attempts,
  *                           u32 seconds left of the wait when written,
  *                           u32 lo, u32 hi of its Unix deadline (0 = unknown) }
@@ -2713,7 +2739,7 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_MAGIC1 'U'
 #define AZ_IOT_SU_PERSIST_MAGIC2 'C'
 #define AZ_IOT_SU_PERSIST_MAGIC3 'P'
-#define AZ_IOT_SU_PERSIST_VERSION 2u
+#define AZ_IOT_SU_PERSIST_VERSION 3u
 #define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
 #define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
 #define AZ_IOT_SU_PERSIST_FLAG_RETRY 0x8u
@@ -2727,7 +2753,8 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u \
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
    + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
-   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
+   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                            \
+   + 4u * (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
 
 /* The workspace reserves AZ_IOT_SU_PERSIST_OVERHEAD beside the request for the
  * workflow record, and as much again for the terminal record: header plus the
@@ -2965,6 +2992,18 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   wr_u32le(&blob[p], (uint32_t)ch_len);
   p += 4u + (uint32_t)ch_len;
 
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    az_span d = SU_I(client).step_results[i].result_details;
+    uint32_t d_len = (uint32_t)az_span_size(d);
+    wr_u32le(&blob[p], d_len);
+    if (d_len > 0)
+    {
+      memcpy(&blob[p + 4u], az_span_ptr(d), d_len);
+    }
+    p += 4u + d_len;
+  }
+
   az_iot_retry_state__save(&SU_I(client).workflow_retry, &blob[p]);
   p += AZ_IOT_RETRY_STATE_RECORD_SIZE;
 
@@ -3083,6 +3122,25 @@ static void restore_step_results(
   }
 }
 
+/** @brief Copy each step's persisted details into its workspace slot. */
+static void restore_step_details(
+    az_iot_su_client* client,
+    const uint8_t* blob,
+    const uint32_t* at,
+    const uint32_t* len,
+    int32_t step_count)
+{
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    uint8_t* slot = SU_I(client).step_details + (size_t)i * SU_I(client).step_details_size;
+    if (len[i] > 0)
+    {
+      memcpy(slot, &blob[at[i]], len[i]);
+    }
+    SU_I(client).step_results[i].result_details = az_span_create(slot, (int32_t)len[i]);
+  }
+}
+
 /** @brief Hand persisted channel state back to the channel; best effort. */
 static void restore_channel_state(az_iot_su_client* client, const uint8_t* src, uint32_t len)
 {
@@ -3182,6 +3240,21 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK;
   }
+  uint32_t details_at[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
+  uint32_t details_len[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
+  for (int32_t i = 0; i < step_count; ++i)
+  {
+    if (!take_field(
+            blob,
+            blen,
+            &end,
+            (uint32_t)SU_I(client).step_details_size,
+            &details_at[i],
+            &details_len[i]))
+    {
+      return AZ_IOT_OK;
+    }
+  }
   uint32_t retry_at = end;
   end += AZ_IOT_RETRY_STATE_RECORD_SIZE;
   if ((size_t)end + 4u != blen)
@@ -3223,6 +3296,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     SU_I(client).current_file = 0;
     SU_I(client).checkpoint_pending = false;
     restore_step_results(client, &blob[steps_at], step_count, res_code, res_ext);
+    restore_step_details(client, blob, details_at, details_len, step_count);
     set_active_workflow(client, az_span_create(&blob[wf_at], (int32_t)wf_id_len), AZ_SPAN_EMPTY, 0);
     SU_I(client).active_workflow_running = false;
     SU_I(client).pending_outcome = (az_iot_su_outcome)outcome;
@@ -3328,6 +3402,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */
   restore_step_results(client, &blob[steps_at], step_count, res_code, res_ext);
+  restore_step_details(client, blob, details_at, details_len, step_count);
   restore_channel_state(client, &blob[ch_at], ch_len);
 
   /* Re-establish the active workflow id so a redelivery after the reboot is
@@ -3806,6 +3881,42 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       break;
   }
 
+  return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
+    az_iot_su_client* client,
+    uint32_t step_index,
+    az_span details)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (SU_I(client).detached)
+  {
+    return AZ_IOT_ERR_DETACHED;
+  }
+  /* Step results exist from the end of manifest verification until the
+   * workflow ends; outside that, a slot may hold another workflow's result. */
+  az_iot_su_state st = SU_I(client).state;
+  if (st == AZ_IOT_SU_STATE_IDLE || st == AZ_IOT_SU_STATE_FAILED
+      || st == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || st == AZ_IOT_SU_STATE_VERIFYING_MANIFEST
+      || (int32_t)step_index >= SU_I(client).step_results_count || step_index > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  int32_t len = az_span_size(details);
+  if (len < 0 || (size_t)len > SU_I(client).step_details_size)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
+  if (len > 0)
+  {
+    memmove(slot, az_span_ptr(details), (size_t)len);
+  }
+  SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
   return AZ_IOT_OK;
 }
 

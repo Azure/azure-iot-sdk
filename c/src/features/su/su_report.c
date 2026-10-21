@@ -15,6 +15,7 @@
 
 #include "azure/iot/az_iot_su.h"
 
+#include "internal/log_internal.h"
 #include "internal/su_device_properties_internal.h"
 #include "internal/su_internal.h"
 #include "internal/su_protocol_internal.h"
@@ -23,11 +24,6 @@
  * count fit comfortably; bounded and stack-local, no heap. */
 #ifndef AZ_IOT_SU_REPORT_BUFFER_SIZE
 #define AZ_IOT_SU_REPORT_BUFFER_SIZE 1024
-#endif
-
-/* Bound on the free-form result detail carried in a structured report. */
-#ifndef AZ_IOT_SU_RESULT_DETAILS_SIZE
-#define AZ_IOT_SU_RESULT_DETAILS_SIZE 256
 #endif
 
 /* Agent result codes the contract defines. */
@@ -69,40 +65,22 @@ az_iot_su_client_agent_state az_iot_su__agent_state(az_iot_su_state state)
   }
 }
 
-/* Assemble the structured result and hand it to the channel. The engine emits
- * no wire format: how this becomes a request body is the channel's business
- * alone. Reporting is per-workflow and idempotent on the workflow id. */
-az_iot_result az_iot_su__report_state(az_iot_su_client* client)
+bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
 {
-  if (client == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (SU_I(client).detached)
-  {
-    return AZ_IOT_ERR_DETACHED;
-  }
-  if (SU_I(client).channel.vtable == NULL || SU_I(client).channel.vtable->report == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
   /* With no active workflow there is no correlation key, and therefore nothing
-   * the service could attribute a report to. Not an error: a day-0 device that
-   * has never been offered an update simply has nothing to say. */
+   * the service could attribute a report to. */
   if (!SU_I(client).active_workflow_valid || SU_I(client).active_workflow_id_len == 0)
   {
-    return AZ_IOT_OK;
+    return false;
   }
 
-  char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
   size_t wlen = SU_I(client).active_workflow_id_len;
   if (wlen > AZ_IOT_SU_WORKFLOW_ID_SIZE)
   {
     wlen = AZ_IOT_SU_WORKFLOW_ID_SIZE;
   }
-  memcpy(workflow_id, SU_I(client).active_workflow_id, wlen);
-  workflow_id[wlen] = '\0';
+  memcpy(v->workflow_id, SU_I(client).active_workflow_id, wlen);
+  v->workflow_id[wlen] = '\0';
 
   az_iot_su_outcome outcome;
   if (SU_I(client).state == AZ_IOT_SU_STATE_FAILED)
@@ -141,17 +119,16 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
 
   /* Fixed-width hex, matching the contract's comma-separated hex form. A
    * single code is the only shape the engine produces today. */
-  char extended[16];
-  az_iot_su__format_extended_result_code(extended, sizeof(extended), r->extended_result_code);
+  az_iot_su__format_extended_result_code(v->extended, sizeof(v->extended), r->extended_result_code);
 
-  char details[AZ_IOT_SU_RESULT_DETAILS_SIZE];
+  char* details = v->details;
   details[0] = '\0';
   int32_t dlen = az_span_size(r->result_details);
   if (dlen > 0)
   {
-    if (dlen > (int32_t)sizeof(details) - 1)
+    if (dlen > (int32_t)sizeof(v->details) - 1)
     {
-      dlen = (int32_t)sizeof(details) - 1;
+      dlen = (int32_t)sizeof(v->details) - 1;
     }
     memcpy(details, az_span_ptr(r->result_details), (size_t)dlen);
     details[dlen] = '\0';
@@ -160,7 +137,6 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   /* installedUpdateId is what is installed on the device NOW. Once a workflow
    * has succeeded that is the update it applied; until then, and on any
    * non-success outcome, it is whatever was installed before. */
-  az_iot_su_report_update_id installed;
   const az_iot_su_report_update_id* installed_ptr = NULL;
   if (outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED && SU_I(client).applied_update_id_valid)
   {
@@ -172,29 +148,59 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
     if (cached->installed_update_id.provider != NULL && cached->installed_update_id.name != NULL
         && cached->installed_update_id.version != NULL)
     {
-      installed.provider = cached->installed_update_id.provider;
-      installed.name = cached->installed_update_id.name;
-      installed.version = cached->installed_update_id.version;
-      installed_ptr = &installed;
+      v->installed.provider = cached->installed_update_id.provider;
+      v->installed.name = cached->installed_update_id.name;
+      v->installed.version = cached->installed_update_id.version;
+      installed_ptr = &v->installed;
     }
   }
 
-  az_iot_su_report report;
-  memset(&report, 0, sizeof(report));
-  report.workflow_id = workflow_id;
-  report.installed_update_id = installed_ptr;
-  report.outcome = outcome;
-  report.failure_origin = (outcome == AZ_IOT_SU_OUTCOME_FAILED)
+  az_iot_su_report* report = &v->report;
+  memset(report, 0, sizeof(*report));
+  report->workflow_id = v->workflow_id;
+  report->installed_update_id = installed_ptr;
+  report->outcome = outcome;
+  report->failure_origin = (outcome == AZ_IOT_SU_OUTCOME_FAILED)
       ? AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE
       : AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  report.result_code = result_code;
-  report.extended_result_codes = extended;
-  report.result_details = (details[0] != '\0') ? details : NULL;
+  report->result_code = result_code;
+  report->extended_result_codes = v->extended;
+  report->result_details = (details[0] != '\0') ? details : NULL;
   if (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS && SU_I(client).step_results_count > 0)
   {
-    report.step_results = SU_I(client).step_results;
-    report.step_results_count = SU_I(client).step_results_count;
+    report->step_results = SU_I(client).step_results;
+    report->step_results_count = SU_I(client).step_results_count;
   }
+
+  return true;
+}
+
+/* Assemble the structured result and hand it to the channel. The engine emits
+ * no wire format: how this becomes a request body is the channel's business
+ * alone. Reporting is per-workflow and idempotent on the workflow id. */
+az_iot_result az_iot_su__report_state(az_iot_su_client* client)
+{
+  if (client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (SU_I(client).detached)
+  {
+    return AZ_IOT_ERR_DETACHED;
+  }
+  if (SU_I(client).channel.vtable == NULL || SU_I(client).channel.vtable->report == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  /* With no active workflow there is nothing to report. Not an error: a day-0
+   * device that has never been offered an update simply has nothing to say. */
+  az_iot_su__report_view v;
+  if (!az_iot_su__build_report_view(client, &v))
+  {
+    return AZ_IOT_OK;
+  }
+  az_iot_su_outcome outcome = v.report.outcome;
 
   /* Consumed by on_channel_result(), which may run inside report(). A refused
    * call restores the previous value: it may belong to an earlier accepted
@@ -203,7 +209,23 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   bool was_in_flight = SU_I(client).terminal_report_in_flight;
   SU_I(client).terminal_report_in_flight = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
   SU_I(client).report_sent_terminal = (outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS);
-  az_iot_result sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &report);
+  az_iot_result sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
+  if (sent == AZ_IOT_ERR_NOT_ENOUGH_SPACE && v.report.step_results_count > 0)
+  {
+    /* The step details do not fit az_iot_su_limits::max_message_size: send the
+     * result without them rather than not at all. */
+    az_iot_su_step_result plain[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+    for (int32_t i = 0; i < v.report.step_results_count; ++i)
+    {
+      plain[i] = v.report.step_results[i];
+      plain[i].result_details = AZ_SPAN_EMPTY;
+    }
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "report does not fit az_iot_su_limits::max_message_size; sent without step details");
+    v.report.step_results = plain;
+    sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
+  }
   if (sent != AZ_IOT_OK)
   {
     SU_I(client).terminal_report_in_flight = was_in_flight;

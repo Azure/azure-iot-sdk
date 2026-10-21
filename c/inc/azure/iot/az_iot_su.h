@@ -105,6 +105,14 @@ extern "C"
 #define AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE 2048
 #endif
 
+/** @brief Default az_iot_su_limits::result_details_size. */
+#ifndef AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE
+#define AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE 128
+#endif
+
+/** @brief Largest az_iot_su_limits::result_details_size: the service limit on resultDetails. */
+#define AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE 1024
+
 /**
  * @brief Signature-verification scratch: the stack az_iot_su_parse_update_request() uses, and
  * the default az_iot_su_limits::scratch_size.
@@ -123,16 +131,15 @@ extern "C"
 /** @brief Largest opaque channel state (e.g. ETags) carried in the persisted blob. */
 #define AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE 256
 
-/** @brief Persisted-state bytes beyond the update metadata: header (40 bytes) and trailer
- * (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed workflow id, applied update
- * id and channel state, 16 retry schedule, 4 CRC). Grows with the upstream step and file limits. */
+/** @brief Persisted-state bytes beyond the update metadata and the step result details: header
+ * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed
+ * workflow id, applied update id, channel state and the details of each step, 16 retry schedule,
+ * 4 CRC). Grows with the upstream step and file limits. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
-  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
-   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                    \
-   + 16u                                                                   \
-       * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)                      \
-          + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                                          \
+  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)                  \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
+   + 16u * (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT))
 #endif
 
 /**
@@ -176,11 +183,12 @@ extern "C"
 #error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
-/** @brief Largest blob passed to persist_state_fn for a client whose
- * az_iot_su_limits::max_update_size is @p max_update_size; size storage for this. The format
+/** @brief Largest blob passed to persist_state_fn for a client with these
+ * az_iot_su_limits::max_update_size and result_details_size; size storage for this. The format
  * version is internal and checked by az_iot_su_client_resume(). */
-#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size) \
-  ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD)
+#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) \
+  ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD           \
+   + (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 
@@ -738,6 +746,9 @@ extern "C"
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
+    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report, step results
+     * included. NULL otherwise. Valid only during the callback. */
+    const az_iot_su_report* report;
   } az_iot_su_event;
 
   /**
@@ -840,7 +851,9 @@ extern "C"
       size_t request_len;
       uint8_t* persist_blob; /**< Workflow record and resume load buffer. */
       size_t persist_blob_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE(request_buffer_size). */
-      uint8_t* terminal_blob; /**< Terminal record; AZ_IOT_SU_PERSIST_OVERHEAD bytes. */
+      uint8_t* terminal_blob; /**< Terminal record. */
+      uint8_t* step_details; /**< result_details_size bytes per step. */
+      size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
       uint8_t* scratch; /**< Decode and verification scratch. */
       size_t scratch_size; /**< az_iot_su_limits::scratch_size. */
 
@@ -985,29 +998,34 @@ extern "C"
     size_t max_message_size;
     /** Device-property strings, in bytes; see az_iot_su_device_properties_buffer_size(). */
     size_t device_properties_size;
+    /** Bytes of resultDetails kept per step; see az_iot_su_client_set_step_result_details().
+     * At most AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE. */
+    size_t result_details_size;
   } az_iot_su_limits;
 
 /**
  * @brief Workspace bytes for the given az_iot_su_limits fields, as a constant expression for
  * static allocation. Equal to az_iot_su_workspace_size() for valid limits.
  */
-#define AZ_IOT_SU_WORKSPACE_SIZE(                                                  \
-    max_update_size, scratch_size, max_message_size, device_properties_size)       \
-  ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size) \
-   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD)
+#define AZ_IOT_SU_WORKSPACE_SIZE(                                                                 \
+    max_update_size, scratch_size, max_message_size, device_properties_size, result_details_size) \
+  ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)                \
+   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                   \
+   + 3u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
 
 /** @brief Workspace bytes for az_iot_su_limits_default(). */
-#define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE  \
-  AZ_IOT_SU_WORKSPACE_SIZE(               \
-      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,  \
-      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,      \
-      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE, \
-      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+#define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE       \
+  AZ_IOT_SU_WORKSPACE_SIZE(                    \
+      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,       \
+      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,           \
+      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,      \
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, \
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)
 
   /**
    * @brief Returns the default limits: AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,
-   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE and
-   * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE.
+   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
+   * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE and AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE.
    *
    * @return The default limits.
    */
@@ -1119,6 +1137,29 @@ extern "C"
    * AZ_NODISCARD: a pump whose result is typically observed via state, not return.
    */
   az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
+
+  /**
+   * @brief Sets the resultDetails reported for one step of the workflow in progress.
+   *
+   * Call from a platform hook, or between do_work() calls, while the workflow runs. The
+   * text is copied, persisted with the step's result and reported with the terminal
+   * result; an empty @p details clears it. The client sets the step's outcome and codes.
+   * When the report would not fit az_iot_su_limits::max_message_size it is sent without
+   * step details.
+   *
+   * @param[in,out] client The client.
+   * @param[in] step_index Manifest step index, as passed to the hooks.
+   * @param[in] details Human-readable text; at most az_iot_su_limits::result_details_size
+   *   bytes.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on a NULL client; AZ_IOT_ERR_NOT_FOUND
+   *   when no workflow is past manifest verification or @p step_index is not one of its
+   *   steps; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p details is longer than
+   *   result_details_size; AZ_IOT_ERR_DETACHED if the client is detached.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
+      az_iot_su_client* client,
+      uint32_t step_index,
+      az_span details);
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
