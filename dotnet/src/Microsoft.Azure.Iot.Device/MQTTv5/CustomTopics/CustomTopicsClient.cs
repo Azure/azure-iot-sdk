@@ -747,21 +747,30 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 // publish is still only exposed to the user, and acknowledged, once
                 if (DoesTopicMatchFilter(args.Publish.Topic, subscribedCustomTopicFilter))
                 {
-                    // The snapshot above may predate a concurrent Dispose, so check again before calling into user code
-                    if (_isDisposed)
+                    Task? callbackTask = null;
+                    lock (_subscribedCustomTopicsLock)
                     {
-                        return;
+                        // The snapshot above may predate a concurrent Dispose, so check again before calling into user code
+                        if (_isDisposed)
+                        {
+                            return;
+                        }
+
+                        // Read and invoke the event under the disposal lock so disposal cannot return between the check and callback start.
+                        var handlers = CustomTopicPublishReceivedAsync;
+                        if (handlers != null)
+                        {
+                            callbackTask = InvokeAllHandlersAsync(handlers, args);
+                        }
+                        else
+                        {
+                            Trace.TraceError("Received a publish on a custom topic, but user did not setup CustomTopicPublishReceivedAsync to receive it. The publish will be acknowledged and will not be re-delivered.");
+                        }
                     }
 
-                    // Read the event once so a handler being removed concurrently can't null it out between the check and the invoke
-                    var handlers = CustomTopicPublishReceivedAsync;
-                    if (handlers != null)
+                    if (callbackTask != null)
                     {
-                        await InvokeAllHandlersAsync(handlers, args);
-                    }
-                    else
-                    {
-                        Trace.TraceError("Received a publish on a custom topic, but user did not setup CustomTopicPublishReceivedAsync to receive it. The publish will be acknowledged and will not be re-delivered.");
+                        await callbackTask;
                     }
 
                     // The user's handler may have run long enough for this client (and possibly the connection) to be disposed

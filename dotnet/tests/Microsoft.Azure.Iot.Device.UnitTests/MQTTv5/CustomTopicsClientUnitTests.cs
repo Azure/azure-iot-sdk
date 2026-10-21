@@ -622,6 +622,54 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, callbackCount);
         }
 
+        [Fact]
+        public async Task DisposeWaitsForCallbackAdmissionToFinish()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            CustomTopicsClient customTopicsClient = new(connection);
+            using ManualResetEventSlim callbackCanReturn = new();
+            using ManualResetEventSlim callbackStarted = new();
+
+            customTopicsClient.CustomTopicPublishReceivedAsync += _ =>
+            {
+                callbackStarted.Set();
+                callbackCanReturn.Wait(TestContext.Current.CancellationToken);
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            Task receiveTask = Task.Run(async () => await connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = "topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            }), TestContext.Current.CancellationToken);
+
+            Assert.True(callbackStarted.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+
+            using ManualResetEventSlim disposeStarted = new();
+            Task disposeTask = Task.Run(() =>
+            {
+                disposeStarted.Set();
+                customTopicsClient.Dispose();
+            }, TestContext.Current.CancellationToken);
+            try
+            {
+                Assert.True(disposeStarted.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+                Assert.False(disposeTask.IsCompleted);
+            }
+            finally
+            {
+                callbackCanReturn.Set();
+            }
+
+            await Task.WhenAll(receiveTask, disposeTask);
+        }
+
         // A subscribe already in flight when this client is disposed must not repopulate the tracked topics when it completes,
         // and operations still waiting their turn must fail with ObjectDisposedException instead of using the connection.
         [Fact]
