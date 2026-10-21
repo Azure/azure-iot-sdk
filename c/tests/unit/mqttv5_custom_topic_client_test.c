@@ -806,8 +806,7 @@ static void dps_hub_connect(dps_fixture* fx, const char* device_id)
 static void format_topic_follows_a_reprovisioned_device_id(void** state)
 {
   dps_fixture* fx = (dps_fixture*)*state;
-  assert_int_equal(
-      az_iot_mqttv5_custom_topic_client_init(&fx->custom, &fx->connection), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_custom_topic_client_init(&fx->custom, &fx->connection), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->connection), AZ_IOT_OK);
   dps_assign(fx, "device-a");
   dps_hub_connect(fx, "device-a");
