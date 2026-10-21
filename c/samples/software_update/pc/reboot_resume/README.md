@@ -14,8 +14,8 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 
 ## Sample features
 - Target platforms: **Linux** and **Windows**.
-- `persist_state_fn` writes a file atomically (temporary file, then rename) and erases it on
-  a zero-length write. `load_state_fn` reads it back.
+- `persist_state_fn` writes a file atomically (temporary file, then rename; `MoveFileExA` on
+  Windows) and erases it on a zero-length write. `load_state_fn` reads it back.
 - `SAMPLE_REBOOT_AT=install:<n>` or `apply:<n>` picks where a reboot is needed (1-based
   step).
   - After an install reboot, the step resumes at Apply.
@@ -28,6 +28,9 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   retries (`AZ_IOT_SU_EVENT_PERSIST_FAILED`, then `_RECOVERED`), and the sample does not
   "reboot" while a write is failing.
 - Step result details set before the reboot are reported in the final report after it.
+- A failed workflow cancels the pending "reboot".
+- After a succeeded update, later checks advertise its id as installed
+  (`az_iot_su_client_update_device_properties()`).
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 ## Configure
@@ -38,7 +41,7 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 | `AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY`, `AZ_IOT_TRUSTED_CA` | yes | X.509 credential and trust bundle |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | DPS endpoint; default global |
 | `AZ_IOT_SU_MANUFACTURER`, `AZ_IOT_SU_MODEL` | no | Compatibility; default `Contoso`/`SU-Reboot` |
-| `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id at the first start; default `Contoso/SU-Reboot/1.0.0` |
+| `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id at startup; default `Contoso/SU-Reboot/1.0.0`. A real device reads it from its image; set it to the applied id when restarting after a completed update |
 | `SAMPLE_REBOOT_AT` | no | `install:<n>` (default `install:1`) or `apply:<n>` |
 | `SAMPLE_STATE_FILE` | no | Saved workflow; default `./su_reboot_state.bin` |
 | `SAMPLE_PERSIST_FAIL_COUNT` | no | Number of state writes to fail first |
