@@ -407,10 +407,13 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
-        # No broker: the race-labelled tests are hermetic.
+        # No broker: the race-labelled tests are hermetic. RACE_ANNOTATIONS
+        # describes the SDK's atomic spin lock to the tools (valgrind
+        # package ships <valgrind/helgrind.h>).
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_RACE_ANNOTATIONS=ON
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
       - name: Build

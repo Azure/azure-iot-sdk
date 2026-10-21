@@ -88,6 +88,10 @@ option(AZ_IOT_ENABLE_MSVC_ANALYZE "Run the MSVC code analyzer (/analyze) on firs
 # the normal debug build. No-op on MSVC -- Windows coverage is collected
 # externally by OpenCppCoverage against an ordinary build.
 option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       OFF)
+# Tells valgrind's helgrind and DRD about the SDK's own spin lock (log_file.c),
+# which they cannot see. Needs <valgrind/helgrind.h>. No-op at run time outside
+# valgrind; used by the race-detector CI job.
+option(AZ_IOT_RACE_ANNOTATIONS "Annotate SDK synchronization for helgrind and DRD" OFF)
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.

@@ -27,6 +27,16 @@ if(UNIX)
         _DEFAULT_SOURCE)
 endif()
 
+# Synchronization helgrind and DRD cannot see on their own (internal/race_annotations.h).
+if(AZ_IOT_RACE_ANNOTATIONS)
+    include(CheckIncludeFile)
+    check_include_file(valgrind/helgrind.h AZ_IOT_HAVE_HELGRIND_H)
+    if(NOT AZ_IOT_HAVE_HELGRIND_H)
+        message(FATAL_ERROR "AZ_IOT_RACE_ANNOTATIONS=ON needs <valgrind/helgrind.h> (install valgrind).")
+    endif()
+    target_compile_definitions(az_iot_core PRIVATE AZ_IOT_RACE_ANNOTATIONS=1)
+endif()
+
 # azure-sdk-for-c is required by the public struct definition
 # (az_iot_hub_client / az_iot_provisioning_client are embedded).
 target_link_libraries(az_iot_core
