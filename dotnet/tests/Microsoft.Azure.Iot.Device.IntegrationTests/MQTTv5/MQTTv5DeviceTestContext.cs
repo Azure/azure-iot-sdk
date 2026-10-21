@@ -33,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             }
             finally
             {
-                await Setup.GetMQTTv3IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
+                await Setup.GetMQTTv5IotHubRegistryManager().RemoveDeviceAsync(DeviceId);
             }
         }
     }
