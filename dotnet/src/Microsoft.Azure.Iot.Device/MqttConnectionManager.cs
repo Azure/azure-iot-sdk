@@ -314,6 +314,7 @@ namespace Microsoft.Azure.Iot.Device
                 // "Disconnected" callback both observe it and stand down rather than racing this call.
                 _isClosing = true;
                 _isDesiredConnected = false;
+                Interlocked.MemoryBarrier();
                 _reconnectionCancellationToken?.Cancel();
             }
 
@@ -379,6 +380,14 @@ namespace Microsoft.Azure.Iot.Device
 
                 _reconnectionCancellationToken?.Dispose();
                 _reconnectionCancellationToken = new CancellationTokenSource();
+
+                // A deliberate close may have landed after the check above but before the new token existed, in which
+                // case it cancelled the previous token instead. Re-check so that close still takes precedence.
+                Interlocked.MemoryBarrier();
+                if (_isClosing)
+                {
+                    return;
+                }
 
                 // The most recent connect cache should be set since at least one connect must happen before this "Disconnected" callback is triggered
                 Debug.Assert(_mostRecentConnect != null);
@@ -552,6 +561,15 @@ namespace Microsoft.Azure.Iot.Device
                     using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
                     MqttConnectAck? mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
+                    if (isReconnection && _isClosing)
+                    {
+                        // The owner deliberately closed the connection while this attempt was completing. The close
+                        // takes precedence, so drop the connection this attempt just established.
+                        Trace.TraceInformation("MQTT reconnection cancelled because the client is being closed.");
+                        await DisconnectSupersededReconnectionAsync().ConfigureAwait(false);
+                        return null;
+                    }
+
                     if (isReconnection)
                     {
                         Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again.");
@@ -581,6 +599,19 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     attemptCount++;
                 }
+            }
+        }
+
+        private async Task DisconnectSupersededReconnectionAsync()
+        {
+            try
+            {
+                await _underlyingMqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                // Best effort: the owner's own close is already tearing this connection down.
+                Trace.TraceWarning("Failed to drop a reconnection that completed after the client was closed. {0}", e);
             }
         }
 

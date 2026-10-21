@@ -1341,6 +1341,207 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
         }
 
+        [Fact]
+        public async Task ExplicitDisconnectDuringReprovisioningBackoffReleasesWaitingOperationsAndStopsReprovisioning()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            // Short enough that a re-provisioning loop that survived the disconnect would retry within the negative
+            // test timeout below.
+            ReprovisioningRetryDelayPolicy retryPolicy = new(TimeSpan.FromMilliseconds(500));
+            int dpsConnectAttempts = 0;
+            mockMqttClient.OnConnect = connect => Task.FromResult(new MqttConnectAck()
+            {
+                ResultCode = connect.HostName == GlobalDeviceEndpoint
+                    && Interlocked.Increment(ref dpsConnectAttempts) >= 2
+                    ? MqttConnectReasonCode.Banned
+                    : MqttConnectReasonCode.Success,
+            });
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = retryPolicy,
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await retryPolicy.ReprovisioningRetryDelayStarted.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // This operation waits for the re-provisioning to make the device present again. It runs on its own thread
+            // because that wait blocks the thread it is on.
+            Task pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+            Assert.False(pendingPublish.IsCompleted);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // Re-provisioning has stopped: no further connection is attempted to either DPS or any hub.
+            int connectAttemptsAfterDisconnect = mockMqttClient.ConnectAttemptCount;
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(connectAttemptsAfterDisconnect, mockMqttClient.ConnectAttemptCount);
+            Assert.False(mockMqttClient.IsConnected());
+            Assert.False(connectionClient.IsConnectionTargetSet);
+        }
+
+        [Fact]
+        public async Task ExplicitDisconnectDuringHubReconnectionReleasesWaitingOperationsAndStopsReconnecting()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            // Every reconnection to the hub is refused with a retryable code, so the connection layer keeps retrying it.
+            int hubConnectAttempts = 0;
+            mockMqttClient.OnConnect = connect => Task.FromResult(new MqttConnectAck()
+            {
+                ResultCode = connect.HostName == FirstAssignedHub
+                    && Interlocked.Increment(ref hubConnectAttempts) >= 2
+                    ? MqttConnectReasonCode.ServerUnavailable
+                    : MqttConnectReasonCode.Success,
+            });
+
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                if (!mockMqttClient.IsConnected())
+                {
+                    throw new MqttClientNotConnectedException("mock client not connected exception");
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(TimeSpan.FromMilliseconds(100)),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+
+            Task pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            // Let the connection layer make a few reconnection attempts while the publish waits for them.
+            SpinWait.SpinUntil(() => Volatile.Read(ref hubConnectAttempts) >= 3, s_testTimeout);
+            Assert.False(pendingPublish.IsCompleted);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // Reconnection has stopped.
+            int connectAttemptsAfterDisconnect = mockMqttClient.ConnectAttemptCount;
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(connectAttemptsAfterDisconnect, mockMqttClient.ConnectAttemptCount);
+            Assert.False(mockMqttClient.IsConnected());
+        }
+
+        [Fact]
+        public async Task ExplicitDisconnectDuringAnInFlightReprovisioningConnectKeepsTheDeviceDisconnected()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            // The re-provisioning attempt's CONNECT to DPS is held in flight until the test lets the broker accept it,
+            // which it only does after the application has asked to disconnect.
+            TaskCompletionSource reprovisioningConnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseReprovisioningConnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int dpsConnectAttempts = 0;
+            List<string> connectedHostNames = new();
+            mockMqttClient.OnConnect = async connect =>
+            {
+                lock (connectedHostNames)
+                {
+                    connectedHostNames.Add(connect.HostName);
+                }
+
+                if (connect.HostName == GlobalDeviceEndpoint && Interlocked.Increment(ref dpsConnectAttempts) == 2)
+                {
+                    reprovisioningConnectStarted.TrySetResult();
+                    await releaseReprovisioningConnect.Task;
+                }
+
+                return new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success };
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Task pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+            Assert.False(pendingPublish.IsCompleted);
+
+            Task disconnect = connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            // The waiting operation is released straight away, without waiting for the in-flight connect to finish.
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // An operation started while the disconnect is still in progress fails fast rather than waiting for the
+            // recovery that the disconnect is stopping.
+            Assert.False(disconnect.IsCompleted);
+            await Assert.ThrowsAsync<MqttClientNotConnectedException>(
+                () => connectionClient.PublishAsync(
+                    new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
+                    TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            releaseReprovisioningConnect.TrySetResult();
+            await disconnect.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The connect that completed after the disconnect was requested did not lead anywhere: the device never
+            // connected to a newly assigned hub, and is left disconnected.
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+            Assert.False(mockMqttClient.IsConnected());
+            lock (connectedHostNames)
+            {
+                Assert.DoesNotContain(SecondAssignedHub, connectedHostNames);
+            }
+
+            Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
+            Assert.False(connectionClient.IsConnectionTargetSet);
+        }
+
         /// <summary>
         /// A feature client operation issued before this client has ever connected -- so nothing is maintaining or
         /// recovering a connection -- must fail fast with the underlying not-connected error rather than block forever
