@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using MQTTnet;
@@ -39,7 +40,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     /// MQTT-level results are returned as-is. A PUBACK, SUBACK or UNSUBACK whose reason code reports a failure (for example,
     /// <see cref="MqttClientSubscribeReasonCode.NotAuthorized"/>) is returned to the caller rather than thrown as an
     /// exception, and the operation is not retried. Connection-level failures are still handled by the connection client:
-    /// an operation sent while the device is not connected waits for the connection to be re-established and is then re-sent.
+    /// an operation that cannot be sent because the device is not connected waits for the connection to be re-established
+    /// and is then sent. An operation that the connection drops after it was sent is not re-sent; it fails instead. See the
+    /// remarks on each operation for how it behaves in exceptional cases.
     /// </para>
     /// <para>
     /// Subscriptions survive connection loss. Whenever the connection client re-establishes this device's presence on IoT
@@ -111,8 +114,68 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// The publish to send. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in its topic is replaced with this
         /// device's current ID when it is sent.
         /// </param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
+        /// <param name="cancellationToken">
+        /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established.
+        /// </param>
+        /// <returns>
+        /// The PUBACK, whatever its reason code. For a QoS 0 publish, which IoT hub does not acknowledge, this is a
+        /// successful PUBACK created once the PUBLISH has been sent.
+        /// </returns>
+        /// <remarks>
+        /// <para>How this method behaves in exceptional cases:</para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// <b>A temporary disconnection.</b> If this device is not connected to IoT hub when the PUBLISH is about to be
+        /// sent (for example, because the connection dropped and is being re-established, or because the device is being
+        /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
+        /// hub, then sends the PUBLISH. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
+        /// device ID at that time. However, if the connection drops after the PUBLISH was sent but before its PUBACK
+        /// arrived, the PUBLISH is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
+        /// <see cref="DeviceException.Retryability"/> is <see cref="ErrorRetryability.Retryable"/>. IoT hub may or may not
+        /// have received that PUBLISH, so publishing it again may deliver it twice.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
+        /// reports through <see cref="AbstractConnectionClient.ConnectionFaultedAsync"/>) while this method waits for the
+        /// connection, this method stops waiting. It throws an <see cref="OperationCanceledException"/> whose
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> that describes the fault. Calls made
+        /// after such a fault fail without waiting, until the application connects the connection client again.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A PUBACK with a failure reason code.</b> The PUBACK is returned as-is. This method does not throw, and the
+        /// PUBLISH is not retried. Check <see cref="MqttPublishAck.ReasonCode"/> to find out whether IoT hub accepted it.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A deliberate disconnection by the application.</b> If <see cref="AbstractConnectionClient.DisconnectAsync"/>
+        /// has been called before this method is called, this method throws a <see cref="NotSupportedException"/> without
+        /// sending anything. If it is called while the PUBLISH is awaiting its PUBACK, this method throws a
+        /// <see cref="DeviceException"/>, as described above for a dropped connection. If it is called while this method is
+        /// waiting for a lost connection to be re-established, this method keeps waiting until the application connects
+        /// the connection client again, the connection client faults, or <paramref name="cancellationToken"/> is canceled.
+        /// Use a cancellable token so that this wait is bounded. If it is called just as this method finds the connection
+        /// gone, before this method has started waiting, this method throws a <see cref="MqttClientNotConnectedException"/>
+        /// instead.
+        /// </description></item>
+        /// </list>
+        /// </remarks>
+        /// <exception cref="NotSupportedException">
+        /// Thrown if the connection client is disconnected and is not trying to reconnect, for example because
+        /// <see cref="AbstractConnectionClient.DisconnectAsync"/> was called.
+        /// </exception>
+        /// <exception cref="MqttClientNotConnectedException">
+        /// Thrown if <see cref="AbstractConnectionClient.DisconnectAsync"/> is called just as this operation finds the
+        /// connection gone, before it has started waiting for the connection to be re-established.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
+        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
+        /// </exception>
+        /// <exception cref="DeviceException">
+        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
+        /// dropped while the operation was in flight.
+        /// </exception>
+        /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -131,8 +194,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// this device's current ID when it is sent.
         /// </param>
         /// <param name="qos">The maximum QoS level to receive publishes on this topic with.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
+        /// <param name="cancellationToken">
+        /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established.
+        /// </param>
+        /// <returns>The reason code IoT hub returned for the topic, whether or not it granted the subscription.</returns>
+        /// <remarks>
+        /// This behaves exactly as <see cref="SubscribeAsync(MqttSubscribe, CancellationToken)"/> does in exceptional cases:
+        /// <inheritdoc cref="SubscribeAsync(MqttSubscribe, CancellationToken)" path="/remarks/list"/>
+        /// </remarks>
+        /// <inheritdoc cref="SubscribeAsync(MqttSubscribe, CancellationToken)" path="/exception"/>
+        /// <exception cref="InvalidOperationException">Thrown if the SUBACK does not hold exactly one reason code.</exception>
         public async Task<MqttClientSubscribeReasonCode> SubscribeAsync(string topic, MqttQualityOfServiceLevel qos, CancellationToken cancellationToken = default)
         {
             MqttSubscribe subscribe = new()
@@ -156,11 +227,73 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// The subscribe to send. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in its topic filters is replaced
         /// with this device's current ID when it is sent.
         /// </param>
-        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <param name="cancellationToken">
+        /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established,
+        /// and for any subscribe or unsubscribe that is already in progress on this client to finish.
+        /// </param>
         /// <returns>
-        /// The SUBACK. Its topic filters are the ones that were sent, so any placeholder in them has been replaced.
+        /// The SUBACK, whatever its reason codes. Its topic filters are the ones that were sent, so any placeholder in them
+        /// has been replaced.
         /// </returns>
-        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
+        /// <remarks>
+        /// <para>How this method behaves in exceptional cases:</para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// <b>A temporary disconnection.</b> If this device is not connected to IoT hub when the SUBSCRIBE is about to be
+        /// sent (for example, because the connection dropped and is being re-established, or because the device is being
+        /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
+        /// hub, then sends the SUBSCRIBE. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
+        /// device ID at that time. However, if the connection drops after the SUBSCRIBE was sent but before its SUBACK
+        /// arrived, the SUBSCRIBE is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
+        /// <see cref="DeviceException.Retryability"/> is         <see cref="ErrorRetryability.Retryable"/>, and this request leaves
+                /// <see cref="GetSubscribedTopics"/> as it was. Subscribe again to retry.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
+        /// reports through <see cref="AbstractConnectionClient.ConnectionFaultedAsync"/>) while this method waits for the
+        /// connection, this method stops waiting. It throws an <see cref="OperationCanceledException"/> whose
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/>         that describes the fault, and this
+                /// request leaves <see cref="GetSubscribedTopics"/> as it was. Calls made after such a fault fail without waiting, until the
+        /// application connects the connection client again.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A SUBACK with a failure reason code.</b> The SUBACK is returned as-is. This method does not throw, and the
+        /// SUBSCRIBE is not retried. Check the reason code of each item in <see cref="MqttSubscribeAck.Items"/> to find
+        /// out which topics IoT hub granted. Topics that were not granted are not tracked as subscribed (see
+        /// <see cref="GetSubscribedTopics"/>), so they are not re-subscribed to when the connection is re-established.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A deliberate disconnection by the application.</b> If <see cref="AbstractConnectionClient.DisconnectAsync"/>
+        /// has been called before this method sends the SUBSCRIBE (including while this method waits for an earlier
+        /// subscribe or unsubscribe on this client to finish), this method throws a <see cref="NotSupportedException"/>
+        /// without sending anything. If it is called while the SUBSCRIBE is awaiting its SUBACK, this method throws a
+        /// <see cref="DeviceException"/>, as described above for a dropped connection. If it is called while this method
+        /// is waiting for a lost connection to be re-established, this method keeps waiting until the application connects
+        /// the connection client again, the connection client faults, or <paramref name="cancellationToken"/> is canceled.
+        /// Use a cancellable token so that this wait is bounded. If it is called just as this method finds the connection
+        /// gone, before this method has started waiting, this method throws a <see cref="MqttClientNotConnectedException"/>
+        /// instead. In every case where this method throws, this request leaves <see cref="GetSubscribedTopics"/> as it was.
+        /// </description></item>
+        /// </list>
+        /// </remarks>
+        /// <exception cref="NotSupportedException">
+        /// Thrown if the connection client is disconnected and is not trying to reconnect, for example because
+        /// <see cref="AbstractConnectionClient.DisconnectAsync"/> was called.
+        /// </exception>
+        /// <exception cref="MqttClientNotConnectedException">
+        /// Thrown if <see cref="AbstractConnectionClient.DisconnectAsync"/> is called just as this operation finds the
+        /// connection gone, before it has started waiting for the connection to be re-established.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
+        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
+        /// </exception>
+        /// <exception cref="DeviceException">
+        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
+        /// dropped while the operation was in flight.
+        /// </exception>
+        /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             //TODO probably want some kind of client-side validation of some topic strings, but only if AEG-returned error is too hard for user to interpret
@@ -253,8 +386,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// <see cref="IConnectionClient.DeviceIdPlaceholder"/>). Any placeholder is replaced with this device's current ID
         /// when it is sent.
         /// </param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
+        /// <param name="cancellationToken">
+        /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established.
+        /// </param>
+        /// <returns>The reason code IoT hub returned for the topic, whether or not the unsubscribe succeeded.</returns>
+        /// <remarks>
+        /// This behaves exactly as <see cref="UnsubscribeAsync(MqttUnsubscribe, CancellationToken)"/> does in exceptional cases:
+        /// <inheritdoc cref="UnsubscribeAsync(MqttUnsubscribe, CancellationToken)" path="/remarks/list"/>
+        /// </remarks>
+        /// <inheritdoc cref="UnsubscribeAsync(MqttUnsubscribe, CancellationToken)" path="/exception"/>
+        /// <exception cref="InvalidOperationException">Thrown if the UNSUBACK does not hold exactly one reason code.</exception>
         public async Task<MqttClientUnsubscribeReasonCode> UnsubscribeAsync(string topic, CancellationToken cancellationToken = default)
         {
             MqttUnsubscribe unsubscribe = new(topic);
@@ -277,11 +418,76 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// <see cref="IConnectionClient.DeviceIdPlaceholder"/>). Any placeholder is replaced with this device's current ID
         /// when it is sent.
         /// </param>
-        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <param name="cancellationToken">
+        /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established,
+        /// and for any subscribe or unsubscribe that is already in progress on this client to finish.
+        /// </param>
         /// <returns>
-        /// The UNSUBACK. Its topic filters are the ones that were sent, so any placeholder in them has been replaced.
+        /// The UNSUBACK, whatever its reason codes. Its topic filters are the ones that were sent, so any placeholder in
+        /// them has been replaced.
         /// </returns>
-        /// <exception cref="NotSupportedException">Thrown if the connection client is disconnected and is not trying to reconnect.</exception>
+        /// <remarks>
+        /// <para>How this method behaves in exceptional cases:</para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// <b>A temporary disconnection.</b> If this device is not connected to IoT hub when the UNSUBSCRIBE is about to be
+        /// sent (for example, because the connection dropped and is being re-established, or because the device is being
+        /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
+        /// hub, then sends the UNSUBSCRIBE. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
+        /// device ID at that time. The topics being unsubscribed from are not re-subscribed to upon that reconnection, so
+        /// they stop being tracked as subscribed (see <see cref="GetSubscribedTopics"/>) whatever the outcome of this
+        /// method. However, if the connection drops after the UNSUBSCRIBE was sent but before its UNSUBACK arrived, the
+        /// UNSUBSCRIBE is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
+        /// <see cref="DeviceException.Retryability"/> is <see cref="ErrorRetryability.Retryable"/>, the topics stay tracked
+        /// as subscribed, and they are re-subscribed to when the connection is re-established. Unsubscribe again to retry.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
+        /// reports through <see cref="AbstractConnectionClient.ConnectionFaultedAsync"/>) while this method waits for the
+        /// connection, this method stops waiting. It throws an <see cref="OperationCanceledException"/> whose
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> that describes the fault. Calls made
+        /// after such a fault fail without waiting, until the application connects the connection client again.
+        /// </description></item>
+        /// <item><description>
+        /// <b>An UNSUBACK with a failure reason code.</b> The UNSUBACK is returned as-is. This method does not throw, and
+        /// the UNSUBSCRIBE is not retried. Check the reason code of each item in <see cref="MqttUnsubscribeAck.Items"/> to
+        /// find out which topics IoT hub unsubscribed this device from. Topics whose reason code is
+        /// <see cref="MqttClientUnsubscribeReasonCode.Success"/> or
+        /// <see cref="MqttClientUnsubscribeReasonCode.NoSubscriptionExisted"/> stop being tracked as subscribed. Any other
+        /// topic stays tracked, so it keeps being delivered and is re-subscribed to when the connection is re-established.
+        /// </description></item>
+        /// <item><description>
+        /// <b>A deliberate disconnection by the application.</b> If <see cref="AbstractConnectionClient.DisconnectAsync"/>
+        /// has been called before this method sends the UNSUBSCRIBE (including while this method waits for an earlier
+        /// subscribe or unsubscribe on this client to finish), this method throws a <see cref="NotSupportedException"/>
+        /// without sending anything, and the topics stay tracked as subscribed. If it is called while the UNSUBSCRIBE is
+        /// awaiting its UNSUBACK, this method throws a <see cref="DeviceException"/>, as described above for a dropped
+        /// connection. If it is called while this method is waiting for a lost connection to be re-established, this
+        /// method keeps waiting until the application connects the connection client again, the connection client faults,
+        /// or <paramref name="cancellationToken"/> is canceled. Use a cancellable token so that this wait is bounded. If it
+        /// is called just as this method finds the connection gone, before this method has started waiting, this method
+        /// throws a <see cref="MqttClientNotConnectedException"/> instead.
+        /// </description></item>
+        /// </list>
+        /// </remarks>
+        /// <exception cref="NotSupportedException">
+        /// Thrown if the connection client is disconnected and is not trying to reconnect, for example because
+        /// <see cref="AbstractConnectionClient.DisconnectAsync"/> was called.
+        /// </exception>
+        /// <exception cref="MqttClientNotConnectedException">
+        /// Thrown if <see cref="AbstractConnectionClient.DisconnectAsync"/> is called just as this operation finds the
+        /// connection gone, before it has started waiting for the connection to be re-established.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
+        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
+        /// </exception>
+        /// <exception cref="DeviceException">
+        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
+        /// dropped while the operation was in flight.
+        /// </exception>
+        /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
