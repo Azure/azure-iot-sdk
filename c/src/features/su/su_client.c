@@ -181,25 +181,6 @@ static void result_step_failure(
   }
 }
 
-static void result_step_canceled(az_iot_su_client* client)
-{
-  int32_t step_count = SU_I(client).step_results_count;
-  uint32_t step = SU_I(client).current_step;
-  if ((int32_t)step >= step_count)
-  {
-    return;
-  }
-
-  az_iot_su_step_result* result = &SU_I(client).step_results[step];
-  if (result->outcome == AZ_IOT_SU_OUTCOME_SKIPPED)
-  {
-    result->outcome = AZ_IOT_SU_OUTCOME_CANCELED;
-    result->failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
-    result->result_code = AZ_IOT_SU_RESULT_FAILURE;
-    result->extended_result_code = 0;
-  }
-}
-
 static void result_overall_success(az_iot_su_client* client)
 {
   az_iot_su_client_install_result* r = &SU_I(client).install_result;
@@ -1135,7 +1116,6 @@ static void reset_to_idle(az_iot_su_client* client)
   SU_I(client).have_request = false;
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
-  SU_I(client).cancel_requested = false;
   SU_I(client).checkpoint_pending = false;
   memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
   memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
@@ -1605,7 +1585,6 @@ static void process_update_metadata(
 
   SU_I(client).current_request = req;
   SU_I(client).have_request = true;
-  SU_I(client).cancel_requested = false;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
   SU_I(client).current_step = 0;
@@ -2396,7 +2375,7 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 /* Versioned, integrity-checked workflow snapshot. Layout (all little-endian):
  *   [0]  magic[4]   = 'S','U','C','P'
  *   [4]  u16 version (= AZ_IOT_SU_PERSIST_VERSION)
- *   [6]  u16 flags   (bit0 cancel_requested, bit1 have_request, bit2 report_owed)
+ *   [6]  u16 flags   (bit0 reserved, 0; bit1 have_request, bit2 report_owed)
  *   [8]  u32 state
  *   [12] u32 current_step
  *   [16] u32 current_file
@@ -2430,7 +2409,6 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_MAGIC3 'P'
 #define AZ_IOT_SU_PERSIST_VERSION 1u
 #define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
-#define AZ_IOT_SU_PERSIST_FLAG_CANCEL 0x1u
 #define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
 #define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
 /* Fixed part of the trailer (outcome + 3 result ints). */
@@ -2608,10 +2586,6 @@ static az_iot_result su_persist(az_iot_su_client* client, bool terminal)
   }
   else
   {
-    if (SU_I(client).cancel_requested)
-    {
-      flags |= AZ_IOT_SU_PERSIST_FLAG_CANCEL;
-    }
     if (SU_I(client).have_request)
     {
       flags |= AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST;
@@ -2918,7 +2892,6 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
     SU_I(client).request_len = 0;
     SU_I(client).have_request = false;
-    SU_I(client).cancel_requested = false;
     SU_I(client).current_step = 0;
     SU_I(client).current_file = 0;
     SU_I(client).checkpoint_pending = false;
@@ -3014,7 +2987,6 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
 
   SU_I(client).current_step = step;
   SU_I(client).current_file = file;
-  SU_I(client).cancel_requested = (flags & AZ_IOT_SU_PERSIST_FLAG_CANCEL) != 0;
   SU_I(client).have_request = (flags & AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST) != 0;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).checkpoint_stored = true;
@@ -3243,32 +3215,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   /* Hold while a checkpoint write is outstanding. A superseded workflow's
    * record would make a reboot resume it or re-send its report; a failed
    * boundary write would let the workflow run a phase it could not resume.
-   * Checked before cancellation, which would otherwise abandon an installed
-   * step without rolling it back. */
+   */
   if (SU_I(client).checkpoint_superseded
       || (SU_I(client).checkpoint_pending && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
           && SU_I(client).state != AZ_IOT_SU_STATE_FAILED))
   {
-    return AZ_IOT_OK;
-  }
-
-  /* Cancellation at a phase boundary returns immediately to Idle. FAILED is
-   * excluded: its terminal outcome is already reported, and a late cancel would
-   * report a second, conflicting one for the same workflow. */
-  if (SU_I(client).cancel_requested && SU_I(client).state != AZ_IOT_SU_STATE_IDLE
-      && SU_I(client).state != AZ_IOT_SU_STATE_FAILED)
-  {
-    /* The installed step not yet applied is undone: a reboot must not activate
-     * a canceled update. Completed steps are kept, as the report says. */
-    if (SU_I(client).state == AZ_IOT_SU_STATE_INSTALL_COMPLETE
-        || SU_I(client).state == AZ_IOT_SU_STATE_APPLY_STARTED)
-    {
-      roll_back_installed(client, SU_I(client).current_step, SU_I(client).current_step + 1u);
-    }
-    result_step_canceled(client);
-    latch_terminal(client, AZ_IOT_SU_OUTCOME_CANCELED);
-    reset_to_idle(client);
-    (void)az_iot_su__report_state(client);
     return AZ_IOT_OK;
   }
 
@@ -3520,15 +3471,6 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   }
 
   return AZ_IOT_OK;
-}
-
-bool az_iot_su_is_cancelled(const az_iot_su_client* client)
-{
-  if (client == NULL)
-  {
-    return false;
-  }
-  return SU_I(client).cancel_requested;
 }
 
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)

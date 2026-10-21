@@ -122,7 +122,8 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
 `{ workflowId, installedUpdateId, installResult }`, where `installResult` is
 `{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails, stepResults }`:
 
-- `outcome`: `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELED` or `SKIPPED`.
+- `outcome`: `IN_PROGRESS`, `SUCCEEDED`, `FAILED` or `SKIPPED`. `CANCELED` is set by the service
+  only.
 - `extendedResultCodes`: comma-separated hex.
 - `stepResults`: `{ step_0, step_1, … }`, each with `outcome`, `failureOrigin`, `resultCode`,
   `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports; complete in
@@ -419,9 +420,6 @@ indexed by step number. As the machine progresses:
 - On failure, the step becomes `FAILED` / `AGENT_CORE` with the failing phase's
   `result_code` + composed `extended_result_code` (see Result-Code Mapping), and
   no further steps MUST be started.
-- On cancellation, the active unfinished step becomes `CANCELED` /
-  `NOT_APPLICABLE`, result code `-1`, extended result code `0`; later steps stay
-  `SKIPPED`.
 - The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
   failing step (the root cause), not a later rollback outcome.
 - `step_results_count` MUST equal the number of manifest steps for terminal
@@ -470,10 +468,11 @@ rules are in §2.
 
 ### Cancellation
 
-Software updates carries no cancel action. A new `workflowId` replaces the in-progress workflow
-only before its first `install_fn` call; later it is deferred (see Duplicate vs. Replacement
-Detection). `az_iot_su_is_cancelled()` remains
-for hooks to poll; no software updates input sets it.
+The device has no cancel path. A cancel is service-side: the service stops offering the
+deployment, and a device that already has it finishes it; its `SUCCEEDED` or `FAILED` report
+replaces the service's `CANCELED`. A new `workflowId` replaces the in-progress workflow only
+before its first `install_fn` call; later it is deferred (see Duplicate vs. Replacement
+Detection).
 
 ### Reboot coordination
 
@@ -483,7 +482,7 @@ If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 2. The application MUST reboot the device after the client persists state. Until it does, a new `workflowId` is deferred.
 3. On startup, the application MUST call `az_iot_su_client_resume()`, which reads persisted state and continues the workflow from the appropriate phase.
 
-When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
+When a workflow ends (succeeded, failed, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
 retires it once the channel's verdict is final: accepted or refused by the
 service. A report abandoned for want of a session is kept, so
@@ -504,8 +503,8 @@ internal and may change between SDK versions.
   record of any other magic or version is ignored. All integers are
   little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
-- **Contents** — workflow state, step/file position, flags (cancel,
-  have-request, report-owed), the raw request buffer (manifest, workflow id),
+- **Contents** — workflow state, step/file position, flags (have-request,
+  report-owed), the raw request buffer (manifest, workflow id),
   the latched outcome, the overall and per-step results, the download URLs, the
   active workflow id, the applied update id, and opaque channel state (the DPS
   channel's `agentInfoEtag` / `serviceConfigEtag`).
@@ -570,11 +569,7 @@ The byte layout is documented next to the serializer in
    - a held new workflow proceeds.
 
    A write needed later is still attempted once; a tracked success resets the count.
-   While a workflow is held at a reboot boundary, a new `workflowId` is deferred
-   and a cancel waits. A cancel
-   that reaches an installed step not yet applied (`INSTALL_COMPLETE` /
-   `APPLY_STARTED`) rolls it back first, reported like the give-up above when
-   there is no `restore_fn`; completed steps are kept.
+   While a workflow is held at a reboot boundary, a new `workflowId` is deferred.
    While a failure is outstanding the application MUST NOT reboot for
    `REBOOT_REQUIRED`: nothing would resume.
 
@@ -612,7 +607,6 @@ extern "C" {
 #define AZ_IOT_SU_RESULT_IN_PROGRESS       1
 #define AZ_IOT_SU_RESULT_REBOOT_REQUIRED   2
 #define AZ_IOT_SU_RESULT_ALREADY_INSTALLED 3
-#define AZ_IOT_SU_RESULT_CANCELLED         4
 #define AZ_IOT_SU_RESULT_FAILURE          -1
 
 /* --- State enum ---------------------------------------------------------- */
@@ -642,7 +636,6 @@ typedef struct az_iot_su_platform_hooks
      * MUST return AZ_IOT_SU_RESULT_IN_PROGRESS to continue on next do_work;
      * MUST return AZ_IOT_SU_RESULT_SUCCESS when complete.
      * The hook MUST verify the file hash (helpers provided).
-     * The hook SHOULD check az_iot_su_is_cancelled() periodically.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -802,7 +795,6 @@ typedef struct az_iot_su_client
         az_iot_su_client_update_manifest current_manifest;
         uint32_t current_step;
         uint32_t current_file;
-        bool cancel_requested;
         /* Client-owned device-properties cache (deep copy of caller's struct). */
         uint8_t* device_properties_buffer;
         size_t device_properties_buffer_size;
@@ -936,11 +928,6 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client);
  * Non-blocking: MUST process at most one chunk of work per invocation.
  */
 az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
-
-/**
- * Check if cancellation has been requested (called from within platform hooks).
- */
-bool az_iot_su_is_cancelled(const az_iot_su_client* client);
 
 /**
  * Get the current software updates agent state.
