@@ -36,6 +36,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     /// To keep using a specific device ID even if the device is later assigned a different one, put that ID in the topic instead of the placeholder.
     /// </para>
     /// <para>
+    /// MQTT-level results are returned as-is. A PUBACK, SUBACK or UNSUBACK whose reason code reports a failure (for example,
+    /// <see cref="MqttClientSubscribeReasonCode.NotAuthorized"/>) is returned to the caller rather than thrown as an
+    /// exception, and the operation is not retried. Connection-level failures are still handled by the connection client:
+    /// an operation sent while the device is not connected waits for the connection to be re-established and is then re-sent.
+    /// </para>
+    /// <para>
     /// Subscriptions survive connection loss. Whenever the connection client re-establishes this device's presence on IoT
     /// hub without a resumed session (including after re-provisioning), it re-subscribes to every topic in
     /// <see cref="GetSubscribedTopics"/> in the same SUBSCRIBE as its own device presence subscriptions, with the QoS each
@@ -113,7 +119,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             cancellationToken.ThrowIfCancellationRequested();
             EnsureConnected();
 
-            return await _connection.PublishAsync(publish, cancellationToken);
+            // Unlike other feature clients, this client hands MQTT-level results to the user as-is
+            return await _connection.PublishAsync(publish, throwOnErrorReasonCode: false, cancellationToken);
         }
 
         /// <summary>
@@ -142,7 +149,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             return suback.Items.First().ReasonCode;
         }
 
-        //TODO is the underlying connection client going to retry subscriptions if the user provides a malformed topic string? Probably don't want that. I think MQTT-level failures (suback with negative reason code) are just returned as-is, right?
         /// <summary>
         /// Subscribe to one or more custom topics.
         /// </summary>
@@ -188,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 MqttSubscribeAck suback;
                 try
                 {
-                    suback = await _connection.SubscribeAsync(subscribe, cancellationToken);
+                    suback = await _connection.SubscribeAsync(subscribe, throwOnErrorReasonCode: false, cancellationToken);
                 }
                 catch
                 {
@@ -300,7 +306,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 MqttUnsubscribeAck unsuback;
                 try
                 {
-                    unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
+                    unsuback = await _connection.UnsubscribeAsync(unsubscribe, throwOnErrorReasonCode: false, cancellationToken);
                 }
                 finally
                 {

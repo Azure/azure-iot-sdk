@@ -633,7 +633,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             Task<MqttPublishAck> pendingPublish = connectionClient.PublishAsync(
                 new MqttPublish() { Topic = "test/topic" },
-                TestContext.Current.CancellationToken);
+                throwOnErrorReasonCode: true, TestContext.Current.CancellationToken);
 
             try
             {
@@ -693,7 +693,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             };
 
             MqttSubscribe featureClientLevelSubscribeRequest = new(expectedTopicString, MqttQualityOfServiceLevel.AtLeastOnce);
-            await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, TestContext.Current.CancellationToken);
+            await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken);
 
 
             if (isMQTTv5)
@@ -767,7 +767,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             };
 
             MqttUnsubscribe featureClientLevelUnsubscribeRequest = new(expectedTopicString);
-            await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
+            await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken);
 
 
             if (isMQTTv5)

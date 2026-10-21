@@ -762,5 +762,99 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.Equal($"ih/{DeviceId}/dev/#", Assert.Single(presenceSubscribe.TopicFilters).Topic);
         }
+
+        // Unlike other feature clients' operations, a custom topic operation's MQTT-level failure is the user's to
+        // interpret, so it is returned as-is rather than thrown, and tracking reflects what the service actually granted.
+        [Fact]
+        public async Task ErrorReasonCodesAreReturnedAsIsRatherThanThrown()
+        {
+            const string topic = "custom/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            await customTopicsClient.SubscribeAsync(topic, MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            mockMqttClient.OnPublish = publish => Task.FromResult(new MqttPublishAck()
+            {
+                ReasonCode = publish.Topic == topic ? MqttPublishAckReasonCode.NotAuthorized : MqttPublishAckReasonCode.Success,
+            });
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                MqttSubscribeAck suback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                foreach (MqttSubscribeAckItem item in suback.Items)
+                {
+                    item.ReasonCode = MqttClientSubscribeReasonCode.TopicFilterInvalid;
+                }
+
+                return Task.FromResult(suback);
+            };
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                MqttUnsubscribeAck unsuback = MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+                foreach (MqttUnsubscribeAckItem item in unsuback.Items)
+                {
+                    item.ReasonCode = MqttClientUnsubscribeReasonCode.NotAuthorized;
+                }
+
+                return Task.FromResult(unsuback);
+            };
+
+            MqttPublishAck puback = await customTopicsClient.PublishAsync(
+                new MqttPublish() { Topic = topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+            Assert.Equal(MqttPublishAckReasonCode.NotAuthorized, puback.ReasonCode);
+
+            Assert.Equal(
+                MqttClientSubscribeReasonCode.TopicFilterInvalid,
+                await customTopicsClient.SubscribeAsync("invalid/topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken));
+
+            Assert.Equal(
+                MqttClientUnsubscribeReasonCode.NotAuthorized,
+                await customTopicsClient.UnsubscribeAsync(topic, TestContext.Current.CancellationToken));
+
+            Assert.Equal(new[] { topic }, customTopicsClient.GetSubscribedTopics);
+        }
+
+        // Connection-level failures are still the SDK's to handle: an operation the connection loss interrupts is re-sent
+        // once the device is present again, and only the eventual MQTT-level result is returned.
+        [Fact]
+        public async Task OperationInterruptedByConnectionLossIsResentAndItsErrorReasonCodeReturned()
+        {
+            const string topic = "custom/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            int customTopicPublishAttempts = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic != topic)
+                {
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
+                if (Interlocked.Increment(ref customTopicPublishAttempts) == 1)
+                {
+                    _ = Task.Run(() => mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception")));
+                    throw new MqttClientNotConnectedException("mock connection loss");
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.QuotaExceeded });
+            };
+
+            MqttPublishAck puback = await customTopicsClient
+                .PublishAsync(new MqttPublish() { Topic = topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce }, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(MqttPublishAckReasonCode.QuotaExceeded, puback.ReasonCode);
+            Assert.Equal(2, customTopicPublishAttempts);
+        }
     }
 }

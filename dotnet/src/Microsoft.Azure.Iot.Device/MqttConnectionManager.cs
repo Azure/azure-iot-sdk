@@ -981,13 +981,26 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
+        {
+            return BuildAndPublishAsync(endpoint, buildPublish, throwOnPubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndPublishAsync(ConnectionEndpoint, Func{MqttPublish}, CancellationToken)"/>
+        /// <param name="throwOnPubackErrorCode">
+        /// False to return the PUBACK as-is even if it reports an error, for callers that hand MQTT-level results to the user.
+        /// </param>
+        internal async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, bool throwOnPubackErrorCode, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
                 var puback = await _underlyingMqttClient.PublishAsync(buildPublish(), cancellationToken);
-                ThrowIfPubackHasErrorCode(puback);
+                if (throwOnPubackErrorCode)
+                {
+                    ThrowIfPubackHasErrorCode(puback);
+                }
+
                 return puback;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
@@ -1088,13 +1101,27 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
+        {
+            return BuildAndUnsubscribeAsync(endpoint, buildUnsubscribe, throwOnUnsubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndUnsubscribeAsync(ConnectionEndpoint, Func{MqttUnsubscribe}, CancellationToken)"/>
+        /// <param name="throwOnUnsubackErrorCode">
+        /// False to return the UNSUBACK as-is even if it rejects some topic filters, for callers that hand MQTT-level
+        /// results to the user.
+        /// </param>
+        internal async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, bool throwOnUnsubackErrorCode, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
                 var unsuback = await _underlyingMqttClient.UnsubscribeAsync(buildUnsubscribe(), cancellationToken);
-                ThrowIfUnsubackHasErrorCode(unsuback);
+                if (throwOnUnsubackErrorCode)
+                {
+                    ThrowIfUnsubackHasErrorCode(unsuback);
+                }
+
                 return unsuback;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)

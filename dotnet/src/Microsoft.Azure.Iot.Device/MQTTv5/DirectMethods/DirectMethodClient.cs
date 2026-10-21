@@ -178,7 +178,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
                 }
 
-                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
@@ -273,7 +273,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 resultPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("result:1")));
 
-                MqttPublishAck puback = await _connection.PublishAsync(resultPublish);
+                MqttPublishAck puback = await _connection.PublishAsync(resultPublish, throwOnErrorReasonCode: true);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {

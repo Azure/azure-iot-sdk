@@ -157,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
                 publish.Payload = methodResponse.Payload;
             }
 
-            MqttPublishAck puback = await _connection.PublishAsync(publish, CancellationToken.None);
+            MqttPublishAck puback = await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, CancellationToken.None);
 
             if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
             {
