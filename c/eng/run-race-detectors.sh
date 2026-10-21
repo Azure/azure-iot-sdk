@@ -69,14 +69,18 @@ for t in "${tests[@]}"; do
     echo "::group::${tool}: ${name}"
     rc=0
     (
-        [ -z "${wd}" ] || cd "${wd}"
+        # errexit is off in a subshell tested by ||, so a failed cd must exit here.
+        [ -z "${wd}" ] || cd "${wd}" || exit 97
         "${valgrind}" --tool="${tool}" --error-exitcode=42 -s --num-callers=40 \
             "${tool_opts[@]}" --suppressions="${supp}" "${cmd[@]}"
     ) >"${log}" 2>&1 || rc=$?
     cat "${log}"
     echo "::endgroup::"
 
-    if ! grep -q "ERROR SUMMARY:" "${log}"; then
+    if [ "${rc}" -eq 97 ] && ! grep -q "ERROR SUMMARY:" "${log}"; then
+        annotate "${tool}: ${name}: cannot enter working directory ${wd}"
+        status=1
+    elif ! grep -q "ERROR SUMMARY:" "${log}"; then
         annotate "${tool}: ${name} did not run to completion (exit ${rc})"
         status=1
     elif [ "${rc}" -eq 42 ]; then
