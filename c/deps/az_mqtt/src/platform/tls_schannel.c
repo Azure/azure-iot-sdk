@@ -72,6 +72,11 @@ typedef struct
   bool capturing;
   bool capture_overflow;
   int32_t captured;
+  /**
+   * @brief The server started a renegotiation (SEC_I_RENEGOTIATE): driven by receive and send
+   * until done. The server was validated by the handshake this session is protected by.
+   */
+  bool renegotiating;
   uint8_t stage;
   /** @brief close_notify sent (or tried) on this connection. */
   bool closing;
@@ -936,6 +941,7 @@ static void _tls_free(_tls_transport* transport)
   transport->capturing = false;
   transport->capture_overflow = false;
   transport->captured = 0;
+  transport->renegotiating = false;
   transport->in_len = 0;
   transport->plain_pos = 0;
   transport->plain_len = 0;
@@ -1128,10 +1134,6 @@ static void _keep_extra(_tls_transport* transport, unsigned long extra)
 }
 
 /**
- * @brief Drive the handshake until done, failed or @p deadline; resumable.
- * Failures below were reported there (as AZ_MQTT_ERROR_TLS_HANDSHAKE).
- */
-/**
  * @brief The server certificate received so far, validated; on failure reported, and NULL.
  * CertFreeCertificateContext() it.
  */
@@ -1240,8 +1242,11 @@ static az_result _present_client_certificate(_tls_transport* transport)
   HCERTSTORE store = NULL;
   PCCERT_CONTEXT server_cert = NULL;
   transport->capturing = false;
-  az_result rc = _captured_server_certificate(transport, &store, &server_cert);
-  if (az_result_succeeded(rc))
+  // In a renegotiation, the request comes through the session of a validated handshake.
+  az_result rc = transport->renegotiating
+      ? AZ_OK
+      : _captured_server_certificate(transport, &store, &server_cert);
+  if (az_result_succeeded(rc) && server_cert != NULL)
   {
     rc = _validate_server_certificate(transport, server_cert);
   }
@@ -1270,6 +1275,10 @@ static az_result _present_client_certificate(_tls_transport* transport)
   return AZ_OK;
 }
 
+/**
+ * @brief Drive the handshake (or a renegotiation) until done, failed or @p deadline; resumable.
+ * Failures below were reported there (as AZ_MQTT_ERROR_TLS_HANDSHAKE).
+ */
 static az_result _tls_handshake(_tls_transport* transport, int64_t deadline)
 {
   for (;;)
@@ -1521,6 +1530,20 @@ static az_result _connect_poll(az_mqtt_transport* t, int32_t timeout_ms)
   return AZ_OK;
 }
 
+/**
+ * @brief Continue a renegotiation the server started, until done or @p deadline.
+ * @retval AZ_MQTT_ERROR_TIMEOUT Not done yet; call again.
+ */
+static az_result _renegotiate(_tls_transport* transport, int64_t deadline)
+{
+  az_result const rc = _tls_handshake(transport, deadline);
+  if (az_result_succeeded(rc))
+  {
+    transport->renegotiating = false;
+  }
+  return rc;
+}
+
 static az_result _send(az_mqtt_transport* t, az_span data)
 {
   _tls_transport* const transport = _T(t);
@@ -1533,6 +1556,15 @@ static az_result _send(az_mqtt_transport* t, az_span data)
     return az_mqtt_transport_send(_LOWER_T(transport), data);
   }
   int64_t const deadline = _az_mqtt_io_layer_deadline(AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS);
+  if (transport->renegotiating)
+  {
+    az_result const rc = _renegotiate(transport, deadline);
+    if (az_result_failed(rc))
+    {
+      transport->stage = _STAGE_IDLE;
+      return rc;
+    }
+  }
   int32_t const header = (int32_t)transport->sizes.cbHeader;
   int32_t const trailer = (int32_t)transport->sizes.cbTrailer;
   int32_t max_chunk = (int32_t)transport->sizes.cbMaximumMessage;
@@ -1628,7 +1660,7 @@ static az_result _decrypt(_tls_transport* transport, bool* out_incomplete)
   {
     return AZ_MQTT_ERROR_CONNECTION_CLOSED; // close_notify from the peer.
   }
-  if (sec != SEC_E_OK)
+  if (sec != SEC_E_OK && sec != SEC_I_RENEGOTIATE)
   {
     _report(transport, AZ_MQTT_NATIVE_ERROR_TLS, (DWORD)sec, AZ_MQTT_ERROR_TRANSPORT);
     return AZ_MQTT_ERROR_TRANSPORT;
@@ -1661,8 +1693,17 @@ static az_result _decrypt(_tls_transport* transport, bool* out_incomplete)
   {
     transport->in_len = 0;
   }
+  if (sec == SEC_I_RENEGOTIATE)
+  {
+    // A new handshake, from what remains in in (if anything): see _renegotiate().
+    transport->renegotiating = true;
+    transport->handshake_done = false;
+    transport->needs_read = false;
+    transport->cert_request_answered = false;
+  }
   return AZ_OK;
 }
+
 
 static az_result _receive(
     az_mqtt_transport* t,
@@ -1686,6 +1727,19 @@ static az_result _receive(
     if (_deliver(transport, buffer, out_received))
     {
       return AZ_OK;
+    }
+    if (transport->renegotiating)
+    {
+      az_result const rc = _renegotiate(transport, deadline);
+      if (rc == AZ_MQTT_ERROR_TIMEOUT)
+      {
+        return AZ_OK; // Continued by the next call.
+      }
+      if (az_result_failed(rc))
+      {
+        transport->stage = _STAGE_IDLE;
+        return rc;
+      }
     }
     bool incomplete = false;
     az_result rc = _decrypt(transport, &incomplete);
