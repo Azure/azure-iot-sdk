@@ -155,6 +155,12 @@
 
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
+- Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
+  `UPDATE_ACCOUNT_NOT_LINKED`; `DEVICE_NOT_PROVISIONED`, `MAX_DEVICE_CLASSES_EXCEEDED` and
+  `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
+  `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
+
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.

@@ -1117,7 +1117,8 @@ az_iot_su_error_action az_iot_su__classify_error(
   /* The originating string code is the most precise signal when present. */
   if (error_code != NULL && error_code[0] != '\0')
   {
-    if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0)
+    if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0
+        || strcmp(error_code, "UPDATE_ACCOUNT_ACCESS_DENIED") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_PROCEED;
     }
@@ -1125,10 +1126,6 @@ az_iot_su_error_action az_iot_su__classify_error(
         || strcmp(error_code, "UNKNOWN_AGENT_INFO_VERSION") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
-    }
-    if (strcmp(error_code, "OUTDATED_SERVICE_CONFIG") == 0)
-    {
-      return AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG;
     }
     if (strcmp(error_code, "UPSTREAM_UNAVAILABLE") == 0
         || strcmp(error_code, "INTERNAL_SERVER_ERROR") == 0)
@@ -1147,13 +1144,22 @@ az_iot_su_error_action az_iot_su__classify_error(
     }
     /* Both sides of the 400000 bucket. Neither can be fixed by resending the
      * same request: the device is not onboarded, or the workflow no longer
-     * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
+     * exists. Not reported as delivered -- that would claim a delivery
      * that never happened. */
     if (strcmp(error_code, "INVALID_REQUEST") == 0
         || strcmp(error_code, "UNSUPPORTED_API_VERSION") == 0
         || strcmp(error_code, "UNSUPPORTED_AGENT_PROFILE") == 0
         || strcmp(error_code, "INVALID_COMPATIBILITY_PROPERTIES") == 0
         || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
+    {
+      return AZ_IOT_SU_ERROR_ACTION_FATAL;
+    }
+    /* Not retried unchanged: operator action (device-class quota, access) or
+     * provisioning must change first. DEVICE_NOT_PROVISIONED clears on a later
+     * scheduled check once the device is provisioned. */
+    if (strcmp(error_code, "DEVICE_NOT_PROVISIONED") == 0
+        || strcmp(error_code, "MAX_DEVICE_CLASSES_EXCEEDED") == 0
+        || strcmp(error_code, "FORBIDDEN") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
     }
@@ -1192,24 +1198,21 @@ az_iot_su_error_action az_iot_su__classify_error(
   switch (status)
   {
     case SU_ERROR_STATUS_BAD_REQUEST:
-      /* One 400 IS recoverable, which its status does not say. The whole
-       * resend/re-sync family shares that code, and resending the full
-       * agentInfo also drops the stale service-config ETag, so one action
-       * covers every member. Every other 400 is a malformed request. */
+      /* One 400 IS recoverable, which its status does not say: the agentInfo
+       * resend family shares that code. Every other 400 is a malformed
+       * request. */
       return (numeric_code == AZ_IOT_SU_ERR_AGENT_INFO_RESEND_REQUIRED)
           ? AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO
           : AZ_IOT_SU_ERROR_ACTION_FATAL;
 
     case SU_ERROR_STATUS_CONFLICT:
-      /* The one documented 409 is shared by two conditions needing OPPOSITE
-       * handling: a fetch means the account is not linked (proceed, do not
-       * retry); a report means a terminal result is already recorded (treat as
-       * delivered). Without the string code, the operation in flight is what
-       * disambiguates them. An undocumented 409 is not assumed to mean either. */
-      if (numeric_code == AZ_IOT_SU_ERR_GENERIC_CONFLICT)
+      /* No 409 is a delivered report: an identical report is a 200. On a fetch
+       * the untyped 409000 is most likely the update account (proceed: it must
+       * not block provisioning); on a report it is a rejection. Neither is
+       * retried unchanged. */
+      if (numeric_code == AZ_IOT_SU_ERR_GENERIC_CONFLICT && operation != AZ_IOT_SU_OP_REPORT_STATUS)
       {
-        return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED
-                                                         : AZ_IOT_SU_ERROR_ACTION_PROCEED;
+        return AZ_IOT_SU_ERROR_ACTION_PROCEED;
       }
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
 
