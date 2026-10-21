@@ -71,6 +71,9 @@
 #define SAMPLE_ERR_CURL 0x200 /* + CURLcode */
 #define SAMPLE_ERR_HTTP 0x1000 /* + HTTP status */
 
+/** @brief A transfer slower than 1 byte/s for this long fails (CURLE_OPERATION_TIMEDOUT). */
+#define SAMPLE_DOWNLOAD_STALL_S 60L
+
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
 {
@@ -93,6 +96,11 @@ typedef struct
   FILE* file;
   char path[512];
   curl_off_t last_reported;
+
+  /* The file the hash check is reading, kept open across sequential reads. */
+  FILE* reader;
+  char reader_path[512];
+  size_t reader_offset;
 
   /* Install in progress: chunks done for the current step. */
   long install_done;
@@ -118,6 +126,22 @@ static void file_path(
       d->path_prefix,
       (int)az_span_size(file->id),
       (const char*)az_span_ptr(file->id));
+}
+
+/** @brief Close the hash check's reader, if open. */
+static void reader_close(download_context* d)
+{
+  if (d->reader != NULL)
+  {
+    (void)fclose(d->reader);
+    d->reader = NULL;
+  }
+}
+
+/** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's. */
+static size_t download_write(char* data, size_t size, size_t count, void* user_data)
+{
+  return fwrite(data, 1, size * count, (FILE*)user_data);
 }
 
 /** @brief Stop the transfer in progress and close its file. */
@@ -163,6 +187,7 @@ static int32_t download_file(
     url_text[az_span_size(url)] = '\0';
 
     file_path(d, file, d->path, sizeof(d->path));
+    reader_close(d);
     d->file = sample_fopen_private(d->path);
     if (d->file == NULL)
     {
@@ -175,13 +200,20 @@ static int32_t download_file(
       return SAMPLE_ERR_CURL;
     }
     (void)curl_easy_setopt(d->easy, CURLOPT_URL, url_text);
-    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEDATA, d->file); /* default writer: fwrite */
+    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEFUNCTION, download_write);
+    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEDATA, d->file);
     (void)curl_easy_setopt(d->easy, CURLOPT_FOLLOWLOCATION, 1L);
     (void)curl_easy_setopt(d->easy, CURLOPT_FAILONERROR, 1L);
-    /* The download goes through the same proxy as the MQTT sessions. */
+    /* A stalled transfer fails rather than holding the workflow forever. */
+    (void)curl_easy_setopt(d->easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    (void)curl_easy_setopt(d->easy, CURLOPT_LOW_SPEED_TIME, SAMPLE_DOWNLOAD_STALL_S);
+    (void)curl_easy_setopt(d->easy, CURLOPT_CONNECTTIMEOUT, SAMPLE_DOWNLOAD_STALL_S);
+    /* The download takes the same route as the MQTT sessions: the proxy set, or
+     * none ("" disables it), whatever the proxy environment variables say. */
+    (void)curl_easy_setopt(d->easy, CURLOPT_PROXY, d->proxy_url != NULL ? d->proxy_url : "");
+    (void)curl_easy_setopt(d->easy, CURLOPT_NOPROXY, "");
     if (d->proxy_url != NULL)
     {
-      (void)curl_easy_setopt(d->easy, CURLOPT_PROXY, d->proxy_url);
       if (d->proxy_username != NULL)
       {
         (void)curl_easy_setopt(d->easy, CURLOPT_PROXYUSERNAME, d->proxy_username);
@@ -247,26 +279,38 @@ static int32_t download_read_file(
   download_context* d = (download_context*)user_ctx;
   char path[512];
   file_path(d, file, path, sizeof(path));
-  FILE* f = fopen(path, "rb");
-  if (f == NULL)
+  /* The SDK reads sequentially: reopen only for another file or offset. */
+  if (d->reader != NULL && (strcmp(path, d->reader_path) != 0 || offset != d->reader_offset))
   {
-    return SAMPLE_ERR_FILE_OPEN;
+    reader_close(d);
   }
-  int32_t rc = AZ_IOT_SU_RESULT_SUCCESS;
-  if (offset > (size_t)LONG_MAX || fseek(f, (long)offset, SEEK_SET) != 0)
+  if (d->reader == NULL)
   {
-    rc = SAMPLE_ERR_FILE_OPEN;
-  }
-  else
-  {
-    *out_read = fread(buffer, 1, buffer_size, f);
-    if (*out_read < buffer_size && ferror(f))
+    d->reader = fopen(path, "rb");
+    if (d->reader == NULL)
     {
-      rc = SAMPLE_ERR_FILE_OPEN;
+      return SAMPLE_ERR_FILE_OPEN;
+    }
+    (void)snprintf(d->reader_path, sizeof(d->reader_path), "%s", path);
+    if (offset > (size_t)LONG_MAX || fseek(d->reader, (long)offset, SEEK_SET) != 0)
+    {
+      reader_close(d);
+      return SAMPLE_ERR_FILE_OPEN;
     }
   }
-  (void)fclose(f);
-  return rc;
+  *out_read = fread(buffer, 1, buffer_size, d->reader);
+  if (*out_read < buffer_size)
+  {
+    int failed = ferror(d->reader);
+    reader_close(d);
+    if (failed)
+    {
+      return SAMPLE_ERR_FILE_OPEN;
+    }
+    return AZ_IOT_SU_RESULT_SUCCESS;
+  }
+  d->reader_offset = offset + *out_read;
+  return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
 /** @brief is_installed_fn: the offer is already installed when its id matches. */
@@ -309,7 +353,7 @@ static int32_t download_install(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-/** @brief apply_fn: simulated; records the applied update id. */
+/** @brief apply_fn: simulated; the last step records the update as installed. */
 static int32_t download_apply(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step_index,
@@ -317,6 +361,11 @@ static int32_t download_apply(
 {
   download_context* d = (download_context*)user_ctx;
   printf("Applying step %u (simulated)\n", step_index);
+  /* Later steps are downloaded and applied separately, and may still fail. */
+  if (step_index + 1u < manifest->instructions.steps_count)
+  {
+    return AZ_IOT_SU_RESULT_SUCCESS;
+  }
   (void)snprintf(
       d->installed_provider,
       sizeof(d->installed_provider),
@@ -429,6 +478,14 @@ int main(void)
 
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
   {
+    return 1;
+  }
+  /* Without an asynchronous resolver, curl_multi_perform() blocks on DNS. */
+  const curl_version_info_data* curl_info = curl_version_info(CURLVERSION_NOW);
+  if (curl_info == NULL || (curl_info->features & CURL_VERSION_ASYNCHDNS) == 0)
+  {
+    fprintf(stderr, "libcurl without asynchronous DNS: the download would block do_work().\n");
+    curl_global_cleanup();
     return 1;
   }
 
@@ -644,6 +701,7 @@ cleanup:
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
   download_reset(&dl);
+  reader_close(&dl);
   if (dl.multi != NULL)
   {
     (void)curl_multi_cleanup(dl.multi);

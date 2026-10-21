@@ -15,8 +15,13 @@ on the device changes.
 - Target platforms: **Linux** (and Windows when CMake finds libcurl).
 - `download_fn` returns `AZ_IOT_SU_RESULT_IN_PROGRESS` until the transfer ends, so
   `do_work()` never blocks on the network.
-- `read_file_fn` streams the downloaded file back for the SDK's hash check.
-- One proxy setting (`AZ_IOT_PROXY_*`) for both `copts.proxy` and the download.
+- `read_file_fn` streams the downloaded file back for the SDK's hash check, keeping it open
+  across sequential reads.
+- One proxy setting (`AZ_IOT_PROXY_*`) for both `copts.proxy` and the download; libcurl's
+  proxy environment variables are overridden.
+- A transfer that stalls (under 1 byte/s for 60 s) or cannot connect within 60 s fails.
+- Requires libcurl with asynchronous DNS (`AsynchDNS` in `curl --version`); without it the
+  sample exits.
 - `install_fn` works in chunks (`SAMPLE_INSTALL_CHUNKS` calls per step), returning
   `AZ_IOT_SU_RESULT_IN_PROGRESS` between them.
 - Device failure codes from 0x100 up, so they never read as an `AZ_IOT_SU_RESULT_*`
@@ -31,7 +36,7 @@ on the device changes.
 | Connection, update check, manifest verification, status reports | **Real** |
 | `download_fn` | **Real**, libcurl multi interface, to `SAMPLE_DOWNLOAD_PREFIX<file id>` |
 | `read_file_fn` | **Real**, reads the downloaded file for the SHA-256 check |
-| `install_fn` / `apply_fn` | **Simulated**, log only; apply records the update as installed |
+| `install_fn` / `apply_fn` | **Simulated**, log only; applying the last step records the update as installed |
 | `is_installed_fn` | "Already installed" for an update whose id equals the installed one |
 
 The update's import manifest must declare compatibility `manufacturer`/`model` equal to
