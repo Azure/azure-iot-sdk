@@ -201,8 +201,11 @@ static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state
   (void)state;
   // Five fields of 65,000 bytes (each under the MQTT limit): more than the send buffer.
   static char text[65001];
+  if (5u * (sizeof(text) - 1) <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE)
+  {
+    skip(); // A send buffer this large holds any CONNECT.
+  }
   memset(text, 'a', sizeof(text) - 1);
-  assert_true(5u * (sizeof(text) - 1) > AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
   az_iot_mqtt_connect_options o = valid_connect();
   o.client_id = text;
   o.username = text;
