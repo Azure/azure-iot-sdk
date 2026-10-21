@@ -114,21 +114,54 @@ static az_result _setup_failure(_tls_transport* transport, DWORD err)
 
 // ──────────────────────── Trust ──────────────────────────────
 
-/** @brief Read @p path (PEM or DER, up to 64 KiB) into @p der_out as DER. */
-static az_result _read_cert_file(
-    _tls_transport* transport,
-    az_span path,
-    uint8_t* der_out,
-    DWORD der_capacity,
-    DWORD* out_der_len)
+/** @brief Offset of @p needle in @p hay[0, @p hay_len), or -1. */
+static int32_t _find(char const* hay, int32_t hay_len, char const* needle)
+{
+  int32_t const n = (int32_t)strlen(needle);
+  for (int32_t i = 0; i + n <= hay_len; i++)
+  {
+    if (memcmp(hay + i, needle, (size_t)n) == 0)
+    {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** @brief Add DER certificate @p der to @p store. */
+static az_result _add_der(_tls_transport* transport, HCERTSTORE store, BYTE const* der, DWORD len)
+{
+  if (!CertAddEncodedCertificateToStore(
+          store,
+          X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+          der,
+          len,
+          CERT_STORE_ADD_REPLACE_EXISTING,
+          NULL))
+  {
+    return _setup_failure(transport, GetLastError());
+  }
+  return AZ_OK;
+}
+
+#define _PEM_BEGIN "-----BEGIN CERTIFICATE-----"
+#define _PEM_END "-----END CERTIFICATE-----"
+/** @brief Largest certificate, as PEM text and as DER. */
+#define _PEM_MAX (32 * 1024)
+#define _DER_MAX (24 * 1024)
+
+/**
+ * @brief Add every certificate in @p path to @p store: each CERTIFICATE block of a PEM file (a
+ * bundle of any length, read in pieces), or the single certificate of a DER file.
+ */
+static az_result _add_cert_file(_tls_transport* transport, az_span path, HCERTSTORE store)
 {
   char path_str[260];
-  az_result const rc = _span_to_cstr(path, path_str, (int32_t)sizeof(path_str));
+  az_result rc = _span_to_cstr(path, path_str, (int32_t)sizeof(path_str));
   if (az_result_failed(rc))
   {
     return rc;
   }
-
   HANDLE h = CreateFileA(
       path_str, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (h == INVALID_HANDLE_VALUE)
@@ -136,48 +169,95 @@ static az_result _read_cert_file(
     return _setup_failure(transport, GetLastError());
   }
 
-  LARGE_INTEGER file_size;
-  BOOL const size_ok = GetFileSizeEx(h, &file_size);
-  if (!size_ok || file_size.QuadPart <= 0 || file_size.QuadPart > 64 * 1024)
+  char text[_PEM_MAX];
+  BYTE der[_DER_MAX];
+  int32_t len = 0;
+  int32_t added = 0;
+  bool eof = false;
+  bool pem = false;
+  rc = AZ_OK;
+  while (az_result_succeeded(rc))
   {
-    DWORD const err = size_ok ? ERROR_INVALID_DATA : GetLastError(); // Empty or over 64 KiB.
-    CloseHandle(h);
-    return _setup_failure(transport, err);
-  }
-
-  DWORD const file_len = (DWORD)file_size.QuadPart;
-  char file_buf[(64 * 1024) + 1];
-  DWORD read_bytes = 0;
-  BOOL const ok = ReadFile(h, file_buf, file_len, &read_bytes, NULL);
-  DWORD const read_error = ok ? ERROR_HANDLE_EOF : GetLastError(); // Short read: EOF.
-  CloseHandle(h);
-  if (!ok || read_bytes != file_len)
-  {
-    return _setup_failure(transport, read_error);
-  }
-  file_buf[file_len] = '\0';
-
-  if (strstr(file_buf, "-----BEGIN CERTIFICATE-----") != NULL)
-  {
-    DWORD decoded_len = der_capacity;
-    if (!CryptStringToBinaryA(
-            file_buf, file_len, CRYPT_STRING_BASE64HEADER, der_out, &decoded_len, NULL, NULL))
+    if (!eof && len < (int32_t)sizeof(text))
     {
-      return _setup_failure(transport, GetLastError());
+      DWORD got = 0;
+      if (!ReadFile(h, text + len, (DWORD)((int32_t)sizeof(text) - len), &got, NULL))
+      {
+        rc = _setup_failure(transport, GetLastError());
+        break;
+      }
+      eof = got == 0;
+      len += (int32_t)got;
     }
-    *out_der_len = decoded_len;
-    return AZ_OK;
+    int32_t const begin = _find(text, len, _PEM_BEGIN);
+    if (begin < 0)
+    {
+      if (!pem && added == 0 && eof)
+      {
+        // No PEM block anywhere: a DER file, which must fit in one read.
+        if (len == 0 || len > (int32_t)sizeof(der))
+        {
+          rc = _setup_failure(transport, ERROR_INVALID_DATA);
+          break;
+        }
+        memcpy(der, text, (size_t)len);
+        rc = _add_der(transport, store, der, (DWORD)len);
+        added += az_result_succeeded(rc) ? 1 : 0;
+        break;
+      }
+      if (eof)
+      {
+        break;
+      }
+      // Keep a tail that may hold the start of a marker; a DER file is decided at its end.
+      int32_t const keep = pem ? (int32_t)sizeof(_PEM_BEGIN) - 2 : len;
+      if (pem && len > keep)
+      {
+        memmove(text, text + len - keep, (size_t)keep);
+        len = keep;
+      }
+      else if (!pem && len == (int32_t)sizeof(text))
+      {
+        pem = true; // Too large for DER: only PEM is accepted from here on.
+      }
+      continue;
+    }
+    pem = true;
+    int32_t const end_at = _find(text + begin, len - begin, _PEM_END);
+    if (end_at < 0)
+    {
+      if (eof || (begin == 0 && len == (int32_t)sizeof(text)))
+      {
+        rc = _setup_failure(transport, ERROR_INVALID_DATA); // Truncated, or over _PEM_MAX.
+        break;
+      }
+      memmove(text, text + begin, (size_t)(len - begin));
+      len -= begin;
+      continue;
+    }
+    int32_t const block_len = end_at + (int32_t)sizeof(_PEM_END) - 1;
+    DWORD der_len = (DWORD)sizeof(der);
+    if (!CryptStringToBinaryA(
+            text + begin, (DWORD)block_len, CRYPT_STRING_BASE64HEADER, der, &der_len, NULL, NULL))
+    {
+      rc = _setup_failure(transport, GetLastError());
+      break;
+    }
+    rc = _add_der(transport, store, der, der_len);
+    added++;
+    int32_t const consumed = begin + block_len;
+    memmove(text, text + consumed, (size_t)(len - consumed));
+    len -= consumed;
   }
-  if (file_len > der_capacity)
+  CloseHandle(h);
+  if (az_result_succeeded(rc) && added == 0)
   {
-    return AZ_ERROR_NOT_ENOUGH_SPACE;
+    rc = _setup_failure(transport, ERROR_INVALID_DATA);
   }
-  memcpy(der_out, file_buf, file_len);
-  *out_der_len = file_len;
-  return AZ_OK;
+  return rc;
 }
 
-/** @brief A store with the CA in @p ca_cert_path (*@p out_store NULL if none given). */
+/** @brief A store with the CAs in @p ca_cert_path (*@p out_store NULL if none given). */
 static az_result _build_custom_root(
     _tls_transport* transport,
     az_span ca_cert_path,
@@ -189,31 +269,17 @@ static az_result _build_custom_root(
     return AZ_OK;
   }
 
-  uint8_t der[64 * 1024];
-  DWORD der_len = 0;
-  az_result const rc = _read_cert_file(transport, ca_cert_path, der, (DWORD)sizeof(der), &der_len);
-  if (az_result_failed(rc))
-  {
-    return rc;
-  }
-
   HCERTSTORE store = CertOpenStore(
       CERT_STORE_PROV_MEMORY, X509_ASN_ENCODING, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
   if (store == NULL)
   {
     return _setup_failure(transport, GetLastError());
   }
-  if (!CertAddEncodedCertificateToStore(
-          store,
-          X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-          der,
-          der_len,
-          CERT_STORE_ADD_REPLACE_EXISTING,
-          NULL))
+  az_result const rc = _add_cert_file(transport, ca_cert_path, store);
+  if (az_result_failed(rc))
   {
-    DWORD const err = GetLastError();
     CertCloseStore(store, 0);
-    return _setup_failure(transport, err);
+    return rc;
   }
   *out_store = store;
   return AZ_OK;

@@ -87,9 +87,10 @@ typedef az_result (*az_mqtt_tls_configure_fn)(void* native_config, void* context
 typedef struct
 {
   /**
-   * @brief Path to CA certificate file (PEM). With neither this nor
-   * ca_cert_pem, OpenSSL and Schannel use the system store; mbedTLS has none
-   * and needs `configure` to install trust (else AZ_MQTT_ERROR_NOT_SUPPORTED).
+   * @brief Path to a CA file: one or more PEM certificates (Schannel: or one DER).
+   * With neither this nor ca_cert_pem, OpenSSL and Schannel use the system
+   * store; mbedTLS has none and needs `configure` to install trust (else
+   * AZ_MQTT_ERROR_NOT_SUPPORTED).
    */
   az_span ca_cert_path;
 

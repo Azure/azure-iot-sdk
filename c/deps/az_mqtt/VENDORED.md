@@ -13,6 +13,10 @@ MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/
     reader) (ewertons/az_mqtt#44, merged in `d2e8a2b`).
   - PUBLISH sizes summed in 64 bits, oversized Topic Names and non-advancing readers refused
     (ewertons/az_mqtt#45, merged in `2f470cb`).
+- Patched with this upstream change, not yet merged (files `src/platform/tls_schannel.c`,
+  `inc/az_mqtt/az_mqtt_transport.h`); update the commit here when it is:
+  - Schannel trusts every certificate of a CA file, of any size (ewertons/az_mqtt#46,
+    commit `3a7c079`).
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`.
 - Not imported: samples, tests, CI, and the `deps/azure-sdk-for-c` submodule. The SDK's
   azure-sdk-for-c is used instead, and samples and tests are off when built from here.
