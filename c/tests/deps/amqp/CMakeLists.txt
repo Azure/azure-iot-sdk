@@ -82,5 +82,7 @@ else()
         AZ_AMQP_SAMPLE_USE_OPENSSL
         _DEFAULT_SOURCE
         _POSIX_C_SOURCE=200112L
+        # Apple hides SO_NOSIGPIPE under _POSIX_C_SOURCE; the transport needs it there.
+        $<$<PLATFORM_ID:Darwin>:_DARWIN_C_SOURCE>
     )
 endif()
