@@ -1383,6 +1383,82 @@ jobs:
           path: c/build/linux-gcc-coverage/coverage/
           if-no-files-found: warn
 
+  # ---------------------------------------------------------------------------
+  # ESP-IDF builds: one job per ESP32 sample, target and profile, each through
+  # eng/esp-idf-build.sh (fails on any compiler warning). Build checks only:
+  # secure profiles are signed with a key generated per build and discarded.
+  # ---------------------------------------------------------------------------
+  esp-idf:
+    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    container:
+      # espressif/idf:v6.0, pinned by digest.
+      image: espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [ software_update/esp32 ]
+        target: [ esp32, esp32c3, esp32s3, esp32c6 ]
+        profile: [ default, secure ]
+        include:
+          - sample: software_update/esp32
+            target: esp32
+            profile: secure_esp32_legacy
+          - sample: software_update/esp32
+            target: esp32
+            profile: secure_virtual_efuse
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # The ESP-IDF component builds azure-sdk-for-c from c/deps.
+          submodules: true
+      - name: Build
+        env:
+          SAMPLE: ${{ matrix.sample }}
+          TARGET: ${{ matrix.target }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          # The container runs as root over a runner-owned checkout; ESP-IDF
+          # runs git (app version) in it.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh" > /dev/null
+          bash eng/esp-idf-build.sh "samples/$SAMPLE" "$TARGET" "$PROFILE"
+
+  # Single check name for the esp-idf matrix, which reports one check per cell.
+  # Same rules as coverage-gate below.
+  esp-idf-gate:
+    name: esp-idf-gate
+    needs: [changes, esp-idf]
+    if: always()
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check esp-idf job outcome
+        env:
+          changes_result: ${{ needs.changes.result }}
+          esp_idf_result: ${{ needs.esp-idf.result }}
+        run: |
+          echo "changes: $changes_result"
+          echo "esp-idf: $esp_idf_result"
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::esp-idf gate: change detection did not succeed ($changes_result)"
+            exit 1
+          fi
+          if [ "$esp_idf_result" = "success" ] || [ "$esp_idf_result" = "skipped" ]; then
+            exit 0
+          fi
+          echo "::error::esp-idf gate failed (esp-idf: $esp_idf_result)"
+          exit 1
+
   # Single stable check name for branch-protection to reference. It reports on
   # every pull request, passes when the coverage job legitimately did not need
   # to run, and fails whenever the coverage job failed. `if: always()` is what
