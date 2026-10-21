@@ -94,19 +94,30 @@ typedef struct
    */
   az_span ca_cert_path;
 
-  /** @brief Client certificate file (PEM) for mutual TLS. */
+  /**
+   * @brief Client certificate file (PEM), then any chain certificates, for mutual TLS.
+   * Schannel: TLS 1.2 only (the server is validated before the certificate is sent).
+   * Schannel sends only chain certificates it finds in the system stores: the chain certificates
+   * given (not self-issued ones) are added to the current user's intermediate CA store (CA), and
+   * stay there.
+   */
   az_span client_cert_path;
 
-  /** @brief Client private key file (PEM) for mutual TLS. */
+  /**
+   * @brief Client private key file (PEM) for mutual TLS.
+   * Schannel: unencrypted PKCS#8, PKCS#1 (RSA) or SEC1 (EC: P-256, P-384, P-521), up to 32 KiB.
+   * Schannel takes persisted keys only: the key is imported into the user's CNG key store
+   * (Microsoft Software Key Storage Provider) for each connection, and deleted when it closes.
+   */
   az_span client_key_path;
 
-  /** @brief CA certificates, PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief CA certificates, PEM in memory. */
   az_span ca_cert_pem;
 
-  /** @brief Client certificate (chain), PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief Client certificate, then any chain certificates, PEM in memory; as client_cert_path. */
   az_span client_cert_pem;
 
-  /** @brief Client private key, PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief Client private key, PEM in memory; Schannel: as client_key_path. */
   az_span client_key_pem;
 
   /**
