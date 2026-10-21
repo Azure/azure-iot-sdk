@@ -39,23 +39,27 @@ fi
 # in either clang-format shape:
 # - a name followed by "(" on a line that starts at column 0, after its return
 #   type and any qualifiers or macros (AZ_NODISCARD ...);
-# - a signature split over several lines, whose body "{" stands alone.
+# - a signature, at any indentation and possibly split over lines, whose body
+#   "{" stands alone at the same indentation (control statements excluded).
 mapfile -t first_party < <(
     {
         # shellcheck disable=SC2016 # $0 and friends belong to awk
         find "${root_dir}/src" "${root_dir}/adapters" \( -name '*.c' -o -name '*.h' \) -print0 |
             xargs -0 awk '
-                /^\{[[:space:]]*$/ {
-                    if (sig != "" && sig !~ /=/ && match(sig, /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)) {
+                function indent_of(s) { match(s, /^[ \t]*/); return RLENGTH }
+                /^[ \t]*\{[ \t]*$/ {
+                    if (sig != "" && indent_of($0) == sig_indent && sig !~ /=/ \
+                        && match(sig, /[A-Za-z_][A-Za-z0-9_]*[ \t]*\(/)) {
                         name = substr(sig, RSTART, RLENGTH)
-                        sub(/[[:space:]]*\($/, "", name)
+                        sub(/[ \t]*\($/, "", name)
                         print name
                     }
                     sig = ""
                     next
                 }
-                /^[[:space:]]*$/ || /^#/ || /^\// || /;[[:space:]]*$/ || /^\}/ { sig = ""; next }
-                /^[A-Za-z_]/ { sig = (sig == "" ? $0 : sig " " $0); next }
+                /^[ \t]*$/ || /^[ \t]*#/ || /^[ \t]*\// || /^[ \t]*\*/ || /;[ \t]*$/ || /^[ \t]*\}/ { sig = ""; next }
+                /^[ \t]*(if|else|for|while|switch|do|return|case|default)([^A-Za-z0-9_]|$)/ { sig = ""; next }
+                sig == "" && /^[ \t]*[A-Za-z_]/ { sig = $0; sig_indent = indent_of($0); next }
                 sig != "" { sig = sig " " $0 }'
         grep -rhoE --include='*.c' --include='*.h' \
             '^([A-Za-z_][A-Za-z0-9_]*[ *]+)+\**[A-Za-z_][A-Za-z0-9_]*\(' \
