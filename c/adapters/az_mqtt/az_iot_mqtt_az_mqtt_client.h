@@ -486,7 +486,8 @@ static void _azm_emit_publish_ack(_azm_client* m, _AZM(ack_data) const* ack)
     event.status = AZ_IOT_ERR_MQTT;
   }
 #if AZ_IOT_AZ_MQTT_V == 5
-  if (az_span_size(ack->reason_string) > 0)
+  // NULL: no Reason String. Non-NULL with length 0: present and empty.
+  if (az_span_ptr(ack->reason_string) != NULL)
   {
     event.reason_string = (char const*)az_span_ptr(ack->reason_string);
     event.reason_string_len = (size_t)az_span_size(ack->reason_string);

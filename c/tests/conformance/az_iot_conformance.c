@@ -2644,6 +2644,13 @@ static void a_refused_publish_is_reported(void** state)
   assert_refused_publish_is_reported(0x87, "no topic template allows this topic");
 }
 
+/* A present but empty Reason String is reported as such, not as absent. */
+static void a_refused_publish_with_an_empty_reason_string_is_reported(void** state)
+{
+  (void)state;
+  assert_refused_publish_is_reported(0x87, "");
+}
+
 /* Quota exceeded, without a Reason String: AZ_IOT_ERR_BUSY, so the caller retries later. */
 static void a_publish_over_quota_is_reported_as_busy(void** state)
 {
@@ -4292,6 +4299,7 @@ int az_iot_conformance_run_with_options(
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(server_disconnect_is_reported),
             cmocka_unit_test(a_refused_publish_is_reported),
+            cmocka_unit_test(a_refused_publish_with_an_empty_reason_string_is_reported),
             cmocka_unit_test(a_publish_over_quota_is_reported_as_busy),
             cmocka_unit_test(v5_message_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_properties_from_the_server_are_surfaced_intact),

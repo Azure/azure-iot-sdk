@@ -416,10 +416,11 @@ extern "C"
      * conformant. */
     int32_t transport_code;
     /* AZ_IOT_MQTT_EVT_PUBLISH_ACK, MQTT 5: the PUBACK's Reason String, verbatim. UTF-8, not
-     * NUL-terminated, valid only during the callback. NULL, length 0: the PUBACK carried none.
-     * Unused for other event kinds. An adapter reports every Reason String it receives, except
-     * for an ack it must hold past the receive buffer's lifetime. Diagnostics: never branch on
-     * it. */
+     * NUL-terminated, valid only during the callback. NULL: the PUBACK carried none; non-NULL with
+     * length 0: present and empty. Unused for other event kinds. An adapter must report it for a
+     * PUBACK reason code of 0x80 or above, except for an ack it holds past the receive buffer's
+     * lifetime; below 0x80 it may omit it (Paho's API does not expose it). Diagnostics: never
+     * branch on it. */
     const char* reason_string;
     size_t reason_string_len;
   } az_iot_mqtt_event;

@@ -1050,7 +1050,8 @@ extern "C"
      * 3.1.1, the session ended first, or an adapter that does not report one). */
     int32_t reason_code;
     /** The hub's PUBACK Reason String: UTF-8, not NUL-terminated, valid only during the callback.
-     * NULL: none. For diagnostics; its text is not a stable interface. */
+     * NULL: none, or not reported (an adapter need report it only for a refusal). Non-NULL with
+     * length 0: present and empty. For diagnostics; its text is not a stable interface. */
     const char* reason_string;
     /** Bytes at @p reason_string. */
     size_t reason_string_len;
