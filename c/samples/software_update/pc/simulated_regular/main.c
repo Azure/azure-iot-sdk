@@ -462,9 +462,12 @@ int main(void)
         stderr,
         "Device properties are invalid or too long for the %zu-byte cache. Need "
         "1-%d compatibility properties and a nonempty installed provider, name and "
-        "version.\n",
+        "version. Strings must fit AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE (%d) and "
+        "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE (%d) bytes; see docs/client-configuration.md.\n",
         sizeof(state.dp_buffer),
-        AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES);
+        AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES,
+        AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE,
+        AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE);
     sample_state_destroy(&state);
     return 1;
   }

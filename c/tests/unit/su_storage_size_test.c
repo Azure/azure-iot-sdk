@@ -1,0 +1,393 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+
+/* Device-property storage limits through the public API. Built twice (tests/CMakeLists.txt):
+ * with the default AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE and AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE,
+ * and with both enlarged or reduced for the SDK sources and the test alike. Expectations derive
+ * from the macros, so every build checks the same boundaries. */
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <cmocka.h>
+
+#include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_su.h"
+
+#include "support/test_provider.h"
+#include "su_channel_internal.h"
+#include "su_protocol_internal.h"
+
+#define COMPAT_SIZE ((size_t)AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE)
+#define INSTALLED_SIZE ((size_t)AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE)
+
+/* Three custom properties with 32-byte names and 64-byte values: 3 * (32 + 1 + 64 + 1). */
+#define EXAMPLE_COMPAT_NEED 294u
+
+typedef struct
+{
+  az_iot_connection_client conn;
+  az_iot_su_client su;
+  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+  char names[3][33];
+  char values[3][65];
+  az_iot_su_custom_property custom[3];
+  char long_value[AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + 1];
+  char long_provider[AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE + 1];
+} fixture;
+
+static char g_last_error[AZ_IOT_LOG_MESSAGE_MAX];
+
+static void capture_error(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)user_ctx;
+  (void)component;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR)
+  {
+    snprintf(g_last_error, sizeof(g_last_error), "%s", msg);
+  }
+}
+
+static az_iot_result stub_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
+{
+  (void)self;
+  (void)ctx;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
+{
+  (void)self;
+  (void)ctx;
+  (void)data;
+  (void)len;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  memset(out, 0, AZ_IOT_SHA256_SIZE);
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_verify_rs256(
+    const az_iot_crypto* self,
+    const uint8_t* modulus,
+    size_t modulus_len,
+    const uint8_t* exponent,
+    size_t exponent_len,
+    const uint8_t* data,
+    size_t data_len,
+    const uint8_t* signature,
+    size_t signature_len)
+{
+  (void)self;
+  (void)modulus;
+  (void)modulus_len;
+  (void)exponent;
+  (void)exponent_len;
+  (void)data;
+  (void)data_len;
+  (void)signature;
+  (void)signature_len;
+  return AZ_IOT_ERR_AUTH;
+}
+
+static const az_iot_crypto k_stub_crypto = {
+  .version = AZ_IOT_CRYPTO_VERSION,
+  .sha256_init = stub_sha256_init,
+  .sha256_update = stub_sha256_update,
+  .sha256_final = stub_sha256_final,
+  .verify_rs256 = stub_verify_rs256,
+};
+
+static const az_iot_su_platform_hooks k_hooks = { 0 };
+
+static int setup(void** state)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+  az_iot_connection_client_options opts = { 0 };
+  opts.device_id = "ut-device";
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  opts.crypto = &k_stub_crypto;
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+
+  for (size_t i = 0; i < 3; ++i)
+  {
+    memset(fx->names[i], 'a' + (char)i, 32);
+    memset(fx->values[i], 'x', 64);
+    fx->custom[i] = (az_iot_su_custom_property){ fx->names[i], fx->values[i] };
+  }
+
+  static az_iot_log_sink sink = { capture_error, NULL, AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  g_last_error[0] = '\0';
+  *state = fx;
+  return 0;
+}
+
+static int teardown(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_log_set_global_sink(NULL);
+  az_iot_connection_client_deinit(&fx->conn);
+  free(fx);
+  return 0;
+}
+
+static az_iot_result init_client(fixture* fx, const az_iot_su_device_properties* dp)
+{
+  az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+  opts.hooks = &k_hooks;
+  opts.device_properties = dp;
+  opts.device_properties_buffer = fx->dp_buf;
+  opts.device_properties_buffer_size = sizeof(fx->dp_buf);
+  return az_iot_su_client_init(&fx->su, &fx->conn, &opts);
+}
+
+/* manufacturer of @p len bytes: it takes len + 1 bytes of compatibility storage. */
+static const char* manufacturer_of(fixture* fx, size_t len)
+{
+  memset(fx->long_value, 'm', len);
+  fx->long_value[len] = '\0';
+  return fx->long_value;
+}
+
+/* Provider of @p len bytes; with name "n" and version "v" the ID takes len + 5 bytes. */
+static const char* provider_of(fixture* fx, size_t len)
+{
+  memset(fx->long_provider, 'p', len);
+  fx->long_provider[len] = '\0';
+  return fx->long_provider;
+}
+
+static void defaults_cover_both_storages(void** state)
+{
+  (void)state;
+  assert_int_equal(AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, COMPAT_SIZE + INSTALLED_SIZE);
+#ifndef AZ_IOT_TEST_SU_STORAGE_OVERRIDDEN
+  assert_int_equal(COMPAT_SIZE, 256);
+  assert_int_equal(INSTALLED_SIZE, 192);
+#endif
+}
+
+/* Three 32-byte names with 64-byte values need 294 bytes: rejected by the default build, both
+ * at init and on replacement, and accepted by a build sized for them. */
+static void three_long_custom_properties_need_294_bytes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp
+      = { .custom_properties = fx->custom, .custom_properties_count = 3 };
+  bool fits = EXAMPLE_COMPAT_NEED <= COMPAT_SIZE;
+
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), fits ? EXAMPLE_COMPAT_NEED : 0);
+  az_iot_result r = init_client(fx, &dp);
+  if (fits)
+  {
+    assert_int_equal(r, AZ_IOT_OK);
+    az_iot_su_client_deinit(&fx->su);
+  }
+  else
+  {
+    assert_int_equal(r, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    assert_non_null(strstr(g_last_error, "need 294 bytes"));
+    assert_non_null(strstr(g_last_error, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE"));
+  }
+
+  az_iot_su_device_properties small = { .manufacturer = "m" };
+  assert_int_equal(init_client(fx, &small), AZ_IOT_OK);
+  g_last_error[0] = '\0';
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &dp),
+      fits ? AZ_IOT_OK : AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  if (!fits)
+  {
+    assert_non_null(strstr(g_last_error, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE"));
+    assert_string_equal(fx->su._internal.device_properties.manufacturer, "m");
+  }
+  az_iot_su_client_deinit(&fx->su);
+}
+
+/* Checks @p fit (exactly full) and @p over (one byte more) at init and on replacement. A
+ * rejected replacement keeps @p fit; the error log names @p macro and @p over_need. */
+static void check_boundary(
+    fixture* fx,
+    const az_iot_su_device_properties* fit,
+    const az_iot_su_device_properties* over,
+    size_t over_need,
+    const char* macro)
+{
+  char expected[96];
+  snprintf(expected, sizeof(expected), "need %lu bytes", (unsigned long)over_need);
+
+  assert_int_equal(az_iot_su_device_properties_buffer_size(over), 0);
+  g_last_error[0] = '\0';
+  assert_int_equal(init_client(fx, over), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_non_null(strstr(g_last_error, expected));
+  assert_non_null(strstr(g_last_error, macro));
+
+  assert_int_equal(init_client(fx, fit), AZ_IOT_OK);
+  size_t fit_size = az_iot_su_device_properties_buffer_size(fit);
+  assert_true(fit_size > 0);
+  uint8_t* saved = (uint8_t*)malloc(fit_size);
+  assert_non_null(saved);
+  memcpy(saved, fx->dp_buf, fit_size);
+  az_iot_su_device_properties kept = fx->su._internal.device_properties;
+
+  g_last_error[0] = '\0';
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, over), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_non_null(strstr(g_last_error, expected));
+  assert_non_null(strstr(g_last_error, macro));
+  assert_memory_equal(fx->dp_buf, saved, fit_size);
+  assert_memory_equal(&fx->su._internal.device_properties, &kept, sizeof(kept));
+
+  /* From a small set, the exact fit is accepted as a replacement too. */
+  az_iot_su_device_properties small = { .manufacturer = "m" };
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &small), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, fit), AZ_IOT_OK);
+  assert_memory_equal(fx->dp_buf, saved, fit_size);
+  free(saved);
+  az_iot_su_client_deinit(&fx->su);
+}
+
+static void compatibility_storage_exact_fit_and_one_over(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties fit = { .manufacturer = manufacturer_of(fx, COMPAT_SIZE - 1) };
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&fit), COMPAT_SIZE);
+  /* An empty model adds its NUL terminator: one byte over. */
+  az_iot_su_device_properties over = { .manufacturer = fit.manufacturer, .model = "" };
+  check_boundary(fx, &fit, &over, COMPAT_SIZE + 1, "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE");
+}
+
+static void installed_id_storage_exact_fit_and_one_over(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* provider + "n" + "v" with NUL terminators: INSTALLED_SIZE bytes. */
+  az_iot_su_device_properties fit = { .manufacturer = "m" };
+  fit.installed_update_id
+      = (az_iot_su_update_id_info){ provider_of(fx, INSTALLED_SIZE - 5), "n", "v" };
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&fit), 2 + INSTALLED_SIZE);
+  az_iot_su_device_properties over = fit;
+  over.installed_update_id.version = "vv";
+  check_boundary(fx, &fit, &over, INSTALLED_SIZE + 1, "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE");
+}
+
+/* Both storages full at once fill the default cache exactly. */
+static void the_default_cache_holds_both_storages_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { .manufacturer = manufacturer_of(fx, COMPAT_SIZE - 1) };
+  dp.installed_update_id
+      = (az_iot_su_update_id_info){ provider_of(fx, INSTALLED_SIZE - 5), "n", "v" };
+  assert_int_equal(
+      az_iot_su_device_properties_buffer_size(&dp), AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
+  assert_int_equal(init_client(fx, &dp), AZ_IOT_OK);
+  az_iot_su_client_deinit(&fx->su);
+}
+
+static void a_short_cache_is_logged(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { .manufacturer = "Contoso" };
+  az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+  opts.hooks = &k_hooks;
+  opts.device_properties = &dp;
+  opts.device_properties_buffer = fx->dp_buf;
+  opts.device_properties_buffer_size = az_iot_su_device_properties_buffer_size(&dp) - 1;
+  assert_int_equal(az_iot_su_client_init(&fx->su, &fx->conn, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_non_null(strstr(g_last_error, "device_properties_buffer holds 7 bytes"));
+  assert_non_null(strstr(g_last_error, "need 8"));
+}
+
+/* The largest status report fits the channel body at any storage size: the longest workflow ID,
+ * an installed or applied update ID filling the larger of its storage and
+ * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, every byte of both escaped, and every step failed. */
+static void the_largest_status_report_fits_the_channel_body(void** state)
+{
+  (void)state;
+  assert_true(AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE >= 2048);
+
+  char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+  memset(workflow_id, 0x01, sizeof(workflow_id) - 1);
+  workflow_id[sizeof(workflow_id) - 1] = '\0';
+
+  /* Three NUL-terminated parts filling id_size bytes: provider takes all but four. */
+  size_t id_size = INSTALLED_SIZE > AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE
+      ? INSTALLED_SIZE
+      : (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE;
+  char* provider = (char*)malloc(id_size - 4);
+  assert_non_null(provider);
+  memset(provider, 0x01, id_size - 5);
+  provider[id_size - 5] = '\0';
+  const az_iot_su_report_update_id installed = { provider, "\x01", "\x01" };
+
+  az_iot_su_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  memset(steps, 0, sizeof(steps));
+  for (int32_t i = 0; i < _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS; ++i)
+  {
+    steps[i].outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    steps[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+    steps[i].result_code = INT32_MIN;
+    steps[i].extended_result_code = (int32_t)0xFFFFFFFFu;
+  }
+  az_iot_su_report report = { 0 };
+  report.workflow_id = workflow_id;
+  report.installed_update_id = &installed;
+  report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+  report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+  report.result_code = INT32_MIN;
+  report.extended_result_codes = "ffffffff";
+  report.step_results = steps;
+  report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+
+  static uint8_t body[AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE];
+  size_t len = 0;
+  assert_int_equal(az_iot_su__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
+  assert_true(len > 0 && len <= sizeof(body));
+  free(provider);
+}
+
+int main(void)
+{
+  const struct CMUnitTest tests[] = {
+    cmocka_unit_test(defaults_cover_both_storages),
+    cmocka_unit_test(the_largest_status_report_fits_the_channel_body),
+    cmocka_unit_test_setup_teardown(three_long_custom_properties_need_294_bytes, setup, teardown),
+    cmocka_unit_test_setup_teardown(compatibility_storage_exact_fit_and_one_over, setup, teardown),
+    cmocka_unit_test_setup_teardown(installed_id_storage_exact_fit_and_one_over, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_default_cache_holds_both_storages_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_short_cache_is_logged, setup, teardown),
+  };
+  return cmocka_run_group_tests_name("su_storage_size", tests, NULL, NULL);
+}

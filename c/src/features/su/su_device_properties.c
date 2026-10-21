@@ -6,6 +6,7 @@
 
 #include "internal/su_device_properties_internal.h"
 #include "internal/span_writer.h"
+#include "internal/log_internal.h"
 
 az_iot_result az_iot_su__validate_compatibility_properties(
     const az_iot_su_custom_property* properties,
@@ -81,6 +82,35 @@ size_t az_iot_su__compatibility_properties(
   return count;
 }
 
+/** @brief Bytes @p value takes in packed storage: 0 if NULL, else strlen + 1. */
+static size_t packed_size(const char* value) { return value != NULL ? strlen(value) + 1 : 0; }
+
+/**
+ * @brief Fails, with an error log naming @p macro, if @p need exceeds @p capacity.
+ *
+ * @return AZ_IOT_OK if it fits; AZ_IOT_ERR_NOT_ENOUGH_SPACE if not.
+ */
+static az_iot_result check_storage(
+    size_t need,
+    size_t capacity,
+    const char* what,
+    const char* macro)
+{
+  if (need <= capacity)
+  {
+    return AZ_IOT_OK;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "%s strings need %lu bytes (NUL terminators included) but %s is %lu; "
+      "raise it for both the SDK and the application",
+      what,
+      (unsigned long)need,
+      macro,
+      (unsigned long)capacity);
+  return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+}
+
 static const char* pack_string(az_iot_span_writer* writer, char* strings, const char* value)
 {
   if (value == NULL)
@@ -120,6 +150,36 @@ az_iot_result az_iot_su__prepare_device_properties(
                                     properties->installed_update_id.version };
   r = az_iot_su__validate_installed_update_id(
       id.provider == NULL && id.name == NULL && id.version == NULL ? NULL : &id);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+
+  /* Strings are validated to at most AZ_IOT_SU_MAX_JSON_STRING_SIZE bytes, so these sums of at
+   * most 2 * AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES of them cannot overflow. */
+  size_t compatibility_need = 0;
+  for (size_t i = 0; i < count; ++i)
+  {
+    compatibility_need += packed_size(compatibility[i].value);
+  }
+  for (size_t i = 0; i < properties->custom_properties_count; ++i)
+  {
+    compatibility_need += packed_size(properties->custom_properties[i].name);
+  }
+  r = check_storage(
+      compatibility_need,
+      AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE,
+      "compatibility-property",
+      "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE");
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+  r = check_storage(
+      packed_size(id.provider) + packed_size(id.name) + packed_size(id.version),
+      AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE,
+      "installed-update-ID",
+      "AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE");
   if (r != AZ_IOT_OK)
   {
     return r;

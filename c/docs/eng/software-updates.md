@@ -1001,7 +1001,9 @@ az_iot_result az_iot_su_client_update_device_properties(
 > and the channel's escaped request before committing either cache. Failure preserves
 > the previous accepted properties. The specified 1-5 compatibility KVP limit includes
 > supplied manufacturer/model keys, not `agentProfile`; an installed ID must be absent
-> or a complete nonempty triple.
+> or a complete nonempty triple. The strings are bounded by
+> `AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE` and `AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE`, set when
+> compiled; see [Sizing device-property storage](../client-configuration.md#sizing-device-property-storage).
 > The application explicitly requests each check and chooses its route. The
 > property setter refreshes the caches, but does not itself queue a fetch.
 
@@ -1032,7 +1034,7 @@ az_iot_su_device_properties properties = {
     .custom_properties_count = 1,
 };
 
-uint8_t properties_cache[256];
+AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(properties_cache);
 size_t root_key_count;
 const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();

@@ -887,6 +887,14 @@ static az_iot_result channel_set_device_properties(
       &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, sizeof(c->body), NULL);
   if (r != AZ_IOT_OK)
   {
+    if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "update-check body exceeds %lu bytes once JSON-escaped; it grows with "
+          "AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE and AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE",
+          (unsigned long)sizeof(c->body));
+    }
     return r;
   }
 
