@@ -428,5 +428,37 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 }
             }
         }
+
+        // Polls a condition until it becomes true or the timeout elapses.
+        public static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            DateTime deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (await condition())
+                {
+                    return true;
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+
+            return false;
+        }
+
+        public static async Task<bool> DeviceExistsAsync(RegistryManager registryManager, string deviceId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await registryManager.GetDeviceAsync(deviceId, cancellationToken) != null;
+            }
+            catch
+            {
+                // Treat any failure to read the device (including a not-found response) as the device not being present.
+                return false;
+            }
+        }
     }
 }

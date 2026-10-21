@@ -11,6 +11,7 @@ using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Provisioning;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -76,6 +77,81 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             return Task.CompletedTask;
+        }
+
+        // Feature clients whose subscriptions are re-established as part of the device presence flow. Immutable so the
+        // presence flow can enumerate a snapshot while feature clients are concurrently added or removed.
+        private ImmutableList<IDevicePresenceSubscriptionSource> _devicePresenceSubscriptionSources = ImmutableList<IDevicePresenceSubscriptionSource>.Empty;
+
+        /// <summary>
+        /// Have the device presence flow re-subscribe to the source's topic filters each time it runs without a resumed session.
+        /// </summary>
+        internal void AddDevicePresenceSubscriptionSource(IDevicePresenceSubscriptionSource source)
+        {
+            ImmutableInterlocked.Update(ref _devicePresenceSubscriptionSources, sources => sources.Contains(source) ? sources : sources.Add(source));
+        }
+
+        internal void RemoveDevicePresenceSubscriptionSource(IDevicePresenceSubscriptionSource source)
+        {
+            ImmutableInterlocked.Update(ref _devicePresenceSubscriptionSources, sources => sources.Remove(source));
+        }
+
+        /// <summary>
+        /// Snapshot the topic filters of every registered <see cref="IDevicePresenceSubscriptionSource"/>.
+        /// </summary>
+        /// <remarks>
+        /// A source that throws is skipped (and logged) so that it cannot stop this device from becoming present.
+        /// </remarks>
+        internal IReadOnlyList<DevicePresenceSubscriptionRequest> CollectDevicePresenceSubscriptions()
+        {
+            List<DevicePresenceSubscriptionRequest> requests = new();
+            foreach (IDevicePresenceSubscriptionSource source in Volatile.Read(ref _devicePresenceSubscriptionSources))
+            {
+                try
+                {
+                    IReadOnlyList<MqttTopicFilter> topicFilters = source.GetDevicePresenceTopicFilters();
+                    if (topicFilters.Count > 0)
+                    {
+                        requests.Add(new DevicePresenceSubscriptionRequest(source, topicFilters));
+                    }
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("A feature client failed to provide its topic filters to re-subscribe to. Its subscriptions will not be re-established on this connection. {0}", e);
+                }
+            }
+
+            return requests;
+        }
+
+        /// <summary>
+        /// Hand each source the SUBACK items for the topic filters it provided.
+        /// </summary>
+        /// <param name="requests">The requests whose filters were sent, in the order they were sent.</param>
+        /// <param name="subackItems">The SUBACK items for exactly those filters, in the same order.</param>
+        internal static void ReportDevicePresenceSubscriptionResults(IReadOnlyList<DevicePresenceSubscriptionRequest> requests, IReadOnlyList<MqttSubscribeAckItem> subackItems)
+        {
+            int offset = 0;
+            foreach (DevicePresenceSubscriptionRequest request in requests)
+            {
+                int count = request.TopicFilters.Count;
+                List<MqttSubscribeAckItem> results = new(count);
+                for (int i = 0; i < count; i++)
+                {
+                    results.Add(subackItems[offset + i]);
+                }
+
+                offset += count;
+
+                try
+                {
+                    request.Source.OnDevicePresenceSubscribeCompleted(request.TopicFilters, results);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("A feature client failed to process the result of re-subscribing to its topics. {0}", e);
+                }
+            }
         }
 
         internal bool _isDisposed = false;

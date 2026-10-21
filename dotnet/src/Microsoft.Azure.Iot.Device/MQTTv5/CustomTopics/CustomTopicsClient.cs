@@ -35,8 +35,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     /// <para>
     /// To keep using a specific device ID even if the device is later assigned a different one, put that ID in the topic instead of the placeholder.
     /// </para>
+    /// <para>
+    /// Subscriptions survive connection loss. Whenever the connection client re-establishes this device's presence on IoT
+    /// hub without a resumed session (including after re-provisioning), it re-subscribes to every topic in
+    /// <see cref="GetSubscribedTopics"/> in the same SUBSCRIBE as its own device presence subscriptions, with the QoS each
+    /// topic was most recently successfully subscribed to with. Operations that were waiting on the reconnection resume only after that. A
+    /// topic that IoT hub rejects upon re-subscribing is no longer tracked as subscribed. A topic whose unsubscribe is in
+    /// flight is not re-subscribed to, and stops being tracked even if that unsubscribe then fails.
+    /// </para>
     /// </remarks>
-    public class CustomTopicsClient : IDisposable
+    public class CustomTopicsClient : IDisposable, IDevicePresenceSubscriptionSource
     {
         // Volatile because it is read by the publish received handler and by in-flight operations on other threads. Only set
         // while holding _subscribedCustomTopicsLock so that no tracked topic update can land after disposal.
@@ -49,6 +57,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         private volatile ImmutableList<string> _subscribedCustomTopics = ImmutableList<string>.Empty;
 
         private readonly object _subscribedCustomTopicsLock = new();
+
+        // The QoS to re-subscribe to each tracked topic with upon reconnecting. Pruned along with _subscribedCustomTopics.
+        // Guarded by _subscribedCustomTopicsLock.
+        private ImmutableDictionary<string, MqttQualityOfServiceLevel> _subscribedCustomTopicQos = ImmutableDictionary<string, MqttQualityOfServiceLevel>.Empty;
+
+        // The unsubscribe currently in flight, if any. Guarded by _subscribedCustomTopicsLock.
+        private PendingUnsubscribe? _pendingUnsubscribe;
 
         // Serializes subscribe/unsubscribe operations end-to-end (request through ack processing) so that the tracked topics
         // are updated in the same order the operations were sent on the wire.
@@ -68,6 +83,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         {
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
+
+            // Fold this client's subscriptions into the device presence flow so they are re-established upon reconnecting
+            (_connection as AbstractConnectionClient)?.AddDevicePresenceSubscriptionSource(this);
         }
 
         /// <summary>
@@ -98,7 +116,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             return await _connection.PublishAsync(publish, cancellationToken);
         }
 
-        //TODO currently implementation loses all subscriptions upon losing connection. Fix later.
         /// <summary>
         /// Subscribe to a custom topic.
         /// </summary>
@@ -156,11 +173,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 // Track the requested topics before sending the SUBSCRIBE. The service may deliver publishes on a topic as soon
                 // as it grants the subscription, which can be before this client processes the SUBACK. Those publishes must
                 // still be delivered to the user (and acknowledged) rather than dropped.
-                UpdateSubscribedTopics(builder =>
+                UpdateSubscribedTopics((builder, qosBuilder) =>
                 {
                     foreach (var topicFilter in subscribe.TopicFilters)
                     {
                         builder.Add(topicFilter.Topic);
+
+                        // An in-flight topic may need to be re-subscribed to before its SUBACK arrives. An already tracked
+                        // topic keeps its current QoS until this request is granted.
+                        qosBuilder.TryAdd(topicFilter.Topic, topicFilter.QualityOfServiceLevel);
                     }
                 });
 
@@ -171,7 +192,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 }
                 catch
                 {
-                    UpdateSubscribedTopics(builder =>
+                    UpdateSubscribedTopics((builder, _) =>
                     {
                         foreach (var topicFilter in subscribe.TopicFilters)
                         {
@@ -184,15 +205,26 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
 
                 // Roll back only the topics the service did not grant. Remove a single instance so that a pre-existing
                 // subscription to the same topic stays tracked.
-                UpdateSubscribedTopics(builder =>
+                UpdateSubscribedTopics((builder, qosBuilder) =>
                 {
                     List<string> requestedTopics = subscribe.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
                     int index = 0;
                     foreach (var subackItem in suback.Items)
                     {
-                        if (subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1 && subackItem.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS2)
+                        string trackedTopic = GetTrackedTopic(requestedTopics, suback.Items.Count, index, subackItem.TopicFilter.Topic);
+                        if (IsGranted(subackItem.ReasonCode))
                         {
-                            builder.Remove(GetTrackedTopic(requestedTopics, suback.Items.Count, index, subackItem.TopicFilter.Topic));
+                            MqttTopicFilter? requestedFilter = subscribe.TopicFilters.Count == suback.Items.Count
+                                ? subscribe.TopicFilters[index]
+                                : subscribe.TopicFilters.FirstOrDefault(topicFilter => topicFilter.Topic == trackedTopic);
+                            if (requestedFilter != null && builder.Contains(trackedTopic))
+                            {
+                                qosBuilder[trackedTopic] = requestedFilter.QualityOfServiceLevel;
+                            }
+                        }
+                        else
+                        {
+                            builder.Remove(trackedTopic);
                         }
 
                         index++;
@@ -257,10 +289,35 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 ObjectDisposedException.ThrowIf(_isDisposed, this);
                 EnsureConnected();
 
-                // Keep tracking the topics until the UNSUBACK so publishes the service sends before then are still delivered
-                var unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
+                // Keep tracking the topics until the UNSUBACK so publishes the service sends before then are still delivered.
+                // Meanwhile, a reconnection must not re-subscribe to them, or this UNSUBSCRIBE could be undone.
+                PendingUnsubscribe pendingUnsubscribe = new(unsubscribe.TopicFilters);
+                lock (_subscribedCustomTopicsLock)
+                {
+                    _pendingUnsubscribe = pendingUnsubscribe;
+                }
 
-                UpdateSubscribedTopics(builder =>
+                MqttUnsubscribeAck unsuback;
+                try
+                {
+                    unsuback = await _connection.UnsubscribeAsync(unsubscribe, cancellationToken);
+                }
+                finally
+                {
+                    lock (_subscribedCustomTopicsLock)
+                    {
+                        _pendingUnsubscribe = null;
+                    }
+
+                    // A reconnection that skipped these topics left them unsubscribed on the service, whatever the
+                    // outcome of this UNSUBSCRIBE, so stop tracking them.
+                    if (pendingUnsubscribe.WasSkippedByResubscription)
+                    {
+                        UpdateSubscribedTopics((builder, _) => builder.RemoveAll(pendingUnsubscribe.Topics.Contains));
+                    }
+                }
+
+                UpdateSubscribedTopics((builder, _) =>
                 {
                     int index = 0;
                     foreach (var unsubackItem in unsuback.Items)
@@ -307,7 +364,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             return requestedTopics.Count == ackItemCount ? requestedTopics[index] : ackedTopic;
         }
 
-        private void UpdateSubscribedTopics(Action<ImmutableList<string>.Builder> update)
+        private static bool IsGranted(MqttClientSubscribeReasonCode reasonCode)
+        {
+            return reasonCode == MqttClientSubscribeReasonCode.GrantedQoS0
+                || reasonCode == MqttClientSubscribeReasonCode.GrantedQoS1
+                || reasonCode == MqttClientSubscribeReasonCode.GrantedQoS2;
+        }
+
+        private void UpdateSubscribedTopics(Action<ImmutableList<string>.Builder, ImmutableDictionary<string, MqttQualityOfServiceLevel>.Builder> update)
         {
             lock (_subscribedCustomTopicsLock)
             {
@@ -318,9 +382,80 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 }
 
                 var builder = _subscribedCustomTopics.ToBuilder();
-                update(builder);
+                var qosBuilder = _subscribedCustomTopicQos.ToBuilder();
+                update(builder, qosBuilder);
+
+                // Forget the QoS of topics that are no longer tracked at all
+                HashSet<string> trackedTopics = new(builder, StringComparer.Ordinal);
+                qosBuilder.RemoveRange(qosBuilder.Keys.Where(topic => !trackedTopics.Contains(topic)).ToList());
+
                 _subscribedCustomTopics = builder.ToImmutable();
+                _subscribedCustomTopicQos = qosBuilder.ToImmutable();
             }
+        }
+
+        IReadOnlyList<MqttTopicFilter> IDevicePresenceSubscriptionSource.GetDevicePresenceTopicFilters()
+        {
+            lock (_subscribedCustomTopicsLock)
+            {
+                if (_isDisposed)
+                {
+                    return Array.Empty<MqttTopicFilter>();
+                }
+
+                List<MqttTopicFilter> topicFilters = new();
+                HashSet<string> addedTopics = new(StringComparer.Ordinal);
+                foreach (string topic in _subscribedCustomTopics)
+                {
+                    if (_pendingUnsubscribe != null && _pendingUnsubscribe.Topics.Contains(topic))
+                    {
+                        _pendingUnsubscribe.WasSkippedByResubscription = true;
+                        continue;
+                    }
+
+                    if (addedTopics.Add(topic))
+                    {
+                        MqttQualityOfServiceLevel qos = _subscribedCustomTopicQos.TryGetValue(topic, out MqttQualityOfServiceLevel trackedQos)
+                            ? trackedQos
+                            : MqttQualityOfServiceLevel.AtLeastOnce;
+                        topicFilters.Add(new MqttTopicFilter(topic, qos));
+                    }
+                }
+
+                return topicFilters;
+            }
+        }
+
+        void IDevicePresenceSubscriptionSource.OnDevicePresenceSubscribeCompleted(IReadOnlyList<MqttTopicFilter> topicFilters, IReadOnlyList<MqttSubscribeAckItem> results)
+        {
+            List<string> rejectedTopics = new();
+            for (int i = 0; i < topicFilters.Count; i++)
+            {
+                if (!IsGranted(results[i].ReasonCode))
+                {
+                    Trace.TraceWarning("IoT hub rejected re-subscribing to custom topic {0} upon reconnecting with reason code {1}. It is no longer subscribed to.", topicFilters[i].Topic, results[i].ReasonCode);
+                    rejectedTopics.Add(topicFilters[i].Topic);
+                }
+            }
+
+            if (rejectedTopics.Count > 0)
+            {
+                UpdateSubscribedTopics((builder, _) => builder.RemoveAll(rejectedTopics.Contains));
+            }
+        }
+
+        // The topics of the unsubscribe currently in flight, and whether a reconnection has skipped re-subscribing to them
+        private sealed class PendingUnsubscribe
+        {
+            public PendingUnsubscribe(IEnumerable<string> topics)
+            {
+                Topics = new HashSet<string>(topics, StringComparer.Ordinal);
+            }
+
+            public HashSet<string> Topics { get; }
+
+            // Guarded by _subscribedCustomTopicsLock
+            public bool WasSkippedByResubscription { get; set; }
         }
 
         /// <summary>
@@ -346,8 +481,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 // (and stops acknowledging on a connection that is about to be disposed)
                 _isDisposed = true;
                 _subscribedCustomTopics = ImmutableList<string>.Empty;
+                _subscribedCustomTopicQos = ImmutableDictionary<string, MqttQualityOfServiceLevel>.Empty;
             }
 
+            (_connection as AbstractConnectionClient)?.RemoveDevicePresenceSubscriptionSource(this);
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
 
             if (disposing)

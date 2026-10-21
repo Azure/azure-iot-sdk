@@ -1028,13 +1028,26 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
+        {
+            return BuildAndSubscribeAsync(endpoint, buildSubscribe, throwOnSubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndSubscribeAsync(ConnectionEndpoint, Func{MqttSubscribe}, CancellationToken)"/>
+        /// <param name="throwOnSubackErrorCode">
+        /// False to return the SUBACK as-is even if it rejects some topic filters, for callers that judge each item themselves.
+        /// </param>
+        internal async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, bool throwOnSubackErrorCode, CancellationToken cancellationToken = default)
         {
             BeginOperation(endpoint);
             try
             {
                 var suback = await _underlyingMqttClient.SubscribeAsync(buildSubscribe(), cancellationToken);
-                ThrowIfSubackHasErrorCode(suback);
+                if (throwOnSubackErrorCode)
+                {
+                    ThrowIfSubackHasErrorCode(suback);
+                }
+
                 return suback;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
