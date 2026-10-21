@@ -97,7 +97,8 @@ extern "C"
    *
    * The variable is case-sensitive, as on the hub. The device id can change when the device is
    * provisioned again, so build the topic for each publish rather than once: a topic built earlier
-   * keeps the old id, and az_iot_mqttv5_custom_topic_client_publish() sends it unchanged.
+   * keeps the old id, and az_iot_mqttv5_custom_topic_client_publish() sends it unchanged. A device
+   * id with `+` or `#` yields a topic that publish() rejects: MQTT forbids them in topic names.
    *
    * @param[out] out_len Optional. Length written, excluding the terminator.
    *
