@@ -83,11 +83,21 @@ function(az_iot_add_cmocka_test name)
         list(REMOVE_ITEM sources NO_CTEST)
         set(register FALSE)
     endif()
+    # RACE: the test starts threads. Labelled "race" so CI runs it under
+    # helgrind and DRD (eng/run-race-detectors.sh).
+    set(race FALSE)
+    if("RACE" IN_LIST sources)
+        list(REMOVE_ITEM sources RACE)
+        set(race TRUE)
+    endif()
     add_executable(${name} ${sources})
     target_link_libraries(${name} PRIVATE az_iot_core cmocka)
     az_iot_apply_warnings(${name})
     if(register)
         add_test(NAME ${name} COMMAND ${name})
+        if(race)
+            set_tests_properties(${name} PROPERTIES LABELS race)
+        endif()
     endif()
     # If cmocka built as a shared lib (e.g. on Windows when something forced
     # BUILD_SHARED_LIBS=ON), copy the DLL next to the test exe.
@@ -454,11 +464,10 @@ if(AZ_IOT_WITH_PAHO)
     #
     # Same construction again -- the mock lets the test BE the Paho thread, so
     # the only concurrency in the binary is the concurrency under test. It
-    # runs in the ordinary suite, and CI additionally runs this one exe under
-    # helgrind, which is what actually adjudicates happens-before; memcheck
-    # and ASan cannot see a race at all. See the race-detector job in
-    # .github/workflows/ci-c.yml.
-    az_iot_add_cmocka_test(az_iot_tests_paho_event_queue_race
+    # runs in the ordinary suite, and RACE also runs it under helgrind and DRD
+    # (eng/run-race-detectors.sh), which adjudicate happens-before; memcheck
+    # and ASan cannot see a race at all.
+    az_iot_add_cmocka_test(az_iot_tests_paho_event_queue_race RACE
         unit/paho_event_queue_race_test.c
         support/mock_paho_async.c
         support/fake_paho_key_custody.c

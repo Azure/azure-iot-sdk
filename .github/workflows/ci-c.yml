@@ -194,6 +194,8 @@ jobs:
         run: bash eng/check-version.sh
       - name: Check log components
         run: bash eng/check-log-components.sh
+      - name: Check race-detector suppressions
+        run: bash eng/check-race-suppressions.sh
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -368,30 +370,34 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Race detection. Separate from the valgrind job above because it answers a
-  # different question, with a different tool, on a different binary.
+  # different question, with a different tool.
   #
-  # memcheck and ASan look at WHICH memory is touched. Neither looks at which
-  # thread touched it or under which lock, so neither can see a data race at
-  # all: a race whose timing happens not to bite on the runner is simply
-  # invisible to them. That gap was not theoretical -- the adapter published a
-  # queued event to the consumer thread and then kept writing to it, and every
-  # job in this workflow passed straight through the window.
+  # memcheck and ASan look at WHICH memory is touched, not at which thread
+  # touched it or under which lock, so neither can see a data race. A race
+  # whose timing does not bite on the runner is invisible to them: the Paho
+  # adapter once published a queued event to the consumer thread and then kept
+  # writing to it, and every other job passed.
   #
-  # The adapter's event queue is the only place in this SDK where two threads
-  # meet (Paho's callback threads produce, the application's process_loop()
-  # consumes), so it is the only thing this job runs: one hermetic binary with
-  # no broker and no sockets, whose sole content is that seam.
+  # Runs every ctest test labelled "race" (az_iot_add_cmocka_test(... RACE
+  # ...)) through eng/run-race-detectors.sh, which fails on a reported error,
+  # a failed test, or a run that ended without an ERROR SUMMARY. A new
+  # threaded test joins by carrying the label.
   #
-  # Both tools run, and either one reporting an error fails the job. They agree
-  # on most races but not all -- they implement happens-before differently, and
-  # DRD additionally reports lock-order and mutex-misuse problems helgrind does
-  # not -- so running both is cheap coverage rather than duplication.
+  # One leg per tool; either reporting an error fails the job. They implement
+  # happens-before differently and DRD also reports lock-order and mutex
+  # misuse, so running both is coverage rather than duplication. Suppressions:
+  # eng/sanitizers/<tool>.supp, third-party code only
+  # (eng/check-race-suppressions.sh); every suppression used is in the log.
   # ---------------------------------------------------------------------------
   race-detector:
-    name: linux-gcc / helgrind + drd
+    name: linux-gcc / ${{ matrix.tool }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [ helgrind, drd ]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -399,53 +405,22 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
-        # No broker and no conformance suites: this job builds and runs exactly
-        # one test binary, which needs neither.
+        # No broker: the race-labelled tests are hermetic.
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
       - name: Build
-        run: cmake --build --preset linux-gcc-debug --target az_iot_tests_paho_event_queue_race
-      - name: Event queue under helgrind and drd
-        working-directory: c/build/linux-gcc-debug
-        run: |
-          set -o pipefail
-          status=0
-          for tool in helgrind drd; do
-            echo "::group::${tool}"
-            # --error-exitcode makes a reported race fail the step. It does NOT
-            # cover valgrind aborting on its own, so the ERROR SUMMARY line is
-            # checked as well: a run that produced no summary did not finish,
-            # and must not be read as a clean one.
-            if valgrind --tool="${tool}" --error-exitcode=42 \
-                 ./tests/az_iot_tests_paho_event_queue_race 2>&1 | tee "${tool}.log"; then
-              :
-            else
-              # Put the report itself in the annotation, not just the verdict.
-              # The full log is an artifact, but a failure that can be read
-              # straight off the run summary is one that gets acted on -- and
-              # the first context is almost always the whole story. Newlines
-              # are escaped because an annotation is a single line.
-              detail=$(grep -E '^==[0-9]+==' "${tool}.log" | head -40 \
-                       | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-              echo "::error::${tool} reported a threading defect:%0A${detail}"
-              status=1
-            fi
-            if ! grep -q "ERROR SUMMARY:" "${tool}.log"; then
-              echo "::error::${tool} did not run to completion"
-              status=1
-            fi
-            echo "::endgroup::"
-          done
-          exit "${status}"
+        run: cmake --build --preset linux-gcc-debug
+      - name: Race-labelled tests under ${{ matrix.tool }}
+        run: bash eng/run-race-detectors.sh ${{ matrix.tool }}
       - name: Upload race-detector logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: race-detector-logs
-          path: c/build/linux-gcc-debug/*.log
+          name: race-detector-logs-${{ matrix.tool }}
+          path: c/build/linux-gcc-debug/race-logs/
           if-no-files-found: ignore
 
   asan-windows:
