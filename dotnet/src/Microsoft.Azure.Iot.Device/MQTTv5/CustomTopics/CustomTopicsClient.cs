@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using MQTTnet;
+using System.Collections;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Reflection.Metadata.Ecma335;
@@ -11,7 +12,6 @@ using System.Reflection.Metadata.Ecma335;
 namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
 {
     // Open questions:
-    // QoS values supported by AEG? Just 1 and 0?
     // Are we just exposing MQTT semantics and types? Probably, but check with Usha
     // Should we allow delayed acks?
     // Other variables besides {deviceId} ? No. Topics may contain the "{deviceId}" placeholder (IConnectionClient.DeviceIdPlaceholder), which the connection client replaces with the device's current ID each time it sends the operation
@@ -116,10 +116,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 TopicFilters = new() { { new MqttTopicFilter(topic, qos) } }
             };
 
-            var suback = await SubscribeAsync(subscribe, cancellationToken);
+            MqttSubscribeAck suback = await SubscribeAsync(subscribe, cancellationToken);
+            if (suback.Items.Count != 1)
+            {
+                throw new InvalidOperationException("IoT Hub returned a suback with an unexpected number of subscriptions granted");
+            }
 
-            // TODO should always be the case, but don't be lazy, Tim
-            return suback.Items.FirstOrDefault()!.ReasonCode;
+            return suback.Items.First().ReasonCode;
         }
 
         //TODO is the underlying connection client going to retry subscriptions if the user provides a malformed topic string? Probably don't want that. I think MQTT-level failures (suback with negative reason code) are just returned as-is, right?
@@ -220,7 +223,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
 
             var unsuback = await UnsubscribeAsync(unsubscribe, cancellationToken);
 
-            return unsuback.Items.FirstOrDefault()!.ReasonCode;
+            if (unsuback.Items.Count != 1)
+            {
+                throw new InvalidOperationException("IoT Hub returned a suback with an unexpected number of unsubscriptions granted");
+            }
+
+            return unsuback.Items.First().ReasonCode;
         }
 
         /// <summary>
