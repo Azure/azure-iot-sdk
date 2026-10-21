@@ -1,0 +1,6 @@
+# glob matching SDK functions
+{
+   sdk-glob
+   drd:ConflictingAccess
+   fun:q_*
+}
