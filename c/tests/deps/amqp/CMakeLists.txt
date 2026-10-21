@@ -69,7 +69,8 @@ if(WIN32)
     target_link_libraries(az_amqp_transport PUBLIC ws2_32 secur32 crypt32 ncrypt)
 else()
     find_package(OpenSSL REQUIRED)
-    target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    find_package(Threads REQUIRED) # pthread_sigmask
+    target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
     # AZ_AMQP_SAMPLE_USE_OPENSSL selects the OpenSSL TLS path. The _DEFAULT_SOURCE /
     # _POSIX_C_SOURCE macros expose the POSIX networking API the reference transport
     # relies on (getaddrinfo/struct addrinfo in az_amqp_sample_transport.c; select/
