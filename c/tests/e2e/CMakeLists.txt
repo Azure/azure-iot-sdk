@@ -113,6 +113,16 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
 
+# A write by the harness AMQP transport to a closed loopback peer fails without
+# raising SIGPIPE. POSIX only; named `e2e` so the e2e job's filter runs it.
+if(NOT WIN32)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_transport_sigpipe
+        tests/e2e_amqp_transport_sigpipe_test.c)
+    target_link_libraries(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE az_amqp_transport)
+    target_compile_definitions(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE
+        _DEFAULT_SOURCE _POSIX_C_SOURCE=200112L)
+endif()
+
 # Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
 # stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
