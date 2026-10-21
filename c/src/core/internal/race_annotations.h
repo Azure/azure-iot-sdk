@@ -16,14 +16,25 @@
 #if defined(AZ_IOT_RACE_ANNOTATIONS)
 #include <valgrind/helgrind.h>
 
-/** @brief @p lock now exists and is free. */
-#define AZ_IOT_RACE_LOCK_CREATE(lock) ANNOTATE_RWLOCK_CREATE(lock)
+/** @brief @p lock now exists and is free. helgrind does not check the lock word itself:
+ * it is accessed only atomically, which helgrind does not model. */
+#define AZ_IOT_RACE_LOCK_CREATE(lock)                      \
+  do                                                       \
+  {                                                        \
+    ANNOTATE_RWLOCK_CREATE(lock);                          \
+    VALGRIND_HG_DISABLE_CHECKING((lock), sizeof(*(lock))); \
+  } while (0)
 /** @brief @p lock was acquired exclusively. */
 #define AZ_IOT_RACE_LOCK_ACQUIRED(lock) ANNOTATE_RWLOCK_ACQUIRED(lock, 1)
 /** @brief @p lock is about to be released. */
 #define AZ_IOT_RACE_LOCK_RELEASED(lock) ANNOTATE_RWLOCK_RELEASED(lock, 1)
-/** @brief @p lock is no longer used. */
-#define AZ_IOT_RACE_LOCK_DESTROY(lock) ANNOTATE_RWLOCK_DESTROY(lock)
+/** @brief @p lock is no longer used; its memory is checked again. */
+#define AZ_IOT_RACE_LOCK_DESTROY(lock)                    \
+  do                                                      \
+  {                                                       \
+    ANNOTATE_RWLOCK_DESTROY(lock);                        \
+    VALGRIND_HG_ENABLE_CHECKING((lock), sizeof(*(lock))); \
+  } while (0)
 #else
 #define AZ_IOT_RACE_LOCK_CREATE(lock) ((void)(lock))
 #define AZ_IOT_RACE_LOCK_ACQUIRED(lock) ((void)(lock))
