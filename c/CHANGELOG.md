@@ -95,7 +95,8 @@
   persisted-state records, the verification scratch (was the client's persist scratch), the
   message body and the property strings live there; `az_iot_su_client` drops from
   about 39 KiB to about 3.5 KiB and no longer depends on them. `max_update_size` defaults to
-  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). The workflow
+  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). `max_message_size` is at
+  least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2048), which fits the largest status report. The workflow
   record is serialized in place around the update copy, so the separate persist scratch is gone.
   Removed: `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_PERSIST_BLOB_SIZE`,
   `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()`. `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` takes the

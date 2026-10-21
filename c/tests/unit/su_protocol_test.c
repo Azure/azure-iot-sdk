@@ -867,7 +867,8 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   report.step_results = steps;
   report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
 
-  uint8_t body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
+  /* AZ_IOT_SU_MIN_MESSAGE_SIZE is the guarantee that this fits. */
+  uint8_t body[AZ_IOT_SU_MIN_MESSAGE_SIZE];
   size_t len = 0;
   assert_int_equal(az_iot_su__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
   assert_true(len > 0 && len <= sizeof(body));

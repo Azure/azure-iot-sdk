@@ -2223,14 +2223,15 @@ AZ_NODISCARD az_iot_su_limits az_iot_su_limits_default(void)
   return limits;
 }
 
-/** @brief Smallest max_update_size, scratch_size and max_message_size accepted. */
+/** @brief Smallest max_update_size and scratch_size accepted. */
 #define AZ_IOT_SU_MIN_LIMIT 256u
 
 AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
 {
   if (limits == NULL || limits->max_update_size < AZ_IOT_SU_MIN_LIMIT
       || limits->scratch_size < AZ_IOT_SU_MIN_LIMIT
-      || limits->max_message_size < AZ_IOT_SU_MIN_LIMIT || limits->device_properties_size == 0)
+      || limits->max_message_size < AZ_IOT_SU_MIN_MESSAGE_SIZE
+      || limits->device_properties_size == 0)
   {
     return 0;
   }

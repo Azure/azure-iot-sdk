@@ -2412,10 +2412,14 @@ static void workspace_size_follows_the_limits(void** state)
 
   limits.max_update_size = 1000;
   limits.scratch_size = 300;
-  limits.max_message_size = 400;
+  limits.max_message_size = AZ_IOT_SU_MIN_MESSAGE_SIZE;
   limits.device_properties_size = 50;
-  assert_int_equal(az_iot_su_workspace_size(&limits), 1750 + 2u * AZ_IOT_SU_PERSIST_OVERHEAD);
-  assert_int_equal(az_iot_su_workspace_size(&limits), AZ_IOT_SU_WORKSPACE_SIZE(1000, 300, 400, 50));
+  assert_int_equal(
+      az_iot_su_workspace_size(&limits),
+      1350 + AZ_IOT_SU_MIN_MESSAGE_SIZE + 2u * AZ_IOT_SU_PERSIST_OVERHEAD);
+  assert_int_equal(
+      az_iot_su_workspace_size(&limits),
+      AZ_IOT_SU_WORKSPACE_SIZE(1000, 300, AZ_IOT_SU_MIN_MESSAGE_SIZE, 50));
 
   assert_int_equal(az_iot_su_workspace_size(NULL), 0);
   az_iot_su_limits bad = limits;
@@ -2425,7 +2429,7 @@ static void workspace_size_follows_the_limits(void** state)
   bad.scratch_size = 255;
   assert_int_equal(az_iot_su_workspace_size(&bad), 0);
   bad = limits;
-  bad.max_message_size = 255;
+  bad.max_message_size = AZ_IOT_SU_MIN_MESSAGE_SIZE - 1; /* the largest report might not fit */
   assert_int_equal(az_iot_su_workspace_size(&bad), 0);
   bad = limits;
   bad.device_properties_size = 0;

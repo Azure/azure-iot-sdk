@@ -210,7 +210,7 @@ The software updates client's variable-size memory is not set by macros. The app
 | --- | --- | --- |
 | `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
-| `max_message_size` | 2048 | Update-check and status-report bodies. |
+| `max_message_size` | 2048 | Update-check and status-report bodies. At least 2048 (`AZ_IOT_SU_MIN_MESSAGE_SIZE`), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Copied device-property strings. |
 
 The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records. These

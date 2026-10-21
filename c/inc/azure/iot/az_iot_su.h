@@ -96,6 +96,10 @@ extern "C"
 #define AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE 65536
 #endif
 
+/** @brief Smallest az_iot_su_limits::max_message_size: the largest status report the client
+ * builds fits, so no report is refused for its size. */
+#define AZ_IOT_SU_MIN_MESSAGE_SIZE 2048
+
 /** @brief Default az_iot_su_limits::max_message_size. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE
 #define AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE 2048
@@ -952,7 +956,8 @@ extern "C"
     /** Decode and signature-verification scratch, in bytes. A signature part or file
      * URL that does not fit is refused. At least 256. */
     size_t scratch_size;
-    /** Largest update-check or status-report body, in bytes. At least 256. */
+    /** Largest update-check or status-report body, in bytes. At least
+     * AZ_IOT_SU_MIN_MESSAGE_SIZE. */
     size_t max_message_size;
     /** Device-property strings, in bytes; see az_iot_su_device_properties_buffer_size(). */
     size_t device_properties_size;
