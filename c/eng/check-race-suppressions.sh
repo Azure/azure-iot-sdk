@@ -9,34 +9,82 @@
 # - name no function defined in c/src or c/adapters (globs are expanded);
 # - use obj: only for shared libraries (*.so*): the SDK is linked statically.
 # Dependency-free so it runs in the conventions job before configure.
+#
+# Usage: check-race-suppressions.sh [file.supp...]   (default: the two above)
+#        check-race-suppressions.sh --self-test      (fixtures in eng/sanitizers/selftest)
 
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-violations=0
 
-# Functions defined in first-party sources: clang-format puts the name of a
-# definition at the start of a line, after its return type.
+if [ "${1:-}" = "--self-test" ]; then
+    failures=0
+    for f in "${root_dir}"/eng/sanitizers/selftest/*.supp; do
+        if bash "$0" "${f}" >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
+        case "$(basename "${f}")" in
+            good-*) expected=pass ;;
+            *) expected=fail ;;
+        esac
+        if [ "${verdict}" != "${expected}" ]; then
+            echo "self-test: ${f#"${root_dir}"/}: expected ${expected}, got ${verdict}"
+            failures=$((failures + 1))
+        fi
+    done
+    [ "${failures}" -eq 0 ] || exit 1
+    echo "self-test: every fixture gave the expected verdict."
+    exit 0
+fi
+
+# Functions defined in first-party sources (.c and .h, which hold inline code),
+# in either clang-format shape:
+# - a name followed by "(" on a line that starts at column 0, after its return
+#   type and any qualifiers or macros (AZ_NODISCARD ...);
+# - a signature split over several lines, whose body "{" stands alone.
 mapfile -t first_party < <(
-    grep -rhoE --include='*.c' \
-        '^(static )?(const )?[A-Za-z_][A-Za-z0-9_]*[ *]+\**[A-Za-z_][A-Za-z0-9_]*\(' \
-        "${root_dir}/src" "${root_dir}/adapters" |
-        sed -E 's/\($//; s/.*[ *]//' | sort -u
+    {
+        # shellcheck disable=SC2016 # $0 and friends belong to awk
+        find "${root_dir}/src" "${root_dir}/adapters" \( -name '*.c' -o -name '*.h' \) -print0 |
+            xargs -0 awk '
+                /^\{[[:space:]]*$/ {
+                    if (sig != "" && sig !~ /=/ && match(sig, /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)) {
+                        name = substr(sig, RSTART, RLENGTH)
+                        sub(/[[:space:]]*\($/, "", name)
+                        print name
+                    }
+                    sig = ""
+                    next
+                }
+                /^[[:space:]]*$/ || /^#/ || /^\// || /;[[:space:]]*$/ || /^\}/ { sig = ""; next }
+                /^[A-Za-z_]/ { sig = (sig == "" ? $0 : sig " " $0); next }
+                sig != "" { sig = sig " " $0 }'
+        grep -rhoE --include='*.c' --include='*.h' \
+            '^([A-Za-z_][A-Za-z0-9_]*[ *]+)+\**[A-Za-z_][A-Za-z0-9_]*\(' \
+            "${root_dir}/src" "${root_dir}/adapters" |
+            sed -E 's/\($//; s/.*[ *]//'
+    } | sort -u
 )
 
+violations=0
 fail() {
     echo "$1:$2: $3"
     violations=$((violations + 1))
 }
 
-for supp in "${root_dir}"/eng/sanitizers/helgrind.supp "${root_dir}"/eng/sanitizers/drd.supp; do
+if [ "$#" -gt 0 ]; then
+    files=("$@")
+else
+    files=("${root_dir}/eng/sanitizers/helgrind.supp" "${root_dir}/eng/sanitizers/drd.supp")
+fi
+
+for supp in "${files[@]}"; do
     [ -f "${supp}" ] || continue
     rel="${supp#"${root_dir}"/}"
     prev=""
     in_entry=0
     line_no=0
     start=0
-    # Body lines seen so far in the entry: 1 = name, 2 = kind, 3.. = frames.
+    # Significant lines seen so far in the entry: 1 = name, 2 = kind, 3.. =
+    # frames. Blank lines and comments are not counted: valgrind ignores them.
     body=0
     while IFS= read -r raw || [ -n "${raw}" ]; do
         line_no=$((line_no + 1))
@@ -55,6 +103,9 @@ for supp in "${root_dir}"/eng/sanitizers/helgrind.supp "${root_dir}"/eng/sanitiz
             in_entry=0
             [ "${body}" -ge 3 ] || fail "${rel}" "${start}" "entry has no frame"
             prev="}"
+            continue
+        fi
+        if [ -z "${line}" ] || [[ "${line}" == \#* ]]; then
             continue
         fi
         body=$((body + 1))

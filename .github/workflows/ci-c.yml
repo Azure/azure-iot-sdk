@@ -195,7 +195,9 @@ jobs:
       - name: Check log components
         run: bash eng/check-log-components.sh
       - name: Check race-detector suppressions
-        run: bash eng/check-race-suppressions.sh
+        run: >
+          bash eng/check-race-suppressions.sh
+          && bash eng/check-race-suppressions.sh --self-test
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format

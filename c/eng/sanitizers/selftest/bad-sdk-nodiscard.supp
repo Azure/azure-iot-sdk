@@ -1,0 +1,6 @@
+# AZ_NODISCARD definition (src/core/mqtt_iface.c)
+{
+   nodiscard
+   drd:ConflictingAccess
+   fun:az_iot_mqtt_user_properties_next
+}
