@@ -74,9 +74,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public static async Task<MQTTv5DeviceTestContext> CreateProvisionableMQTTv5DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string deviceId = Guid.NewGuid().ToString();
@@ -91,7 +88,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             // Create individual enrollment for the test device to provision from
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            TwinCollection initialDesiredProperties = new(JsonSerializer.Serialize(initialTwin.Desired));
+            TwinCollection initialDesiredProperties = initialTwin == null
+                ? new()
+                : new(JsonSerializer.Serialize(initialTwin.Desired));
             IndividualEnrollment individualEnrollment = new(registrationId, attestation)
             {
                 InitialTwinState = new(new(), initialDesiredProperties)
@@ -114,8 +113,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
         public static async Task<MQTTv5DeviceTestContext> CreateMQTTv5DeviceOnDirectlyOnHubAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
             string deviceId = Guid.NewGuid().ToString();
             string registrationId = deviceId;
             string certId = Guid.NewGuid().ToString();
@@ -155,8 +152,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string deviceId = Guid.NewGuid().ToString();
@@ -194,11 +189,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("No MQTTv5 hub to test against yet");
-            }
-
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string deviceId = Guid.NewGuid().ToString();
@@ -241,11 +231,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("No MQTTv5 hub to test against yet");
-            }
-
             ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID") ?? throw new Exception("TODO");
