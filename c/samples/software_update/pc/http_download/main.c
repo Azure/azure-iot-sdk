@@ -366,11 +366,29 @@ static int32_t download_read_file(
       return SAMPLE_ERR_FILE_OPEN;
     }
   }
-  *out_read = fread(buffer, 1, buffer_size, d->reader);
+  /* At most one byte past the manifest size: a larger file (replaced since the
+   * download) fails at once instead of being hashed to its end. */
+  uint64_t size = file->size_in_bytes > 0 ? (uint64_t)file->size_in_bytes : 0u;
+  if ((uint64_t)offset > size)
+  {
+    reader_close(d);
+    return SAMPLE_ERR_TOO_LARGE;
+  }
+  size_t want = buffer_size;
+  if (size - (uint64_t)offset < (uint64_t)want)
+  {
+    want = (size_t)(size - (uint64_t)offset) + 1u;
+  }
+  *out_read = fread(buffer, 1, want, d->reader);
   if (ferror(d->reader))
   {
     reader_close(d);
     return SAMPLE_ERR_FILE_OPEN;
+  }
+  if ((uint64_t)offset + *out_read > size)
+  {
+    reader_close(d);
+    return SAMPLE_ERR_TOO_LARGE;
   }
   /* Kept open after a short read: the SDK reads once more for the 0-byte end,
    * and reopening would need a seek that a 32-bit long cannot express. */

@@ -24,7 +24,7 @@ on the device changes.
 - Only HTTP and HTTPS URLs are fetched, redirects included.
 - A file is restarted when a replacing workflow asks for another file mid-transfer.
 - Each download replaces any file or link at its path (removed, then created exclusively, owner-only);
-  the read-back refuses a link.
+  the read-back refuses a link, a non-regular file, and a file larger than the manifest size.
 - Requires libcurl with asynchronous DNS (`AsynchDNS` in `curl --version`); without it the
   sample exits.
 - `install_fn` works in chunks (`SAMPLE_INSTALL_CHUNKS` calls per step), returning
