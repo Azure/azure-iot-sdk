@@ -624,6 +624,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ReprovisioningStartedAsyncIsRaisedOnceWhenAnIdentityFaultReprovisions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == SecondAssignedHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            List<ReprovisioningStartedEventArgs> reprovisioningStartedArgs = new();
+
+            // A handler that throws must not stop the other handlers or the re-provisioning itself.
+            connectionClient.ReprovisioningStartedAsync += _ => throw new InvalidOperationException("misbehaving handler");
+            connectionClient.ReprovisioningStartedAsync += args =>
+            {
+                lock (reprovisioningStartedArgs)
+                {
+                    reprovisioningStartedArgs.Add(args);
+                }
+
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            lock (reprovisioningStartedArgs)
+            {
+                // The initial provisioning requested by the application is not a re-provisioning.
+                Assert.Empty(reprovisioningStartedArgs);
+            }
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            lock (reprovisioningStartedArgs)
+            {
+                ReprovisioningStartedEventArgs args = Assert.Single(reprovisioningStartedArgs);
+                Assert.Equal(ErrorRetryability.IdentityTerminal, args.Exception.Retryability);
+            }
+        }
+        [Fact]
         public async Task IdentityFaultDoesNotReprovisionADeviceThatWasNeverProvisioned()
         {
             using MockConnectionMqttClient mockMqttClient = new();
