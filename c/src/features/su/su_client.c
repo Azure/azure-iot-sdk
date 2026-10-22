@@ -3955,6 +3955,15 @@ AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
     memmove(slot, az_span_ptr(details), (size_t)len);
   }
   SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
+  /* Held at a stored resume point (an install awaiting its reboot, or the next
+   * step after an apply that asked for one), no later write would carry the
+   * change: rewrite the record on the next do_work(), before the workflow goes on. */
+  if (SU_I(client).checkpoint_stored && !SU_I(client).checkpoint_terminal
+      && (st == AZ_IOT_SU_STATE_INSTALL_COMPLETE
+          || (st == AZ_IOT_SU_STATE_DOWNLOAD_STARTED && SU_I(client).current_file == 0)))
+  {
+    SU_I(client).checkpoint_pending = true;
+  }
   return AZ_IOT_OK;
 }
 

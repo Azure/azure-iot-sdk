@@ -1178,7 +1178,8 @@ extern "C"
    * text is copied, persisted with the step's result and reported with the terminal
    * result; an empty @p details clears it. The client sets the step's outcome and codes.
    * When the report would not fit az_iot_su_limits::max_message_size it is sent without
-   * step details.
+   * step details. A change made while the workflow waits for a reboot is saved by the next
+   * do_work(); reboot after that call, or the previous details are restored.
    *
    * @param[in,out] client The client.
    * @param[in] step_index Manifest step index, as passed to the hooks.
