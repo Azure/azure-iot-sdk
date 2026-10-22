@@ -628,7 +628,13 @@ int main(void)
     goto cleanup;
   }
 
-  /* One proxy for both the MQTT sessions and the download. */
+  /* One proxy for both the MQTT sessions and the download; port 0 or unset is
+   * the MQTT adapters' default. */
+  uint16_t proxy_port_num = (proxy_port != NULL) ? (uint16_t)strtoul(proxy_port, NULL, 10) : 0u;
+  if (proxy_port_num == 0u)
+  {
+    proxy_port_num = (uint16_t)AZ_IOT_MQTT_DEFAULT_PROXY_PORT;
+  }
   if (proxy_host != NULL)
   {
     size_t n = strlen(proxy_host) + 32;
@@ -637,8 +643,7 @@ int main(void)
     {
       goto cleanup;
     }
-    (void)snprintf(
-        dl.proxy_url, n, "http://%s:%s", proxy_host, proxy_port != NULL ? proxy_port : "8080");
+    (void)snprintf(dl.proxy_url, n, "http://%s:%u", proxy_host, (unsigned)proxy_port_num);
     dl.proxy_username = proxy_username;
     dl.proxy_password = proxy_password;
   }
@@ -663,7 +668,7 @@ int main(void)
   copts.crypto = az_iot_crypto_mbedtls(); /* verifies manifests and file hashes */
 #endif
   copts.proxy.host = proxy_host; /* NULL: no proxy */
-  copts.proxy.port = (proxy_port != NULL) ? (uint16_t)strtoul(proxy_port, NULL, 10) : (uint16_t)0;
+  copts.proxy.port = proxy_port_num;
   copts.proxy.username = proxy_username;
   copts.proxy.password = proxy_password;
   if (az_iot_connection_client_init(&connection, &copts) != AZ_IOT_OK)
