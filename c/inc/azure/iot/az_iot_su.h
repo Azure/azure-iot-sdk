@@ -593,7 +593,14 @@ extern "C"
      * (`service_error` names the cause, e.g. REPORT_CONFLICT or
      * UNKNOWN_WORKFLOW_ID): it is retired and never sent again. The
      * service's view is authoritative; call az_iot_su_client_request_update()
-     * to learn it. */
+     * to learn it.
+     *
+     * A report rejected with REPORT_CONFLICT, or with an untyped 409000, is
+     * the one case where the client checks for updates itself, after this
+     * event: on the route last requested (regular if none), with
+     * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS. No check is added while one is
+     * queued or in flight; that check's answer serves instead. Its answer
+     * arrives as for any check. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
     /* persist_state_fn failed. Raised on the first failure of an episode
@@ -942,6 +949,8 @@ extern "C"
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
+      /** Route of the application's last update request (pending_fetch encoding); 0 if none. */
+      uint8_t last_requested_fetch;
     } _internal;
   } az_iot_su_client;
 

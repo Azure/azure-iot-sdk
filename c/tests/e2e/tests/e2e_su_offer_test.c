@@ -466,7 +466,8 @@ static void spy_on_update(const uint8_t* payload, size_t len, void* ctx)
 static bool verdict_is_final(az_iot_result result, az_iot_su_error_action action)
 {
   return result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_NONE
-      || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
+      || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
 }
 
 static void spy_on_result(
@@ -894,7 +895,7 @@ static void real_update_is_downloaded_verified_installed_and_reported(void** sta
 }
 
 /* An identical report is accepted. An explicit conflict rejects this payload
- * permanently; it is not acceptance of a duplicate. */
+ * permanently and asks for a new check; it is not acceptance of a duplicate. */
 static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** state)
 {
   (void)state;
@@ -929,7 +930,7 @@ static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** stat
   r = send_report(fx, saved_report_view(&conflicting));
   assert_int_not_equal(r->result, AZ_IOT_OK);
   assert_int_equal(r->service_code, 409000);
-  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
 /* The service keeps offering a workflow after its terminal report. A client

@@ -6124,6 +6124,71 @@ static void a_proceed_verdict_is_also_reported(void** state)
   assert_string_equal(fx->last_error_text, "UPDATE_ACCOUNT_NOT_LINKED");
 }
 
+/* A conflicting report queues a check on the route last requested, and leaves a
+ * check the application already queued untouched. */
+static void a_report_conflict_rechecks_on_the_last_requested_route(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->abandoned_count = 0;
+  az_iot_su_service_error se
+      = { .code = 409000, .message = "REPORT_CONFLICT", .tracking_id = "t-1" };
+
+  /* An application check already queued wins: same route, same deadline. */
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, 5000u), AZ_IOT_OK);
+  uint64_t deadline = fx->su._internal.pending_fetch_deadline_ms;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_string_equal(fx->last_error_text, "REPORT_CONFLICT");
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_ONBOARDING);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, deadline);
+
+  /* With nothing queued, the conflict queues one on that same route. */
+  fx->su._internal.pending_fetch = SU_FETCH_NONE;
+  fx->su._internal.pending_fetch_deadline_ms = 0;
+  uint64_t before = az_iot_time_mono_ms();
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_ONBOARDING);
+  assert_false(fx->su._internal.pending_fetch_paced);
+  assert_int_equal(fx->su._internal.pending_fetch_timeout_ms, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+  assert_true(
+      fx->su._internal.pending_fetch_deadline_ms >= before + AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+
+  /* A check in flight also covers it. */
+  fx->su._internal.pending_fetch = SU_FETCH_NONE;
+  fx->su._internal.fetch_in_flight = SU_FETCH_REGULAR;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_NONE);
+  fx->su._internal.fetch_in_flight = SU_FETCH_NONE;
+
+  /* FATAL on a report queues nothing. */
+  fx->su._internal.pending_fetch_deadline_ms = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_NONE);
+}
+
 /* A verdict with no service response behind it still delivers a usable event:
  * the strings are empty, never NULL, so an observer never has to null-check. */
 static void an_abandonment_without_a_service_error_carries_empty_strings(void** state)
@@ -7552,8 +7617,9 @@ static void catalog_engine_error(void** state)
   assert_int_equal(count_ops(&fx->log, OP_INSTALL), installs);
   assert_int_equal(count_ops(&fx->log, OP_APPLY), applies);
 
+  bool recheck = row->action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
   bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED || recheck;
   if (terminal)
   {
     assert_int_equal(fx->abandoned_count, 1);
@@ -7562,19 +7628,50 @@ static void catalog_engine_error(void** state)
     assert_int_equal(fx->last_error_code, row->numeric);
     assert_string_equal(fx->last_error_text, row->code);
     assert_string_equal(fx->last_tracking_id, "catalog-track");
-    assert_int_equal(fx->su._internal.pending_fetch, 0);
     assert_int_equal(fx->su._internal.fetch_in_flight, 0);
-    assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
     assert_false(fx->su._internal.device_properties_report_pending);
+    if (recheck)
+    {
+      /* A conflict queues a check on the route last requested, with the default timeout. */
+      assert_true(report);
+      assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_REGULAR);
+      assert_false(fx->su._internal.pending_fetch_paced);
+      assert_true(
+          fx->su._internal.pending_fetch_deadline_ms
+          <= az_iot_time_mono_ms() + AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+      assert_true(
+          fx->su._internal.pending_fetch_deadline_ms
+          >= before + AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+    }
+    else
+    {
+      assert_int_equal(fx->su._internal.pending_fetch, 0);
+      assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+    }
     if (report)
     {
       assert_false(fx->su._internal.report_owed);
       assert_false(fx->log.have_persist);
-      assert_wire_pumps_do_not_publish(fx, sent);
+      if (recheck)
+      {
+        assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+        assert_int_equal(
+            az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), sent + 1);
+        assert_true(wire_channel(fx)->request_pending);
+        assert_int_equal(wire_channel(fx)->pending_operation, AZ_IOT_SU_OP_GET_UPDATE);
+        assert_wire_pumps_do_not_publish(fx, sent + 1);
+      }
+      else
+      {
+        assert_wire_pumps_do_not_publish(fx, sent);
+      }
       wire_response(fx, original_rid, 200, "", "");
       assert_int_equal(fx->abandoned_count, 1);
-      /* Recovery is an explicit application poll, not acceptance of the report. */
-      wire_fetch(fx, AZ_IOT_SU_OP_GET_UPDATE);
+      if (!recheck)
+      {
+        /* Recovery is an explicit application poll, not acceptance of the report. */
+        wire_fetch(fx, AZ_IOT_SU_OP_GET_UPDATE);
+      }
       wire_response(fx, original_rid, 200, "", "");
       assert_true(wire_channel(fx)->request_pending);
       assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
@@ -8001,6 +8098,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_abandoned_operation_is_reported_to_observers, setup, teardown),
     cmocka_unit_test_setup_teardown(a_proceed_verdict_is_also_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_conflict_rechecks_on_the_last_requested_route, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_abandonment_without_a_service_error_carries_empty_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(the_observer_registry_enforces_its_contract, setup, teardown),

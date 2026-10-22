@@ -351,6 +351,7 @@ static az_iot_su_error_action handle_failure(
     case AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER:
     case AZ_IOT_SU_ERROR_ACTION_RETRY:
     case AZ_IOT_SU_ERROR_ACTION_FATAL:
+    case AZ_IOT_SU_ERROR_ACTION_RECHECK:
     default:
       /* Nothing cached to invalidate; the caller decides whether to retry. */
       break;

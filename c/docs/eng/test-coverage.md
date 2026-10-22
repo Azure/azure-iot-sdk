@@ -1032,7 +1032,7 @@ The common inventory keeps parser, channel and engine rows identical without add
 | `UPDATE_ACCOUNT_ACCESS_DENIED` | 5 | 5 | 5 | Same as `UPDATE_ACCOUNT_NOT_LINKED`. |
 | `DEVICE_NOT_PROVISIONED` | 5 | — | — | Fatal; stop retry, expose abandonment. Regular fetch only. |
 | `UNKNOWN_WORKFLOW_ID` | — | — | 5 | Fatal; stop reporting this workflow, expose rejection, never claim delivery. |
-| `REPORT_CONFLICT` | — | — | 6 | Fatal when typed; stop conflicting replay, expose rejection; application explicitly re-polls. |
+| `REPORT_CONFLICT` | — | — | 6 | Stop conflicting replay, expose rejection, then the client checks for updates once. |
 | `INTERNAL_SERVER_ERROR` | 5 | 5 | 5 | Jittered exponential backoff, then unchanged retry. |
 | `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay; fallback backoff or honor supplied delay. |
 | 429 | 12 | 12 | 12 | Typed and bodyless × supplied, missing, zero, malformed (`3s`), negative, HTTP-date topic values. Valid seconds gate retry; all unusable hints fall back to backoff. |
@@ -1056,8 +1056,8 @@ The fallback rows, on all routes, are numeric `400000`, `409000`, `429000`, capt
 `500001`, `503000`, unknown `FUTURE_CODE` with `400002` or `503000`, and bodyless 503.
 Fetches additionally exercise numeric `400004` corrective resend. Numeric values come
 from the SDK's existing DPS constants/captured fixtures, **not HTTP status multiplication**.
-The untyped shared `409000` is `PROCEED` on a fetch and `FATAL` on a report; a 409
-never means the report was recorded.
+The untyped shared `409000` is `PROCEED` on a fetch and a conflict (`RECHECK`) on a report; a
+409 never means the report was recorded.
 
 | Suite | Evidence beyond classification |
 | --- | --- |
@@ -1194,7 +1194,7 @@ No downloads, external runner, service calls or cloud agents are required.
 | | Malformed manifest JSON is rejected | — | unit | Done | [malformed_manifest_json_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1481) |
 | | Verify file hash rejects an unsupported algorithm | — | unit | Done | [verify_file_hash_rejects_an_unsupported_algorithm](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/unit/su_client_test.c#L1534) |
 | End-to-end | Real update is downloaded, verified, installed and reported | A real offer through the whole client: real roots, real download and hash, SUCCEEDED acknowledged. Passes live; not yet in CI. | e2e | Pending | [real_update_is_downloaded_verified_installed_and_reported](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
-| | Terminal report is idempotent and a conflict is detected | An identical report is accepted (200); typed 409000 REPORT_CONFLICT rejects the payload permanently. Requires live service; not part of the offline error catalog. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
+| | Terminal report is idempotent and a conflict is detected | An identical report is accepted (200); typed 409000 REPORT_CONFLICT rejects the payload permanently and asks for a new check. Requires live service; not part of the offline error catalog. | e2e | Pending | [terminal_report_is_idempotent_and_a_conflict_is_detected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Workflow is offered again after its terminal report | The service keeps offering it; a client with no record runs it again and the identical report is accepted. Passes live; not yet in CI. | e2e | Pending | [workflow_is_offered_again_after_its_terminal_report](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Incompatible device is offered nothing | 200 with no updateMetadata; nothing downloaded or reported. Passes live; not yet in CI. | e2e | Pending | [incompatible_device_is_offered_nothing](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
 | | Install failure is rolled back and reported failed | Needs a staged offer; not yet run live. | e2e | Pending | [install_failure_is_rolled_back_and_reported_failed](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_su_offer_test.c) |
