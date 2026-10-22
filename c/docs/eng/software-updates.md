@@ -498,7 +498,11 @@ blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
-- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
+- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` bytes; size storage for it.
+- **In place** — a workflow record is serialized around the update copy in the workspace: its
+  header just before it, its trailer just after. A terminal record has no request and is built
+  in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
+  the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
 - **Versioned** — magic `"SUCP"` and a `u16` format version (currently 1). A
   record of any other magic or version is ignored. All integers are
   little-endian.
@@ -795,9 +799,13 @@ typedef struct az_iot_su_client
         az_iot_su_client_update_manifest current_manifest;
         uint32_t current_step;
         uint32_t current_file;
-        /* Client-owned device-properties cache (deep copy of caller's struct). */
+        /* Parts of the application's workspace: update copy and its persisted
+         * record, terminal record, scratch, message body, device-property cache. */
+        uint8_t* request_buffer;
+        uint8_t* persist_blob;
+        uint8_t* terminal_blob;
+        uint8_t* scratch;
         uint8_t* device_properties_buffer;
-        size_t device_properties_buffer_size;
         bool device_properties_report_pending;
         /* Connection-state observer / detach safety (see §16). */
         bool detached;
@@ -817,9 +825,10 @@ typedef struct az_iot_su_client
  *     Microsoft-signed updates, pass az_iot_su_microsoft_root_keys().
  *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
- *   device_properties_buffer / size: caller-owned cache the client copies into.
- *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
- *     with az_iot_su_device_properties_buffer_size().
+ *   limits: sizes of the workspace parts (az_iot_su_limits_default()).
+ *   workspace / workspace_size: the client's memory, at least
+ *     az_iot_su_workspace_size(&limits) bytes. No hidden allocation; it MUST
+ *     outlive the client.
  *   replacement_policy: what a new workflow id does to a workflow that may not
  *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
  *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
@@ -830,8 +839,9 @@ typedef struct az_iot_su_client_config_options
     const az_iot_su_root_key*          root_keys;
     size_t                              root_key_count;
     const az_iot_su_device_properties* device_properties;
-    uint8_t*                            device_properties_buffer;
-    size_t                              device_properties_buffer_size;
+    az_iot_su_limits                    limits;
+    uint8_t*                            workspace;
+    size_t                              workspace_size;
     az_iot_su_replacement_policy        replacement_policy;
 } az_iot_su_client_config_options;
 
@@ -1032,7 +1042,7 @@ az_iot_su_device_properties properties = {
     .custom_properties_count = 1,
 };
 
-uint8_t properties_cache[256];
+static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 size_t root_key_count;
 const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
@@ -1040,8 +1050,8 @@ su_opts.hooks = &hooks;
 su_opts.root_keys = root_keys;
 su_opts.root_key_count = root_key_count;
 su_opts.device_properties = &properties;
-su_opts.device_properties_buffer = properties_cache;
-su_opts.device_properties_buffer_size = sizeof(properties_cache);
+su_opts.workspace = su_workspace; /* limits: az_iot_su_limits_default() */
+su_opts.workspace_size = sizeof(su_workspace);
 az_iot_su_client_init(&su, &conn, &su_opts);
 /* `properties` and its strings may now be freed/reused; the client holds a deep copy. */
 

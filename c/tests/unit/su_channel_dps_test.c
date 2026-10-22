@@ -58,6 +58,7 @@ typedef struct
 
   az_iot_su_channel_dps channel_state;
   az_iot_su_channel channel;
+  uint8_t body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
 
   /* What the engine would have been told. */
   size_t update_count;
@@ -211,7 +212,9 @@ static int setup(void** state)
   dp.installed_update_id.name = "Foobar";
   dp.installed_update_id.version = "1.0";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+      AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -1039,6 +1042,8 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   memcpy(fx->channel_state.service_config_etag, "config", sizeof("config"));
   az_iot_su_channel_dps before;
   memcpy(&before, &fx->channel_state, sizeof(before));
+  uint8_t body_before[sizeof(fx->body)];
+  memcpy(body_before, fx->body, sizeof(body_before));
   az_iot_su_custom_property six[]
       = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" }, { "e", "5" }, { "f", "6" } };
   az_iot_su_custom_property duplicate[] = { { "manufacturer", "other" } };
@@ -1076,7 +1081,7 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   az_iot_su_device_properties valid = { .manufacturer = "replacement" };
   assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &valid), AZ_IOT_OK);
   assert_true(fx->channel_state.request_pending);
-  assert_memory_equal(fx->channel_state.body, before.body, sizeof(before.body));
+  assert_memory_equal(fx->body, body_before, sizeof(body_before));
   assert_string_equal(fx->channel_state.pending_rid, before.pending_rid);
   assert_int_equal(fx->channel_state.pending_operation, before.pending_operation);
   assert_int_equal(fx->result_count, 0);
@@ -1276,12 +1281,12 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   fixture* fx = (fixture*)*state;
   az_iot_su_platform_hooks hooks = { 0 };
   az_iot_su_device_properties properties = { .manufacturer = "original" };
-  uint8_t storage[512] = { 0 };
+  static uint8_t workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
   options.hooks = &hooks;
   options.device_properties = &properties;
-  options.device_properties_buffer = storage;
-  options.device_properties_buffer_size = sizeof(storage);
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
   az_iot_su_client client;
   assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
@@ -1294,16 +1299,16 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   properties.manufacturer = escaped_compat;
   properties.installed_update_id = (az_iot_su_update_id_info){ escaped_provider, "n", "v" };
   size_t need = az_iot_su_device_properties_buffer_size(&properties);
-  assert_true(need > 0 && need <= sizeof(storage));
+  assert_true(need > 0 && need <= options.limits.device_properties_size);
 
   az_iot_su_client before;
   memcpy(&before, &client, sizeof(before));
-  uint8_t storage_before[sizeof(storage)];
-  memcpy(storage_before, storage, sizeof(storage));
+  static uint8_t workspace_before[sizeof(workspace)];
+  memcpy(workspace_before, workspace, sizeof(workspace));
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &properties), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
-  assert_memory_equal(storage, storage_before, sizeof(storage_before));
+  assert_memory_equal(workspace, workspace_before, sizeof(workspace_before));
   az_iot_su_client_deinit(&client);
 
   /* The same validation must run during initialization, before opening the channel. */
@@ -1734,7 +1739,9 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   dp.manufacturer = "Contoso";
   dp.model = "Foobar";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+      AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
   (void)open_to_registering(fx);
 
