@@ -10,6 +10,7 @@
 
 #include "azure/iot/az_iot.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,6 +243,65 @@ FILE* sample_fopen_private(const char* path)
   }
 #endif
   return f;
+}
+
+FILE* sample_fopen_private_new(const char* path)
+{
+  FILE* f = NULL;
+  int fd;
+  if (!path || (remove(path) != 0 && errno != ENOENT))
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  if (_sopen_s(
+          &fd, path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE)
+      != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+  /* O_EXCL fails on any existing name, a symbolic link included. */
+  fd = open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  f = fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
+}
+
+FILE* sample_fopen_read_nofollow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+#if defined(_WIN32) || !defined(O_NOFOLLOW)
+  return fopen(path, "rb");
+#else
+  int fd = open(path, O_RDONLY | O_NOFOLLOW);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  FILE* f = fdopen(fd, "rb");
+  if (!f)
+  {
+    (void)close(fd);
+  }
+  return f;
+#endif
 }
 
 uint64_t sample_now_ms(void)

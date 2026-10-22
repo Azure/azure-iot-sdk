@@ -245,7 +245,7 @@ static int32_t download_file(
     d->written = 0;
     d->too_large = 0;
     reader_close(d);
-    d->file = sample_fopen_private(d->path);
+    d->file = sample_fopen_private_new(d->path);
     if (d->file == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -354,7 +354,7 @@ static int32_t download_read_file(
   }
   if (d->reader == NULL)
   {
-    d->reader = fopen(path, "rb");
+    d->reader = sample_fopen_read_nofollow(path);
     if (d->reader == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;

@@ -80,6 +80,24 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
  */
 FILE* sample_fopen_private(const char* path);
 
+/**
+ * @brief Like sample_fopen_private(), but removes @p path first and creates it
+ * exclusively, so a file or link planted at @p path is never opened.
+ *
+ * @param[in] path File to replace.
+ * @return Stream to close with fclose(), or NULL on failure (including when
+ * @p path cannot be removed).
+ */
+FILE* sample_fopen_private_new(const char* path);
+
+/**
+ * @brief Open @p path for binary reading; on POSIX a symbolic link is refused.
+ *
+ * @param[in] path File to read.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_fopen_read_nofollow(const char* path);
+
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
 // that has to measure elapsed time brings its own.

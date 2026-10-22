@@ -23,6 +23,8 @@ on the device changes.
   does one that sends more than the manifest's file size.
 - Only HTTP and HTTPS URLs are fetched, redirects included.
 - A file is restarted when a replacing workflow asks for another file mid-transfer.
+- Each download replaces any file or link at its path (removed, then created exclusively, owner-only);
+  the read-back refuses a link.
 - Requires libcurl with asynchronous DNS (`AsynchDNS` in `curl --version`); without it the
   sample exits.
 - `install_fn` works in chunks (`SAMPLE_INSTALL_CHUNKS` calls per step), returning
