@@ -43,19 +43,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         public bool IsConnectionTargetSet => _unifiedConnectionClient.IsConnectionTargetSet;
 
-        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
-            return _unifiedConnectionClient.PublishAsync(publish, cancellationToken);
+            return _unifiedConnectionClient.PublishAsync(publish, throwOnErrorReasonCode, cancellationToken);
         }
 
-        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
-            return _unifiedConnectionClient.SubscribeAsync(subscribe, cancellationToken);
+            return _unifiedConnectionClient.SubscribeAsync(subscribe, throwOnErrorReasonCode, cancellationToken);
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
-            return _unifiedConnectionClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+            return _unifiedConnectionClient.UnsubscribeAsync(unsubscribe, throwOnErrorReasonCode, cancellationToken);
         }
     }
 }

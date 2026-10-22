@@ -31,7 +31,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         {
             Debug.Assert(CurrentConnectionContext != null);
 
-            return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args);
+            return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
         }
 
         /// <summary>
@@ -41,9 +41,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// <remarks>
         /// The connection and device id are supplied by the caller rather than read from this client's own state so
         /// that the unified connection client can run this same flow on the connection that it owns when it is
-        /// connected to a gen 2 hub.
+        /// connected to a gen 2 hub. Likewise, <paramref name="subscriptionSourceOwner"/> is the client whose registered
+        /// <see cref="IDevicePresenceSubscriptionSource"/>s are re-subscribed to alongside the devicebound topic.
         /// </remarks>
-        internal async Task AnnounceDevicePresenceAsync(MqttConnectionManager connection, string deviceId, MqttClientConnectedEventArgs args)
+        internal async Task AnnounceDevicePresenceAsync(MqttConnectionManager connection, string deviceId, MqttClientConnectedEventArgs args, AbstractConnectionClient subscriptionSourceOwner)
         {
             //TODO do we need any sort of cancellation handling here if the connect call's cancellation token triggers?
 
@@ -59,18 +60,37 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 try
                 {
-                    var suback = await connection.SubscribeAsync(ConnectionEndpoint.IotHub, new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce));
-                    var subackFirstItem = suback.Items.FirstOrDefault();
-                    if (subackFirstItem == null)
-                    {
-                        Trace.TraceWarning("Received malformed SUBACK. Attempting connection again...");
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
-                        return;
-                    }
+                    // Feature clients' subscriptions (such as custom topics) were lost with the session, so they are
+                    // re-established in the same SUBSCRIBE as the devicebound topic. They are collected only once the
+                    // SUBSCRIBE is about to be sent, so that it reflects every subscribe/unsubscribe made before then.
+                    IReadOnlyList<DevicePresenceSubscriptionRequest> featureSubscriptions = Array.Empty<DevicePresenceSubscriptionRequest>();
+                    int sentTopicFilterCount = 0;
+                    var suback = await connection.BuildAndSubscribeAsync(
+                        ConnectionEndpoint.IotHub,
+                        () =>
+                        {
+                            featureSubscriptions = subscriptionSourceOwner.CollectDevicePresenceSubscriptions();
+                            MqttSubscribe subscribe = new(string.Format("ih/{0}/dev/#", deviceId), MqttQualityOfServiceLevel.AtLeastOnce);
+                            foreach (DevicePresenceSubscriptionRequest request in featureSubscriptions)
+                            {
+                                foreach (MqttTopicFilter topicFilter in request.TopicFilters)
+                                {
+                                    subscribe.TopicFilters.Add(new MqttTopicFilter(
+                                        topicFilter.Topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal),
+                                        topicFilter.QualityOfServiceLevel));
+                                }
+                            }
 
-                    if (subackFirstItem == null)
+                            sentTopicFilterCount = subscribe.TopicFilters.Count;
+                            return subscribe;
+                        },
+                        // A feature client's topic being rejected must not fail the presence flow, so judge each item below
+                        throwOnSubackErrorCode: false);
+
+                    var subackFirstItem = suback.Items.FirstOrDefault();
+                    if (subackFirstItem == null || suback.Items.Count != sentTopicFilterCount)
                     {
-                        Trace.TraceWarning($"Received malformed SUBACK on devicebound SUBSCRIBE.");
+                        Trace.TraceWarning("Received malformed SUBACK on devicebound SUBSCRIBE. Attempting connection again...");
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                         return;
                     }
@@ -81,6 +101,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
                         return;
                     }
+
+                    ReportDevicePresenceSubscriptionResults(featureSubscriptions, suback.Items.Skip(1).ToList());
                 }
                 catch (Exception e)
                 {

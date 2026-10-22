@@ -1,10 +1,13 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Retry;
 using System.Text;
 using Xunit;
 
@@ -52,6 +55,52 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttPublish receivedPublish = Assert.Single(receivedPublishes);
             Assert.Same(publish, receivedPublish);
             Assert.Equal(1, deliveredArgs.AcknowledgeCount);
+        }
+
+        // Overlapping subscriptions can also come from a "{deviceId}" placeholder filter (resolved only when matching) and
+        // single-level wildcards. MQTT 5 additionally lets the service send a separate copy of the publish for each matching
+        // subscription, so each copy must reach the user exactly once and be acknowledged exactly once.
+        [Fact]
+        public async Task EachCopyOfPublishMatchingOverlappingPlaceholderAndWildcardTopicsIsDeliveredAndAcknowledgedOnce()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            List<MqttPublish> receivedPublishes = new();
+            customTopicsClient.CustomTopicPublishReceivedAsync += args =>
+            {
+                receivedPublishes.Add(args.Publish);
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync($"commands/{IConnectionClient.DeviceIdPlaceholder}/+", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("commands/+/reboot", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("commands/#", MqttQualityOfServiceLevel.AtMostOnce, TestContext.Current.CancellationToken);
+
+            MqttPublish firstCopy = new()
+            {
+                Topic = $"commands/{DeviceId}/reboot",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                Payload = Encoding.UTF8.GetBytes("reboot"),
+            };
+            MqttPublish secondCopy = new()
+            {
+                Topic = firstCopy.Topic,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                Payload = firstCopy.Payload,
+            };
+
+            MockMqttPublishReceivedEventArgs firstDelivery = await connection.SimulateReceiveAsync(firstCopy);
+            MockMqttPublishReceivedEventArgs secondDelivery = await connection.SimulateReceiveAsync(secondCopy);
+
+            Assert.Equal(2, receivedPublishes.Count);
+            Assert.Same(firstCopy, receivedPublishes[0]);
+            Assert.Same(secondCopy, receivedPublishes[1]);
+            Assert.Equal(1, firstDelivery.AcknowledgeCount);
+            Assert.Equal(1, secondDelivery.AcknowledgeCount);
         }
 
         // If a user subscribes to multiple topics at once, and only some of them are successful, this client should still track those topics as subscribed. This client should also still receive and delegate publishes to those topics to the user
@@ -573,6 +622,54 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, callbackCount);
         }
 
+        [Fact]
+        public async Task DisposeWaitsForCallbackAdmissionToFinish()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            CustomTopicsClient customTopicsClient = new(connection);
+            using ManualResetEventSlim callbackCanReturn = new();
+            using ManualResetEventSlim callbackStarted = new();
+
+            customTopicsClient.CustomTopicPublishReceivedAsync += _ =>
+            {
+                callbackStarted.Set();
+                callbackCanReturn.Wait(TestContext.Current.CancellationToken);
+                return Task.CompletedTask;
+            };
+
+            await customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            Task receiveTask = Task.Run(async () => await connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = "topic",
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+            }), TestContext.Current.CancellationToken);
+
+            Assert.True(callbackStarted.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+
+            using ManualResetEventSlim disposeStarted = new();
+            Task disposeTask = Task.Run(() =>
+            {
+                disposeStarted.Set();
+                customTopicsClient.Dispose();
+            }, TestContext.Current.CancellationToken);
+            try
+            {
+                Assert.True(disposeStarted.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+                Assert.False(disposeTask.IsCompleted);
+            }
+            finally
+            {
+                callbackCanReturn.Set();
+            }
+
+            await Task.WhenAll(receiveTask, disposeTask);
+        }
+
         // A subscribe already in flight when this client is disposed must not repopulate the tracked topics when it completes,
         // and operations still waiting their turn must fail with ObjectDisposedException instead of using the connection.
         [Fact]
@@ -598,6 +695,465 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.Empty(customTopicsClient.GetSubscribedTopics);
             Assert.Empty(connection.UnsubscribedMessages);
+        }
+
+        private static ConnectionClient CreateReconnectingConnectionClient(MockConnectionMqttClient mockMqttClient)
+        {
+            return new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+        }
+
+        private static ConnectionContext CreateHubConnectionContext()
+        {
+#pragma warning disable SYSLIB0026 // Mock certificate, no need to load a real one
+            return new ConnectionContext()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                DeviceId = DeviceId,
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
+            };
+#pragma warning restore SYSLIB0026
+        }
+
+        // Lose the connection and wait for the connection client to re-establish this device's presence, returning the
+        // device presence SUBSCRIBE sent on the new connection.
+        private static async Task<MqttSubscribe> ReconnectAndGetPresenceSubscribeAsync(MockConnectionMqttClient mockMqttClient, ConnectionClient connectionClient)
+        {
+            TaskCompletionSource presenceCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Func<DevicePresenceFlowCompletedArgs, Task> onPresenceCompleted = _ =>
+            {
+                presenceCompleted.TrySetResult();
+                return Task.CompletedTask;
+            };
+            connectionClient.DevicePresenceFlowCompletedAsync += onPresenceCompleted;
+
+            int trafficCountBeforeReconnect;
+            lock (mockMqttClient.SentMqttTrafficInOrder)
+            {
+                trafficCountBeforeReconnect = mockMqttClient.SentMqttTrafficInOrder.Count;
+            }
+
+            try
+            {
+                await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"))
+                    .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await presenceCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                connectionClient.DevicePresenceFlowCompletedAsync -= onPresenceCompleted;
+            }
+
+            lock (mockMqttClient.SentMqttTrafficInOrder)
+            {
+                return mockMqttClient.SentMqttTrafficInOrder
+                    .Skip(trafficCountBeforeReconnect)
+                    .Select(traffic => traffic.Subscribe)
+                    .OfType<MqttSubscribe>()
+                    .Single(subscribe => subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic == $"ih/{DeviceId}/dev/#"));
+            }
+        }
+
+        // Custom topic subscriptions are lost with the session, so they must be re-subscribed to (with their QoS and the
+        // device's current ID) in the device presence SUBSCRIBE. A topic the service then rejects must stop being tracked
+        // without failing the presence flow.
+        [Fact]
+        public async Task SubscribedTopicsAreResubscribedInDevicePresenceSubscribeUponReconnecting()
+        {
+            const string placeholderTopic = "foo/{deviceId}/bar";
+            const string rejectedTopic = "rejected/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            await customTopicsClient.SubscribeAsync(placeholderTopic, MqttQualityOfServiceLevel.AtMostOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("baz/#", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync(rejectedTopic, MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                MqttSubscribeAck suback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                foreach (MqttSubscribeAckItem item in suback.Items.Where(item => item.TopicFilter.Topic == rejectedTopic))
+                {
+                    item.ReasonCode = MqttClientSubscribeReasonCode.NotAuthorized;
+                }
+
+                return Task.FromResult(suback);
+            };
+
+            MqttSubscribe presenceSubscribe = await ReconnectAndGetPresenceSubscribeAsync(mockMqttClient, connectionClient);
+
+            Assert.Equal(
+                new (string, MqttQualityOfServiceLevel)[]
+                {
+                    ($"ih/{DeviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce),
+                    ($"foo/{DeviceId}/bar", MqttQualityOfServiceLevel.AtMostOnce),
+                    ("baz/#", MqttQualityOfServiceLevel.AtLeastOnce),
+                    (rejectedTopic, MqttQualityOfServiceLevel.AtLeastOnce),
+                },
+                presenceSubscribe.TopicFilters.Select(topicFilter => (topicFilter.Topic, topicFilter.QualityOfServiceLevel)));
+
+            Assert.Equal(new[] { placeholderTopic, "baz/#" }, customTopicsClient.GetSubscribedTopics);
+            Assert.Empty(mockMqttClient.DisconnectRequests);
+        }
+
+        // A reconnection while an unsubscribe is in flight must not re-subscribe to its topic (which could undo the
+        // unsubscribe), and since the service then no longer has that subscription, it stops being tracked even if the
+        // unsubscribe fails.
+        [Fact]
+        public async Task TopicWithPendingUnsubscribeIsNotResubscribedUponReconnecting()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            await customTopicsClient.SubscribeAsync("a", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("b", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            TaskCompletionSource unsubscribeSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<MqttUnsubscribeAck> pendingUnsuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnUnsubscribe = _ =>
+            {
+                unsubscribeSent.TrySetResult();
+                return pendingUnsuback.Task;
+            };
+
+            Task<MqttClientUnsubscribeReasonCode> unsubscribeTask = customTopicsClient.UnsubscribeAsync("a", TestContext.Current.CancellationToken);
+            await unsubscribeSent.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            MqttSubscribe presenceSubscribe = await ReconnectAndGetPresenceSubscribeAsync(mockMqttClient, connectionClient);
+
+            Assert.Equal(new[] { $"ih/{DeviceId}/dev/#", "b" }, presenceSubscribe.TopicFilters.Select(topicFilter => topicFilter.Topic));
+
+            pendingUnsuback.SetException(new Exception("mock unsubscribe failure"));
+            await Assert.ThrowsAnyAsync<Exception>(() => unsubscribeTask);
+
+            Assert.Equal(new[] { "b" }, customTopicsClient.GetSubscribedTopics);
+        }
+
+        // Once disposed, a custom topics client must no longer add its topics to the device presence SUBSCRIBE
+        [Fact]
+        public async Task DisposedClientTopicsAreNotResubscribedUponReconnecting()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("a", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            customTopicsClient.Dispose(disposing: false);
+
+            MqttSubscribe presenceSubscribe = await ReconnectAndGetPresenceSubscribeAsync(mockMqttClient, connectionClient);
+
+            Assert.Equal($"ih/{DeviceId}/dev/#", Assert.Single(presenceSubscribe.TopicFilters).Topic);
+        }
+
+        // Unlike other feature clients' operations, a custom topic operation's MQTT-level failure is the user's to
+        // interpret, so it is returned as-is rather than thrown, and tracking reflects what the service actually granted.
+        [Fact]
+        public async Task ErrorReasonCodesAreReturnedAsIsRatherThanThrown()
+        {
+            const string topic = "custom/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            await customTopicsClient.SubscribeAsync(topic, MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            mockMqttClient.OnPublish = publish => Task.FromResult(new MqttPublishAck()
+            {
+                ReasonCode = publish.Topic == topic ? MqttPublishAckReasonCode.NotAuthorized : MqttPublishAckReasonCode.Success,
+            });
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                MqttSubscribeAck suback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                foreach (MqttSubscribeAckItem item in suback.Items)
+                {
+                    item.ReasonCode = MqttClientSubscribeReasonCode.TopicFilterInvalid;
+                }
+
+                return Task.FromResult(suback);
+            };
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                MqttUnsubscribeAck unsuback = MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+                foreach (MqttUnsubscribeAckItem item in unsuback.Items)
+                {
+                    item.ReasonCode = MqttClientUnsubscribeReasonCode.NotAuthorized;
+                }
+
+                return Task.FromResult(unsuback);
+            };
+
+            MqttPublishAck puback = await customTopicsClient.PublishAsync(
+                new MqttPublish() { Topic = topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+            Assert.Equal(MqttPublishAckReasonCode.NotAuthorized, puback.ReasonCode);
+
+            Assert.Equal(
+                MqttClientSubscribeReasonCode.TopicFilterInvalid,
+                await customTopicsClient.SubscribeAsync("invalid/topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken));
+
+            Assert.Equal(
+                MqttClientUnsubscribeReasonCode.NotAuthorized,
+                await customTopicsClient.UnsubscribeAsync(topic, TestContext.Current.CancellationToken));
+
+            Assert.Equal(new[] { topic }, customTopicsClient.GetSubscribedTopics);
+        }
+
+        // Connection-level failures are still the SDK's to handle: an operation the connection loss interrupts is re-sent
+        // once the device is present again, and only the eventual MQTT-level result is returned.
+        [Fact]
+        public async Task OperationInterruptedByConnectionLossIsResentAndItsErrorReasonCodeReturned()
+        {
+            const string topic = "custom/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            int customTopicPublishAttempts = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic != topic)
+                {
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
+                if (Interlocked.Increment(ref customTopicPublishAttempts) == 1)
+                {
+                    _ = Task.Run(() => mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception")));
+                    throw new MqttClientNotConnectedException("mock connection loss");
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.QuotaExceeded });
+            };
+
+            MqttPublishAck puback = await customTopicsClient
+                .PublishAsync(new MqttPublish() { Topic = topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce }, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(MqttPublishAckReasonCode.QuotaExceeded, puback.ReasonCode);
+            Assert.Equal(2, customTopicPublishAttempts);
+        }
+
+        // An operation that the connection drops after it was sent may or may not have reached the service, so it is not
+        // re-sent. It fails with a retryable DeviceException instead, and leaves the tracked topics as they were.
+        [Fact]
+        public async Task OperationsDroppedAfterBeingSentThrowRetryableDeviceExceptionWithoutBeingResent()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync("existing", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            // MQTTnet fails an operation awaiting its ack with this exception when the connection drops
+            int publishAttempts = 0, subscribeAttempts = 0, unsubscribeAttempts = 0;
+            Exception connectionDropped = new MQTTnet.Exceptions.MqttClientDisconnectedException(new Exception("mock connection loss"));
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic != "custom/topic")
+                {
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
+                Interlocked.Increment(ref publishAttempts);
+                throw connectionDropped;
+            };
+            mockMqttClient.OnSubscribe = _ =>
+            {
+                Interlocked.Increment(ref subscribeAttempts);
+                throw connectionDropped;
+            };
+            mockMqttClient.OnUnsubscribe = _ =>
+            {
+                Interlocked.Increment(ref unsubscribeAttempts);
+                throw connectionDropped;
+            };
+
+            DeviceException publishException = await Assert.ThrowsAsync<DeviceException>(() => customTopicsClient.PublishAsync(
+                new MqttPublish() { Topic = "custom/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken));
+
+            MqttSubscribe subscribe = new()
+            {
+                TopicFilters = new()
+                {
+                    new MqttTopicFilter("existing", MqttQualityOfServiceLevel.AtLeastOnce),
+                    new MqttTopicFilter("new", MqttQualityOfServiceLevel.AtLeastOnce),
+                },
+            };
+            DeviceException subscribeException = await Assert.ThrowsAsync<DeviceException>(
+                () => customTopicsClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken));
+            Assert.Equal(new[] { "existing" }, customTopicsClient.GetSubscribedTopics);
+
+            DeviceException unsubscribeException = await Assert.ThrowsAsync<DeviceException>(
+                () => customTopicsClient.UnsubscribeAsync("existing", TestContext.Current.CancellationToken));
+            Assert.Equal(new[] { "existing" }, customTopicsClient.GetSubscribedTopics);
+
+            Assert.All(
+                new[] { publishException, subscribeException, unsubscribeException },
+                exception => Assert.Equal(ErrorRetryability.Retryable, exception.Retryability));
+            Assert.Equal(1, publishAttempts);
+            Assert.Equal(1, subscribeAttempts);
+            Assert.Equal(1, unsubscribeAttempts);
+        }
+
+        // An application that disconnects the connection client while an operation awaits its ack drops that operation
+        // like any other connection loss, so the operation fails with a DeviceException.
+        [Fact]
+        public async Task DeliberateDisconnectWhileAwaitingAckThrowsDeviceException()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource publishSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<MqttPublishAck> pendingPuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnPublish = _ =>
+            {
+                publishSent.TrySetResult();
+                return pendingPuback.Task;
+            };
+
+            // MQTTnet fails every operation awaiting its ack when the client disconnects
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                pendingPuback.TrySetException(new MQTTnet.Exceptions.MqttClientDisconnectedException(null));
+                return Task.CompletedTask;
+            };
+
+            Task<MqttPublishAck> publishTask = customTopicsClient.PublishAsync(
+                new MqttPublish() { Topic = "custom/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+            await publishSent.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<DeviceException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        }
+
+        // An operation waiting for the connection must stop waiting once the connection client hits a fault it will not
+        // recover from, report that fault as the inner exception, and leave the tracked topics as they were.
+        [Fact]
+        public async Task UnrecoverableFaultWhileWaitingForConnectionThrowsOperationCanceledWithTheFault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            // The operations find the connection gone, so they wait for it to be re-established
+            TaskCompletionSource publishAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource subscribeAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnPublish = _ =>
+            {
+                publishAttempted.TrySetResult();
+                throw new MqttClientNotConnectedException("mock client not connected exception");
+            };
+            mockMqttClient.OnSubscribe = _ =>
+            {
+                subscribeAttempted.TrySetResult();
+                throw new MqttClientNotConnectedException("mock client not connected exception");
+            };
+
+            // Run on their own threads because waiting for the connection blocks the thread
+            Task<MqttPublishAck> publishTask = Task.Run(
+                () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = "custom/topic" }, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+            Task<MqttClientSubscribeReasonCode> subscribeTask = Task.Run(
+                () => customTopicsClient.SubscribeAsync("custom/topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+            await Task.WhenAll(publishAttempted.Task, subscribeAttempted.Task).WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // Terminal, and not about this device's identity, so nothing will bring the connection back
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerMoved);
+
+            foreach (Task operation in new Task[] { publishTask, subscribeTask })
+            {
+                OperationCanceledException exception = await Assert.ThrowsAsync<OperationCanceledException>(
+                    () => operation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+                DeviceException fault = Assert.IsType<DeviceException>(exception.InnerException);
+                Assert.Equal(ErrorRetryability.Terminal, fault.Retryability);
+            }
+
+            Assert.Empty(customTopicsClient.GetSubscribedTopics);
+        }
+
+        // DisconnectAsync does not release an operation already waiting for the connection, so the operation keeps waiting
+        // until its cancellation token is canceled.
+        [Fact]
+        public async Task OperationWaitingForConnectionKeepsWaitingAfterDeliberateDisconnectUntilCanceled()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource publishAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnPublish = _ =>
+            {
+                publishAttempted.TrySetResult();
+                throw new MqttClientNotConnectedException("mock client not connected exception");
+            };
+
+            using CancellationTokenSource operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            Task<MqttPublishAck> publishTask = Task.Run(
+                () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = "custom/topic" }, operationCancellation.Token),
+                TestContext.Current.CancellationToken);
+            await publishAttempted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // There is no hook for when the operation starts waiting, so give it time to get there after its failed
+            // attempt. A disconnect that lands before then fails the operation fast instead.
+            await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+            Assert.False(publishTask.IsCompleted);
+
+            operationCancellation.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        }
+
+        // The single-topic overloads return the one reason code they asked for, so an ack holding any other number of
+        // reason codes cannot be interpreted.
+        [Fact]
+        public async Task SingleTopicOperationsThrowIfAckDoesNotHoldExactlyOneReasonCode()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnSubscribe = _ => Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(new MqttSubscribe())),
+                OnUnsubscribe = _ => Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(new MqttUnsubscribe())),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => customTopicsClient.SubscribeAsync("topic", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => customTopicsClient.UnsubscribeAsync("topic", TestContext.Current.CancellationToken));
         }
     }
 }

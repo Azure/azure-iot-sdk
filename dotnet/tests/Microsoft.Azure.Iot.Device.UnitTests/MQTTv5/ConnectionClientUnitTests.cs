@@ -205,7 +205,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
 
             MqttSubscribe featureClientLevelSubscribeRequest = new(expectedTopicString, MqttQualityOfServiceLevel.AtLeastOnce);
-            await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, TestContext.Current.CancellationToken);
+            await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken);
 
             if (isSessionResumed)
             {
@@ -260,7 +260,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
 
             MqttUnsubscribe featureClientLevelUnsubscribeRequest = new(expectedTopicString);
-            await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
+            await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken);
 
             if (isSessionResumed)
             {

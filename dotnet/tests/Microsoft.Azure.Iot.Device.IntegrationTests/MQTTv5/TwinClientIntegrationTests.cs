@@ -70,7 +70,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             var getTwinResponse = await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(getTwinResponse.Desired);
             Assert.NotNull(getTwinResponse.Reported);
-            Assert.Empty(getTwinResponse.Desired);
+            Assert.True(getTwinResponse.Desired.ContainsKey(expectedInitialDesiredPropertyKey));
+            Assert.Equal(expectedInitialDesiredPropertyValue, (string)getTwinResponse.Desired[expectedInitialDesiredPropertyKey]!);
             Assert.Empty(getTwinResponse.Reported);
 
             string expectedDesiredPropertyKey = Guid.NewGuid().ToString();
