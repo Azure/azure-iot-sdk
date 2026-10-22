@@ -33,6 +33,8 @@ on the device changes.
   low bits of the step's extended result code.
 - The regular route: checks at startup, again after each applied update, and every
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).
+  Each check waits at most half the interval (60 s cap). The sample exits if it cannot report
+  an applied update as installed.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 | Concern | Behavior |
