@@ -1153,8 +1153,8 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
-/* ETags survive a reboot through save_state()/restore_state(), at their
- * largest size too. */
+/* ETags round-trip through save_state()/restore_state(), at their largest size
+ * too. */
 static void etags_round_trip_through_saved_state(void** state)
 {
   fixture* fx = (fixture*)*state;

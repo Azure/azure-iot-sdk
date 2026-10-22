@@ -18,10 +18,8 @@
  * arrive on the provisioning subscription the connection client already
  * establishes, which is why this channel adds no subscription of its own.
  *
- * STATUS: the bootstrap (pre-registration) path is wired. The operational poll
- * runs after the provisioning session has been torn down and needs session
- * lifetime work in the connection client that is not done yet; until then
- * request_update() reports AZ_IOT_ERR_NOT_CONNECTED rather than pretending.
+ * Both routes are implemented. After registration the channel keeps, or opens
+ * on demand, a provisioning session for the operational route.
  */
 
 #include <string.h>
@@ -1038,7 +1036,12 @@ static size_t put_etag(uint8_t* p, const char* etag)
   return n + 1u;
 }
 
-/** @brief Serialize the cached ETags so a reboot does not force a full agentInfo resend. */
+/**
+ * @brief Serialize the cached ETags into the client's persisted workflow record.
+ *
+ * They survive a reboot only while such a record exists; it is erased when the
+ * workflow ends.
+ */
 static az_iot_result channel_save_state(void* ctx, uint8_t* buf, size_t cap, size_t* out_len)
 {
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;

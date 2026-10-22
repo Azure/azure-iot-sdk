@@ -174,10 +174,10 @@ Key ordering guarantees that both clients must honour:
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The software updates bootstrap update check runs before `open()`, not inside it.** The agent drives the
-   onboarding update call against the DPS gateway until the service reports no update, and only then
-   does the connection client register. The check is **advisory**: if it fails, the device proceeds
-   to register anyway. See [§7](#7-software-updates-onboarding-and-renewal-partly-implemented).
+4. **The software updates bootstrap update check runs inside `open()`, ahead of registration**, on
+   the DPS session, when the agent has asked for it. Registration is held until the first check
+   verdict that will not immediately repeat, and a hold timeout bounds it; on expiry the device
+   registers anyway. See [§7](#7-software-updates-onboarding-and-renewal-partly-implemented).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 
@@ -421,7 +421,7 @@ checked before backoff is scheduled.
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
-| Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
+| Software updates status report not yet acked | Yes | Held in durable storage and retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process and re-sent later (next device-properties update, or after restart and resume). |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
@@ -496,11 +496,11 @@ gateway it already talks to, reusing the credential it already has; the gateway 
 pass-through to the update service. The device needs no update-specific credential, and there is no
 subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (on the wire) |
-| --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` |
-| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` |
-| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` |
+| Phase | Gateway | Operation | DPS `{operation}` on the wire |
+| --- | --- | --- | --- |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `iotdps-get-onboarding-deviceupdate` |
+| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` | `iotdps-get-deviceupdate` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `iotdps-report-deviceupdatestatus` |
 
 All three are requests under the device's own registration on the gateway's device endpoint; see
 [software-updates.md](software-updates.md#2-device-contract) for the request and response shapes.
@@ -515,11 +515,14 @@ or validate the choice.
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
 The critical ordering fact for this document: **the bootstrap update check happens before the device
-registers.** The agent, not the connection client, drives it. On the happy path `open()` waits until
-the check reports no update, so several updates can chain before provisioning.
+registers.** The agent, not the connection client, asks for it; it runs inside `open()`, on the DPS
+session, while registration is held.
 
-The check is **advisory and must never block provisioning.** If it errors, times out, or the account
-is not linked, the device proceeds to register anyway.
+The check **must never block provisioning.** The hold is released at the first verdict that will not
+immediately repeat: success, a fatal error, or an update account that is not linked. A retryable
+failure keeps the hold until the check is answered or the hold timeout expires; then the device
+registers anyway. Registration is held for the check, not for an install: an install, its report and
+any re-check run afterwards, alongside registration.
 
 ```mermaid
 sequenceDiagram
@@ -529,25 +532,22 @@ sequenceDiagram
     participant DPS
     participant Hub
 
-    loop until "no update" or an advisory failure
-        SU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
-        alt update available
-            DPS-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            SU->>SU: verify signature, download fileUrls, install (reboot if required)
-            SU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
-        else no update
-            DPS-->>SU: 200 with updateMetadata omitted
-        end
+    Conn->>DPS: CONNECT + SUBSCRIBE, registration held
+    SU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
+    alt update available
+        DPS-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+    else no update
+        DPS-->>SU: 200 with updateMetadata omitted
     end
 
-    Note over SU,Conn: provisioning proceeds - on success or on an advisory failure
+    Note over SU,Conn: hold released - on a final verdict, or on hold timeout
     Conn->>DPS: Register (unchanged, CSR optional)
     DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
 ```
 
-- The loop is genuine: after installing a bootstrap update the agent re-checks, because a bootstrap
-  deployment can chain.
+- An offered update is verified, downloaded, installed and reported after the hold is released, on
+  the DPS session. A bootstrap deployment can chain, so the agent may check again after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
@@ -570,8 +570,9 @@ sequenceDiagram
     participant Store as Durable software updates state
 
     Conn-->>SU: CONNECTED
+    Note over SU,Store: on resume(), called by the application at startup
     SU->>Store: load_state()
-    Store-->>SU: installedUpdateId, ETags, unsent report
+    Store-->>SU: workflow record, if any (unsent report, ETags)
     opt report pending from a previous session
         SU->>GW: reportUpdateStatus (workflowId, installResult)
     end
@@ -592,7 +593,7 @@ sequenceDiagram
     Conn--xSU: connection drop
     Note over SU: install continues, report held in durable storage
     Conn-->>SU: CONNECTED again
-    SU->>GW: retry the report until acked, then resume polling
+    SU->>GW: re-send the report until accepted or rejected; checks continue when the agent asks
 ```
 
 `installResult` carries the outcome, its failure origin and the hex
@@ -608,8 +609,9 @@ reports include complete per-step outcomes when steps are available — see
   report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
-  honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
-  report is a durable write and must not be lost.
+  honours `Retry-After` on throttling and retries `reportUpdateStatus` until the service accepts
+  or permanently rejects it — a report is a durable write and must not be lost. A report given up
+  after repeated session loss stays stored and is re-sent later.
 - **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
   workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
   consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
@@ -621,7 +623,7 @@ reports include complete per-step outcomes when steps are available — see
   not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates never drives the connection.** It does not open, close, or force a reconnect. It does
-  sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.
+  hold registration inside the *first* `open()` for the bootstrap check in §7.1.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
@@ -639,12 +641,10 @@ deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["Software updates bootstrap check<br/>requestOnboardingUpdates via DPS"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
-    BINST --> BCHK
-    BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
-
-    IDLE -->|"open() with id_scope"| REG["DPS register<br/>CSR optional"]
+    BOOT["Agent boot"] --> IDLE["IDLE"]
+    IDLE -->|"open() with id_scope"| BCHK["Registration held:<br/>software updates bootstrap check<br/>requestOnboardingUpdates via DPS"]
+    BCHK -->|"final verdict, or hold timeout"| REG["DPS register<br/>CSR optional"]
+    BCHK -.->|"update available"| BINST["Verify, download, install,<br/>report (after the hold)"]
     IDLE -->|"open() with host"| CRED
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
@@ -679,13 +679,13 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (currently over DPS) |
+| **Software updates** | `requestOnboardingUpdates` inside `open()`, registration held until its verdict or a timeout | `requestSoftwareUpdates` / `reportUpdateStatus` when the agent asks (currently over DPS) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember:
-the CSR travels *inside* registration, while the software updates bootstrap check happens *before* it and must
-complete first.
+the CSR travels *inside* registration, while the software updates bootstrap check happens *before* it, holding
+it until a verdict or a timeout.
 
 ---
 

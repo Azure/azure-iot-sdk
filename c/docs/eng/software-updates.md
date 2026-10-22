@@ -43,21 +43,23 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 The device checks for updates and reports results through **DPS**, reusing its DPS credential
 (X.509) and session. DPS passes each request through to the update service and returns its answer;
 it keeps no per-device state. The device never talks to the update service directly, and there is
-no subscription and no unsolicited offer: the agent polls.
+no subscription and no unsolicited offer: the device asks. The SDK has no polling cadence; the
+application decides when to check (§11).
 
 API version: `2026-11-02-preview`. Public REST definition:
 [device.json](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/deviceprovisioningservices/data-plane/DeviceProvisioningServices/preview/2026-11-02-preview/device.json).
 
 ### Operations
 
-| Operation | When |
-| --- | --- |
-| `requestOnboardingUpdates` | **Before** registration: a day-zero device that has no device record yet. |
-| `requestSoftwareUpdates` | **After** registration (operational). |
-| `reportUpdateStatus` | After an install attempt, on either route. Required. |
+| Operation | DPS `{operation}` (MQTT topic) | When |
+| --- | --- | --- |
+| `requestOnboardingUpdates` | `iotdps-get-onboarding-deviceupdate` | **Before** registration: a day-zero device that has no device record yet. |
+| `requestSoftwareUpdates` | `iotdps-get-deviceupdate` | **After** registration (operational). |
+| `reportUpdateStatus` | `iotdps-report-deviceupdatestatus` | After an install attempt, on either route. Required. |
 
-The device selects the route by which operation it calls. The SDK sends them over the device's DPS
-MQTT session:
+The first column is the service operation name used in this document; the second is what the SDK
+puts on the wire. The device selects the route by which operation it calls. The SDK sends them over
+the device's DPS MQTT session:
 
 ```
 PUBLISH   $dps/registrations/POST/{operation}/?$rid={request_id}
@@ -89,12 +91,16 @@ sequenceDiagram
     DPS-->>Dev: IoT Hub assignment
 ```
 
-- The check is **advisory**: if it fails, the device registers anyway.
+- The check must not block provisioning. A verdict that will not be repeated (success, or a
+  fatal or proceed error) releases registration at once. A retryable failure (e.g. 503) keeps
+  registration held until the check is answered or `dps_hold_timeout_ms` (default
+  `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) expires; then the device registers anyway.
 - The agent re-checks after each successful install, so updates can chain before registration.
 - Onboarding progress is recorded on the onboarding update job, not on a device record, since the
   device has none yet.
 
-The operational route polls `requestSoftwareUpdates` with the same shapes.
+The operational route uses `requestSoftwareUpdates` with the same shapes, when the application
+asks.
 
 ### Request (both fetches)
 
@@ -113,7 +119,9 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
 - `serviceConfiguration.rootKeyDownloadUrl`: the root-key package for signature verification.
   Omitted only when the sent `serviceConfigEtag` matches; a missing or stale ETag gets the current
   configuration in the 200 response, not an error.
-- `serviceConfigEtag`, `agentInfoEtag`: always present.
+- `serviceConfigEtag`, `agentInfoEtag`: always present per the contract; the SDK tolerates their
+  absence. The SDK persists them only inside a workflow record (§4 Persistence), so after a
+  restart with no record the next check carries no ETags and gets a full response.
 - `updateMetadata`: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`, present
   only when an update applies. **Omitted means "no update"** (HTTP 200, not an error).
 
@@ -173,8 +181,10 @@ connection client's `unix_time` source) in the persisted record, so it survives 
 
 ### Errors
 
-Act on the machine-readable `error.code`, never on the HTTP status. Exception: a failure whose body
-carries no code (empty or unparseable) is classified by its status alone -- 429 throttled,
+Act on the machine-readable code, never on the HTTP status. The SDK reads `info.aduErrorCode`,
+else `message`, and the numeric `errorCode`; it does not read a nested `error.code`.
+Exception: a failure whose body carries no code (empty or unparseable) is classified by its
+status alone -- 429 throttled,
 500/502/503/504 retryable, anything else fatal -- and the missing code is reported as 0.
 
 | Case | Code / status | Device action |
@@ -192,8 +202,12 @@ carries no code (empty or unparseable) is classified by its status alone -- 429 
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
-any accepted operation; it counts against the request timeout. Reports are durable writes,
-retried until acknowledged or explicitly rejected permanently by the service.
+any accepted operation; it counts against the request timeout. A report is retried until the
+service accepts it or rejects it permanently; a rejected report is dropped. After
+`AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) consecutive DPS session losses the report is abandoned
+for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal report stays owed (and
+stored, with persistence) and is re-sent on the next `az_iot_su_client_update_device_properties()`
+call, or after a restart and `az_iot_su_client_resume()`.
 
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
 `info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
@@ -213,7 +227,7 @@ the platform hooks.
 flowchart TB
     MAIN2["main / do_work loop"] --> CORE["engine<br/>state machine · verify · persistence"]
     CORE --> CH["az_iot_su_channel (vtable)"]
-    CH --> V2["Software updates channel<br/>Get(Onboarding)DeviceUpdate · ReportDeviceUpdateStatus<br/>over the device's DPS connection"]
+    CH --> V2["Software updates channel<br/>iotdps-get-onboarding-deviceupdate · iotdps-get-deviceupdate ·<br/>iotdps-report-deviceupdatestatus<br/>over the device's DPS connection"]
     CH --> FAKE["test fake channel"]
     CORE --> AZ["azure-sdk-for-c<br/>manifest parse/format"]
     CORE --> HK["platform hooks"]
@@ -476,7 +490,7 @@ returned to its pre-deployment state:
 ### State reporting to cloud
 
 Workflow transitions produce a status report. The engine hands the channel a structured result
-(see Result-Code Mapping); the software updates channel sends it as `ReportDeviceUpdateStatus`:
+(see Result-Code Mapping); the software updates channel sends it as `reportUpdateStatus` (`iotdps-report-deviceupdatestatus`):
 
 ```json
 {
@@ -1470,7 +1484,7 @@ sequenceDiagram
         SU->>Hook: apply_fn(step)
     end
     SU->>Ch: report(workflowId, installResult)
-    Ch->>DPS: ReportDeviceUpdateStatus
+    Ch->>DPS: reportUpdateStatus
 ```
 
 ### 10.2 do_work Integration
@@ -1542,7 +1556,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportStatus` body is built by the channel.
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportUpdateStatus` body is built by the channel.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -1578,16 +1592,23 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 
 ### Configurable Limits (No Source Change Needed)
 
-The following `#ifndef`-guarded macros in `az_iot_adu_internal.h` default to `2`, which is too small for real deployments. Override via CMake compile definitions:
+The following `#ifndef`-guarded macros in `az_iot_adu_internal.h` default to `2`, which is too
+small for real deployments. They size structs shared by azure-sdk-for-c, `az_iot_core` (which
+holds the software updates sources; there is no separate `az_iot_su` target) and the
+application, through `az_iot_su.h`. Define them identically for all three, for example in the
+parent project before adding this SDK:
 
 ```cmake
-target_compile_definitions(az_iot_su PRIVATE
+add_compile_definitions(
     _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS=10
     _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT=10
     _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP=5
     _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT=3
 )
 ```
+
+With a prebuilt azure-sdk-for-c (`find_package`), that package must be built with the same
+values.
 
 ### Known limitation: strict step parsing
 
