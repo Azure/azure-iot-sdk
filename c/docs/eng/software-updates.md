@@ -76,26 +76,28 @@ sequenceDiagram
     participant Dev as Device (SDK)
     participant DPS as DPS
     participant SVC as Update service
-    loop until "no update"
-      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
-      DPS->>SVC: pass-through
-      SVC-->>DPS: serviceConfiguration [+ updateMetadata]
-      DPS-->>Dev: 200 (no updateMetadata = no update)
-      alt update available
-        Dev->>Dev: verify signature, download fileUrls, install
-        Dev->>DPS: reportUpdateStatus (workflowId, result)
-        DPS-->>Dev: 200
-      end
-    end
+    Note over Dev,DPS: registration held
+    Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
+    DPS->>SVC: pass-through
+    SVC-->>DPS: serviceConfiguration [+ updateMetadata]
+    DPS-->>Dev: 200 (no updateMetadata = no update)
+    Note over Dev,DPS: hold released on this verdict
     Dev->>DPS: Register (unchanged)
     DPS-->>Dev: IoT Hub assignment
+    opt update was offered
+      Dev->>Dev: verify signature, download fileUrls, install
+      Dev->>DPS: reportUpdateStatus (workflowId, result)
+      DPS-->>Dev: 200
+    end
 ```
 
 - The check must not block provisioning. A verdict that will not be repeated (success, or a
   fatal or proceed error) releases registration at once. A retryable failure (e.g. 503) keeps
   registration held until the check is answered or `dps_hold_timeout_ms` (default
   `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) expires; then the device registers anyway.
-- The agent re-checks after each successful install, so updates can chain before registration.
+- Registration is held for the check, not for an install: an offered update is installed and
+  reported alongside registration. Follow-up checks the application requests (e.g. to chain
+  onboarding updates) do not hold registration.
 - Onboarding progress is recorded on the onboarding update job, not on a device record, since the
   device has none yet.
 
