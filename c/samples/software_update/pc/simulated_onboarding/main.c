@@ -138,10 +138,12 @@ typedef struct
   int su_workflow_completed; /* one finished and returned to Idle */
   int su_workflow_succeeded; /* ...and it was applied successfully */
 
-  /* Sized by the SDK's own default so raising it really does grow this cache;
-   * the values it holds come from the environment. */
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 } sample_state;
+
+/* The software updates client's memory: update copy, persisted-state record,
+ * scratch, message body and device-property strings. Sized for the limits
+ * main() sets; static, as it is too large for a stack frame. */
+static uint8_t g_su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 
 static void sample_state_destroy(sample_state* s)
 {
@@ -284,6 +286,12 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       break;
     case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
       printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      /* A later update check offers it again; it is retried once the wait elapses. */
+      printf(
+          "Failed update offered again; retry in %u s.\n",
+          (unsigned)(event->retry_after_ms / 1000u));
       break;
   }
 }
@@ -459,14 +467,14 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  if (dp_needed > sizeof(state.dp_buffer))
+  if (dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
         "Device properties need %zu bytes of cache; this sample has %zu. Shorten "
-        "them or raise AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE.\n",
+        "them or raise limits.device_properties_size.\n",
         dp_needed,
-        sizeof(state.dp_buffer));
+        (size_t)AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
     sample_state_destroy(&state);
     return 1;
   }
@@ -476,8 +484,13 @@ int main(void)
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = state.dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
+  /* Limits, each the SDK default; the workspace is sized for them. */
+  su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.workspace = g_su_workspace;
+  su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");
@@ -562,7 +575,6 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
       if (state.su_workflow_succeeded && state.simulation_control.applied_valid)
       {
         az_iot_su_device_properties next = { 0 };

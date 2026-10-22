@@ -9,8 +9,8 @@
  *     -lssl -lcrypto). This is the path the Azure Service Bus sample uses (AMQPS, port 5671).
  *   - On Windows, TLS is left as an integration point (wire Schannel here); plaintext works as-is.
  *
- * The whole adapter is socket code plus the OpenSSL handshake/encrypt/decrypt; the AMQP client above
- * it never sees any of it.
+ * The whole adapter is socket code plus the OpenSSL handshake/encrypt/decrypt; the AMQP client
+ * above it never sees any of it.
  */
 
 #include "az_amqp_sample_transport.h"
@@ -32,7 +32,8 @@
 typedef SOCKET _sock;
 #define _SOCK_INVALID INVALID_SOCKET
 #define _sock_would_block() (WSAGetLastError() == WSAEWOULDBLOCK)
-#define _sock_in_progress() (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINPROGRESS)
+#define _sock_in_progress() \
+  (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINPROGRESS)
 #define _sock_last_error() (WSAGetLastError())
 #define _sock_close(s) closesocket(s)
 #else
@@ -41,6 +42,7 @@ typedef SOCKET _sock;
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -368,7 +370,8 @@ static void _sch_fail(az_amqp_sample_transport* s, char const* where, long statu
   _set_error(s, (int32_t)status, buf);
 }
 
-// Sends as much pending ciphertext as the socket accepts. OK when drained; WANT_WRITE if more remains.
+// Sends as much pending ciphertext as the socket accepts. OK when drained; WANT_WRITE if more
+// remains.
 static az_amqp_transport_status _sch_flush(az_amqp_sample_transport* s)
 {
   _sock sock = (_sock)s->file_descriptor;
@@ -446,21 +449,31 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
 
   // Certificate: strip the PEM armor to DER, then build a temporary context.
   if (!CryptStringToBinaryA(
-          (LPCSTR)az_span_ptr(cert_pem), (DWORD)az_span_size(cert_pem), CRYPT_STRING_BASE64HEADER,
-          NULL, &cert_der_len, NULL, NULL))
+          (LPCSTR)az_span_ptr(cert_pem),
+          (DWORD)az_span_size(cert_pem),
+          CRYPT_STRING_BASE64HEADER,
+          NULL,
+          &cert_der_len,
+          NULL,
+          NULL))
   {
     goto cleanup;
   }
   cert_der = (BYTE*)malloc(cert_der_len);
   if (cert_der == NULL
       || !CryptStringToBinaryA(
-             (LPCSTR)az_span_ptr(cert_pem), (DWORD)az_span_size(cert_pem), CRYPT_STRING_BASE64HEADER,
-             cert_der, &cert_der_len, NULL, NULL))
+          (LPCSTR)az_span_ptr(cert_pem),
+          (DWORD)az_span_size(cert_pem),
+          CRYPT_STRING_BASE64HEADER,
+          cert_der,
+          &cert_der_len,
+          NULL,
+          NULL))
   {
     goto cleanup;
   }
-  tmp_cert
-      = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, cert_der, cert_der_len);
+  tmp_cert = CertCreateCertificateContext(
+      X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, cert_der, cert_der_len);
   if (tmp_cert == NULL)
   {
     goto cleanup;
@@ -468,22 +481,38 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
 
   // Private key: PKCS#1 PEM -> DER -> CNG RSA private-key blob.
   if (!CryptStringToBinaryA(
-          (LPCSTR)az_span_ptr(key_pem), (DWORD)az_span_size(key_pem), CRYPT_STRING_BASE64HEADER, NULL,
-          &key_der_len, NULL, NULL))
+          (LPCSTR)az_span_ptr(key_pem),
+          (DWORD)az_span_size(key_pem),
+          CRYPT_STRING_BASE64HEADER,
+          NULL,
+          &key_der_len,
+          NULL,
+          NULL))
   {
     goto cleanup;
   }
   key_der = (BYTE*)malloc(key_der_len);
   if (key_der == NULL
       || !CryptStringToBinaryA(
-             (LPCSTR)az_span_ptr(key_pem), (DWORD)az_span_size(key_pem), CRYPT_STRING_BASE64HEADER,
-             key_der, &key_der_len, NULL, NULL))
+          (LPCSTR)az_span_ptr(key_pem),
+          (DWORD)az_span_size(key_pem),
+          CRYPT_STRING_BASE64HEADER,
+          key_der,
+          &key_der_len,
+          NULL,
+          NULL))
   {
     goto cleanup;
   }
   if (!CryptDecodeObjectEx(
-          X509_ASN_ENCODING, CNG_RSA_PRIVATE_KEY_BLOB, key_der, key_der_len, CRYPT_DECODE_ALLOC_FLAG,
-          NULL, &cng_blob, &cng_blob_len))
+          X509_ASN_ENCODING,
+          CNG_RSA_PRIVATE_KEY_BLOB,
+          key_der,
+          key_der_len,
+          CRYPT_DECODE_ALLOC_FLAG,
+          NULL,
+          &cng_blob,
+          &cng_blob_len))
   {
     goto cleanup;
   }
@@ -493,8 +522,12 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
   // function returns; the key Schannel ultimately uses is the no-persist one that
   // PFXImportCertStore produces.
   (void)_snwprintf_s(
-      key_name, _countof(key_name), _TRUNCATE, L"az-iot-e2e-mtls-%lu-%lu",
-      (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
+      key_name,
+      _countof(key_name),
+      _TRUNCATE,
+      L"az-iot-e2e-mtls-%lu-%lu",
+      (unsigned long)GetCurrentProcessId(),
+      (unsigned long)GetTickCount());
   if (NCryptOpenStorageProvider(&prov, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS)
   {
     prov = 0;
@@ -511,7 +544,13 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
     params.pBuffers = &name_buf;
     // Import unfinalized so the export policy can be set before the key is sealed.
     if (NCryptImportKey(
-            prov, 0, BCRYPT_RSAPRIVATE_BLOB, &params, &tmp_key, cng_blob, cng_blob_len,
+            prov,
+            0,
+            BCRYPT_RSAPRIVATE_BLOB,
+            &params,
+            &tmp_key,
+            cng_blob,
+            cng_blob_len,
             NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_DO_NOT_FINALIZE_FLAG)
         != ERROR_SUCCESS)
     {
@@ -520,7 +559,10 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
     }
     DWORD export_policy = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
     if (NCryptSetProperty(
-            tmp_key, NCRYPT_EXPORT_POLICY_PROPERTY, (PBYTE)&export_policy, sizeof(export_policy),
+            tmp_key,
+            NCRYPT_EXPORT_POLICY_PROPERTY,
+            (PBYTE)&export_policy,
+            sizeof(export_policy),
             NCRYPT_SILENT_FLAG)
             != ERROR_SUCCESS
         || NCryptFinalizeKey(tmp_key, NCRYPT_SILENT_FLAG) != ERROR_SUCCESS)
@@ -557,8 +599,7 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
   pfx.pbData = (BYTE*)malloc(pfx.cbData);
   if (pfx.pbData == NULL
       || !PFXExportCertStoreEx(
-             mem_store, &pfx, L"", NULL,
-             EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY))
+          mem_store, &pfx, L"", NULL, EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY))
   {
     goto cleanup;
   }
@@ -574,7 +615,11 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
     goto cleanup;
   }
   g_sch.client_cert = CertFindCertificateInStore(
-      g_sch.cert_store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_HAS_PRIVATE_KEY, NULL,
+      g_sch.cert_store,
+      X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+      0,
+      CERT_FIND_HAS_PRIVATE_KEY,
+      NULL,
       NULL);
   if (g_sch.client_cert == NULL)
   {
@@ -665,7 +710,8 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     SCH_CREDENTIALS cred;
     memset(&cred, 0, sizeof(cred));
     cred.dwVersion = SCH_CREDENTIALS_VERSION;
-    cred.dwFlags = SCH_USE_STRONG_CRYPTO | SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
+    cred.dwFlags
+        = SCH_USE_STRONG_CRYPTO | SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_NO_DEFAULT_CREDS;
     cred.cTlsParameters = 1;
     cred.pTlsParameters = &tls_params;
     if (g_sch.client_cert != NULL)
@@ -674,7 +720,15 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
       cred.paCred = &g_sch.client_cert;
     }
     SECURITY_STATUS st = AcquireCredentialsHandleA(
-        NULL, (SEC_CHAR*)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &g_sch.cred, NULL);
+        NULL,
+        (SEC_CHAR*)UNISP_NAME_A,
+        SECPKG_CRED_OUTBOUND,
+        NULL,
+        &cred,
+        NULL,
+        NULL,
+        &g_sch.cred,
+        NULL);
     if (st != SEC_E_OK)
     {
       _sch_fail(s, "AcquireCredentialsHandle failed", (long)st);
@@ -686,7 +740,18 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     SecBufferDesc out = { SECBUFFER_VERSION, 1, &outbuf };
     DWORD attrs = 0;
     st = InitializeSecurityContextA(
-        &g_sch.cred, NULL, (SEC_CHAR*)host, isc_flags, 0, 0, NULL, 0, &g_sch.ctxt, &out, &attrs, NULL);
+        &g_sch.cred,
+        NULL,
+        (SEC_CHAR*)host,
+        isc_flags,
+        0,
+        0,
+        NULL,
+        0,
+        &g_sch.ctxt,
+        &out,
+        &attrs,
+        NULL);
     g_sch.ctxt_ok = true;
     g_sch.started = true;
     if (st != SEC_I_CONTINUE_NEEDED)
@@ -732,14 +797,25 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   int incomplete_creds_seen = 0;
   for (;;)
   {
-    SecBuffer inbufs[2]
-        = { { (unsigned long)g_sch.in_len, SECBUFFER_TOKEN, g_sch.in }, { 0, SECBUFFER_EMPTY, NULL } };
+    SecBuffer inbufs[2] = { { (unsigned long)g_sch.in_len, SECBUFFER_TOKEN, g_sch.in },
+                            { 0, SECBUFFER_EMPTY, NULL } };
     SecBufferDesc in = { SECBUFFER_VERSION, 2, inbufs };
     SecBuffer outbuf = { 0, SECBUFFER_TOKEN, NULL };
     SecBufferDesc out = { SECBUFFER_VERSION, 1, &outbuf };
     DWORD attrs = 0;
     SECURITY_STATUS st = InitializeSecurityContextA(
-        &g_sch.cred, &g_sch.ctxt, (SEC_CHAR*)host, isc_flags, 0, 0, &in, 0, NULL, &out, &attrs, NULL);
+        &g_sch.cred,
+        &g_sch.ctxt,
+        (SEC_CHAR*)host,
+        isc_flags,
+        0,
+        0,
+        &in,
+        0,
+        NULL,
+        &out,
+        &attrs,
+        NULL);
 
     if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
     {
@@ -865,14 +941,25 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
 
     if (g_sch.in_len > 0)
     {
-      SecBuffer inbufs[2]
-          = { { (unsigned long)g_sch.in_len, SECBUFFER_TOKEN, g_sch.in }, { 0, SECBUFFER_EMPTY, NULL } };
+      SecBuffer inbufs[2] = { { (unsigned long)g_sch.in_len, SECBUFFER_TOKEN, g_sch.in },
+                              { 0, SECBUFFER_EMPTY, NULL } };
       SecBufferDesc in = { SECBUFFER_VERSION, 2, inbufs };
       SecBuffer outbuf = { 0, SECBUFFER_TOKEN, NULL };
       SecBufferDesc out = { SECBUFFER_VERSION, 1, &outbuf };
       DWORD attrs = 0;
       SECURITY_STATUS st = InitializeSecurityContextA(
-          &g_sch.cred, &g_sch.ctxt, (SEC_CHAR*)host, isc_flags, 0, 0, &in, 0, NULL, &out, &attrs, NULL);
+          &g_sch.cred,
+          &g_sch.ctxt,
+          (SEC_CHAR*)host,
+          isc_flags,
+          0,
+          0,
+          &in,
+          0,
+          NULL,
+          &out,
+          &attrs,
+          NULL);
 
       if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
       {
@@ -939,8 +1026,10 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
   }
 }
 
-static az_amqp_transport_status
-_sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
+static az_amqp_transport_status _sch_read(
+    az_amqp_sample_transport* s,
+    az_span destination,
+    size_t* out_bytes)
 {
   // Finish any in-progress TLS post-handshake / renegotiation flight before
   // serving application data.
@@ -1091,8 +1180,10 @@ _sch_read(az_amqp_sample_transport* s, az_span destination, size_t* out_bytes)
   }
 }
 
-static az_amqp_transport_status
-_sch_write(az_amqp_sample_transport* s, az_span source, size_t* out_bytes)
+static az_amqp_transport_status _sch_write(
+    az_amqp_sample_transport* s,
+    az_span source,
+    size_t* out_bytes)
 {
   *out_bytes = 0;
   // Flush pending ciphertext from a previous partial write before encrypting more.
@@ -1115,11 +1206,12 @@ _sch_write(az_amqp_sample_transport* s, az_span source, size_t* out_bytes)
   }
   memcpy(g_sch.out + g_sch.sizes.cbHeader, az_span_ptr(source), (size_t)chunk);
 
-  SecBuffer bufs[4]
-      = { { g_sch.sizes.cbHeader, SECBUFFER_STREAM_HEADER, g_sch.out },
-          { (unsigned long)chunk, SECBUFFER_DATA, g_sch.out + g_sch.sizes.cbHeader },
-          { g_sch.sizes.cbTrailer, SECBUFFER_STREAM_TRAILER, g_sch.out + g_sch.sizes.cbHeader + chunk },
-          { 0, SECBUFFER_EMPTY, NULL } };
+  SecBuffer bufs[4] = {
+    { g_sch.sizes.cbHeader, SECBUFFER_STREAM_HEADER, g_sch.out },
+    { (unsigned long)chunk, SECBUFFER_DATA, g_sch.out + g_sch.sizes.cbHeader },
+    { g_sch.sizes.cbTrailer, SECBUFFER_STREAM_TRAILER, g_sch.out + g_sch.sizes.cbHeader + chunk },
+    { 0, SECBUFFER_EMPTY, NULL }
+  };
   SecBufferDesc desc = { SECBUFFER_VERSION, 4, bufs };
   SECURITY_STATUS st = EncryptMessage(&g_sch.ctxt, 0, &desc, 0);
   if (st != SEC_E_OK)
@@ -1156,8 +1248,12 @@ static void _sch_close(void)
     DWORD key_spec = 0;
     BOOL caller_free = FALSE;
     if (CryptAcquireCertificatePrivateKey(
-            g_sch.client_cert, CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG, NULL,
-            &key, &key_spec, &caller_free)
+            g_sch.client_cert,
+            CRYPT_ACQUIRE_SILENT_FLAG | CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG,
+            NULL,
+            &key,
+            &key_spec,
+            &caller_free)
         && key_spec == CERT_NCRYPT_KEY_SPEC)
     {
       (void)NCryptDeleteKey((NCRYPT_KEY_HANDLE)key, NCRYPT_SILENT_FLAG);
@@ -1394,6 +1490,12 @@ static az_amqp_transport_status _open(az_amqp_transport* transport)
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
   }
   _set_nonblocking(sock);
+#ifdef SO_NOSIGPIPE
+  {
+    int one = 1;
+    (void)setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  }
+#endif
 
   int rc = connect(sock, result->ai_addr, (int)result->ai_addrlen);
   freeaddrinfo(result);
@@ -1519,8 +1621,10 @@ static az_amqp_transport_status _process(az_amqp_transport* transport)
   return AZ_AMQP_TRANSPORT_STATUS_OK;
 }
 
-static az_amqp_transport_status
-_read(az_amqp_transport* transport, az_span destination, size_t* out_bytes)
+static az_amqp_transport_status _read(
+    az_amqp_transport* transport,
+    az_span destination,
+    size_t* out_bytes)
 {
   az_amqp_sample_transport* s = _impl(transport);
   *out_bytes = 0;
@@ -1582,8 +1686,10 @@ _read(az_amqp_transport* transport, az_span destination, size_t* out_bytes)
   return AZ_AMQP_TRANSPORT_STATUS_ERROR;
 }
 
-static az_amqp_transport_status
-_write(az_amqp_transport* transport, az_span source, size_t* out_bytes)
+static az_amqp_transport_status _write(
+    az_amqp_transport* transport,
+    az_span source,
+    size_t* out_bytes)
 {
   az_amqp_sample_transport* s = _impl(transport);
   *out_bytes = 0;
@@ -1669,12 +1775,113 @@ static void _get_last_error(az_amqp_transport* transport, int32_t* out_status, a
   *out_message = az_span_create_from_str((char*)s->last_error_message);
 }
 
+#if !defined(_WIN32) && !defined(SO_NOSIGPIPE)
+/*
+ * A write to a socket the peer has closed raises SIGPIPE, which kills the process. OpenSSL
+ * writes to the socket itself (SSL_write, the handshake, SSL_shutdown), so no MSG_NOSIGNAL
+ * reaches it. Each call is made with SIGPIPE blocked in the calling thread; the write then
+ * fails with EPIPE and is reported as a transport error. A SIGPIPE raised meanwhile is
+ * discarded, and the thread's mask restored, so the device code under test still gets the
+ * process's own SIGPIPE behavior.
+ */
+
+/** @brief The calling thread's state, saved by _sigpipe_hold(). */
+typedef struct
+{
+  sigset_t mask; /**< Signal mask to restore. */
+  bool was_pending; /**< A SIGPIPE was already pending: not ours to discard. */
+} _sigpipe_guard;
+
+/** @brief Block SIGPIPE in the calling thread. */
+static void _sigpipe_hold(_sigpipe_guard* g)
+{
+  sigset_t pipe_only;
+  sigset_t pending;
+  sigemptyset(&pipe_only);
+  sigaddset(&pipe_only, SIGPIPE);
+  g->was_pending = sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) == 1;
+  (void)pthread_sigmask(SIG_BLOCK, &pipe_only, &g->mask);
+}
+
+/** @brief Discard a SIGPIPE raised since _sigpipe_hold(), then restore the mask. */
+static void _sigpipe_release(_sigpipe_guard const* g)
+{
+  sigset_t pipe_only;
+  sigset_t pending;
+  sigemptyset(&pipe_only);
+  sigaddset(&pipe_only, SIGPIPE);
+  if (!g->was_pending && sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) == 1)
+  {
+    struct timespec const now = { 0, 0 };
+    (void)sigtimedwait(&pipe_only, NULL, &now);
+  }
+  (void)pthread_sigmask(SIG_SETMASK, &g->mask, NULL);
+}
+
+static az_amqp_transport_status _open_no_sigpipe(az_amqp_transport* transport)
+{
+  _sigpipe_guard g;
+  _sigpipe_hold(&g);
+  az_amqp_transport_status const status = _open(transport);
+  _sigpipe_release(&g);
+  return status;
+}
+
+static az_amqp_transport_status _process_no_sigpipe(az_amqp_transport* transport)
+{
+  _sigpipe_guard g;
+  _sigpipe_hold(&g);
+  az_amqp_transport_status const status = _process(transport);
+  _sigpipe_release(&g);
+  return status;
+}
+
+static az_amqp_transport_status _read_no_sigpipe(
+    az_amqp_transport* transport,
+    az_span destination,
+    size_t* out_bytes)
+{
+  _sigpipe_guard g;
+  _sigpipe_hold(&g);
+  az_amqp_transport_status const status = _read(transport, destination, out_bytes);
+  _sigpipe_release(&g);
+  return status;
+}
+
+static az_amqp_transport_status _write_no_sigpipe(
+    az_amqp_transport* transport,
+    az_span source,
+    size_t* out_bytes)
+{
+  _sigpipe_guard g;
+  _sigpipe_hold(&g);
+  az_amqp_transport_status const status = _write(transport, source, out_bytes);
+  _sigpipe_release(&g);
+  return status;
+}
+
+static az_amqp_transport_status _close_no_sigpipe(az_amqp_transport* transport)
+{
+  _sigpipe_guard g;
+  _sigpipe_hold(&g);
+  az_amqp_transport_status const status = _close(transport);
+  _sigpipe_release(&g);
+  return status;
+}
+#else
+#define _open_no_sigpipe _open
+#define _process_no_sigpipe _process
+#define _read_no_sigpipe _read
+#define _write_no_sigpipe _write
+#define _close_no_sigpipe _close
+#endif
+
 static az_amqp_transport_vtable const _vtable = {
-  .open = _open,
-  .process = _process,
-  .read = _read,
-  .write = _write,
-  .close = _close,
+  .open = _open_no_sigpipe,
+  .process = _process_no_sigpipe,
+  .read = _read_no_sigpipe,
+  .write = _write_no_sigpipe,
+  .close = _close_no_sigpipe,
   .get_last_error = _get_last_error,
 };
 

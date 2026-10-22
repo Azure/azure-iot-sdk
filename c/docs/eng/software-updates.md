@@ -131,9 +131,33 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
 rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
+`SUCCEEDED` and `SKIPPED` are absorbing; `FAILED` and `CANCELED` are not: `IN_PROGRESS` after
+`FAILED` for the same `workflowId` is a retry (see below), not a conflict.
 An explicit conflict stops replay and raises `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the
 service diagnosis. The application requests current state with `az_iot_su_client_request_update()`;
 the SDK does not add an automatic recovery poll or change the application's polling cadence.
+
+### Failed-workflow retries
+
+While a deployment still applies and its update is not installed, the service re-offers a workflow
+whose outcome is not `SUCCEEDED` or `SKIPPED`, with the same `workflowId` and `updateMetadata`, on
+both fetches and without limit. The response carries no retry time. The device MUST retry a
+`FAILED` workflow (apply again, report under the same id), MUST NOT give up because an earlier
+attempt failed, and MUST wait between attempts at the same id: at least 1 h after the first
+failure, at least doubling per consecutive failure, capped at 24 h. It MUST NOT apply an early
+re-offer, SHOULD add jitter and SHOULD keep the wait across restarts.
+
+Only `FAILED` is retried; the client never reports `CANCELED`. After the n-th consecutive failure it waits
+min(1 h × 2ⁿ⁻¹, 24 h) plus a uniform jitter of up to 10% of that (1 h, 2 h, 4 h, 8 h, 16 h, 24 h,
+24 h, …); there is no attempt limit. A re-offer before the wait elapses is not started and raises
+`AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` with `retry_after_ms`. A due re-offer starts a new attempt from
+ManifestReceived under the same id, unless the previous attempt's terminal report is not yet
+settled: then it raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`). Success or skip, or
+another `workflowId`, resets the count; fetches, "no update" answers and report acknowledgements do
+not. The wait runs on the monotonic clock; it is also stored with a Unix deadline (from the
+connection client's `unix_time` source) in the persisted record, so it survives a restart (see
+§4 Persistence). It is an `az_iot_retry_policy` with `AZ_IOT_RETRY_JITTER_ADDITIVE`, kept in an
+`az_iot_retry_state`, separate from the transient fetch/report backoff below.
 
 ### Trust
 
@@ -229,6 +253,7 @@ stateDiagram-v2
 
     RestoreStarted --> Idle : restore complete (reports failure)
     Failed --> Idle : error reported to cloud
+    Idle --> ManifestReceived : same workflowId after FAILED, retry wait elapsed
 
     DownloadStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
     InstallStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
@@ -320,7 +345,9 @@ superseded. The client MUST distinguish:
 |-----------|---------|----------|
 | New `workflowId`, before the first `install_fn` call, or once the workflow ended (Idle / Failed) | **Replacement** | MUST restart from ManifestReceived with the new deployment |
 | New `workflowId`, from the first `install_fn` call until the workflow ends, or after a last apply that returned `REBOOT_REQUIRED` until re-initialization (the reboot) | **Deferred** | MUST NOT process; the current workflow runs to its end; raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`) on each delivery. The application requests an update again later |
-| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore; raises `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` on each delivery |
+| Same `workflowId` (whatever the manifest bytes) while it runs, or after it `SUCCEEDED` or was `SKIPPED` | **Duplicate** | MUST ignore; raises `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` on each delivery |
+| Same `workflowId` after it `FAILED`, before its retry wait elapses | **Retry wait** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`) on each delivery |
+| Same `workflowId` after it `FAILED`, wait elapsed | **Retry** | MUST restart from ManifestReceived under the same id, keeping the failure count; deferred (`AZ_IOT_SU_EVENT_UPDATE_DEFERRED`, `AZ_IOT_ERR_BUSY`) while the previous attempt's terminal report is not settled |
 | `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
 | Payload that cannot be decoded (not JSON, required field missing or mistyped, invalid escape) | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_PROTOCOL`) |
 
@@ -485,7 +512,9 @@ If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 When a workflow ends (succeeded, failed, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
 retires it once the channel's verdict is final: accepted or refused by the
-service. A report abandoned for want of a session is kept, so
+service. After a `FAILED` workflow it is replaced by a **retry record**
+instead, so the retry wait survives a restart. A report abandoned for
+want of a session is kept, so
 it is re-sent after the next boot. Retiring a permanently rejected record, including
 `REPORT_CONFLICT`, stops replay; it is not evidence of delivery. A new `workflowId` replaces
 it, unless the last apply returned `REBOOT_REQUIRED` and the client has not been
@@ -498,18 +527,26 @@ blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
-- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
-- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 1). A
-  record of any other magic or version is ignored. All integers are
+- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` bytes; size storage for it.
+- **In place** — a workflow record is serialized around the update copy in the workspace: its
+  header just before it, its trailer just after. A terminal record has no request and is built
+  in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
+  the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
+- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 2). A
+  record of any other magic or version (version 1 included) is ignored. All integers are
   little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (have-request,
-  report-owed), the raw request buffer (manifest, workflow id),
+  report-owed, retry record), the raw request buffer (manifest, workflow id),
   the latched outcome, the overall and per-step results, the download URLs, the
-  active workflow id, the applied update id, and opaque channel state (the DPS
-  channel's `agentInfoEtag` / `serviceConfigEtag`).
+  active workflow id, the applied update id, opaque channel state (the DPS
+  channel's `agentInfoEtag` / `serviceConfigEtag`), and the retry schedule
+  (consecutive failures, seconds of wait left when written, Unix deadline or 0
+  when unknown).
 - **Terminal record** — report-owed set, state Idle, no request: only what the
   terminal report needs.
+- **Retry record** — retry flag set, state Idle, no request, nothing owed: a
+  `FAILED` workflow whose report is settled, kept for its retry schedule.
 
 The byte layout is documented next to the serializer in
 `src/features/su/su_client.c`; it is not a public contract.
@@ -525,12 +562,18 @@ The byte layout is documented next to the serializer in
    latter is cleared.
 2. A terminal record restores the workflow id, outcome, results, applied update
    id and channel state; the client stays Idle and re-sends the report from
-   `do_work()`. Otherwise core rehydrates `current_request`, `current_step`,
-   `current_file`, the overall and per-step results and channel state.
+   `do_work()`. A retry record restores the same with nothing owed. Otherwise
+   core rehydrates `current_request`, `current_step`, `current_file`, the
+   overall and per-step results and channel state. Every record restores the
+   retry schedule: the wait left is the Unix deadline minus the current Unix
+   time when both are known (a time before 2024-01-01 is unknown), else the
+   wait left when the record was written; at most 24 h plus jitter.
 3. **Replacement check** — when the next offer arrives, core compares its
    `workflowId` against the persisted one. The same id is a duplicate and is
-   ignored. A different id is deferred while the resumed workflow runs (it
-   resumes past `install_fn`) and replaces a restored terminal record.
+   ignored, unless it `FAILED`: then it is a retry, held
+   until the restored wait elapses. A different id is deferred while the
+   resumed workflow runs (it resumes past `install_fn`) and replaces a
+   restored terminal or retry record.
 4. **Re-entry point** — `resume()` MUST re-enter at a *phase boundary*, never
    mid-hook (hooks are not assumed re-entrant across reboot):
    - persisted `state` ∈ {`INSTALL_*`} ⇒ re-enter at the start of **Apply** for
@@ -541,9 +584,11 @@ The byte layout is documented next to the serializer in
      (Download), re-downloading any partially fetched file; partial download
      progress is intentionally **not** trusted across reboot.
 5. When the workflow returns to Idle, core replaces the stored blob with the
-   terminal record; it clears it (a zero-length `persist_state_fn` write) once
-   the report is final and when a new workflow supersedes it, so a later boot
-   does not replay a finished workflow. If the terminal record cannot be
+   terminal record; once the report is final it clears it (a zero-length
+   `persist_state_fn` write), or after `FAILED` replaces it with
+   the retry record, which a retry attempt's own records, its success or a new
+   workflow then replace or clear. So a later boot does not replay a finished
+   workflow. An early re-offer writes nothing. If the terminal record cannot be
    written, the stale blob is cleared instead. A failed checkpoint write before
    a requested reboot holds the workflow at that boundary (`INSTALL_COMPLETE`,
    or the next step's `DOWNLOAD_STARTED`); if the clear on supersede fails, the
@@ -795,9 +840,13 @@ typedef struct az_iot_su_client
         az_iot_su_client_update_manifest current_manifest;
         uint32_t current_step;
         uint32_t current_file;
-        /* Client-owned device-properties cache (deep copy of caller's struct). */
+        /* Parts of the application's workspace: update copy and its persisted
+         * record, terminal record, scratch, message body, device-property cache. */
+        uint8_t* request_buffer;
+        uint8_t* persist_blob;
+        uint8_t* terminal_blob;
+        uint8_t* scratch;
         uint8_t* device_properties_buffer;
-        size_t device_properties_buffer_size;
         bool device_properties_report_pending;
         /* Connection-state observer / detach safety (see §16). */
         bool detached;
@@ -817,9 +866,10 @@ typedef struct az_iot_su_client
  *     Microsoft-signed updates, pass az_iot_su_microsoft_root_keys().
  *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
- *   device_properties_buffer / size: caller-owned cache the client copies into.
- *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
- *     with az_iot_su_device_properties_buffer_size().
+ *   limits: sizes of the workspace parts (az_iot_su_limits_default()).
+ *   workspace / workspace_size: the client's memory, at least
+ *     az_iot_su_workspace_size(&limits) bytes. No hidden allocation; it MUST
+ *     outlive the client.
  *   replacement_policy: what a new workflow id does to a workflow that may not
  *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
  *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
@@ -830,8 +880,9 @@ typedef struct az_iot_su_client_config_options
     const az_iot_su_root_key*          root_keys;
     size_t                              root_key_count;
     const az_iot_su_device_properties* device_properties;
-    uint8_t*                            device_properties_buffer;
-    size_t                              device_properties_buffer_size;
+    az_iot_su_limits                    limits;
+    uint8_t*                            workspace;
+    size_t                              workspace_size;
     az_iot_su_replacement_policy        replacement_policy;
 } az_iot_su_client_config_options;
 
@@ -857,12 +908,15 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     cannot be decoded.
  *   UPDATE_DEFERRED        -- a delivered update with a new workflow id was not
  *     started: the current workflow has changed the device, or a reboot its
- *     last apply asked for is owed.
+ *     last apply asked for is owed; or a due retry waits for the failed
+ *     attempt's report to settle.
  *   NO_UPDATE              -- an update check was answered with no update.
  *   UPDATE_DUPLICATE       -- a delivered update repeats the current workflow
- *     id and was ignored.
+ *     id, or a SUCCEEDED / SKIPPED one, and was ignored.
  *   REPORT_ACCEPTED        -- the service accepted a status report;
  *     `report_terminal` marks the workflow's final one.
+ *   UPDATE_RETRY_WAIT      -- a FAILED workflow was offered again
+ *     before its retry wait elapsed; `retry_after_ms` is the time left.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
@@ -1032,7 +1086,7 @@ az_iot_su_device_properties properties = {
     .custom_properties_count = 1,
 };
 
-uint8_t properties_cache[256];
+static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 size_t root_key_count;
 const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
@@ -1040,8 +1094,8 @@ su_opts.hooks = &hooks;
 su_opts.root_keys = root_keys;
 su_opts.root_key_count = root_key_count;
 su_opts.device_properties = &properties;
-su_opts.device_properties_buffer = properties_cache;
-su_opts.device_properties_buffer_size = sizeof(properties_cache);
+su_opts.workspace = su_workspace; /* limits: az_iot_su_limits_default() */
+su_opts.workspace_size = sizeof(su_workspace);
 az_iot_su_client_init(&su, &conn, &su_opts);
 /* `properties` and its strings may now be freed/reused; the client holds a deep copy. */
 

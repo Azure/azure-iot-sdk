@@ -4,6 +4,8 @@
 
 ### Features Added
 
+- Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
+  delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
 - DPS assignment notification: `az_iot_connection_client_set_dps_assignment_callback()` reports the
   hub, device id and profile each time an assignment is adopted, so an application can persist it
@@ -24,8 +26,8 @@
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
-  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows; WebSockets, HTTP CONNECT proxy, and
-  key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
+  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
+  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
   without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
   config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
@@ -87,6 +89,21 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Breaking: software updates memory comes from one application-provided workspace.
+  `az_iot_su_client_config_options` replaces `device_properties_buffer` /
+  `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
+  `scratch_size`, `max_message_size`, `device_properties_size`) and `workspace` / `workspace_size`,
+  sized with `az_iot_su_workspace_size()` or `AZ_IOT_SU_WORKSPACE_SIZE()`. The update copy, the
+  persisted-state records, the verification scratch (was the client's persist scratch), the
+  message body and the property strings live there; `az_iot_su_client` drops from
+  about 39 KiB to about 3.5 KiB and no longer depends on them. `max_update_size` defaults to
+  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). `max_message_size` is at
+  least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2048), which fits the largest status report. The workflow
+  record is serialized in place around the update copy, so the separate persist scratch is gone.
+  Removed: `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_PERSIST_BLOB_SIZE`,
+  `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()`. `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` takes the
+  limit. `az_iot_su_client_resume()` returns `AZ_IOT_ERR_BUSY` while a workflow is in progress. A
+  file URL longer than `scratch_size` is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 - Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
   4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
   decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
@@ -153,6 +170,10 @@
   MQTT adapters, including your own, must implement and read the view: see
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
   patched for it (`deps/az_mqtt/VENDORED.md`).
+- Software updates: a `FAILED` workflow offered again under the same `workflowId` is
+  retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
+  offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
+  restart; the persisted format moves to version 2, so version-1 records are ignored.
 
 ### Bugs Fixed
 

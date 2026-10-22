@@ -171,6 +171,27 @@ Flow Guard, ASLR or DEP, and, on x64, high entropy VA or CET compatibility. CI r
 gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`), and on MSVC, static
 and shared (`hardening-windows`).
 
+## Race detection
+
+Tests that start threads are registered with `az_iot_add_cmocka_test(<name> RACE ...)`, which
+labels them `race` in CTest. [`eng/run-race-detectors.sh`](../../eng/run-race-detectors.sh)
+runs each of them under valgrind's helgrind or DRD:
+
+```sh
+bash eng/run-race-detectors.sh helgrind   # or drd; optional second argument: build directory
+```
+
+A test fails on any reported error, on its own failure, or when valgrind ends without an
+`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`. Each log lists every
+suppression used (`-s`). Suppressions live in `eng/sanitizers/{helgrind,drd}.supp`. They may
+name third-party code only, and each needs a comment giving its upstream reference;
+[`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
+CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`).
+
+The tools see pthread locks only. The file sink's atomic spin lock is described to them by
+`-DAZ_IOT_RACE_ANNOTATIONS=ON` (needs `<valgrind/helgrind.h>`; no effect outside valgrind), which the
+CI job sets. Without it, a race-labelled test that logs to a file sink reports false races.
+
 ## MQTT adapter conformance suite
 
 [`tests/conformance/`](../../tests/conformance/) is a reusable test suite that drives an MQTT

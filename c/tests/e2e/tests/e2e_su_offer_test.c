@@ -592,10 +592,11 @@ typedef struct
   az_iot_connection_client conn;
   az_iot_mqtt_factory* factory;
   az_iot_su_channel_dps channel_state;
+  uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
   spy_channel spy;
   az_iot_su_client su;
   platform plat;
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+  uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   const char* model;
 
   /* What fixture_open() got through, so teardown releases exactly that. */
@@ -699,7 +700,14 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   dp.installed_update_id.name = "e2e";
   dp.installed_update_id.version = "0.0.0";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->conn, &dp, &fx->spy.inner), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state,
+          &fx->conn,
+          &dp,
+          fx->channel_body,
+          sizeof(fx->channel_body),
+          &fx->spy.inner),
+      AZ_IOT_OK);
 
   az_iot_su_platform_hooks hooks = {
     .download_fn = hook_download,
@@ -718,8 +726,8 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   su.root_keys = o->roots;
   su.root_key_count = o->root_count;
   su.device_properties = &dp;
-  su.device_properties_buffer = fx->dp_buf;
-  su.device_properties_buffer_size = sizeof(fx->dp_buf);
+  su.workspace = fx->su_workspace;
+  su.workspace_size = sizeof(fx->su_workspace);
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&fx->su, &spy, az_iot_crypto_openssl(), &su),

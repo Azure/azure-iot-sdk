@@ -32,12 +32,10 @@ if(TARGET az_iot_adapter_az_mqtt)
     unset(_defs)
 endif()
 
-# az_iot_add_e2e_suite(<name> [NO_CTEST] [X509] [ADAPTERS <adapter...>] SOURCES <src...> LIBS <lib...>)
+# az_iot_add_e2e_suite(<name> [NO_CTEST] [ADAPTERS <adapter...>] SOURCES <src...> LIBS <lib...>)
 # One cmocka suite per adapter in AZ_IOT_E2E_ADAPTERS (ADAPTERS narrows it), linked to it.
-# X509: the device presents a client certificate, which az_mqtt does not support on Windows
-# (Schannel), so there its variant is built but not registered with CTest.
 function(az_iot_add_e2e_suite name)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "NO_CTEST;X509" "" "ADAPTERS;SOURCES;LIBS")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "NO_CTEST" "" "ADAPTERS;SOURCES;LIBS")
     set(adapters ${AZ_IOT_E2E_ADAPTERS})
     if("ADAPTERS" IN_LIST arg_KEYWORDS_MISSING_VALUES)
         return() # Narrowed to no adapter.
@@ -55,11 +53,7 @@ function(az_iot_add_e2e_suite name)
         if(NOT adapter STREQUAL "paho")
             set(t ${name}_${adapter})
         endif()
-        set(ctest ${no_ctest})
-        if(arg_X509 AND WIN32 AND adapter STREQUAL "az_mqtt")
-            set(ctest NO_CTEST)
-        endif()
-        az_iot_add_cmocka_test(${t} ${ctest} ${arg_SOURCES})
+        az_iot_add_cmocka_test(${t} ${no_ctest} ${arg_SOURCES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_E2E_ADAPTER_${ADAPTER})
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
     endforeach()
@@ -85,7 +79,7 @@ if(AZ_IOT_BUILD_E2E_SU AND WIN32)
 endif()
 
 if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
-    az_iot_add_e2e_suite(az_iot_tests_e2e_su X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_su
         SOURCES tests/e2e_su_test.c tests/e2e_su_env.c
         LIBS az_iot_core)
 
@@ -95,7 +89,7 @@ if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
             "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
-    az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer
         SOURCES tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c
         LIBS az_iot_core az_iot_crypto_openssl CURL::libcurl)
     # The suites assert on the channel and the codecs, and the offer suite's spy
@@ -118,6 +112,16 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 # peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
+
+# A write by the harness AMQP transport to a closed loopback peer fails without
+# raising SIGPIPE. POSIX only; named `e2e` so the e2e job's filter runs it.
+if(NOT WIN32)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_transport_sigpipe
+        tests/e2e_amqp_transport_sigpipe_test.c)
+    target_link_libraries(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE az_amqp_transport)
+    target_compile_definitions(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE
+        _DEFAULT_SOURCE _POSIX_C_SOURCE=200112L)
+endif()
 
 # Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
 # stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
@@ -150,7 +154,7 @@ add_subdirectory(service)
 # It requires provisioning + secrets in the environment (device X.509 material
 # and hub/eventhub connection strings) supplied by the e2e CI job.
 # ---------------------------------------------------------------------------
-az_iot_add_e2e_suite(az_iot_tests_e2e X509
+az_iot_add_e2e_suite(az_iot_tests_e2e
     SOURCES tests/e2e_scenarios_test.c tests/e2e_device.c
     LIBS az_iot_e2e_service az_iot_mqttv3)
 
@@ -172,7 +176,7 @@ if(AZ_IOT_BUILD_E2E_CSR)
             "AZ_IOT_BUILD_E2E_CSR=ON requires the OpenSSL managed certificate provider "
             "(AZ_IOT_WITH_CERT_PROVIDER_MANAGED=ON).")
     endif()
-    az_iot_add_e2e_suite(az_iot_tests_e2e_csr X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_csr
         SOURCES tests/e2e_csr_test.c
         LIBS az_iot_mqttv3 az_iot_certificate_provider_managed)
 endif()
@@ -195,7 +199,7 @@ az_iot_add_e2e_suite(az_iot_tests_e2e_sas
     SOURCES tests/e2e_sas_test.c tests/e2e_sas_device.c
     LIBS az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto)
 if(AZ_IOT_BUILD_E2E_CSR)
-    az_iot_add_e2e_suite(az_iot_tests_e2e_csr_sas X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_csr_sas
         SOURCES tests/e2e_csr_sas_test.c tests/e2e_sas_device.c
         LIBS az_iot_mqttv3 az_iot_crypto_openssl az_iot_certificate_provider_managed)
 endif()
@@ -247,7 +251,7 @@ set(_e2e_fileupload_ctest "")
 if(WIN32)
     set(_e2e_fileupload_ctest NO_CTEST)
 endif()
-az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload X509 ${_e2e_fileupload_ctest}
+az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
     SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c
     LIBS az_iot_e2e_service az_iot_mqttv3)
 
@@ -273,7 +277,7 @@ set(_e2e_posix "")
 if(UNIX)
     set(_e2e_posix _POSIX_C_SOURCE=200809L)
 endif()
-az_iot_add_e2e_suite(az_iot_tests_e2e_transport X509
+az_iot_add_e2e_suite(az_iot_tests_e2e_transport
     SOURCES tests/e2e_transport_test.c tests/e2e_device.c
     LIBS az_iot_e2e_service az_iot_mqttv3)
 foreach(_t az_iot_tests_e2e_transport az_iot_tests_e2e_transport_az_mqtt)
@@ -296,7 +300,7 @@ endforeach()
 # it fails rather than skipping when it is not.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_PKCS11)
-    az_iot_add_e2e_suite(az_iot_tests_e2e_custody X509 ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
+    az_iot_add_e2e_suite(az_iot_tests_e2e_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
         SOURCES tests/e2e_custody_test.c
         LIBS az_iot_e2e_service az_iot_mqttv3)
 endif()
@@ -320,22 +324,22 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
             "-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${_e2e_send_buffer_min} or more "
             "(got '${AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}').")
     endif()
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
         SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 twin: desired delivery (push and pull), reported patches, GET options, push_reported.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_twin X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_twin
         SOURCES tests/e2e_mqttv5_twin_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 connection lifecycle: DPS profile, saved hub with DPS fallback, reopen, eviction.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_connection X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_connection
         SOURCES tests/e2e_mqttv5_connection_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 telemetry: delivery, properties as the service sees them, order and size limits.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_telemetry X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_telemetry
         SOURCES tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
@@ -345,14 +349,14 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     if(WIN32)
         set(_e2e_direct_method_ctest NO_CTEST)
     endif()
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method X509 ${_e2e_direct_method_ctest}
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
         SOURCES tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
     # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, AZ_IOT_E2E_PROXY_LOG); fails
     # without them.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_transport X509
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_transport
         SOURCES tests/e2e_mqttv5_transport_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
     # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
@@ -365,7 +369,7 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     # mqttv5 key custody: the device key inside a PKCS#11 token (eng/setup-softhsm.sh), as
     # az_iot_tests_e2e_custody. Needs AZ_IOT_CLIENT_KEY_URI; fails without it.
     if(AZ_IOT_BUILD_E2E_PKCS11)
-        az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custody X509 ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
+        az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
             SOURCES tests/e2e_mqttv5_custody_test.c
             LIBS az_iot_e2e_service az_iot_mqttv5)
     endif()

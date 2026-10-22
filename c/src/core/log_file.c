@@ -7,6 +7,7 @@
  * formatter in log.c. */
 #include "azure/iot/az_iot_log_file.h"
 #include "internal/log_format.h"
+#include "internal/race_annotations.h"
 #include "internal/span_writer.h"
 
 #include <errno.h>
@@ -71,11 +72,13 @@ static void file_lock(long* lock)
     (void)sched_yield();
   }
 #endif
+  AZ_IOT_RACE_LOCK_ACQUIRED(lock);
 }
 
 /** @brief Release @p lock. */
 static void file_unlock(long* lock)
 {
+  AZ_IOT_RACE_LOCK_RELEASED(lock);
 #if defined(_MSC_VER)
   (void)InterlockedExchange((volatile LONG*)lock, 0);
 #else
@@ -347,6 +350,7 @@ AZ_NODISCARD az_iot_result az_iot_log_file_sink_open(
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
+  AZ_IOT_RACE_LOCK_CREATE(&file_sink->_internal.lock);
   file_sink->_internal.open = true;
 
   out_sink->sink = file_sink_fn;
@@ -367,6 +371,7 @@ void az_iot_log_file_sink_close(az_iot_log_file_sink* file_sink)
     return;
   }
   file_lock(&file_sink->_internal.lock);
+  bool const was_open = file_sink->_internal.open;
   if (file_sink->_internal.stream != NULL)
   {
     (void)fclose((FILE*)file_sink->_internal.stream);
@@ -374,6 +379,10 @@ void az_iot_log_file_sink_close(az_iot_log_file_sink* file_sink)
   }
   file_sink->_internal.open = false;
   file_unlock(&file_sink->_internal.lock);
+  if (was_open)
+  {
+    AZ_IOT_RACE_LOCK_DESTROY(&file_sink->_internal.lock);
+  }
 #else
   (void)file_sink;
 #endif
