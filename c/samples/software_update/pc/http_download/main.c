@@ -643,7 +643,14 @@ int main(void)
     {
       goto cleanup;
     }
-    (void)snprintf(dl.proxy_url, n, "http://%s:%u", proxy_host, (unsigned)proxy_port_num);
+    /* A bare IPv6 literal is bracketed in a URL. */
+    bool v6 = strchr(proxy_host, ':') != NULL && proxy_host[0] != '[';
+    (void)snprintf(
+        dl.proxy_url,
+        n,
+        v6 ? "http://[%s]:%u" : "http://%s:%u",
+        proxy_host,
+        (unsigned)proxy_port_num);
     dl.proxy_username = proxy_username;
     dl.proxy_password = proxy_password;
   }
