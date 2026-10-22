@@ -357,6 +357,12 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         flags->final_report = (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED) ? 1 : 2;
       }
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      /* A later update check offers it again; it is retried once the wait elapses. */
+      printf(
+          "Failed update offered again; retry in %u s.\n",
+          (unsigned)(event->retry_after_ms / 1000u));
+      break;
     case AZ_IOT_SU_EVENT_OPERATION_ABANDONED:
       fprintf(
           stderr,
