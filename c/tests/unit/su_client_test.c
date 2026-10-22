@@ -2624,6 +2624,36 @@ static void step_result_details_cleared_at_the_reboot_point_are_saved(void** sta
   change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_EMPTY);
 }
 
+/* Setting the saved text again at a reboot point, as a hook called per chunk
+ * may, writes nothing; a different text still rewrites the record once. */
+static void unchanged_step_result_details_write_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("same text")),
+      AZ_IOT_OK);
+  pump_to_checkpoint(fx);
+
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(
+        az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("same text")),
+        AZ_IOT_OK);
+    assert_false(fx->su._internal.checkpoint_pending);
+  }
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("other text")),
+      AZ_IOT_OK);
+  assert_true(fx->su._internal.checkpoint_pending);
+  int writes = fx->log.persist_calls;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, writes + 1);
+}
+
 /* A failed rewrite is reported and retried; the workflow waits, and the
  * change is durable only after PERSIST_RECOVERED. */
 static void a_failed_details_rewrite_is_retried_before_the_workflow_goes_on(void** state)
@@ -8403,6 +8433,7 @@ int main(void)
         step_result_details_cleared_at_the_reboot_point_are_saved, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_details_rewrite_is_retried_before_the_workflow_goes_on, setup, teardown),
+    cmocka_unit_test_setup_teardown(unchanged_step_result_details_write_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_largest_installed_id_reaches_the_accepted_report, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),

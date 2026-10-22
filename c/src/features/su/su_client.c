@@ -3950,6 +3950,11 @@ az_iot_result az_iot_su_client_set_step_result_details(
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
+  /* Unchanged text writes nothing: a hook may set it on every call. */
+  if (az_span_is_content_equal(details, SU_I(client).step_results[step_index].result_details))
+  {
+    return AZ_IOT_OK;
+  }
   uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
   if (len > 0)
   {
