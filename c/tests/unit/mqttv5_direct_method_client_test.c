@@ -2344,6 +2344,128 @@ static void expired_held_notices_do_not_block_new_ones(void** state)
   assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
 }
 
+/* Nothing of @p dm is left on @p conn after a failed init. */
+static void assert_nothing_left_registered(
+    const az_iot_connection_client* conn,
+    const az_iot_mqttv5_direct_method_client* dm)
+{
+  assert_int_equal(conn->required_profile_refs, 0);
+  for (size_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  {
+    assert_ptr_not_equal(conn->puback_reservations[i].owner, dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  {
+    assert_ptr_not_equal(conn->feature_client_binds[i].owner, dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  {
+    assert_false(conn->dispatch.entries[i].in_use && conn->dispatch.entries[i].user_ctx == dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    assert_ptr_not_equal(conn->feature_state_observers[i].user_ctx, dm);
+  }
+}
+
+static void ignore_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+}
+
+/* The connection then delivers a whole invocation to a client initialized afresh. */
+static void assert_a_new_init_serves_invocations(fixture* fx, bool already_open)
+{
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_register_method(&fx->dm, "dump", 0, on_method, fx),
+      AZ_IOT_OK);
+  if (already_open)
+  {
+    reconnect_to_connack(fx);
+    finish_birth(fx);
+  }
+  else
+  {
+    open_to_connected(fx);
+  }
+  run_one_invocation(fx, &rec, 0x61);
+  assert_int_equal(rec.fire_count, 1);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_non_null(find_phase(fx->mock, "result:1"));
+}
+
+static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_MAX_FEATURE_STATE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
+         && az_iot_connection_client__add_state_observer(&fx->conn, ignore_state, &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  assert_true(taken > 0);
+
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_nothing_left_registered(&fx->conn, &fx->dm);
+
+  assert_int_equal(
+      az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[0]),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  assert_a_new_init_serves_invocations(fx, false);
+
+  for (size_t i = 1; i < taken; ++i)
+  {
+    (void)az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[i]);
+  }
+}
+
+typedef struct init_from_callback
+{
+  fixture* fx;
+  bool tried;
+  az_iot_result result;
+} init_from_callback;
+
+static void init_on_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  init_from_callback* c = (init_from_callback*)user_ctx;
+  if (!c->tried)
+  {
+    c->tried = true;
+    c->result = az_iot_mqttv5_direct_method_client_init(&c->fx->dm, &c->fx->conn);
+  }
+}
+
+static void init_from_a_state_callback_is_busy_and_cleans_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  init_from_callback c = { fx, false, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->conn, init_on_state, &c), AZ_IOT_OK);
+  open_conn(fx);
+  assert_true(c.tried);
+  assert_int_equal(c.result, AZ_IOT_ERR_BUSY);
+  assert_nothing_left_registered(&fx->conn, &fx->dm);
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(&fx->conn, init_on_state, &c), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  assert_a_new_init_serves_invocations(fx, true);
+}
+
 static void respond_names_the_argument_it_was_given_wrong(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3054,6 +3176,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_held_probe_ack_past_its_ready_wait_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(expired_held_notices_do_not_block_new_ones, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_without_a_free_state_observer_fails_and_cleans_up, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_from_a_state_callback_is_busy_and_cleans_up, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_after_the_response_timeout_sends_nothing, setup, teardown),
