@@ -2585,6 +2585,45 @@ static void step_result_details_survive_a_reboot(void** state)
       fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("installed slot 2")));
 }
 
+/* Details replaced or cleared while waiting for the reboot are saved before
+ * the workflow goes on, and the resumed workflow reports them. */
+static void change_details_at_the_reboot_point(fixture* fx, az_span replacement)
+{
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("first text")),
+      AZ_IOT_OK);
+  pump_to_checkpoint(fx);
+
+  int writes = fx->log.persist_calls;
+  assert_int_equal(az_iot_su_client_set_step_result_details(&fx->su, 0, replacement), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  /* Rewritten before the workflow moves on; the device reboots here. */
+  assert_int_equal(fx->log.persist_calls, writes + 1);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(
+      az_span_is_content_equal(fx->chan.last_report.step_results[0].result_details, replacement));
+}
+
+static void step_result_details_replaced_at_the_reboot_point_are_saved(void** state)
+{
+  change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_FROM_STR("second text"));
+}
+
+static void step_result_details_cleared_at_the_reboot_point_are_saved(void** state)
+{
+  change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_EMPTY);
+}
+
 /* A report that does not fit the message limit goes out without step
  * details rather than not at all. */
 static void a_report_too_large_is_sent_without_step_details(void** state)
@@ -8197,6 +8236,10 @@ int main(void)
         a_report_too_large_is_sent_without_step_details, setup, teardown),
     cmocka_unit_test_setup_teardown(details_set_from_is_installed_are_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_report_keeps_the_pending_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_replaced_at_the_reboot_point_are_saved, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_cleared_at_the_reboot_point_are_saved, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_largest_installed_id_reaches_the_accepted_report, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),
