@@ -595,11 +595,12 @@ extern "C"
      * service's view is authoritative; call az_iot_su_client_request_update()
      * to learn it.
      *
-     * A report of any kind answered with a 409 (e.g. REPORT_CONFLICT) is the
-     * one case where the client checks for updates itself, after this event:
-     * on the route last requested (regular if none), with
-     * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, unless a check is already pending.
-     * Its answer arrives as for any check. */
+     * A report rejected with REPORT_CONFLICT, or with an untyped 409000, is
+     * the one case where the client checks for updates itself, after this
+     * event: on the route last requested (regular if none), with
+     * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS. No check is added while one is
+     * queued or in flight; that check's answer serves instead. Its answer
+     * arrives as for any check. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
     /* persist_state_fn failed. Raised on the first failure of an episode
