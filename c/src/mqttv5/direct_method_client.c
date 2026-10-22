@@ -398,6 +398,23 @@ static az_iot_result publish_typed(
   return result;
 }
 
+/** @brief True when a held message's budget (0: unbounded) started at @p start_ms is spent. */
+static bool held_budget_is_spent(uint32_t budget_seconds, uint64_t start_ms)
+{
+  return budget_seconds > 0u
+      && remaining_budget_seconds(budget_seconds, start_ms) < DM_MIN_USEFUL_BUDGET_SECONDS;
+}
+
+/** @brief True when a held probe-ack can no longer be sent: its ready wait or connect budget ran
+ *         out. */
+static bool held_probe_ack_is_stale(
+    const az_iot_mqttv5_direct_method_ready_slot* slot,
+    uint64_t now)
+{
+  return now >= RI(slot).expires_at_ms
+      || held_budget_is_spent(RI(slot).connect_budget_seconds, RI(slot).probe_received_at_ms);
+}
+
 /**
  * @brief Hold a ProbeAck{rejected} or Abandon until the connection is CONNECTED.
  *
@@ -417,7 +434,8 @@ static void hold_notice(
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
   {
     az_iot_mqttv5_direct_method_held_notice* n = &DI(dm).held_notices[i];
-    if (!RI(n).in_use)
+    /* An entry whose budget is spent would only be dropped on CONNECTED. */
+    if (!RI(n).in_use || held_budget_is_spent(RI(n).budget_seconds, RI(n).held_at_ms))
     {
       RI(n).in_use = true;
       RI(n).type = type_value;
@@ -496,20 +514,26 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
   {
     az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
-    if (!RI(slot).in_use || now < RI(slot).expires_at_ms)
+    if (!RI(slot).in_use)
     {
       continue;
     }
     if (RI(slot).probe_ack_held)
     {
       /* The service never saw this ready id, so there is nothing to abandon. */
-      AZ_IOT_LOG_WARNF(
-          AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-          "the ready wait for '%s' ran out before its probe-ack could be sent; "
-          "dropping the token",
-          RI(slot).method_name);
-      RI(slot).in_use = false;
-      RI(slot).probe_ack_held = false;
+      if (held_probe_ack_is_stale(slot, now))
+      {
+        AZ_IOT_LOG_WARNF(
+            AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+            "the budget for '%s' ran out before its probe-ack could be sent; dropping the token",
+            RI(slot).method_name);
+        RI(slot).in_use = false;
+        RI(slot).probe_ack_held = false;
+      }
+      continue;
+    }
+    if (now < RI(slot).expires_at_ms)
+    {
       continue;
     }
     AZ_IOT_LOG_WARNF(
@@ -966,14 +990,14 @@ static void flush_held(az_iot_mqttv5_direct_method_client* dm)
         = remaining_budget_seconds(RI(slot).connect_budget_seconds, RI(slot).probe_received_at_ms);
     uint8_t frame[AZ_IOT_DM_PROTO_PROBE_ACK_MAX];
     size_t frame_len = 0;
-    if ((RI(slot).connect_budget_seconds > 0u && remaining < DM_MIN_USEFUL_BUDGET_SECONDS)
+    if (held_probe_ack_is_stale(slot, az_iot_time_mono_ms())
         || az_iot_dm_proto_encode_probe_ack_ready(
                frame, sizeof(frame), RI(slot).ready_id, AZ_IOT_MQTTV5_DM_READY_ID_LEN, &frame_len)
             != AZ_IOT_OK)
     {
       AZ_IOT_LOG_WARNF(
           AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-          "the connect budget for '%s' ran out while its probe-ack was held; dropping the token",
+          "the budget for '%s' ran out while its probe-ack was held; dropping the token",
           RI(slot).method_name);
       RI(slot).in_use = false;
       RI(slot).probe_ack_held = false;
@@ -1031,9 +1055,9 @@ static void flush_held(az_iot_mqttv5_direct_method_client* dm)
     {
       continue;
     }
-    uint32_t remaining = remaining_budget_seconds(RI(n).budget_seconds, RI(n).held_at_ms);
-    if (RI(n).budget_seconds == 0u || remaining >= DM_MIN_USEFUL_BUDGET_SECONDS)
+    if (!held_budget_is_spent(RI(n).budget_seconds, RI(n).held_at_ms))
     {
+      uint32_t remaining = remaining_budget_seconds(RI(n).budget_seconds, RI(n).held_at_ms);
       if (publish_typed(dm, RI(n).type, RI(n).frame, RI(n).frame_len, RI(n).request_id, remaining)
           == AZ_IOT_ERR_NOT_CONNECTED)
       {

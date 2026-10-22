@@ -2099,6 +2099,95 @@ static void a_held_probe_ack_past_its_connect_budget_is_dropped(void** state)
   }
 }
 
+/* PUBLISHes on the service topic carrying the given `type`. */
+static size_t count_phase(az_iot_mock_mqtt_client* m, const char* type_value)
+{
+  size_t count = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = 0; i < n; ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, SRV_TOPIC) == 0
+        && strcmp(c->user_type, type_value) == 0)
+    {
+      count++;
+    }
+  }
+  return count;
+}
+
+static void held_probe_acks_past_their_connect_budget_free_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t stale[16];
+    make_request_id(stale, (uint8_t)(0xA0 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", stale, 16, frame, frame_len, 1);
+  }
+  sleep_past_one_second();
+
+  /* The held acceptances can no longer be sent, so they must not cost this one DEVICE_BUSY. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xAF);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  uint8_t ready_id[16];
+  probe_ack_ready_id(ack, ready_id);
+}
+
+static void a_held_probe_ack_past_its_ready_wait_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  /* No Message Expiry and no response timeout: only the one-second ready wait bounds it. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xB0);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 0);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  sleep_past_one_second();
+
+  /* A ready id advertised now would name a token the exec could no longer find. */
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+}
+
+static void expired_held_notices_do_not_block_new_ones(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t stale[16];
+    make_request_id(stale, (uint8_t)(0xC0 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", stale, 16, frame, frame_len, 1);
+  }
+  sleep_past_one_second();
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xCF);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
+}
+
 static void respond_names_the_argument_it_was_given_wrong(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2799,6 +2888,11 @@ int main(void)
         an_abandon_before_the_birth_ack_is_sent_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_probe_ack_past_its_connect_budget_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        held_probe_acks_past_their_connect_budget_free_capacity, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_probe_ack_past_its_ready_wait_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(expired_held_notices_do_not_block_new_ones, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_after_the_response_timeout_sends_nothing, setup, teardown),
