@@ -41,6 +41,8 @@ typedef struct
 {
   int done;
   az_iot_result status;
+  int32_t reason_code;
+  char reason[128]; /* The hub's Reason String, copied; "" when none. */
 } publish_record;
 
 #define E2E_MAX_PUBLISHES 16
@@ -63,7 +65,22 @@ typedef struct
 
 static fixture g_fx;
 
-static void on_publish(az_iot_result status, void* user_ctx)
+static void on_publish(const az_iot_publish_result* result, void* user_ctx)
+{
+  publish_record* record = (publish_record*)user_ctx;
+  record->status = result->status;
+  record->reason_code = result->reason_code;
+  size_t n = result->reason_string_len < sizeof(record->reason) - 1 ? result->reason_string_len
+                                                                    : sizeof(record->reason) - 1;
+  if (n > 0)
+  {
+    memcpy(record->reason, result->reason_string, n);
+  }
+  record->reason[n] = '\0';
+  record->done = 1;
+}
+
+static void on_telemetry_sent(az_iot_result status, void* user_ctx)
 {
   publish_record* record = (publish_record*)user_ctx;
   record->status = status;
@@ -115,15 +132,12 @@ static void assert_routed(bool seen)
   assert_true(seen);
 }
 
-/* A refused publish: PUBACK 0x87, or AZ_IOT_ERR_MQTT from an adapter that does not report the code.
- */
+/* A refused publish: PUBACK 0x87 (not authorized), which every bundled adapter reports. */
 static void assert_refused(const publish_record* record)
 {
   assert_true(record->done);
-  if (record->status != AZ_IOT_ERR_PUBLISH_REFUSED && record->status != AZ_IOT_ERR_MQTT)
-  {
-    fail_msg("expected a refusal, got %s", az_iot_result_to_string(record->status));
-  }
+  assert_int_equal(record->status, AZ_IOT_ERR_PUBLISH_REFUSED);
+  assert_int_equal(record->reason_code, 0x87);
 }
 
 static void pump(fixture* fx) { e2e_device_do_work(&fx->dev, E2E_PUMP_MS); }
@@ -306,13 +320,16 @@ static bool publish_topic_and_watch(
 
   const bool seen = wait_routed(fx, marker, timeout_s, record);
   printf(
-      "[e2e] '%s' (%u bytes, %u levels) qos %d, %u properties: completion %s, routed %s\n",
+      "[e2e] '%s' (%u bytes, %u levels) qos %d, %u properties: completion %s (reason code 0x%02X, "
+      "\"%s\"), routed %s\n",
       topic,
       (unsigned)strlen(topic),
       (unsigned)count_levels(topic),
       (int)qos,
       (unsigned)properties_count,
       record->done ? az_iot_result_to_string(record->status) : "(none)",
+      (unsigned)record->reason_code,
+      record->reason,
       seen ? "yes" : "no");
   return seen;
 }
@@ -391,7 +408,8 @@ static void baseline_telemetry_is_routed(void** state)
   message.payload_len = strlen(payload);
   publish_record* record = new_record(fx);
   assert_int_equal(
-      az_iot_mqttv5_telemetry_client_send(&telemetry, &message, on_publish, record), AZ_IOT_OK);
+      az_iot_mqttv5_telemetry_client_send(&telemetry, &message, on_telemetry_sent, record),
+      AZ_IOT_OK);
   const bool seen = wait_routed(fx, marker, E2E_ROUTE_TIMEOUT_S, record);
   az_iot_mqttv5_telemetry_client_deinit(&telemetry);
 

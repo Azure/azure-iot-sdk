@@ -1040,6 +1040,28 @@ extern "C"
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
 
+  /** @brief How a publish ended, as its completion callback sees it. */
+  typedef struct az_iot_publish_result
+  {
+    /** The outcome; the publishing function lists the values. */
+    az_iot_result status;
+    /** MQTT 5 reason code behind @p status: the hub's PUBACK code, or one the MQTT adapter reports
+     * for a publish it dropped (0x95: over the hub's Maximum Packet Size). 0: none (QoS 0, MQTT
+     * 3.1.1, the session ended first, or an adapter that does not report one). */
+    int32_t reason_code;
+    /** The hub's PUBACK Reason String: UTF-8, not NUL-terminated, valid only during the callback.
+     * NULL: none, or not reported (an adapter need report it only for a refusal). Non-NULL with
+     * length 0: present and empty. For diagnostics; its text is not a stable interface. */
+    const char* reason_string;
+    /** Bytes at @p reason_string. */
+    size_t reason_string_len;
+  } az_iot_publish_result;
+
+  /** @brief Completion of a publish, with the hub's verdict. @p result is valid only during the
+   * call. */
+  typedef void (
+      *az_iot_publish_result_callback)(const az_iot_publish_result* result, void* user_ctx);
+
   /* Notified when an MQTT session ends -- peer disconnect, transport error, or a
    * user close -- so a feature client can complete whatever it had correlated
    * against that session instead of waiting forever for a response that can no
@@ -1510,6 +1532,8 @@ extern "C"
     {
       uint16_t packet_id;
       az_iot_publish_ack_callback cb;
+      /* Set instead of cb by a publish that wants the hub's verdict. */
+      az_iot_publish_result_callback result_cb;
       void* user_ctx;
       bool in_use;
       /* Index into puback_reservations[] the slot counts against; UINT8_MAX for the shared pool. */

@@ -37,13 +37,26 @@ typedef struct send_record
 {
   int calls;
   az_iot_result status;
+  int32_t reason_code;
+  char reason[64]; /* Copied: the result is valid only during the callback. */
+  int reason_len; /* -1: NULL. */
 } send_record;
 
-static void on_send(az_iot_result status, void* user_ctx)
+static void on_send(const az_iot_publish_result* result, void* user_ctx)
 {
   send_record* record = (send_record*)user_ctx;
   record->calls++;
-  record->status = status;
+  record->status = result->status;
+  record->reason_code = result->reason_code;
+  record->reason_len = -1;
+  if (result->reason_string != NULL)
+  {
+    size_t n = result->reason_string_len < sizeof(record->reason) - 1 ? result->reason_string_len
+                                                                      : sizeof(record->reason) - 1;
+    memcpy(record->reason, result->reason_string, n);
+    record->reason[n] = '\0';
+    record->reason_len = (int)result->reason_string_len;
+  }
 }
 
 static int setup_profile(
@@ -458,6 +471,7 @@ static void a_failed_puback_reaches_the_callback_unchanged(void** state)
   static const az_iot_result statuses[]
       = { AZ_IOT_ERR_PUBLISH_REFUSED, AZ_IOT_ERR_BUSY, AZ_IOT_ERR_MQTT, AZ_IOT_ERR_MQTT };
   static const int32_t codes[] = { 0x87, 0x97, 0x80, 0 }; /* 0: not reported by the adapter. */
+  static const char* const reasons[] = { "no template allows this topic", NULL, "", NULL };
   for (size_t i = 0; i < ARRAY_SIZE(statuses); ++i)
   {
     az_iot_mock_mqtt_client_clear_calls(test->mock);
@@ -472,10 +486,22 @@ static void a_failed_puback_reaches_the_callback_unchanged(void** state)
     ack.packet_id = publish->packet_id;
     ack.status = statuses[i];
     ack.protocol_code = codes[i];
+    ack.reason_string = reasons[i];
+    ack.reason_string_len = reasons[i] ? strlen(reasons[i]) : 0;
     assert_true(az_iot_mock_mqtt_client_inject_event(test->mock, &ack));
     assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
     assert_int_equal(record.calls, 1);
     assert_int_equal(record.status, statuses[i]);
+    assert_int_equal(record.reason_code, codes[i]);
+    if (reasons[i] == NULL)
+    {
+      assert_int_equal(record.reason_len, -1);
+    }
+    else
+    {
+      assert_int_equal(record.reason_len, (int)strlen(reasons[i]));
+      assert_string_equal(record.reason, reasons[i]);
+    }
   }
 }
 
@@ -493,6 +519,8 @@ static void a_disconnect_completes_the_pending_publish(void** state)
   assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   assert_int_equal(record.calls, 1);
   assert_int_equal(record.status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(record.reason_code, 0);
+  assert_int_equal(record.reason_len, -1);
 }
 
 static void publish_before_connect_is_not_connected(void** state)
