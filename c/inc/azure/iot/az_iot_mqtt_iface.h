@@ -165,6 +165,10 @@ extern "C"
    * length reported through `out_sig_len`. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE
    * when the buffer is too small, and leaves *out_sig_len untouched on failure.
    *
+   * Called only from inside the adapter's connect() or process_loop(), so on the
+   * thread that drives the client. An adapter whose TLS handshake runs on its own
+   * thread must not accept this route.
+   *
    * Deliberately a plain function pointer rather than the certificate-provider
    * type: this header is the standalone BYO-MQTT-client seam (see
    * docs/how_to_byo_mqtt_client.md) and must not depend on the certificate

@@ -175,6 +175,12 @@
   retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
   offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
   restart; the persisted format moves to version 2, so version-1 records are ignored.
+- Threading contract documented: the SDK does not lock its state against other threads, so every
+  SDK call in a process must come from one thread or be serialized by the application
+  ([docs/architecture.md](docs/architecture.md)). `tls.sign` and the certificate provider's
+  `sign()` are called only on that thread. Sample
+  [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
+  readings from other threads to the SDK thread.
 
 ### Bugs Fixed
 

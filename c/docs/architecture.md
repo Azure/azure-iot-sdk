@@ -11,6 +11,11 @@ built for constrained and embedded devices.
   threads internally and hands their events over to that thread. Callbacks are dispatched mostly
   from `az_iot_connection_client_do_work()`, but a feature client's own entry points can dispatch
   them too (for example `az_iot_su_client_do_work()` and `az_iot_su_client_resume()`).
+  The SDK does not lock its state against other threads: make every SDK call, for every client in
+  the process, from one thread, or serialize the calls in the application. Callbacks run inside
+  those calls; a callback must not wait for another thread that is calling the SDK.
+  [`unified/multithreaded_telemetry`](../samples/unified/multithreaded_telemetry/README.md) hands
+  data from other threads to the SDK thread.
 - **No dynamic allocation in the connection and feature clients.** Buffers are caller-provided or
   live in caller-allocated structs. The reference PEM certificate provider is the exception: it
   reads the certificate, key and CA files into heap buffers once, at init.
