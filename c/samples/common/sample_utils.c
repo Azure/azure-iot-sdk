@@ -287,7 +287,10 @@ FILE* sample_fopen_read_nofollow(const char* path)
   {
     return NULL;
   }
-#if defined(_WIN32) || !defined(O_NOFOLLOW)
+#ifdef _WIN32
+  FILE* f = NULL;
+  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
+#elif !defined(O_NOFOLLOW)
   return fopen(path, "rb");
 #else
   int fd = open(path, O_RDONLY | O_NOFOLLOW);
