@@ -844,6 +844,56 @@ static void concurrent_invocations_are_correlated(void** state)
   }
 }
 
+/** @brief Pumps until the hub state is @p state; false if E2E_CALL_DEADLINE_S passes first. */
+static bool wait_state(fixture* fx, az_iot_connection_state state)
+{
+  for (time_t start = time(NULL);
+       fx->dev.conn_state != state && (time(NULL) - start) < E2E_CALL_DEADLINE_S;)
+  {
+    e2e_device_do_work(&fx->dev, E2E_PUMP_MS);
+  }
+  return fx->dev.conn_state == state;
+}
+
+/* A result answered while the device is not CONNECTED is sent once it is, and an invocation
+ * started while the device is offline reaches it as it reconnects -- its probe may arrive
+ * before the birth-ack -- and is answered. Last: it closes the connection. */
+static void invocations_across_a_reconnect_are_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  declare(fx, "reconnect", 0);
+
+  char marker[2][E2E_MARKER_MAX];
+  char payload[2][E2E_MARKER_MAX + 16];
+  for (size_t i = 0; i < 2; ++i)
+  {
+    make_marker(marker[i], sizeof(marker[i]), "dmReconnect");
+    marked_payload(payload[i], sizeof(payload[i]), marker[i]);
+  }
+
+  service_call calls[2];
+  call_start(fx, &calls[0], "reconnect", payload[0], E2E_RESPONSE_TIMEOUT_S);
+  expect_invocations(fx, &calls[0], 1, 1);
+
+  (void)az_iot_connection_client_close(&fx->dev.conn);
+  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_IDLE));
+
+  /* Held until CONNECTED, not refused. */
+  assert_int_equal(answer(fx, 0, 200, payload[0], strlen(payload[0])), AZ_IOT_OK);
+
+  call_start(fx, &calls[1], "reconnect", payload[1], E2E_RESPONSE_TIMEOUT_S);
+  assert_int_equal(az_iot_connection_client_open(&fx->dev.conn), AZ_IOT_OK);
+  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_CONNECTED));
+
+  expect_invocations(fx, calls, 2, 2);
+  assert_int_equal(answer(fx, 1, 201, payload[1], strlen(payload[1])), AZ_IOT_OK);
+  wait_done(fx, calls, 2, E2E_CALL_DEADLINE_S);
+  assert_answered(&calls[0], 200);
+  assert_non_null(strstr(calls[0].body, marker[0]));
+  assert_answered(&calls[1], 201);
+  assert_non_null(strstr(calls[1].body, marker[1]));
+}
+
 #define E2E_TEST(name) cmocka_unit_test_setup_teardown(name, test_setup, test_teardown)
 
 int main(void)
@@ -862,6 +912,7 @@ int main(void)
     E2E_TEST(result_body_at_max_is_delivered),
     E2E_TEST(oversized_result_can_be_answered_again),
     E2E_TEST(concurrent_invocations_are_correlated),
+    E2E_TEST(invocations_across_a_reconnect_are_answered),
   };
   return cmocka_run_group_tests_name(
       "e2e_mqttv5_direct_method", tests, group_setup, group_teardown);
