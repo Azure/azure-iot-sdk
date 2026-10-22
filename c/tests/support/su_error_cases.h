@@ -242,7 +242,7 @@ typedef struct
       report,                                                                                      \
       AZ_IOT_SU_OP_REPORT_STATUS,                                                                  \
       409,                                                                                         \
-      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,                                                              \
       AZ_IOT_SU_ERR_SERVER_ERROR,                                                                  \
       "",                                                                                          \
       0)                                                                                           \
@@ -288,7 +288,7 @@ typedef struct
     "REPORT_CONFLICT",                                                                             \
     409,                                                                                           \
     AZ_IOT_SU_ERR_GENERIC_CONFLICT,                                                                \
-    AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                  \
+    AZ_IOT_SU_ERROR_ACTION_RECHECK,                                                                \
     SU_ERROR_INFO,                                                                                 \
     "",                                                                                            \
     0)                                                                                             \
@@ -313,7 +313,7 @@ typedef struct
   SU_FALLBACK_ROUTE(X, regular, AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
   SU_FALLBACK_ROUTE(                                                                               \
       X, onboarding, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
-  SU_FALLBACK_ROUTE(X, report, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_SU_ERROR_ACTION_FATAL)
+  SU_FALLBACK_ROUTE(X, report, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_SU_ERROR_ACTION_RECHECK)
 
 /* A report has no agentInfo fields; corrective resends apply only to fetches. */
 

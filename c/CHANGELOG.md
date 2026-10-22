@@ -189,6 +189,9 @@
   `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
   `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
+- Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
+  `409000`) now makes the client check for updates once, as the service requires, after raising
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses

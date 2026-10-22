@@ -2065,6 +2065,31 @@ static bool arm_retry_backoff(
  * also fire a fresh check just as the hold is released and registration goes
  * out -- onto a session that is about to be torn down -- which is the race the
  * hold exists to prevent. */
+/**
+ * @brief Queue an update check after the service rejected a report as conflicting.
+ *
+ * The service's state differs from the device's, and checking again is how the
+ * device learns it. Uses the route the application last asked for (regular if
+ * none) and AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS. No-op while a check is
+ * queued or in flight: its answer serves the same purpose.
+ *
+ * @param client The software updates client.
+ */
+static void queue_conflict_recheck(az_iot_su_client* client)
+{
+  if (SU_I(client).pending_fetch != SU_FETCH_NONE || SU_I(client).fetch_in_flight != SU_FETCH_NONE)
+  {
+    return;
+  }
+  AZ_IOT_LOG_INFO(
+      AZ_IOT_LOG_COMPONENT_SU, "report conflicts with the service's state; checking for updates");
+  SU_I(client).pending_fetch = (SU_I(client).last_requested_fetch == SU_FETCH_ONBOARDING)
+      ? SU_FETCH_ONBOARDING
+      : SU_FETCH_REGULAR;
+  SU_I(client).pending_fetch_paced = false;
+  arm_pending_fetch_deadline(client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
+}
+
 static void on_channel_result(
     az_iot_su_operation operation,
     az_iot_result result,
@@ -2094,7 +2119,8 @@ static void on_channel_result(
     SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   }
   if (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || action == AZ_IOT_SU_ERROR_ACTION_PROCEED || action == AZ_IOT_SU_ERROR_ACTION_NONE)
+      || action == AZ_IOT_SU_ERROR_ACTION_PROCEED || action == AZ_IOT_SU_ERROR_ACTION_RECHECK
+      || action == AZ_IOT_SU_ERROR_ACTION_NONE)
   {
     if (result == AZ_IOT_OK)
     {
@@ -2109,7 +2135,8 @@ static void on_channel_result(
      * account the service cannot use: the device asked, was refused, and
      * without this reads exactly like "no update available". */
     if (result != AZ_IOT_OK
-        && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED))
+        && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
     {
       raise_abandoned(client, operation, result, service_error);
     }
@@ -2120,6 +2147,10 @@ static void on_channel_result(
       if (result == AZ_IOT_OK)
       {
         raise_simple(client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal);
+      }
+      else if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
+      {
+        queue_conflict_recheck(client);
       }
       return;
     }
@@ -3896,6 +3927,7 @@ az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t ti
     return AZ_IOT_ERR_INVALID_ARG;
   }
   SU_I(client).pending_fetch = SU_FETCH_ONBOARDING;
+  SU_I(client).last_requested_fetch = SU_FETCH_ONBOARDING;
   SU_I(client).pending_fetch_paced = false;
   arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;
@@ -3909,6 +3941,7 @@ az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
     return AZ_IOT_ERR_INVALID_ARG;
   }
   SU_I(client).pending_fetch = SU_FETCH_REGULAR;
+  SU_I(client).last_requested_fetch = SU_FETCH_REGULAR;
   SU_I(client).pending_fetch_paced = false;
   arm_pending_fetch_deadline(client, timeout_ms);
   return AZ_IOT_OK;

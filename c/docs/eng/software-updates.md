@@ -133,9 +133,12 @@ Reporting is **idempotent on `workflowId`**. A different terminal outcome for th
 rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
 `SUCCEEDED` and `SKIPPED` are absorbing; `FAILED` and `CANCELED` are not: `IN_PROGRESS` after
 `FAILED` for the same `workflowId` is a retry (see below), not a conflict.
-An explicit conflict stops replay and raises `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the
-service diagnosis. The application requests current state with `az_iot_su_client_request_update()`;
-the SDK does not add an automatic recovery poll or change the application's polling cadence.
+A conflict (`REPORT_CONFLICT`, or an untyped `409000` on a report) stops replay and raises
+`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the service diagnosis. The client then checks for
+updates once, as the service asks: on the route the application last requested (regular if
+none), with `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, unless a check is already queued or in
+flight. Its answer arrives as for any check. This is the only check the SDK starts itself; it
+does not change the application's polling cadence.
 
 ### Failed-workflow retries
 
@@ -180,7 +183,7 @@ carries no code (empty or unparseable) is classified by its status alone -- 429 
 | Update service not linked, or linked without access to the device's namespace | 409 `UPDATE_ACCOUNT_NOT_LINKED` / `UPDATE_ACCOUNT_ACCESS_DENIED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
 | Device not fully provisioned (regular fetch only) | 409 `DEVICE_NOT_PROVISIONED` | Stop retrying and expose abandonment; a later scheduled check succeeds once the device is provisioned. |
 | Device-class limit reached | 400 `MAX_DEVICE_CLASSES_EXCEEDED` | Stop retrying and expose abandonment for operator action. |
-| Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The application re-polls for current state. |
+| Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The client checks for updates once. |
 | Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
@@ -195,8 +198,9 @@ retried until acknowledged or explicitly rejected permanently by the service.
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
 `info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
 A recognized string wins over numeric/status fallback. An **untyped** shared numeric `409000`
-is `PROCEED` on a fetch (it must not block provisioning) and `FATAL` on a report: an identical
-report is a 200, so a 409 never means the report was recorded. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
+is `PROCEED` on a fetch (it must not block provisioning) and a conflict on a report (stop
+replay, then check for updates once): an identical report is a 200, so a 409 never means the
+report was recorded. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
 
 ---
 

@@ -921,7 +921,7 @@ static void a_numeric_only_body_is_still_usable(void** state)
    * splits 409000 by operation. */
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_FATAL);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -1012,6 +1012,9 @@ static void string_codes_map_to_the_specified_actions(void** state)
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
       az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
+  assert_int_equal(
+      az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_FATAL);
   assert_int_equal(
       az_iot_su__classify_error("UPDATE_ACCOUNT_ACCESS_DENIED", 409000, AZ_IOT_SU_OP_GET_UPDATE),
@@ -1072,7 +1075,7 @@ static void documented_codes_keep_their_actions_without_a_string_code(void** sta
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_FATAL);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -1186,7 +1189,8 @@ static void the_resend_family_is_recoverable_from_the_numeric_code_alone(void** 
 }
 
 /* An untyped 409000 is never a delivered report. On a fetch it proceeds (the
- * update account must not block provisioning); on a report it is a rejection. */
+ * update account must not block provisioning); on a report it is a conflict,
+ * answered by checking again. */
 static void the_shared_conflict_code_is_split_by_operation(void** state)
 {
   (void)state;
@@ -1198,10 +1202,10 @@ static void the_shared_conflict_code_is_split_by_operation(void** state)
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
 
-  /* On a report: a rejection, never a delivery (an identical report is 200). */
+  /* On a report: a conflict, never a delivery (an identical report is 200). */
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_FATAL);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
 static void transient_numeric_codes_are_retried(void** state)

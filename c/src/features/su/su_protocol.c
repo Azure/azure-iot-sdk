@@ -1134,9 +1134,10 @@ az_iot_su_error_action az_iot_su__classify_error(
     }
     if (strcmp(error_code, "REPORT_CONFLICT") == 0)
     {
-      /* A conflicting payload was rejected, not accepted as a duplicate.
-       * Stop replay and surface the diagnosis through the existing fatal path. */
-      return AZ_IOT_SU_ERROR_ACTION_FATAL;
+      /* A conflicting payload was rejected, not accepted as a duplicate. The
+       * service says to stop resending and check for updates again. */
+      return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_RECHECK
+                                                       : AZ_IOT_SU_ERROR_ACTION_FATAL;
     }
     if (strcmp(error_code, "THROTTLED") == 0 || strcmp(error_code, "TOO_MANY_REQUESTS") == 0)
     {
@@ -1206,13 +1207,15 @@ az_iot_su_error_action az_iot_su__classify_error(
           : AZ_IOT_SU_ERROR_ACTION_FATAL;
 
     case SU_ERROR_STATUS_CONFLICT:
-      /* No 409 is a delivered report: an identical report is a 200. On a fetch
-       * the untyped 409000 is most likely the update account (proceed: it must
-       * not block provisioning); on a report it is a rejection. Neither is
-       * retried unchanged. */
-      if (numeric_code == AZ_IOT_SU_ERR_GENERIC_CONFLICT && operation != AZ_IOT_SU_OP_REPORT_STATUS)
+      /* No 409 is a delivered report: an identical report is a 200. The
+       * untyped 409000 on a report is a conflict with the service's state (the
+       * code REPORT_CONFLICT shares): check again. On a fetch it is most likely
+       * the update account (proceed: it must not block provisioning). Neither
+       * is retried unchanged. */
+      if (numeric_code == AZ_IOT_SU_ERR_GENERIC_CONFLICT)
       {
-        return AZ_IOT_SU_ERROR_ACTION_PROCEED;
+        return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_RECHECK
+                                                         : AZ_IOT_SU_ERROR_ACTION_PROCEED;
       }
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
 
