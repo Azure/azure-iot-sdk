@@ -844,13 +844,14 @@ static void concurrent_invocations_are_correlated(void** state)
   }
 }
 
-/** @brief Pumps until the hub state is @p state; false if E2E_CALL_DEADLINE_S passes first. */
-static bool wait_state(fixture* fx, az_iot_connection_state state)
+/** @brief Pumps the device and polls @p calls until the hub state is @p state; false if
+ *         E2E_CALL_DEADLINE_S passes first. */
+static bool wait_state(fixture* fx, az_iot_connection_state state, service_call* calls, size_t n)
 {
   for (time_t start = time(NULL);
        fx->dev.conn_state != state && (time(NULL) - start) < E2E_CALL_DEADLINE_S;)
   {
-    e2e_device_do_work(&fx->dev, E2E_PUMP_MS);
+    (void)pump_calls(fx, calls, n);
   }
   return fx->dev.conn_state == state;
 }
@@ -876,14 +877,31 @@ static void invocations_across_a_reconnect_are_answered(void** state)
   expect_invocations(fx, &calls[0], 1, 1);
 
   (void)az_iot_connection_client_close(&fx->dev.conn);
-  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_IDLE));
+  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_IDLE, calls, 1));
 
   /* Held until CONNECTED, not refused. */
   assert_int_equal(answer(fx, 0, 200, payload[0], strlen(payload[0])), AZ_IOT_OK);
 
+  /* The second invocation reaches the service while the device is offline. */
   call_start(fx, &calls[1], "reconnect", payload[1], E2E_RESPONSE_TIMEOUT_S);
+  for (time_t start = time(NULL); !az_iot_e2e_service_request_is_sent(fx->service, calls[1].handle)
+       && !calls[1].done && (time(NULL) - start) < E2E_CALL_DEADLINE_S;)
+  {
+    (void)pump_calls(fx, calls, 2);
+  }
+  if (calls[1].done)
+  {
+    fail_msg(
+        "the offline invocation completed before the reconnect: http=%d body=%s",
+        calls[1].http_status,
+        calls[1].body);
+  }
+  assert_true(az_iot_e2e_service_request_is_sent(fx->service, calls[1].handle));
+  assert_int_equal(fx->dev.conn_state, AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->calls_used, 1);
+
   assert_int_equal(az_iot_connection_client_open(&fx->dev.conn), AZ_IOT_OK);
-  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_CONNECTED));
+  assert_true(wait_state(fx, AZ_IOT_CONN_STATE_CONNECTED, calls, 2));
 
   expect_invocations(fx, calls, 2, 2);
   assert_int_equal(answer(fx, 1, 201, payload[1], strlen(payload[1])), AZ_IOT_OK);
