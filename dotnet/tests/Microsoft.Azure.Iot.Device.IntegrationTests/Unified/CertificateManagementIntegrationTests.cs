@@ -18,11 +18,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
             using RSA privateKey = RSA.Create(2048);
             await using UnifiedDeviceTestContext device = await CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                testAgainstClassicHub,
                 cancellationToken: TestContext.Current.CancellationToken,
                 issuedCertificatePrivateKey: privateKey);
 
@@ -37,7 +40,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await device.ConnectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
             Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
 
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            ProvisioningSettings provisioningSettings = new(GetDpsIdScope(testAgainstClassicHub))
             {
                 CertificateSigningRequest = new(privateKey, CertificateUtilities.GenerateCsrWithPrivateKey(device.RegistrationId, privateKey)),
             };
@@ -85,7 +88,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             ConnectionClient connectionClient = new();
 
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            ProvisioningSettings provisioningSettings = new(GetDpsIdScope(testAgainstClassicHub))
             {
                 CertificateSigningRequest = new(privateKey, csrBase64),
             };
