@@ -217,6 +217,7 @@ namespace Microsoft.Azure.Iot.Device
         /// flow is only valid for the connection it was started on, so this is cancelled whenever that connection ends.
         /// </summary>
         private CancellationTokenSource? _currentProvisioningFlowCancellation;
+        private CancellationToken _provisioningFlowParentCancellationToken;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -917,10 +918,13 @@ namespace Microsoft.Azure.Iot.Device
             var reprovisioningCancellation = new CancellationTokenSource();
             Interlocked.Exchange(ref _currentReprovisioningCancellation, reprovisioningCancellation);
 
-            if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount)
+            if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0
+                || !ManagedMqttConnection.IsConnectionLifecycleActive)
             {
                 // The application deliberately disconnected this client while this recovery was being set up, possibly
-                // before that disconnect could see (and cancel) it. The disconnect takes precedence, so do not start.
+                // before that disconnect could see (and cancel) it, or the connection lifecycle already ended. The
+                // disconnect takes precedence, so do not start.
                 Trace.TraceInformation("Not re-provisioning because this client was deliberately disconnected.");
                 Interlocked.CompareExchange(ref _currentReprovisioningCancellation, null, reprovisioningCancellation);
                 reprovisioningCancellation.Dispose();
@@ -1176,6 +1180,7 @@ namespace Microsoft.Azure.Iot.Device
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             cancellationToken.ThrowIfCancellationRequested();
+            _provisioningFlowParentCancellationToken = cancellationToken;
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
@@ -1283,7 +1288,7 @@ namespace Microsoft.Azure.Iot.Device
             // Any flow left over from a previous connection belongs to a session that no longer exists, so abandon it.
             CancelCurrentProvisioningFlow();
 
-            var provisioningFlowCancellation = new CancellationTokenSource();
+            var provisioningFlowCancellation = CancellationTokenSource.CreateLinkedTokenSource(_provisioningFlowParentCancellationToken);
             _currentProvisioningFlowCancellation = provisioningFlowCancellation;
 
             // Responses to the previous connection's requests are no longer expected.

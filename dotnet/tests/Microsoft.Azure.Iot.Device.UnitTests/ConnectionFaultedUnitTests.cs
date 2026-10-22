@@ -1397,6 +1397,46 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ExplicitDisconnectWhileWaitingForDpsRegistrationResponseStopsReprovisioning()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+            TaskCompletionSource reprovisioningRegistrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith("$dps/registrations/PUT/"))
+                {
+                    // Return PUBACK but leave the registration-response wait unresolved.
+                    reprovisioningRegistrationStarted.TrySetResult();
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
+                return handleProvisioningPublishAsync.Invoke(publish);
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reprovisioningRegistrationStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(ConnectionEndpoint.DeviceProvisioningService, connectionClient.CurrentEndpoint);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.False(mockMqttClient.IsConnected());
+            Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
+        }
+
+        [Fact]
         public async Task ExplicitDisconnectDuringHubReconnectionReleasesWaitingOperationsAndStopsReconnecting()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -1460,6 +1500,60 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
             Assert.Equal(connectAttemptsAfterDisconnect, mockMqttClient.ConnectAttemptCount);
             Assert.False(mockMqttClient.IsConnected());
+        }
+
+        [Fact]
+        public async Task ExplicitDisconnectDuringSuccessfulHubReconnectionDisconnectsLateConnection()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            TaskCompletionSource reconnectionConnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseReconnectionConnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource lateConnectionDisconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int hubConnectAttempts = 0;
+            int allowLateConnectionCleanup = 0;
+
+            mockMqttClient.OnConnect = async connect =>
+            {
+                if (connect.HostName == FirstAssignedHub && Interlocked.Increment(ref hubConnectAttempts) == 2)
+                {
+                    reconnectionConnectStarted.TrySetResult();
+                    await releaseReconnectionConnect.Task;
+                }
+
+                return new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success };
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                if (Volatile.Read(ref allowLateConnectionCleanup) != 0)
+                {
+                    lateConnectionDisconnected.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+            await reconnectionConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Volatile.Write(ref allowLateConnectionCleanup, 1);
+            releaseReconnectionConnect.TrySetResult();
+
+            await lateConnectionDisconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.False(mockMqttClient.IsConnected());
+            Assert.Equal(2, hubConnectAttempts);
         }
 
         [Fact]
