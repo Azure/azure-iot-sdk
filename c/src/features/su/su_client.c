@@ -2792,7 +2792,8 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
    + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
    + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
    + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                            \
-   + 4u * (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
+   + 4u * (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) + AZ_IOT_RETRY_STATE_RECORD_SIZE  \
+   + 4u)
 
 /* The workspace reserves AZ_IOT_SU_PERSIST_OVERHEAD beside the request for the
  * workflow record, and as much again for the terminal record: header plus the
@@ -3959,8 +3960,10 @@ AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
    * step after an apply that asked for one), no later write would carry the
    * change: rewrite the record on the next do_work(), before the workflow goes on. */
   if (SU_I(client).checkpoint_stored && !SU_I(client).checkpoint_terminal
+      && !SU_I(client).checkpoint_retry && !SU_I(client).checkpoint_superseded
       && (st == AZ_IOT_SU_STATE_INSTALL_COMPLETE
-          || (st == AZ_IOT_SU_STATE_DOWNLOAD_STARTED && SU_I(client).current_file == 0)))
+          || (st == AZ_IOT_SU_STATE_DOWNLOAD_STARTED && SU_I(client).current_step > 0
+              && SU_I(client).current_file == 0)))
   {
     SU_I(client).checkpoint_pending = true;
   }
