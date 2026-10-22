@@ -156,7 +156,8 @@ settled: then it raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`). S
 another `workflowId`, resets the count; fetches, "no update" answers and report acknowledgements do
 not. The wait runs on the monotonic clock; it is also stored with a Unix deadline (from the
 connection client's `unix_time` source) in the persisted record, so it survives a restart (see
-§4 Persistence). This schedule is separate from the transient fetch/report backoff below.
+§4 Persistence). It is an `az_iot_retry_policy` with `AZ_IOT_RETRY_JITTER_ADDITIVE`, kept in an
+`az_iot_retry_state`, separate from the transient fetch/report backoff below.
 
 ### Trust
 
@@ -1425,7 +1426,6 @@ src/features/su/
 ├── su_channel_dps.c             software updates channel over the DPS session
 ├── su_protocol.c                request/response codec
 ├── su_report.c                  structured result for the channel
-├── su_retry.c                   failed-workflow retry schedule and its persisted form
 ├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
 └── internal/                    internal headers
 adapters/su/{crypto_mbedtls,crypto_openssl,esp32}/

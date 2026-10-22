@@ -751,14 +751,6 @@ extern "C"
    * any one of them. */
   typedef void (*az_iot_su_observer_callback)(const az_iot_su_event* event, void* user_ctx);
 
-  /** @brief Retry schedule of a FAILED workflow. Internal to the client. */
-  typedef struct az_iot_su_workflow_retry
-  {
-    uint32_t failures; /**< Consecutive FAILED attempts. */
-    uint64_t due_ms; /**< Monotonic instant the next attempt may start; 0: now. */
-    uint64_t due_unix_s; /**< The same instant in Unix seconds; 0: unknown. */
-  } az_iot_su_workflow_retry;
-
   typedef struct az_iot_su_client
   {
     struct
@@ -828,7 +820,7 @@ extern "C"
       /** The workflow named by active_workflow_id has started and not yet ended. */
       bool active_workflow_running;
       /** Retry schedule of active_workflow_id after it FAILED. */
-      az_iot_su_workflow_retry workflow_retry;
+      az_iot_retry_state workflow_retry;
       /** Unix time source, from the connection client options; NULL uses time(). */
       az_iot_unix_time_callback unix_time_fn;
       void* unix_time_ctx; /**< Passed to unix_time_fn. */

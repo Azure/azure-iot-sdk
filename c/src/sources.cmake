@@ -32,7 +32,6 @@ set(AZ_IOT_CORE_SOURCES
     features/su/su_report.c
     features/su/su_channel_dps.c
     features/su/su_protocol.c
-    features/su/su_retry.c
 )
 
 set(AZ_IOT_MQTTV3_SOURCES
