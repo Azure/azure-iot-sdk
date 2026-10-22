@@ -21,7 +21,8 @@
 - mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
   templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
   `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
-  Topics the hub would refuse are rejected locally. Publish only. Sample:
+  Topics the hub would refuse are rejected locally. Publish only. At QoS 1 the completion
+  (`az_iot_publish_result`) carries the hub's PUBACK reason code and Reason String. Sample:
   [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
@@ -177,6 +178,10 @@
 
 ### Bugs Fixed
 
+- Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
+  `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
+  and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
+  (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
@@ -184,6 +189,9 @@
   `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
   `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
+- Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
+  `409000`) now makes the client check for updates once, as the service requires, after raising
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses

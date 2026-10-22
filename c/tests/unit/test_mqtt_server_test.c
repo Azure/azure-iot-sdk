@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <cmocka.h>
 
@@ -133,6 +134,43 @@ static void puback_v5_omits_the_property_length_when_it_carries_a_reason(void** 
   az_iot_test_mqtt_packet p
       = az_iot_test_mqtt_puback(AZ_IOT_TEST_MQTT_V5, AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED);
   assert_packet(&p, expected, sizeof(expected));
+}
+
+/* An absent Reason String is no property; an empty one is property 0x1F with length 0. */
+static void puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one(void** state)
+{
+  (void)state;
+  static const uint8_t absent[] = { 0x40, 0x04, 0x00, 0x00, 0x87, 0x00 };
+  static const uint8_t empty[] = { 0x40, 0x07, 0x00, 0x00, 0x87, 0x03, 0x1F, 0x00, 0x00 };
+  static const uint8_t text[] = { 0x40, 0x09, 0x00, 0x00, 0x97, 0x05, 0x1F, 0x00, 0x02, 'n', 'o' };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, NULL);
+  assert_packet(&p, absent, sizeof(absent));
+  p = az_iot_test_mqtt_puback_v5_raw(0x87, "");
+  assert_packet(&p, empty, sizeof(empty));
+  p = az_iot_test_mqtt_puback_v5_raw(0x97, "no");
+  assert_packet(&p, text, sizeof(text));
+  assert_int_equal(p.packet_id_offset, 2);
+  assert_int_equal(p.echo_packet_id, 1);
+}
+
+/* Single-byte lengths only: 120 bytes is the longest Reason String (Remaining Length 127). */
+static void puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths(void** state)
+{
+  (void)state;
+  char reason[122];
+  memset(reason, 'r', sizeof(reason));
+  reason[120] = '\0';
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 129);
+  assert_int_equal(p.bytes[1], 127);
+  assert_int_equal(p.bytes[5], 123);
+  assert_int_equal(p.bytes[8], 120);
+  assert_memory_equal(&p.bytes[9], reason, 120);
+
+  reason[120] = 'r';
+  reason[121] = '\0';
+  p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 0);
 }
 
 /* 3.1.1 has no field for it, so the builder reports "not expressible" rather
@@ -327,6 +365,8 @@ int main(void)
     cmocka_unit_test(an_acknowledgement_reports_where_its_packet_id_sits),
     cmocka_unit_test(puback_success_is_the_same_in_both_versions),
     cmocka_unit_test(puback_v5_omits_the_property_length_when_it_carries_a_reason),
+    cmocka_unit_test(puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
+    cmocka_unit_test(puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths),
     cmocka_unit_test(a_refusal_a_version_cannot_express_yields_nothing),
     cmocka_unit_test(server_disconnect_carries_the_v5_reason),
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),

@@ -231,6 +231,9 @@ extern "C"
     AZ_IOT_SU_ERROR_ACTION_RETRY,
     /* The request or our credentials are wrong. Do not retry unchanged. */
     AZ_IOT_SU_ERROR_ACTION_FATAL,
+    /* A report conflicts with the service's state: drop it like FATAL, then
+     * check for updates again to learn that state. Reports only. */
+    AZ_IOT_SU_ERROR_ACTION_RECHECK,
   } az_iot_su_error_action;
 
   /* --- Service numeric error codes ----------------------------------------- */
