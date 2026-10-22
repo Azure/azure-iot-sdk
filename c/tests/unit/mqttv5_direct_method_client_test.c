@@ -1904,6 +1904,23 @@ static void a_result_that_cannot_be_published_says_why(void** state)
 /* between CONNACK and the birth-ack                                         */
 /* ------------------------------------------------------------------------- */
 
+/* PUBLISHes on the service topic carrying the given `type`. */
+static size_t count_phase(az_iot_mock_mqtt_client* m, const char* type_value)
+{
+  size_t count = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = 0; i < n; ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, SRV_TOPIC) == 0
+        && strcmp(c->user_type, type_value) == 0)
+    {
+      count++;
+    }
+  }
+  return count;
+}
+
 /* Close the session and open a new one up to CONNACK: CONNECTING, birth-ack
  * still to come. */
 static void reconnect_to_connack(fixture* fx)
@@ -2026,6 +2043,121 @@ static void an_exec_before_the_birth_ack_has_its_result_sent_once_connected(void
   assert_null(find_phase(fx->mock, "result:1"));
 }
 
+static void several_held_results_are_each_sent_once_with_their_own_bytes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  enum
+  {
+    HELD = 2
+  };
+  uint8_t request_ids[HELD][16];
+  uint8_t ready_ids[HELD][16];
+  for (size_t i = 0; i < HELD; ++i)
+  {
+    make_request_id(request_ids[i], (uint8_t)(0x71 + i));
+    probe_and_accept(fx, request_ids[i], "dump", 300, ready_ids[i]);
+  }
+
+  reconnect_to_connack(fx);
+  static const int statuses[HELD] = { 200, 404 };
+  static const char* const bodies[HELD] = { "first", "second-body" };
+  for (size_t i = 0; i < HELD; ++i)
+  {
+    uint8_t exec[64];
+    size_t exec_len = build_exec(exec, ready_ids[i], 16, NULL, 0);
+    rec.fired = false;
+    inject_dm(fx, DEV_TOPIC, "exec:1", request_ids[i], 16, exec, exec_len, 300);
+    assert_true(rec.fired);
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(
+            &fx->dm, rec.request, statuses[i], (const uint8_t*)bodies[i], strlen(bodies[i])),
+        AZ_IOT_OK);
+  }
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), HELD);
+  size_t matched = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t c = 0; c < n; ++c)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, c);
+    if (call->kind != AZ_IOT_MOCK_CALL_PUBLISH || strcmp(call->user_type, "result:1") != 0)
+    {
+      continue;
+    }
+    for (size_t i = 0; i < HELD; ++i)
+    {
+      if (memcmp(call->correlation_data, request_ids[i], 16) != 0)
+      {
+        continue;
+      }
+      /* Result { status = 1 (varint), payload = 2 (bytes) }; both statuses take two bytes. */
+      size_t body_len = strlen(bodies[i]);
+      uint8_t expected[32];
+      expected[0] = 0x08;
+      expected[1] = (uint8_t)((statuses[i] & 0x7F) | 0x80);
+      expected[2] = (uint8_t)(statuses[i] >> 7);
+      expected[3] = 0x12;
+      expected[4] = (uint8_t)body_len;
+      memcpy(expected + 5, bodies[i], body_len);
+      assert_int_equal(call->payload_len, 5 + body_len);
+      assert_memory_equal(call->payload, expected, 5 + body_len);
+      matched++;
+    }
+  }
+  assert_int_equal(matched, HELD);
+}
+
+static void a_held_result_whose_budget_runs_out_is_dropped_on_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  /* A 5 s response timeout leaves a 1 s safety margin, so a 2 s exec is admitted. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0x81);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 5, ready_id);
+
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 2);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  sleep_past_one_second();
+  sleep_past_one_second();
+
+  /* CONNECTED alone, with no further method message, drops it and frees the slot. */
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  finish_birth(fx);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+  assert_non_null(strstr(cap.all, "ran out while its result was held"));
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t other[16];
+    make_request_id(other, (uint8_t)(0x90 + i));
+    uint8_t ignored[16];
+    probe_and_accept(fx, other, "dump", 300, ignored);
+  }
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+}
+
 static void a_rejected_probe_before_the_birth_ack_is_answered_once_connected(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2097,23 +2229,6 @@ static void a_held_probe_ack_past_its_connect_budget_is_dropped(void** state)
     uint8_t ignored[16];
     probe_and_accept(fx, other, "dump", 300, ignored);
   }
-}
-
-/* PUBLISHes on the service topic carrying the given `type`. */
-static size_t count_phase(az_iot_mock_mqtt_client* m, const char* type_value)
-{
-  size_t count = 0;
-  size_t n = az_iot_mock_mqtt_client_call_count(m);
-  for (size_t i = 0; i < n; ++i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, SRV_TOPIC) == 0
-        && strcmp(c->user_type, type_value) == 0)
-    {
-      count++;
-    }
-  }
-  return count;
 }
 
 static void held_probe_acks_past_their_connect_budget_free_capacity(void** state)
@@ -2882,6 +2997,10 @@ int main(void)
         a_probe_after_the_birth_before_its_ack_is_answered_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_exec_before_the_birth_ack_has_its_result_sent_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        several_held_results_are_each_sent_once_with_their_own_bytes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_result_whose_budget_runs_out_is_dropped_on_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_rejected_probe_before_the_birth_ack_is_answered_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
