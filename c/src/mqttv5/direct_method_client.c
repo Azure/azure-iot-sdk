@@ -458,13 +458,21 @@ static void hold_notice(
       (int)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
 }
 
-/* Best-effort advisory that a ready token ended before execution began. The
- * service uses it to fail the caller early instead of waiting out the response
- * timeout, so losing one costs latency, not correctness. */
+/**
+ * @brief Best-effort advisory that a ready token ended before execution began.
+ *
+ * The service uses it to fail the caller early instead of waiting out the response timeout, so
+ * losing one costs latency, not correctness.
+ *
+ * @param budget_seconds Budget the caller still waits within, from @p start_ms, if the abandon is
+ *        held; 0 uses the response timeout from now.
+ */
 static void publish_abandon(
     az_iot_mqttv5_direct_method_client* dm,
     const az_iot_mqttv5_direct_method_ready_slot* slot,
-    az_iot_dm_proto_abandon_reason reason)
+    az_iot_dm_proto_abandon_reason reason,
+    uint32_t budget_seconds,
+    uint64_t start_ms)
 {
   uint8_t frame[AZ_IOT_DM_PROTO_ABANDON_MAX];
   size_t frame_len = 0;
@@ -490,14 +498,19 @@ static void publish_abandon(
           RI(slot).response_timeout_seconds)
       == AZ_IOT_ERR_NOT_CONNECTED)
   {
+    if (budget_seconds == 0u)
+    {
+      budget_seconds = RI(slot).response_timeout_seconds;
+      start_ms = az_iot_time_mono_ms();
+    }
     hold_notice(
         dm,
         "abandon:" DM_TYPE_VERSION,
         frame,
         frame_len,
         RI(slot).request_id,
-        RI(slot).response_timeout_seconds,
-        az_iot_time_mono_ms());
+        budget_seconds,
+        start_ms);
   }
 }
 
@@ -545,7 +558,7 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
      * message can never claim a token that might still run. */
     az_iot_mqttv5_direct_method_ready_slot expired = *slot;
     RI(slot).in_use = false;
-    publish_abandon(dm, &expired, AZ_IOT_DM_PROTO_ABANDON_READY_WAIT_TIMEOUT);
+    publish_abandon(dm, &expired, AZ_IOT_DM_PROTO_ABANDON_READY_WAIT_TIMEOUT, 0u, 0u);
   }
 }
 
@@ -870,7 +883,8 @@ static void handle_exec(
         (unsigned)exec_budget,
         RI(&abandoned).method_name,
         (unsigned)admission_floor);
-    publish_abandon(dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_INSUFFICIENT_TIME);
+    publish_abandon(
+        dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_INSUFFICIENT_TIME, exec_budget, received_at_ms);
     return;
   }
 
@@ -885,7 +899,8 @@ static void handle_exec(
      * needs to learn that execution did not begin. */
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
     RI(slot).in_use = false;
-    publish_abandon(dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED);
+    publish_abandon(
+        dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED, exec_budget, received_at_ms);
     return;
   }
 

@@ -2204,6 +2204,47 @@ static void an_abandon_before_the_birth_ack_is_sent_once_connected(void** state)
   assert_memory_equal(abandon->correlation_data, request_id, 16);
 }
 
+static void held_abandons_expire_with_their_exec_budget(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  /* A 300 s response timeout, but each exec arrives with 1 s left and is abandoned. */
+  uint8_t request_ids[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  uint8_t ready_ids[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    make_request_id(request_ids[i], (uint8_t)(0x51 + i));
+    probe_and_accept(fx, request_ids[i], "dump", 300, ready_ids[i]);
+  }
+  reconnect_to_connack(fx);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t exec[64];
+    size_t exec_len = build_exec(exec, ready_ids[i], 16, NULL, 0);
+    inject_dm(fx, DEV_TOPIC, "exec:1", request_ids[i], 16, exec, exec_len, 1);
+  }
+  assert_false(rec.fired);
+  sleep_past_one_second();
+
+  /* The abandoned callers have timed out, so their entries no longer hold this one back. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0x5F);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "abandon:1"), 0);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
+}
+
 static void a_held_probe_ack_past_its_connect_budget_is_dropped(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3005,6 +3046,7 @@ int main(void)
         a_rejected_probe_before_the_birth_ack_is_answered_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_abandon_before_the_birth_ack_is_sent_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(held_abandons_expire_with_their_exec_budget, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_probe_ack_past_its_connect_budget_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
