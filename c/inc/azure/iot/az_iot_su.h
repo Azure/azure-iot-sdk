@@ -1192,7 +1192,7 @@ extern "C"
    *   steps; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p details is longer than
    *   result_details_size; AZ_IOT_ERR_DETACHED if the client is detached.
    */
-  AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
+  az_iot_result az_iot_su_client_set_step_result_details(
       az_iot_su_client* client,
       uint32_t step_index,
       az_span details);

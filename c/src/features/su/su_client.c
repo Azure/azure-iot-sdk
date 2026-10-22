@@ -3923,7 +3923,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   return AZ_IOT_OK;
 }
 
-AZ_NODISCARD az_iot_result az_iot_su_client_set_step_result_details(
+az_iot_result az_iot_su_client_set_step_result_details(
     az_iot_su_client* client,
     uint32_t step_index,
     az_span details)
