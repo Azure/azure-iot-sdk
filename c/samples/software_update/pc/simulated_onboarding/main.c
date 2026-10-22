@@ -287,6 +287,12 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
       printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      /* A later update check offers it again; it is retried once the wait elapses. */
+      printf(
+          "Failed update offered again; retry in %u s.\n",
+          (unsigned)(event->retry_after_ms / 1000u));
+      break;
   }
 }
 
@@ -569,7 +575,6 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
       if (state.su_workflow_succeeded && state.simulation_control.applied_valid)
       {
         az_iot_su_device_properties next = { 0 };

@@ -722,6 +722,10 @@ reports include complete per-step outcomes when steps are available — see
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
   honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
   report is a durable write and must not be lost.
+- **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
+  workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
+  consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
+  re-offer is not applied.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
   `agentInfoEtag` means resend the full `agentInfo`. A missing or stale `serviceConfigEtag` is not
   an error: the 200 response carries the current configuration. An update account the service
