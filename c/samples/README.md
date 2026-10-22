@@ -43,6 +43,7 @@ run it, and what to expect.
 | [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
 | [software_update/pc/http_download](software_update/pc/http_download/README.md) | Software updates with a real, non-blocking HTTPS download (libcurl) through a proxy; simulated install. |
+| [software_update/pc/multi_step](software_update/pc/multi_step/README.md) | A multi-step update: per-step hooks, rollback, failure codes, step result details and the final report. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
 ## How a unified sample handles the hub generation
