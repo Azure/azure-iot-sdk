@@ -188,6 +188,10 @@ name third-party code only, and each needs a comment giving its upstream referen
 [`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
 CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`).
 
+The tools see pthread locks only. The file sink's atomic spin lock is described to them by
+`-DAZ_IOT_RACE_ANNOTATIONS=ON` (needs `<valgrind/helgrind.h>`; no effect outside valgrind), which the
+CI job sets. Without it, a race-labelled test that logs to a file sink reports false races.
+
 ## MQTT adapter conformance suite
 
 [`tests/conformance/`](../../tests/conformance/) is a reusable test suite that drives an MQTT

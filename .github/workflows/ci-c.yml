@@ -407,10 +407,13 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
-        # No broker: the race-labelled tests are hermetic.
+        # No broker: the race-labelled tests are hermetic. RACE_ANNOTATIONS
+        # describes the SDK's atomic spin lock to the tools (valgrind
+        # package ships <valgrind/helgrind.h>).
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_RACE_ANNOTATIONS=ON
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
       - name: Build
@@ -1172,7 +1175,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '58'
+      EXPECTED_TESTS: '59'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

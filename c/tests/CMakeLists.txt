@@ -180,6 +180,12 @@ az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# Concurrent writers and rotation in the file sink, which documents itself as
+# thread-safe. RACE: also run under helgrind and DRD.
+az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)
+if(UNIX)
+    target_link_libraries(az_iot_tests_log_file_race PRIVATE pthread)
+endif()
 # Diagnostic surface: the *_to_string helpers, version string, default
 # reconnection policy and the built-in stderr sink. Pulls internal headers for
 # the role/flavor helpers and the CSR request-id generator, which are internal
