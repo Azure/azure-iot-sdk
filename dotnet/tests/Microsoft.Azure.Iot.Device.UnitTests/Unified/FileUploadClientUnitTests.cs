@@ -364,11 +364,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             public ConnectionContext? GetCurrentConnectionContext() => Context;
 
-            public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwIfNotSuccessful, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-            public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, bool throwIfNotSuccessful, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-            public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, bool throwIfNotSuccessful, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
             public void Dispose()
             {
