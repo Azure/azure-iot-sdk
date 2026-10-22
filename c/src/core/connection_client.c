@@ -34,7 +34,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -1267,18 +1266,7 @@ static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_conn
 /** @brief Current Unix time from opts.unix_time, else time(); 0 when unknown. */
 static uint64_t unix_now(const az_iot_connection_client* c)
 {
-  if (c->opts.unix_time.get_time != NULL)
-  {
-    return c->opts.unix_time.get_time(c->opts.unix_time.user_ctx);
-  }
-  time_t t = time(NULL);
-  /* (time_t)-1 is failure. Compared explicitly: time_t may be unsigned, where
-   * it would pass a `> 0` test as a far-future time. */
-  if (t == (time_t)-1)
-  {
-    return 0u;
-  }
-  return t > 0 ? (uint64_t)t : 0u;
+  return az_iot_time_unix_s(c->opts.unix_time.get_time, c->opts.unix_time.user_ctx);
 }
 
 /** @brief Bytes of sas_buffer before the key slots: HMAC, then its base64. */
