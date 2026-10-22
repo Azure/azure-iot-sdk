@@ -59,8 +59,12 @@ jobs:
             workflow:
               - '.github/workflows/ci-c.yml'
 
+  # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
+  # nothing depends on an adapter it was configured without
+  # (eng/check-dependencies.cmake); the Paho-ON legs also prove the check finds
+  # Paho when it is there.
   build:
-    name: ${{ matrix.preset }} / ${{ matrix.build_type }}
+    name: ${{ matrix.preset }} / ${{ matrix.build_type }}${{ matrix.with_paho == 'OFF' && ' / no Paho' || '' }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     strategy:
@@ -79,6 +83,14 @@ jobs:
             preset: windows-msvc-debug
             build_type: Debug
             with_paho: ON
+          - os: ubuntu-24.04
+            preset: linux-gcc-debug
+            build_type: Debug
+            with_paho: OFF
+          - os: windows-latest
+            preset: windows-msvc-debug
+            build_type: Debug
+            with_paho: OFF
     runs-on: ${{ matrix.os }}
 
     # Mosquitto service container for the MQTT iface conformance suite.
@@ -116,12 +128,30 @@ jobs:
         # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
         # fails the configure step outright when OpenSSL is missing instead of
         # dropping the certificate-validation tests.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+        # libcurl: the samples that use it (dps_tpm, file_upload's upload path)
+        # are expected to build.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
+        run: |
+          cmake -DBUILD_DIR=build/${{ matrix.preset }} -DMODE=prepare -P eng/check-dependencies.cmake
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
+      # Every connecting sample is built for every adapter. Windows: no libcurl
+      # (dps_tpm), and az_mqtt has no OpenSSL TLS there for key references (hsm_pkcs11).
+      - name: Check dependencies
+        run: >
+          cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
+          "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
+          "-DEXPECT_SAMPLES=${{ matrix.with_paho == 'OFF' && 'az_mqtt' || 'paho;az_mqtt' }}"
+          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;hsm_pkcs11:az_mqtt' || '' }}"
+          -P eng/check-dependencies.cmake
+      - name: Check dependencies (negative control)
+        if: matrix.with_paho == 'ON'
+        run: >
+          cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
+          -DFORBID=paho -DEXPECT_FAIL=ON -P eng/check-dependencies.cmake
 
       - name: Test
         env:
@@ -164,6 +194,10 @@ jobs:
         run: bash eng/check-version.sh
       - name: Check log components
         run: bash eng/check-log-components.sh
+      - name: Check race-detector suppressions
+        run: >
+          bash eng/check-race-suppressions.sh
+          && bash eng/check-race-suppressions.sh --self-test
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -338,30 +372,34 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Race detection. Separate from the valgrind job above because it answers a
-  # different question, with a different tool, on a different binary.
+  # different question, with a different tool.
   #
-  # memcheck and ASan look at WHICH memory is touched. Neither looks at which
-  # thread touched it or under which lock, so neither can see a data race at
-  # all: a race whose timing happens not to bite on the runner is simply
-  # invisible to them. That gap was not theoretical -- the adapter published a
-  # queued event to the consumer thread and then kept writing to it, and every
-  # job in this workflow passed straight through the window.
+  # memcheck and ASan look at WHICH memory is touched, not at which thread
+  # touched it or under which lock, so neither can see a data race. A race
+  # whose timing does not bite on the runner is invisible to them: the Paho
+  # adapter once published a queued event to the consumer thread and then kept
+  # writing to it, and every other job passed.
   #
-  # The adapter's event queue is the only place in this SDK where two threads
-  # meet (Paho's callback threads produce, the application's process_loop()
-  # consumes), so it is the only thing this job runs: one hermetic binary with
-  # no broker and no sockets, whose sole content is that seam.
+  # Runs every ctest test labelled "race" (az_iot_add_cmocka_test(... RACE
+  # ...)) through eng/run-race-detectors.sh, which fails on a reported error,
+  # a failed test, or a run that ended without an ERROR SUMMARY. A new
+  # threaded test joins by carrying the label.
   #
-  # Both tools run, and either one reporting an error fails the job. They agree
-  # on most races but not all -- they implement happens-before differently, and
-  # DRD additionally reports lock-order and mutex-misuse problems helgrind does
-  # not -- so running both is cheap coverage rather than duplication.
+  # One leg per tool; either reporting an error fails the job. They implement
+  # happens-before differently and DRD also reports lock-order and mutex
+  # misuse, so running both is coverage rather than duplication. Suppressions:
+  # eng/sanitizers/<tool>.supp, third-party code only
+  # (eng/check-race-suppressions.sh); every suppression used is in the log.
   # ---------------------------------------------------------------------------
   race-detector:
-    name: linux-gcc / helgrind + drd
+    name: linux-gcc / ${{ matrix.tool }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [ helgrind, drd ]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -369,53 +407,25 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
       - name: Configure
-        # No broker and no conformance suites: this job builds and runs exactly
-        # one test binary, which needs neither.
+        # No broker: the race-labelled tests are hermetic. RACE_ANNOTATIONS
+        # describes the SDK's atomic spin lock to the tools (valgrind
+        # package ships <valgrind/helgrind.h>).
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_RACE_ANNOTATIONS=ON
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
       - name: Build
-        run: cmake --build --preset linux-gcc-debug --target az_iot_tests_paho_event_queue_race
-      - name: Event queue under helgrind and drd
-        working-directory: c/build/linux-gcc-debug
-        run: |
-          set -o pipefail
-          status=0
-          for tool in helgrind drd; do
-            echo "::group::${tool}"
-            # --error-exitcode makes a reported race fail the step. It does NOT
-            # cover valgrind aborting on its own, so the ERROR SUMMARY line is
-            # checked as well: a run that produced no summary did not finish,
-            # and must not be read as a clean one.
-            if valgrind --tool="${tool}" --error-exitcode=42 \
-                 ./tests/az_iot_tests_paho_event_queue_race 2>&1 | tee "${tool}.log"; then
-              :
-            else
-              # Put the report itself in the annotation, not just the verdict.
-              # The full log is an artifact, but a failure that can be read
-              # straight off the run summary is one that gets acted on -- and
-              # the first context is almost always the whole story. Newlines
-              # are escaped because an annotation is a single line.
-              detail=$(grep -E '^==[0-9]+==' "${tool}.log" | head -40 \
-                       | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-              echo "::error::${tool} reported a threading defect:%0A${detail}"
-              status=1
-            fi
-            if ! grep -q "ERROR SUMMARY:" "${tool}.log"; then
-              echo "::error::${tool} did not run to completion"
-              status=1
-            fi
-            echo "::endgroup::"
-          done
-          exit "${status}"
+        run: cmake --build --preset linux-gcc-debug
+      - name: Race-labelled tests under ${{ matrix.tool }}
+        run: bash eng/run-race-detectors.sh ${{ matrix.tool }}
       - name: Upload race-detector logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: race-detector-logs
-          path: c/build/linux-gcc-debug/*.log
+          name: race-detector-logs-${{ matrix.tool }}
+          path: c/build/linux-gcc-debug/race-logs/
           if-no-files-found: ignore
 
   asan-windows:
@@ -431,11 +441,9 @@ jobs:
       - name: Configure (MSVC AddressSanitizer)
         # Disable Paho here: pulling it in through FetchContent forces the
         # /MD[d] runtime which conflicts with /fsanitize=address's internal
-        # runtime selection on some toolchain builds. The first-party suites
-        # (smoke / mqtt_iface_contract / connection_client / retry_policy
-        # / protocol_profile_dispatch / telemetry / direct_method / twin /
-        # dps_client / dps_handoff / certificate_provider_pem / easy_client /
-        # rust_mqtt_adapter) cover everything we want ASan to vet.
+        # runtime selection on some toolchain builds. The first-party suites,
+        # the az_mqtt adapter (Schannel) and the rust_mqtt shell are what ASan
+        # vets here.
         #
         # NOTE: until this commit these were AZ_IOT_AEG_* -- names no option
         # ever declared -- so Paho was in fact ON here, contradicting the
@@ -444,6 +452,7 @@ jobs:
         run: >
           cmake --preset windows-msvc-debug
           -DAZ_IOT_WITH_PAHO=OFF
+          -DAZ_IOT_WITH_AZ_MQTT=ON
           -DAZ_IOT_WITH_RUST_MQTT=ON
           -DCMAKE_C_FLAGS="/fsanitize=address /Zi"
       - name: Build
@@ -628,6 +637,69 @@ jobs:
           AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
         run: ctest --test-dir build/az-mqtt --output-on-failure -R '^az_iot_(conformance_az_mqtt_|az_mqtt_adapter_broker$)' --no-tests=error
 
+  # ---------------------------------------------------------------------------
+  # No Paho, no OpenSSL, no libcurl: the whole tree (tests, samples) on az_mqtt
+  # over mbedTLS, with the mbedTLS crypto backend, must build, pass and install
+  # without referencing any of them. The az_mqtt suites run against Mosquitto;
+  # their TLS case needs the OpenSSL test proxy, so it is proven by
+  # az-mqtt / mbedtls instead (AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN).
+  # ---------------------------------------------------------------------------
+  deps-isolation:
+    name: deps-isolation / az_mqtt + mbedTLS (no Paho, OpenSSL, libcurl)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build mosquitto mosquitto-clients
+      - name: Start Mosquitto (TCP 1883, WebSocket 8080)
+        run: |
+          sudo systemctl stop mosquitto || true
+          printf 'listener 1883 127.0.0.1\nallow_anonymous true\nlistener 8080 127.0.0.1\nprotocol websockets\n' \
+            > "$RUNNER_TEMP/mosquitto.conf"
+          mosquitto -d -c "$RUNNER_TEMP/mosquitto.conf"
+          for _ in $(seq 1 20); do
+            mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok && break
+            sleep 1
+          done
+          mosquitto_pub -h 127.0.0.1 -p 1883 -t az-iot/probe -m ok
+      - name: Build mbedTLS 4.1.1
+        run: bash eng/install-mbedtls.sh 4.1.1 "$RUNNER_TEMP/mbedtls"
+      - name: Configure
+        run: >
+          cmake -DBUILD_DIR=build/isolation -DMODE=prepare -P eng/check-dependencies.cmake &&
+          cmake -S . -B build/isolation -G Ninja
+          -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
+          -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON -DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON
+          -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=mbedtls
+          -DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF -DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF
+          -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_BUILD_SAMPLES=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
+      - name: Build
+        run: cmake --build build/isolation
+      - name: Test
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_WS_PORT: '8080'
+          AZ_IOT_CONFORMANCE_WS_PATH: /mqtt
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+        run: ctest --test-dir build/isolation --output-on-failure --no-tests=error
+      - name: Install
+        run: cmake --install build/isolation --prefix "$RUNNER_TEMP/az-iot-sdk"
+      # Not built: the samples that need OpenSSL (managed provider, CSR, PKCS#11
+      # custody, OpenSSL-signed tokens, simulated TPM).
+      - name: Check dependencies
+        run: >
+          cmake -DBUILD_DIR=build/isolation -DINSTALL_PREFIX="$RUNNER_TEMP/az-iot-sdk"
+          "-DFORBID=paho;rust_mqtt;openssl;curl"
+          -DEXPECT_SAMPLES=az_mqtt
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11"
+          -P eng/check-dependencies.cmake
+
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
   # static and shared: flags are probed per toolchain, and FORTIFY differs
@@ -652,6 +724,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Configure
         run: >
+          cmake -DBUILD_DIR=build/hardening -DMODE=prepare -P eng/check-dependencies.cmake &&
           cmake -S . -B build/hardening -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_C_COMPILER=${{ matrix.compiler }}
@@ -663,6 +736,9 @@ jobs:
         run: cmake --build build/hardening
       - name: Check binaries
         run: bash eng/check-hardening.sh build/hardening
+      # az_mqtt is off by default: nothing may depend on it.
+      - name: Check dependencies
+        run: cmake -DBUILD_DIR=build/hardening -DFORBID=az_mqtt -P eng/check-dependencies.cmake
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
@@ -692,6 +768,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Configure
         run: >
+          cmake -DBUILD_DIR=build/hardening -DMODE=prepare -P eng/check-dependencies.cmake &&
           cmake -S . -B build/hardening -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
@@ -703,6 +780,9 @@ jobs:
         run: cmake --build build/hardening
       - name: Check binaries
         run: bash eng/check-hardening.sh build/hardening
+      # az_mqtt is off by default: nothing may depend on it.
+      - name: Check dependencies
+        run: cmake -DBUILD_DIR=build/hardening -DFORBID=az_mqtt -P eng/check-dependencies.cmake
       - name: Unit tests
         run: ctest --test-dir build/hardening --output-on-failure
 
@@ -802,6 +882,8 @@ jobs:
   # installed files must use the install-time prefix.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
+  # -no-paho builds without Paho: neither the build nor the package may reference
+  # it, and asking the package for adapter_paho must fail.
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -838,6 +920,18 @@ jobs:
             shared: 'ON'
             mbedtls: ''
             components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+          - os: ubuntu-24.04
+            name: linux-gcc-no-paho
+            shared: 'OFF'
+            mbedtls: '3.6.7'
+            with_paho: 'OFF'
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+          - os: windows-latest
+            name: windows-msvc-no-paho
+            shared: 'OFF'
+            mbedtls: ''
+            with_paho: 'OFF'
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -882,12 +976,14 @@ jobs:
 
       - name: Configure
         run: >
+          cmake -DBUILD_DIR=build/install -DMODE=prepare -P eng/check-dependencies.cmake &&
           cmake -S . -B build/install -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_INSTALL_PREFIX="$AZ_IOT_CONFIGURED_PREFIX"
           -DCMAKE_PREFIX_PATH="$AZ_IOT_MBEDTLS;$AZ_IOT_DEPS"
           -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=${{ matrix.installed_deps || 'OFF' }}
           -DAZ_IOT_USE_INSTALLED_PAHO=${{ matrix.installed_deps || 'OFF' }}
+          -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho || 'ON' }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_RUST_MQTT=ON
@@ -900,6 +996,11 @@ jobs:
 
       - name: Install
         run: cmake --install build/install --prefix "$AZ_IOT_PREFIX"
+      - name: Check dependencies (no Paho)
+        if: matrix.with_paho == 'OFF'
+        run: >
+          cmake -DBUILD_DIR=build/install -DINSTALL_PREFIX="$AZ_IOT_PREFIX"
+          -DFORBID=paho -P eng/check-dependencies.cmake
       - name: Check the installed tree
         run: |
           test -f "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
@@ -943,6 +1044,17 @@ jobs:
         run: cygpath -w "$AZ_IOT_PREFIX/bin" >> "$GITHUB_PATH"
       - name: Test the consumer
         run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
+      - name: The package has no adapter_paho (no Paho)
+        if: matrix.with_paho == 'OFF'
+        run: |
+          if cmake -S tests/install -B "$RUNNER_TEMP/no-paho-consumer" -G Ninja \
+               -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS" \
+               -DAZ_IOT_EXPECTED_COMPONENTS="core;adapter_paho" > "$RUNNER_TEMP/no-paho.log" 2>&1; then
+            echo "::error::find_package(azure-iot-sdk COMPONENTS adapter_paho) succeeded"
+            exit 1
+          fi
+          # Refused by the component check, not by anything else.
+          grep -q 'set azure-iot-sdk_FOUND to FALSE' "$RUNNER_TEMP/no-paho.log"
       - name: Check the exact-version binding (shared)
         # No ABI guarantee: a consumer must bind to this exact release, and on
         # Linux must fail to load when only another release is present.
@@ -1063,7 +1175,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '58'
+      EXPECTED_TESTS: '59'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -1250,6 +1362,82 @@ jobs:
           name: coverage-c
           path: c/build/linux-gcc-coverage/coverage/
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # ESP-IDF builds: one job per ESP32 sample, target and profile, each through
+  # eng/esp-idf-build.sh (fails on any compiler warning). Build checks only:
+  # secure profiles are signed with a key generated per build and discarded.
+  # ---------------------------------------------------------------------------
+  esp-idf:
+    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    container:
+      # espressif/idf:v6.0, pinned by digest.
+      image: espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401
+    defaults:
+      run:
+        shell: bash
+        working-directory: c
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [ software_update/esp32 ]
+        target: [ esp32, esp32c3, esp32s3, esp32c6 ]
+        profile: [ default, secure ]
+        include:
+          - sample: software_update/esp32
+            target: esp32
+            profile: secure_esp32_legacy
+          - sample: software_update/esp32
+            target: esp32
+            profile: secure_virtual_efuse
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # The ESP-IDF component builds azure-sdk-for-c from c/deps.
+          submodules: true
+      - name: Build
+        env:
+          SAMPLE: ${{ matrix.sample }}
+          TARGET: ${{ matrix.target }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          # The container runs as root over a runner-owned checkout; ESP-IDF
+          # runs git (app version) in it.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh" > /dev/null
+          bash eng/esp-idf-build.sh "samples/$SAMPLE" "$TARGET" "$PROFILE"
+
+  # Single check name for the esp-idf matrix, which reports one check per cell.
+  # Same rules as coverage-gate below.
+  esp-idf-gate:
+    name: esp-idf-gate
+    needs: [changes, esp-idf]
+    if: always()
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check esp-idf job outcome
+        env:
+          changes_result: ${{ needs.changes.result }}
+          esp_idf_result: ${{ needs.esp-idf.result }}
+        run: |
+          echo "changes: $changes_result"
+          echo "esp-idf: $esp_idf_result"
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::esp-idf gate: change detection did not succeed ($changes_result)"
+            exit 1
+          fi
+          if [ "$esp_idf_result" = "success" ] || [ "$esp_idf_result" = "skipped" ]; then
+            exit 0
+          fi
+          echo "::error::esp-idf gate failed (esp-idf: $esp_idf_result)"
+          exit 1
 
   # Single stable check name for branch-protection to reference. It reports on
   # every pull request, passes when the coverage job legitimately did not need

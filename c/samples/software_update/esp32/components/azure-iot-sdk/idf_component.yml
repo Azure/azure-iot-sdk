@@ -4,4 +4,4 @@
 ## ESP-IDF component (see components/azure-sdk-for-c). No registry dependency is
 ## needed for it.
 dependencies:
-  idf: ">=5.1"
+  idf: ">=6.0"

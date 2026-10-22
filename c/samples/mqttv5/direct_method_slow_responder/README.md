@@ -10,7 +10,7 @@ about 2 seconds **after** the handler returned, for work that does not fit insid
 ## Sample features
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
-- Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
 - The handler keeps the request (a struct copy, nothing allocated) and returns; the pump loop answers later. `method_name` and `payload` do not outlive the handler, so the payload is copied out.
 - The method is declared with the time it needs (3 s). A caller whose timeout cannot cover it is refused `INSUFFICIENT_TIME` at the probe, before its arguments are sent.
@@ -67,6 +67,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_mqttv5_direct_meth
 ./build/linux-gcc-debug/samples/mqttv5/az_iot_sample_direct_method_slow_responder
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_mqttv5_direct_method_slow_responder_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -100,7 +103,7 @@ method 'slowEcho' invoked, answering in ~2000 ms
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Declare the method with its time budget | `az_iot_mqttv5_direct_method_client_register_method()` |
 | Busy probe | `on_probe()` |
 | Keep the request; answer from the pump | `on_slow_echo()`, `deferred_pump()` |

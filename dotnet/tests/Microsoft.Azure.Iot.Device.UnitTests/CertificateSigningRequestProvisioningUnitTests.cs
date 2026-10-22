@@ -8,6 +8,7 @@ using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Moq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -33,6 +34,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private static readonly byte[] SymmetricKey = Encoding.UTF8.GetBytes("some-symmetric-key-for-unit-tests");
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
+
+        [Fact]
+        public async Task HubConnectionPassesCancellationTokenToOperationalAuthentication()
+        {
+            Mock<AuthenticationProvider> authentication = new(MockBehavior.Strict, new object?[] { null, null });
+            authentication.Setup(provider => provider.GetOperationalAuthenticationCredentialsAsync(
+                AssignedHub, DeviceId, null, It.Is<CancellationToken>(token => token.CanBeCanceled)))
+                .ReturnsAsync(new AuthenticationCredentials());
+            ConnectionContext context = new()
+            {
+                DeviceId = DeviceId,
+                IotHubHostName = AssignedHub,
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
+                AuthenticationProvider = authentication.Object,
+            };
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = _ =>
+                Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            using UnifiedConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ConnectToHubAsync(context, TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            authentication.VerifyAll();
+        }
 
         [Fact]
         public async Task ProvisioningSendsTheCertificateSigningRequestAndReturnsTheIssuedChain()
@@ -174,13 +200,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             X509AuthenticationProvider authentication = CreateAuthenticationProvider(operationalKey);
             Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
 
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain);
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken);
             Assert.NotNull(hubCredentials.ClientCertificate);
             Assert.Equal(issuedCertificate.Thumbprint, hubCredentials.ClientCertificate.Thumbprint);
             Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
 
             // Handling the same chain again reuses the same certificate rather than rebuilding it on every connect.
-            Assert.Same(hubCredentials.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain)).ClientCertificate);
+            Assert.Same(hubCredentials.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken)).ClientCertificate);
 
             // DPS is always authenticated with the original client certificate.
             Assert.Same(authentication.ClientCertificate, authentication.GetBootAuthenticationCredentials().ClientCertificate);
@@ -196,10 +222,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // Without a private key, the default callback presents the original certificate.
             X509AuthenticationProvider authentication = CreateAuthenticationProvider();
             Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
-            Assert.Same(authentication.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain)).ClientCertificate);
+            Assert.Same(authentication.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken)).ClientCertificate);
 
             authentication = CreateAuthenticationProvider(operationalKey);
-            Assert.Same(authentication.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null)).ClientCertificate);
+            Assert.Same(authentication.ClientCertificate, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken)).ClientCertificate);
         }
 
         [Fact]
@@ -265,7 +291,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using RSA operationalKey = RSA.Create(2048);
             SymmetricKeyAuthenticationProvider authentication = new(RegistrationId, IdScope, SymmetricKey, operationalKey);
 
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null);
+            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
 
             Assert.Null(hubCredentials.ClientCertificate);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(hubCredentials.Password));
@@ -440,8 +466,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 : new X509AuthenticationProvider(CreateAuthenticationProvider().ClientCertificate, callback);
             AuthenticationCredentials bootCredentials = authentication.GetBootAuthenticationCredentials();
 
-            Task<AuthenticationCredentials> firstRequest = authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain);
-            Task<AuthenticationCredentials> concurrentRequest = authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain);
+            Task<AuthenticationCredentials> firstRequest = authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken);
+            Task<AuthenticationCredentials> concurrentRequest = authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken);
             Assert.False(firstRequest.IsCompleted);
             Assert.False(concurrentRequest.IsCompleted);
             Assert.Equal(1, callbackInvocations);
@@ -450,7 +476,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             AuthenticationCredentials[] credentials = await Task.WhenAll(firstRequest, concurrentRequest)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             Assert.All(credentials, result => Assert.Same(issuedCertificateWithKey, result.ClientCertificate));
-            Assert.Same(issuedCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain)).ClientCertificate);
+            Assert.Same(issuedCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken)).ClientCertificate);
             Assert.Equal(1, callbackInvocations);
             Assert.Same(bootCredentials.ClientCertificate, authentication.GetBootAuthenticationCredentials().ClientCertificate);
         }
@@ -485,10 +511,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 ? new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, SymmetricKey, callback)
                 : new X509AuthenticationProvider(CreateAuthenticationProvider().ClientCertificate, callback);
 
-            Assert.Same(issuedCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain)).ClientCertificate);
+            Assert.Same(issuedCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, issuedChain, TestContext.Current.CancellationToken)).ClientCertificate);
             Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(
-                () => authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, replacementChain)));
-            Assert.Same(replacementCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, replacementChain)).ClientCertificate);
+                () => authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, replacementChain, TestContext.Current.CancellationToken)));
+            Assert.Same(replacementCertificateWithKey, (await authentication.GetOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, replacementChain, TestContext.Current.CancellationToken)).ClientCertificate);
             Assert.Equal(2, replacementAttempts);
         }
 

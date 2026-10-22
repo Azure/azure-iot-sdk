@@ -1,0 +1,5 @@
+{
+   no-comment
+   drd:ConflictingAccess
+   fun:MQTTAsync_connect
+}

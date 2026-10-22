@@ -68,12 +68,15 @@ In production, keep device private keys in hardware rather than in files; see
 
 The samples build with the rest of the tree when `AZ_IOT_BUILD_SAMPLES=ON` (the default):
 
+Each sample that connects is built once per MQTT adapter (Paho, az_mqtt); see the
+[samples overview](../README.md#build).
+
 | Sample | Built when |
 | --- | --- |
-| `dps_csr_managed`, `dps_persist_assignment`, `hub_renew` | OpenSSL 3.0+ and the Paho adapter (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`) |
-| `custom_certificate_provider` | OpenSSL 3.0+ and the Paho adapter |
-| `hsm_pkcs11` | The Paho adapter |
+| `dps_csr_managed`, `dps_persist_assignment`, `hub_renew` | OpenSSL 3.0+ (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) |
+| `custom_certificate_provider` | OpenSSL 3.0+ |
+| `hsm_pkcs11` | Always with Paho; with az_mqtt over OpenSSL TLS |
 | `custom_provider_template`, `hsm_sign_callback` | Always |
-| `dps_sas_key` | The Paho adapter and the OpenSSL crypto backend (`AZ_IOT_WITH_CRYPTO_OPENSSL`) |
-| `dps_sas_key_issued_cert` | As `dps_sas_key`, plus the managed provider (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) |
-| `user_provided_sas_token` | The Paho adapter and OpenSSL |
+| `dps_sas_key` | A crypto backend: OpenSSL (`AZ_IOT_WITH_CRYPTO_OPENSSL`), else mbedTLS |
+| `dps_sas_key_issued_cert` | The OpenSSL crypto backend and the managed provider (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`) |
+| `user_provided_sas_token` | OpenSSL |

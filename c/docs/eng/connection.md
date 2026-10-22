@@ -382,7 +382,8 @@ Reset points differ per ladder:
 
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
-jitter = uniform(-jitter_pct%, +jitter_pct%) * base
+jitter = uniform(-jitter_pct%, +jitter_pct%) * base   (AZ_IOT_RETRY_JITTER_SYMMETRIC)
+         uniform(0, +jitter_pct%) * base            (AZ_IOT_RETRY_JITTER_ADDITIVE)
 delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
@@ -391,7 +392,8 @@ delay  = clamp(base + jitter, 1, UINT32_MAX)
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
 | `max_delay_ms` | 60000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
-| `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
+| `jitter_pct` | 20 | Randomization, seeded from the monotonic clock. |
+| `jitter_mode` | `AZ_IOT_RETRY_JITTER_SYMMETRIC` | `_ADDITIVE` only lengthens a delay, for waits that must not be shortened. |
 
 The shift is clamped at 30 to avoid 32-bit overflow. The attempt counter resets to zero on every
 successful CONNACK.
@@ -608,9 +610,15 @@ reports include complete per-step outcomes when steps are available — see
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
   honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
   report is a durable write and must not be lost.
+- **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
+  workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
+  consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
+  re-offer is not applied.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
-  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
-  it; an unlinked update account means "no update service configured", which is not a failure.
+  `agentInfoEtag` means resend the full `agentInfo`. A missing or stale `serviceConfigEtag` is not
+  an error: the 200 response carries the current configuration. An update account the service
+  cannot use (not linked, or no access to the namespace) is not retried, is reported, and does
+  not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates never drives the connection.** It does not open, close, or force a reconnect. It does
   sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.

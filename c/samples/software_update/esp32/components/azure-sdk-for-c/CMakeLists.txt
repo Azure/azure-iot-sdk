@@ -9,7 +9,7 @@
 # uses are compiled (no az_http transport, no curl).
 
 # deps/azure-sdk-for-c relative to this file: components/azure-sdk-for-c ->
-# esp32 -> su -> samples -> c (5 levels up).
+# esp32 -> software_update -> samples -> c (5 levels up).
 get_filename_component(AZ_SDK_C_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../../../../../deps/azure-sdk-for-c" ABSOLUTE)
 

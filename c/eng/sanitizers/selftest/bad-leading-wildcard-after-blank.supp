@@ -1,0 +1,9 @@
+# blank line and comment before a leading "..."
+{
+   leading-blank
+   drd:ConflictingAccess
+
+   # comment
+   ...
+   fun:MQTTAsync_connect
+}

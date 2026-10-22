@@ -6,7 +6,14 @@
 #include "e2e_device.h"
 #include "support/test_env.h"
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,8 +121,21 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 
   az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
-  (void)reason;
+  /* A failed attempt: the transport code (the TLS stack's own, e.g. a SECURITY_STATUS) says why. */
+  if (event->error != NULL && event->error->source != AZ_IOT_CONN_ERR_SRC_NONE)
+  {
+    fprintf(
+        stderr,
+        "[e2e] hub %s reason %s: error source %d code %ld (0x%08lx): %.*s\n",
+        az_iot_connection_state_to_string(s),
+        az_iot_result_to_string(event->reason),
+        (int)event->error->source,
+        (long)event->error->code,
+        (unsigned long)(uint32_t)event->error->code,
+        (int)az_span_size(event->error->message),
+        az_span_size(event->error->message) > 0 ? (const char*)az_span_ptr(event->error->message)
+                                                : "");
+  }
   ((e2e_device*)user_ctx)->conn_state = s;
 }
 
@@ -204,8 +224,13 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   dev->conn_ok = true;
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   dev->factory_v3 = az_iot_paho_factory_create_v3_1_1();
   dev->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  dev->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  dev->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v3) != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v5) != AZ_IOT_OK)
   {
@@ -288,8 +313,13 @@ void e2e_device_disconnect(e2e_device* dev)
     az_iot_connection_client_deinit(&dev->conn);
     dev->conn_ok = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(dev->factory_v3);
   az_iot_paho_factory_destroy(dev->factory_v5);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(dev->factory_v3);
+  az_iot_az_mqtt_factory_destroy(dev->factory_v5);
+#endif
   dev->factory_v3 = NULL;
   dev->factory_v5 = NULL;
   if (dev->certs_ok)

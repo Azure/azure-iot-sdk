@@ -187,8 +187,8 @@ jobs:
       - name: Build CSR e2e test
         working-directory: c
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_BUILD_E2E_CSR=ON
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_CSR=ON
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas az_iot_tests_e2e_csr_az_mqtt az_iot_tests_e2e_csr_sas_az_mqtt
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'

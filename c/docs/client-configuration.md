@@ -194,12 +194,27 @@ Defaults used when the matching option is left at 0:
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
-| `AZ_IOT_SU_REQUEST_BUFFER_SIZE` | 16384 | Copy of the update metadata (manifest, signature and file URLs) for the current deployment; a one-file offer is about 5 KiB. A larger deployment is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also sizes `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` and the scratch the client verifies the signature in, so the client holds about twice this value. |
-| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures). A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
+| `AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE` | 65536 | Default `az_iot_su_limits::max_update_size`. |
+| `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | 2048 | Default `az_iot_su_limits::max_message_size`. |
+| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
-| `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default size of the device-properties buffer type. Application-side only; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
+| `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default `az_iot_su_limits::device_properties_size`; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
 | `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
+
+The software updates client's variable-size memory is not set by macros. The application passes one
+`workspace` buffer at `az_iot_su_client_init()`, sized with `az_iot_su_workspace_size()` (or
+`AZ_IOT_SU_WORKSPACE_SIZE()` for static allocation) from `az_iot_su_limits`:
+
+| Limit | Default | Bounds |
+| --- | --- | --- |
+| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
+| `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `max_message_size` | 2048 | Update-check and status-report bodies. At least 2048 (`AZ_IOT_SU_MIN_MESSAGE_SIZE`), which fits the largest status report the client builds, so no report is refused for its size. |
+| `device_properties_size` | 512 | Copied device-property strings. |
+
+The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records. These
+values do not change the layout of `az_iot_su_client`.
 
 #### Dispatch and logging
 

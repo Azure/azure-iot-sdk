@@ -11,19 +11,62 @@
 # rather than per target.
 include_directories(${PROJECT_SOURCE_DIR}/tests)
 
-# Everything here needs the Paho adapter, and the legacy suites additionally
-# need the AMQP service facade. A target left outside this guard fails to build
-# with AZ_IOT_WITH_PAHO=OFF.
-if(AZ_IOT_WITH_PAHO)
+# Each suite that connects is built once per MQTT adapter in the build: <suite>
+# over Paho, <suite>_az_mqtt over az_mqtt. Its sources select the adapter with
+# AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT. Every name contains
+# `e2e`, so the workflows' `ctest -R` filters run both.
+set(AZ_IOT_E2E_ADAPTERS)
+foreach(_adapter paho az_mqtt)
+    if(TARGET az_iot_adapter_${_adapter})
+        list(APPEND AZ_IOT_E2E_ADAPTERS ${_adapter})
+    endif()
+endforeach()
+unset(_adapter)
+# Key references (the custody suites): az_mqtt honours them only over OpenSSL TLS.
+set(AZ_IOT_E2E_KEY_REF_ADAPTERS ${AZ_IOT_E2E_ADAPTERS})
+if(TARGET az_iot_adapter_az_mqtt)
+    get_target_property(_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
+    if(NOT "AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _defs)
+        list(REMOVE_ITEM AZ_IOT_E2E_KEY_REF_ADAPTERS az_mqtt)
+    endif()
+    unset(_defs)
+endif()
 
-# The software updates e2e suites. Both use the shipping Paho adapter and X.509
+# az_iot_add_e2e_suite(<name> [NO_CTEST] [ADAPTERS <adapter...>] SOURCES <src...> LIBS <lib...>)
+# One cmocka suite per adapter in AZ_IOT_E2E_ADAPTERS (ADAPTERS narrows it), linked to it.
+function(az_iot_add_e2e_suite name)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "NO_CTEST" "" "ADAPTERS;SOURCES;LIBS")
+    set(adapters ${AZ_IOT_E2E_ADAPTERS})
+    if("ADAPTERS" IN_LIST arg_KEYWORDS_MISSING_VALUES)
+        return() # Narrowed to no adapter.
+    elseif(arg_ADAPTERS)
+        string(REPLACE ";" "|" re "${arg_ADAPTERS}")
+        list(FILTER adapters INCLUDE REGEX "^(${re})$")
+    endif()
+    set(no_ctest "")
+    if(arg_NO_CTEST)
+        set(no_ctest NO_CTEST)
+    endif()
+    foreach(adapter IN LISTS adapters)
+        string(TOUPPER "${adapter}" ADAPTER)
+        set(t ${name})
+        if(NOT adapter STREQUAL "paho")
+            set(t ${name}_${adapter})
+        endif()
+        az_iot_add_cmocka_test(${t} ${no_ctest} ${arg_SOURCES})
+        target_compile_definitions(${t} PRIVATE AZ_IOT_E2E_ADAPTER_${ADAPTER})
+        target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
+    endforeach()
+endfunction()
+
+# The software updates e2e suites. Both use the shipping MQTT adapters and X.509
 # against the real service; see docs/eng/end-to-end-tests.md.
 #
 #   az_iot_tests_e2e_su        the DPS channel, with no update offered
 #   az_iot_tests_e2e_su_offer  offered updates through the whole client:
 #                              real crypto, real download (libcurl)
 #
-# Requires AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO as well; this option only
+# Requires AZ_IOT_BUILD_E2E as well; this option only
 # selects the suites once the e2e directory is being built at all. Every
 # dependency is REQUIRED: a suite that cannot be built fails the configure
 # rather than dropping out of the run.
@@ -36,12 +79,9 @@ if(AZ_IOT_BUILD_E2E_SU AND WIN32)
 endif()
 
 if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_su tests/e2e_su_test.c tests/e2e_su_env.c)
-    target_link_libraries(az_iot_tests_e2e_su PRIVATE az_iot_core az_iot_adapter_paho)
-    # The suite asserts on the channel and the codecs, which are internal.
-    target_include_directories(az_iot_tests_e2e_su PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/core
-        ${PROJECT_SOURCE_DIR}/src/features/su/internal)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_su
+        SOURCES tests/e2e_su_test.c tests/e2e_su_env.c
+        LIBS az_iot_core)
 
     if(NOT TARGET az_iot_crypto_openssl)
         message(FATAL_ERROR
@@ -49,14 +89,18 @@ if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
             "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_su_offer
-        tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c)
-    target_link_libraries(az_iot_tests_e2e_su_offer PRIVATE
-        az_iot_core az_iot_adapter_paho az_iot_crypto_openssl CURL::libcurl)
-    # The spy wraps the internal channel to observe reports and verdicts.
-    target_include_directories(az_iot_tests_e2e_su_offer PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/core
-        ${PROJECT_SOURCE_DIR}/src/features/su/internal)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer
+        SOURCES tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c
+        LIBS az_iot_core az_iot_crypto_openssl CURL::libcurl)
+    # The suites assert on the channel and the codecs, and the offer suite's spy
+    # wraps the channel: all internal.
+    foreach(_t az_iot_tests_e2e_su az_iot_tests_e2e_su_az_mqtt
+               az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_offer_az_mqtt)
+        if(TARGET ${_t})
+            target_include_directories(${_t} PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/features/su/internal)
+        endif()
+    endforeach()
 else()
     message(STATUS "Software updates e2e suites disabled (set AZ_IOT_BUILD_E2E_SU=ON).")
 endif()
@@ -68,6 +112,16 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 # peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
+
+# A write by the harness AMQP transport to a closed loopback peer fails without
+# raising SIGPIPE. POSIX only; named `e2e` so the e2e job's filter runs it.
+if(NOT WIN32)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_transport_sigpipe
+        tests/e2e_amqp_transport_sigpipe_test.c)
+    target_link_libraries(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE az_amqp_transport)
+    target_compile_definitions(az_iot_tests_e2e_amqp_transport_sigpipe PRIVATE
+        _DEFAULT_SOURCE _POSIX_C_SOURCE=200112L)
+endif()
 
 # Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
 # stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
@@ -91,18 +145,18 @@ add_subdirectory(service)
 # az_iot_tests_e2e
 #
 # The in-process end-to-end suite: ONE cmocka executable that plays both the
-# device (shipping SDK over the Paho MQTT adapter) and the cloud (the
+# device (shipping SDK over an MQTT adapter) and the cloud (the
 # az_iot_e2e_service facade) halves of every scenario against a real Azure IoT
 # Hub / DPS instance. Registered with CTest so the e2e job can run it with
 # `ctest -R e2e`. The test includes ONLY the service facade's public header, so
 # no AMQP type ever leaks into the test translation unit.
 #
 # It requires provisioning + secrets in the environment (device X.509 material
-# and hub/eventhub connection strings) supplied by the e2e CI job; it is only
-# built when AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are enabled.
+# and hub/eventhub connection strings) supplied by the e2e CI job.
 # ---------------------------------------------------------------------------
-az_iot_add_cmocka_test(az_iot_tests_e2e tests/e2e_scenarios_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e PRIVATE az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
+az_iot_add_e2e_suite(az_iot_tests_e2e
+    SOURCES tests/e2e_scenarios_test.c tests/e2e_device.c
+    LIBS az_iot_e2e_service az_iot_mqttv3)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_csr
@@ -122,9 +176,9 @@ if(AZ_IOT_BUILD_E2E_CSR)
             "AZ_IOT_BUILD_E2E_CSR=ON requires the OpenSSL managed certificate provider "
             "(AZ_IOT_WITH_CERT_PROVIDER_MANAGED=ON).")
     endif()
-    az_iot_add_cmocka_test(az_iot_tests_e2e_csr tests/e2e_csr_test.c)
-    target_link_libraries(az_iot_tests_e2e_csr PRIVATE
-        az_iot_mqttv3 az_iot_adapter_paho az_iot_certificate_provider_managed)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_csr
+        SOURCES tests/e2e_csr_test.c
+        LIBS az_iot_mqttv3 az_iot_certificate_provider_managed)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -140,16 +194,14 @@ if(NOT TARGET az_iot_crypto_openssl)
         "AZ_IOT_BUILD_E2E=ON requires the OpenSSL crypto backend (az_iot_crypto_openssl) "
         "for the SAS e2e suites.")
 endif()
-az_iot_add_cmocka_test(az_iot_tests_e2e_sas tests/e2e_sas_test.c tests/e2e_sas_device.c)
 # OpenSSL::Crypto: the user-provided token test signs its own tokens.
-target_link_libraries(az_iot_tests_e2e_sas PRIVATE
-    az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl OpenSSL::Crypto)
+az_iot_add_e2e_suite(az_iot_tests_e2e_sas
+    SOURCES tests/e2e_sas_test.c tests/e2e_sas_device.c
+    LIBS az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto)
 if(AZ_IOT_BUILD_E2E_CSR)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_csr_sas
-        tests/e2e_csr_sas_test.c tests/e2e_sas_device.c)
-    target_link_libraries(az_iot_tests_e2e_csr_sas PRIVATE
-        az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
-        az_iot_certificate_provider_managed)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_csr_sas
+        SOURCES tests/e2e_csr_sas_test.c tests/e2e_sas_device.c
+        LIBS az_iot_mqttv3 az_iot_crypto_openssl az_iot_certificate_provider_managed)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -161,15 +213,17 @@ endif()
 # IOT_DPS_CONNECTION_STRING to create the enrollment.
 # ---------------------------------------------------------------------------
 set(_e2e_sample_common ${PROJECT_SOURCE_DIR}/samples/common)
-az_iot_add_cmocka_test(az_iot_tests_e2e_tpm
-    tests/e2e_tpm_test.c
-    ${_e2e_sample_common}/sample_tpm_sim.c
-    ${_e2e_sample_common}/sample_dps_tpm.c
-    ${_e2e_sample_common}/sample_utils.c)
-target_include_directories(az_iot_tests_e2e_tpm PRIVATE ${_e2e_sample_common} service)
-target_link_libraries(az_iot_tests_e2e_tpm PRIVATE
-    az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho az_iot_crypto_openssl
-    OpenSSL::Crypto)
+az_iot_add_e2e_suite(az_iot_tests_e2e_tpm
+    SOURCES tests/e2e_tpm_test.c
+            ${_e2e_sample_common}/sample_tpm_sim.c
+            ${_e2e_sample_common}/sample_dps_tpm.c
+            ${_e2e_sample_common}/sample_utils.c
+    LIBS az_iot_e2e_service az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto)
+foreach(_t az_iot_tests_e2e_tpm az_iot_tests_e2e_tpm_az_mqtt)
+    if(TARGET ${_t})
+        target_include_directories(${_t} PRIVATE ${_e2e_sample_common} service)
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_fileupload
@@ -197,9 +251,9 @@ set(_e2e_fileupload_ctest "")
 if(WIN32)
     set(_e2e_fileupload_ctest NO_CTEST)
 endif()
-az_iot_add_cmocka_test(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
-    tests/e2e_fileupload_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
+az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
+    SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c
+    LIBS az_iot_e2e_service az_iot_mqttv3)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_transport
@@ -216,16 +270,21 @@ target_link_libraries(az_iot_tests_e2e_fileupload PRIVATE az_iot_e2e_service az_
 # and complete on one that provisions a proxy. The `e2e` name matches the fast
 # job's `ctest -R e2e` filter.
 # ---------------------------------------------------------------------------
-az_iot_add_cmocka_test(az_iot_tests_e2e_transport
-    tests/e2e_transport_test.c tests/e2e_device.c)
-target_link_libraries(az_iot_tests_e2e_transport PRIVATE
-    az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
+# setenv()/unsetenv() are POSIX, not C99, and these targets build -std=c99:
+# without _POSIX_C_SOURCE the calls are implicit declarations and the build fails
+# rather than warning. Same reason as az_iot_tests_paho_transport_proxy.
+set(_e2e_posix "")
 if(UNIX)
-    # setenv()/unsetenv() are POSIX, not C99, and these targets build -std=c99:
-    # without this the calls are implicit declarations and the build fails rather
-    # than warning. Same reason as az_iot_tests_paho_transport_proxy.
-    target_compile_definitions(az_iot_tests_e2e_transport PRIVATE _POSIX_C_SOURCE=200809L)
+    set(_e2e_posix _POSIX_C_SOURCE=200809L)
 endif()
+az_iot_add_e2e_suite(az_iot_tests_e2e_transport
+    SOURCES tests/e2e_transport_test.c tests/e2e_device.c
+    LIBS az_iot_e2e_service az_iot_mqttv3)
+foreach(_t az_iot_tests_e2e_transport az_iot_tests_e2e_transport_az_mqtt)
+    if(TARGET ${_t} AND _e2e_posix)
+        target_compile_definitions(${_t} PRIVATE ${_e2e_posix})
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_custody
@@ -241,9 +300,9 @@ endif()
 # it fails rather than skipping when it is not.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_PKCS11)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_custody tests/e2e_custody_test.c)
-    target_link_libraries(az_iot_tests_e2e_custody PRIVATE
-        az_iot_e2e_service az_iot_mqttv3 az_iot_adapter_paho)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
+        SOURCES tests/e2e_custody_test.c
+        LIBS az_iot_e2e_service az_iot_mqttv3)
 endif()
 
 
@@ -256,28 +315,33 @@ endif()
 # environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custom_topic
-        tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_custom_topic PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit; az_mqtt's
+    # send buffer (264 KiB by default) must hold that, or they would test the client's.
+    set(_e2e_send_buffer_min 1114112)
+    if(TARGET az_iot_adapter_az_mqtt AND (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE STREQUAL ""
+       OR AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE LESS _e2e_send_buffer_min))
+        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_MQTTV5=ON with az_mqtt needs "
+            "-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${_e2e_send_buffer_min} or more "
+            "(got '${AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}').")
+    endif()
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
+        SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 twin: desired delivery (push and pull), reported patches, GET options, push_reported.
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_twin
-        tests/e2e_mqttv5_twin_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_twin PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_twin
+        SOURCES tests/e2e_mqttv5_twin_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 connection lifecycle: DPS profile, saved hub with DPS fallback, reopen, eviction.
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_connection
-        tests/e2e_mqttv5_connection_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_connection PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_connection
+        SOURCES tests/e2e_mqttv5_connection_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 telemetry: delivery, properties as the service sees them, order and size limits.
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_telemetry
-        tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_telemetry PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_telemetry
+        SOURCES tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.
     # Not run on Windows: concurrent REST calls would share the transport's one global TLS session.
@@ -285,30 +349,29 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
     if(WIN32)
         set(_e2e_direct_method_ctest NO_CTEST)
     endif()
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
-        tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_direct_method PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
+        SOURCES tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
     # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, AZ_IOT_E2E_PROXY_LOG); fails
     # without them.
-    az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_transport
-        tests/e2e_mqttv5_transport_test.c tests/e2e_device.c)
-    target_link_libraries(az_iot_tests_e2e_mqttv5_transport PRIVATE
-        az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
-    if(UNIX)
-        # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
-        target_compile_definitions(az_iot_tests_e2e_mqttv5_transport PRIVATE _POSIX_C_SOURCE=200809L)
-    endif()
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_transport
+        SOURCES tests/e2e_mqttv5_transport_test.c tests/e2e_device.c
+        LIBS az_iot_e2e_service az_iot_mqttv5)
+    # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
+    foreach(_t az_iot_tests_e2e_mqttv5_transport az_iot_tests_e2e_mqttv5_transport_az_mqtt)
+        if(TARGET ${_t} AND _e2e_posix)
+            target_compile_definitions(${_t} PRIVATE ${_e2e_posix})
+        endif()
+    endforeach()
 
     # mqttv5 key custody: the device key inside a PKCS#11 token (eng/setup-softhsm.sh), as
     # az_iot_tests_e2e_custody. Needs AZ_IOT_CLIENT_KEY_URI; fails without it.
     if(AZ_IOT_BUILD_E2E_PKCS11)
-        az_iot_add_cmocka_test(az_iot_tests_e2e_mqttv5_custody tests/e2e_mqttv5_custody_test.c)
-        target_link_libraries(az_iot_tests_e2e_mqttv5_custody PRIVATE
-            az_iot_e2e_service az_iot_mqttv5 az_iot_adapter_paho)
+        az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
+            SOURCES tests/e2e_mqttv5_custody_test.c
+            LIBS az_iot_e2e_service az_iot_mqttv5)
     endif()
 endif()
 
-endif() # AZ_IOT_WITH_PAHO

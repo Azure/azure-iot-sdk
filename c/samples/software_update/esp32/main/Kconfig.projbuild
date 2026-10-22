@@ -28,11 +28,13 @@ menu "Software Updates ESP32 Sample Configuration"
     config SU_POLL_INTERVAL_S
         int "Update check interval (seconds)"
         range 10 86400
-        default 60
+        default 14400
         help
             Seconds between update checks on the regular route, once the
             device has connected to its hub. Checks are skipped while a
             deployment is in flight. A check not answered within half
-            the interval (at most 60 s) is abandoned.
+            the interval (at most 60 s) is abandoned. Checks and reports
+            from all devices share the provisioning service's request
+            budget, which plans for one check per device every 4 hours.
 
 endmenu

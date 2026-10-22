@@ -751,7 +751,8 @@ namespace Microsoft.Azure.Iot.Device
             AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
                 connectPacketToEdit.HostName,
                 connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates).ConfigureAwait(false);
+                issuedClientCertificates,
+                cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt

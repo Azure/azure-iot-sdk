@@ -38,7 +38,14 @@
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -61,8 +68,13 @@ static void sample_state_destroy(sample_state* s)
     s->twin_initialized = 0;
   }
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(s->factory_v3);
   az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -218,14 +230,22 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* Both legs: the hub is v5, but DPS is still v3.1.1. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
