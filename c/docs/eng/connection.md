@@ -421,7 +421,7 @@ checked before backoff is scheduled.
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
-| Software updates status report not yet acked | Yes | Held in durable storage and retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process and re-sent later (next device-properties update, or after restart and resume). |
+| Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
@@ -610,8 +610,9 @@ reports include complete per-step outcomes when steps are available — see
   same id is rejected as a conflict.
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
   honours `Retry-After` on throttling and retries `reportUpdateStatus` until the service accepts
-  or permanently rejects it — a report is a durable write and must not be lost. A report given up
-  after repeated session loss stays stored and is re-sent later.
+  or permanently rejects it — a terminal report is a durable write and must not be lost. A terminal
+  report given up after repeated session loss stays owed (stored, with persistence) and is re-sent
+  later; an in-progress report is not replayed.
 - **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
   workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
   consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early

@@ -1037,10 +1037,10 @@ static size_t put_etag(uint8_t* p, const char* etag)
 }
 
 /**
- * @brief Serialize the cached ETags into the client's persisted workflow record.
+ * @brief Serialize the cached ETags into the client's persisted record.
  *
- * They survive a reboot only while such a record exists; it is erased when the
- * workflow ends.
+ * They survive a reboot only while a workflow, terminal or retry record is
+ * retained.
  */
 static az_iot_result channel_save_state(void* ctx, uint8_t* buf, size_t cap, size_t* out_len)
 {

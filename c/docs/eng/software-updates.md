@@ -120,8 +120,8 @@ asks.
   Omitted only when the sent `serviceConfigEtag` matches; a missing or stale ETag gets the current
   configuration in the 200 response, not an error.
 - `serviceConfigEtag`, `agentInfoEtag`: always present per the contract; the SDK tolerates their
-  absence. The SDK persists them only inside a workflow record (§4 Persistence), so after a
-  restart with no record the next check carries no ETags and gets a full response.
+  absence. The SDK persists them only inside a persisted record (workflow, terminal or retry; §4
+  Persistence), so after a restart with no record the next check carries no ETags and gets a full response.
 - `updateMetadata`: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`, present
   only when an update applies. **Omitted means "no update"** (HTTP 200, not an error).
 
@@ -203,11 +203,13 @@ status alone -- 429 throttled,
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
 any accepted operation; it counts against the request timeout. A report is retried until the
-service accepts it or rejects it permanently; a rejected report is dropped. After
-`AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) consecutive DPS session losses the report is abandoned
-for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal report stays owed (and
-stored, with persistence) and is re-sent on the next `az_iot_su_client_update_device_properties()`
-call, or after a restart and `az_iot_su_client_resume()`.
+service accepts it or rejects it permanently; a rejected report is dropped. A lost DPS
+session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
+loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal
+report stays owed (and stored, with persistence) and is re-sent on the next
+`az_iot_su_client_update_device_properties()` call, or after a restart and
+`az_iot_su_client_resume()`. An in-progress report is not replayed; the next reporting point sends
+the then-current state.
 
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
 `info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
