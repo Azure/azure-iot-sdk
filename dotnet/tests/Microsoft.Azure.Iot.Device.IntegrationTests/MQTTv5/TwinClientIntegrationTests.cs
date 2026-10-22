@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
             RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
 
-            ProvisioningSettings provisioningSettings = new(Setup.DpsIdScope);
+            ProvisioningSettings provisioningSettings = new(Setup.MQTTv5DpsIdScope);
 
             TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             TaskCompletionSource<TwinPushReceivedEventArgs> twinPushTcs = new();
@@ -130,7 +130,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
                 await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
                     () => testDeviceContext.ConnectionClient.ProvisionAndConnectAsync(
-                        new(Setup.DpsIdScope), testDeviceContext.AuthenticationProvider, cancellationToken: cancellationToken),
+                        new(Setup.MQTTv5DpsIdScope), testDeviceContext.AuthenticationProvider, cancellationToken: cancellationToken),
                     cancellationToken);
 
                 TwinPushReceivedEventArgs push = await twinPushTcs.Task.WaitAsync(cancellationToken);

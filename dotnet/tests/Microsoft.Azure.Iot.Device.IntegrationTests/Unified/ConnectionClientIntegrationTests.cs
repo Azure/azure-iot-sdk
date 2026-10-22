@@ -69,11 +69,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             httpProxy.Dispose();
         }
 
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanProvisionAndConnectWithSymmetricKeyIndividualEnrollment()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task CanProvisionAndConnectWithSymmetricKeyIndividualEnrollment(bool testAgainstClassicHub)
         {
             // The same key signs the DPS SAS token and, after provisioning, the IoT hub SAS token
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                testAgainstClassicHub, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
             Assert.False(string.IsNullOrEmpty(testDeviceContext.ConnectionContext.IotHubHostName));
