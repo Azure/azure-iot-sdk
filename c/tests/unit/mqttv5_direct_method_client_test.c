@@ -2204,6 +2204,56 @@ static void an_abandon_before_the_birth_ack_is_sent_once_connected(void** state)
   assert_memory_equal(abandon->correlation_data, request_id, 16);
 }
 
+static void a_notice_past_the_live_held_entries_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  uint8_t held[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    make_request_id(held[i], (uint8_t)(0x31 + i));
+    /* The first carries no Message Expiry: unbounded, so never reclaimed as spent. */
+    inject_dm(fx, DEV_TOPIC, "probe:1", held[i], 16, frame, frame_len, i == 0 ? 0u : 30u);
+  }
+
+  uint8_t extra[16];
+  make_request_id(extra, 0x3F);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  inject_dm(fx, DEV_TOPIC, "probe:1", extra, 16, frame, frame_len, 30);
+  az_iot_log_set_global_sink(NULL);
+  assert_non_null(strstr(cap.all, "held-notice entries are in use"));
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+  size_t seen[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT] = { 0 };
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t c = 0; c < n; ++c)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, c);
+    if (call->kind != AZ_IOT_MOCK_CALL_PUBLISH || strcmp(call->user_type, "probe-ack:1") != 0)
+    {
+      continue;
+    }
+    assert_memory_not_equal(call->correlation_data, extra, 16);
+    assert_int_equal(probe_ack_rejected_reason(call), 1 /* METHOD_NOT_FOUND */);
+    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+    {
+      if (memcmp(call->correlation_data, held[i], 16) == 0)
+      {
+        seen[i]++;
+      }
+    }
+  }
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    assert_int_equal(seen[i], 1);
+  }
+}
+
 static void held_abandons_expire_with_their_exec_budget(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -3168,6 +3218,8 @@ int main(void)
         a_rejected_probe_before_the_birth_ack_is_answered_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_abandon_before_the_birth_ack_is_sent_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_notice_past_the_live_held_entries_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(held_abandons_expire_with_their_exec_budget, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_probe_ack_past_its_connect_budget_is_dropped, setup, teardown),
