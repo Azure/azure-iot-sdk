@@ -76,6 +76,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_twin_get_p
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_twin_get_patch
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_unified_twin_get_patch_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -115,7 +118,7 @@ On an mqttv5 hub, the GET prints `twin GET desired (version N): ...` and
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Build or rebuild the twin client for a generation | `clients_build()`, `clients_destroy()` |
 | mqttv3 GET, PATCH, desired updates | `az_iot_mqttv3_twin_client_get()`, `az_iot_mqttv3_twin_client_patch_reported()`; `on_get_mqttv3()`, `on_patch_mqttv3()`, `on_desired_mqttv3()` |
 | mqttv5 GET, PATCH, desired updates | `az_iot_mqttv5_twin_client_get()`, `az_iot_mqttv5_twin_client_patch_reported()`; `on_get_mqttv5()`, `on_patch_mqttv5()`, `on_desired_mqttv5()` |

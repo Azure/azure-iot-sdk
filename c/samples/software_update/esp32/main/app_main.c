@@ -302,16 +302,29 @@ void app_main(void)
   dp.installed_update_id.name = SU_UPDATE_NAME;
   dp.installed_update_id.version = SU_UPDATE_VERSION;
 
-  static AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
-  /* ~22 KB: too large for the 12 KB main task stack. */
+  /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
+   * (partitions*.csv) must hold two generations of the largest checkpoint
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(SU_MAX_UPDATE_SIZE), about 8.6 KiB) while one
+   * replaces the other. */
+#define SU_MAX_UPDATE_SIZE 8192
+  /* The client's memory, about 20 KB: too large for the 12 KB main task stack. */
+  static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
+      SU_MAX_UPDATE_SIZE,
+      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
+      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(dp_buffer);
+  su_opts.limits.max_update_size = SU_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.workspace = su_workspace;
+  su_opts.workspace_size = sizeof(su_workspace);
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "az_iot_su_client_init failed");

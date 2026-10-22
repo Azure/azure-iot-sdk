@@ -68,6 +68,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_unified_telemetry
 ./build/linux-gcc-debug/samples/unified/az_iot_sample_telemetry
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_unified_telemetry_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -104,7 +107,7 @@ sample first prints `DPS assigned MQTTv5 (MQTT v5); rebuilding the telemetry cli
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Build the client for an assumed generation before `open()` | `telemetry_build()` with `sample_initial_profile()` |
 | Detect that DPS assigned the other generation | `on_conn_state()` → `sample_event_is_profile_mismatch()` |
 | Rebuild and reconnect | main loop: `telemetry_destroy()`, `az_iot_connection_client_close()`, `telemetry_build()`, `az_iot_connection_client_open()` |

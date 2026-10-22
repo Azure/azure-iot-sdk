@@ -34,7 +34,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -991,6 +990,36 @@ static void resolve_session_options(
   copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
 }
 
+/**
+ * @brief Complete a tracked publish through the callback it registered.
+ *
+ * @param ack The PUBLISH_ACK event, for its reason code and string; NULL when none arrived.
+ */
+static void complete_publish(
+    az_iot_publish_ack_callback cb,
+    az_iot_publish_result_callback result_cb,
+    void* user_ctx,
+    az_iot_result status,
+    const az_iot_mqtt_event* ack)
+{
+  if (result_cb)
+  {
+    az_iot_publish_result result = { 0 };
+    result.status = status;
+    if (ack)
+    {
+      result.reason_code = ack->protocol_code;
+      result.reason_string = ack->reason_string;
+      result.reason_string_len = ack->reason_string != NULL ? ack->reason_string_len : 0;
+    }
+    result_cb(&result, user_ctx);
+  }
+  else if (cb)
+  {
+    cb(status, user_ctx);
+  }
+}
+
 static void teardown_active(az_iot_connection_client* c)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
@@ -1016,17 +1045,19 @@ static void teardown_active(az_iot_connection_client* c)
   for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
   {
     az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
+    az_iot_publish_result_callback result_cb = c->pending_pubacks[i].result_cb;
     void* user_ctx = c->pending_pubacks[i].user_ctx;
     bool was_awaiting_puback = c->pending_pubacks[i].in_use;
 
     c->pending_pubacks[i].in_use = false;
     c->pending_pubacks[i].cb = NULL;
+    c->pending_pubacks[i].result_cb = NULL;
     c->pending_pubacks[i].user_ctx = NULL;
     c->pending_pubacks[i].packet_id = 0;
 
-    if (was_awaiting_puback && cb)
+    if (was_awaiting_puback)
     {
-      cb(AZ_IOT_ERR_NOT_CONNECTED, user_ctx);
+      complete_publish(cb, result_cb, user_ctx, AZ_IOT_ERR_NOT_CONNECTED, NULL);
     }
   }
 
@@ -1267,18 +1298,7 @@ static void apply_trusted_ca(const az_iot_connection_client* c, az_iot_mqtt_conn
 /** @brief Current Unix time from opts.unix_time, else time(); 0 when unknown. */
 static uint64_t unix_now(const az_iot_connection_client* c)
 {
-  if (c->opts.unix_time.get_time != NULL)
-  {
-    return c->opts.unix_time.get_time(c->opts.unix_time.user_ctx);
-  }
-  time_t t = time(NULL);
-  /* (time_t)-1 is failure. Compared explicitly: time_t may be unsigned, where
-   * it would pass a `> 0` test as a far-future time. */
-  if (t == (time_t)-1)
-  {
-    return 0u;
-  }
-  return t > 0 ? (uint64_t)t : 0u;
+  return az_iot_time_unix_s(c->opts.unix_time.get_time, c->opts.unix_time.user_ctx);
 }
 
 /** @brief Bytes of sas_buffer before the key slots: HMAC, then its base64. */
@@ -4984,17 +5004,21 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     {
       bool matched = false;
       az_iot_publish_ack_callback cb = NULL;
+      az_iot_publish_result_callback result_cb = NULL;
       void* ctx = NULL;
       for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
       {
-        /* cb == NULL: reserved by a publish still in progress; not yet matchable. */
-        if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].cb != NULL
+        /* No callback yet: reserved by a publish still in progress; not yet matchable. */
+        if (c->pending_pubacks[i].in_use
+            && (c->pending_pubacks[i].cb != NULL || c->pending_pubacks[i].result_cb != NULL)
             && c->pending_pubacks[i].packet_id == evt->packet_id)
         {
           cb = c->pending_pubacks[i].cb;
+          result_cb = c->pending_pubacks[i].result_cb;
           ctx = c->pending_pubacks[i].user_ctx;
           c->pending_pubacks[i].in_use = false;
           c->pending_pubacks[i].cb = NULL;
+          c->pending_pubacks[i].result_cb = NULL;
           c->pending_pubacks[i].user_ctx = NULL;
           matched = true;
           break;
@@ -5004,33 +5028,41 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         /* protocol_code 0 is "not reported": printed as "none" (precision 0 prints no digit). */
         bool const has_code = evt->protocol_code != 0;
+        int const reason_len = evt->reason_string != NULL && evt->reason_string_len <= INT32_MAX
+            ? (int)evt->reason_string_len
+            : 0;
+        const char* const reason = reason_len > 0 ? evt->reason_string : "";
         if (matched)
         {
           AZ_IOT_LOG_WARNF(
               AZ_IOT_LOG_COMPONENT_CONNECTION,
-              "publish with packet id %u failed (%s, protocol code %s%.*X)",
+              "publish with packet id %u failed (%s, protocol code %s%.*X, reason \"%.*s\")",
               (unsigned)evt->packet_id,
               az_iot_result_to_string(evt->status),
               has_code ? "0x" : "none",
               has_code ? 2 : 0,
-              (unsigned)evt->protocol_code);
+              (unsigned)evt->protocol_code,
+              reason_len,
+              reason);
         }
         else
         {
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_CONNECTION,
-              "publish with packet id %u failed (%s, protocol code %s%.*X); it had no "
-              "completion callback",
+              "publish with packet id %u failed (%s, protocol code %s%.*X, reason \"%.*s\"); it "
+              "had no completion callback",
               (unsigned)evt->packet_id,
               az_iot_result_to_string(evt->status),
               has_code ? "0x" : "none",
               has_code ? 2 : 0,
-              (unsigned)evt->protocol_code);
+              (unsigned)evt->protocol_code,
+              reason_len,
+              reason);
         }
       }
-      if (cb)
+      if (matched)
       {
-        cb(evt->status, ctx);
+        complete_publish(cb, result_cb, ctx, evt->status, evt);
       }
       break;
     }
@@ -6383,6 +6415,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   {
     client->pending_pubacks[i].in_use = false;
     client->pending_pubacks[i].cb = NULL;
+    client->pending_pubacks[i].result_cb = NULL;
     client->pending_pubacks[i].user_ctx = NULL;
     client->pending_pubacks[i].packet_id = 0;
   }
@@ -8424,12 +8457,17 @@ static void puback_abandon(az_iot_connection_client* c, const void* owner)
   }
 }
 
-az_iot_result az_iot_connection_client__publish(
+/**
+ * @brief Publish on the hub session; completes through @p ack_cb or @p result_cb, whichever is
+ * set (at most one).
+ */
+static az_iot_result publish_tracked(
     az_iot_connection_client* client,
     const void* owner,
     const az_iot_mqtt_message* msg,
     az_iot_publish_ack_callback ack_cb,
-    void* ack_user_ctx)
+    az_iot_publish_result_callback result_cb,
+    void* user_ctx)
 {
   if (!client || !msg)
   {
@@ -8439,15 +8477,16 @@ az_iot_result az_iot_connection_client__publish(
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
+  bool const has_cb = ack_cb != NULL || result_cb != NULL;
 
   /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
    * so a full pool sends nothing and the caller can retry without
-   * duplicating. The reserved slot has no cb, so neither the PUBACK match nor
-   * teardown_active() acts on it. Adapters deliver events only from
+   * duplicating. The reserved slot has no callback, so neither the PUBACK match
+   * nor teardown_active() acts on it. Adapters deliver events only from
    * process_loop() (az_iot_mqtt_iface), so no PUBACK can arrive before the
    * packet id is filled in below. */
   size_t slot = AZ_IOT_MAX_PENDING_PUBACKS;
-  if (msg->qos != AZ_IOT_MQTT_QOS_0 && ack_cb)
+  if (msg->qos != AZ_IOT_MQTT_QOS_0 && has_cb)
   {
     uint8_t pool = puback_pool_of(client, owner);
     slot = puback_free_slot(client, pool);
@@ -8457,6 +8496,7 @@ az_iot_result az_iot_connection_client__publish(
     }
     client->pending_pubacks[slot].packet_id = 0;
     client->pending_pubacks[slot].cb = NULL;
+    client->pending_pubacks[slot].result_cb = NULL;
     client->pending_pubacks[slot].user_ctx = NULL;
     client->pending_pubacks[slot].reservation = pool;
     client->pending_pubacks[slot].in_use = true;
@@ -8473,7 +8513,8 @@ az_iot_result az_iot_connection_client__publish(
     }
     client->pending_pubacks[slot].packet_id = pid;
     client->pending_pubacks[slot].cb = ack_cb;
-    client->pending_pubacks[slot].user_ctx = ack_user_ctx;
+    client->pending_pubacks[slot].result_cb = result_cb;
+    client->pending_pubacks[slot].user_ctx = user_ctx;
     return AZ_IOT_OK;
   }
   if (r != AZ_IOT_OK)
@@ -8481,13 +8522,33 @@ az_iot_result az_iot_connection_client__publish(
     return r;
   }
 
-  /* QoS 0: there is no PUBACK on the wire. Fire the cb synchronously. QoS 1/2
+  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1/2
    * without a callback: the future PUBACK is silently absorbed. */
-  if (msg->qos == AZ_IOT_MQTT_QOS_0 && ack_cb)
+  if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
-    ack_cb(AZ_IOT_OK, ack_user_ctx);
+    complete_publish(ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);
   }
   return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client__publish(
+    az_iot_connection_client* client,
+    const void* owner,
+    const az_iot_mqtt_message* msg,
+    az_iot_publish_ack_callback ack_cb,
+    void* ack_user_ctx)
+{
+  return publish_tracked(client, owner, msg, ack_cb, NULL, ack_user_ctx);
+}
+
+az_iot_result az_iot_connection_client__publish_with_result(
+    az_iot_connection_client* client,
+    const void* owner,
+    const az_iot_mqtt_message* msg,
+    az_iot_publish_result_callback result_cb,
+    void* user_ctx)
+{
+  return publish_tracked(client, owner, msg, NULL, result_cb, user_ctx);
 }
 
 az_iot_result az_iot_connection_client__reserve_pubacks(

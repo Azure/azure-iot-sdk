@@ -76,6 +76,8 @@ typedef struct queued_event
   /* v5 Correlation Data (heap copy). */
   uint8_t* correlation_data;
   size_t correlation_data_len;
+  /* v5 PUBACK Reason String (heap copy); evt.reason_string points here. */
+  char* reason_string;
   struct queued_event* next;
 } queued_event;
 
@@ -178,6 +180,7 @@ static void q_free(queued_event* n)
   }
   free(n->content_type);
   free(n->correlation_data);
+  free(n->reason_string);
   free(n);
 }
 
@@ -845,7 +848,14 @@ static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
+    /* v3.1.1 PUBACKs carry no code: this is a publish that ended without one. */
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_PUBLISH_ACK,
+        AZ_IOT_ERR_MQTT,
+        pid,
+        0,
+        response ? paho_transport_code(response->code) : 0);
   }
 }
 
@@ -950,13 +960,106 @@ static void paho_publish_success5(void* context, MQTTAsync_successData5* respons
   }
 }
 
+/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties) and
+ * for a publish that ends without one (a negative code). The properties are freed on return, so
+ * the Reason String is copied. */
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
   paho_client* m = (paho_client*)context;
-  uint16_t pid = response ? (uint16_t)response->token : 0;
+  if (!m)
+  {
+    return;
+  }
+  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
+  if (!n)
+  {
+    return;
+  }
+  n->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  n->evt.status = AZ_IOT_ERR_MQTT;
+  if (response)
+  {
+    n->evt.packet_id = (uint16_t)response->token;
+    int const code = (int)response->reasonCode;
+    if (code >= 0x80)
+    {
+      n->evt.status = az_iot_mqtt_puback_result(m->version, code);
+      n->evt.protocol_code = code;
+      MQTTProperty* reason
+          = MQTTProperties_getPropertyAt(&response->properties, MQTTPROPERTY_CODE_REASON_STRING, 0);
+      if (reason && reason->value.data.data)
+      {
+        size_t const len = (size_t)reason->value.data.len;
+        n->reason_string = (char*)malloc(len ? len : 1);
+        if (n->reason_string)
+        {
+          memcpy(n->reason_string, reason->value.data.data, len);
+          n->evt.reason_string = n->reason_string;
+          n->evt.reason_string_len = len;
+        }
+      }
+    }
+    else
+    {
+      n->evt.transport_code = paho_transport_code(response->code);
+    }
+  }
+  q_push(m, n);
+}
+
+static void paho_unsubscribe_success(void* context, MQTTAsync_successData* response)
+{
+  paho_client* m = (paho_client*)context;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
+    enqueue_status(
+        m, AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK, AZ_IOT_OK, response ? (uint16_t)response->token : 0);
+  }
+}
+
+static void paho_unsubscribe_failure(void* context, MQTTAsync_failureData* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        AZ_IOT_ERR_MQTT,
+        response ? (uint16_t)response->token : 0,
+        0,
+        response ? paho_transport_code(response->code) : 0);
+  }
+}
+
+/* Paho calls this for every UNSUBACK, whatever its reason code. */
+static void paho_unsubscribe_success5(void* context, MQTTAsync_successData5* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    int const code = response ? (int)response->reasonCode : 0;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        code >= 0x80 ? AZ_IOT_ERR_MQTT : AZ_IOT_OK,
+        response ? (uint16_t)response->token : 0,
+        paho_wire_code(code));
+  }
+}
+
+static void paho_unsubscribe_failure5(void* context, MQTTAsync_failureData5* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        AZ_IOT_ERR_MQTT,
+        response ? (uint16_t)response->token : 0,
+        0,
+        response ? paho_transport_code(response->code) : 0);
   }
 }
 
@@ -1562,6 +1665,16 @@ static az_iot_result paho_iface_unsubscribe(
 
   MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
   resp.context = m;
+  if (m->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    resp.onSuccess5 = paho_unsubscribe_success5;
+    resp.onFailure5 = paho_unsubscribe_failure5;
+  }
+  else
+  {
+    resp.onSuccess = paho_unsubscribe_success;
+    resp.onFailure = paho_unsubscribe_failure;
+  }
   int rc = MQTTAsync_unsubscribe(m->paho, topic_filter, &resp);
   if (out_packet_id)
   {

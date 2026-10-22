@@ -68,7 +68,7 @@ for pair in "${pairs[@]}"; do
     file="${pair#*=}"
 
     echo "--- per-suite report: ${label} ---"
-    gcovr --root "${c_root}" --add-tracefile "${file}" \
+    gcovr --root "${c_root}" --add-tracefile "${file}" --merge-mode-functions=separate \
           --json-summary "${out_dir}/${label}.summary.json" --json-summary-pretty \
           --print-summary > /dev/null
     # Report-only per suite. A single leg legitimately never touches large parts
@@ -85,7 +85,8 @@ echo "--- combined report (${#labels[@]} suites: ${labels[*]}) ---"
 # --root must match the root the tracefiles were produced with (collect-coverage.sh
 # uses c/). The lcov and cobertura writers open the source files, so a mismatched
 # root fails with a confusing FileNotFoundError rather than a path error.
-gcovr --root "${c_root}" "${add_args[@]}" \
+# separate: as in collect-coverage.sh.
+gcovr --root "${c_root}" "${add_args[@]}" --merge-mode-functions=separate \
       --json-summary "${out_dir}/combined.summary.json" --json-summary-pretty \
       --cobertura "${out_dir}/combined.cobertura.xml" --cobertura-pretty \
       --lcov "${out_dir}/combined.lcov" \

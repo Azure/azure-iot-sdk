@@ -4,6 +4,8 @@
 
 ### Features Added
 
+- Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
+  delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
 - DPS assignment notification: `az_iot_connection_client_set_dps_assignment_callback()` reports the
   hub, device id and profile each time an assignment is adopted, so an application can persist it
@@ -19,18 +21,22 @@
 - mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
   templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
   `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
-  Topics the hub would refuse are rejected locally. Publish only. Sample:
+  Topics the hub would refuse are rejected locally. Publish only. At QoS 1 the completion
+  (`az_iot_publish_result`) carries the hub's PUBACK reason code and Reason String. Sample:
   [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
-  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows; WebSockets, HTTP CONNECT proxy, and
-  key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
+  or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
+  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
   without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
   config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
+- Breaking: software updates has no device-side cancel. `az_iot_su_is_cancelled()` and
+  `AZ_IOT_SU_RESULT_CANCELLED` are removed; a cancel is service-side only.
+  `AZ_IOT_SU_OUTCOME_CANCELED` stays as a reported value.
 - Breaking: log calls and sinks take a component. `AZ_IOT_LOG_*(component, msg)`,
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
   `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).
@@ -84,6 +90,21 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Breaking: software updates memory comes from one application-provided workspace.
+  `az_iot_su_client_config_options` replaces `device_properties_buffer` /
+  `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
+  `scratch_size`, `max_message_size`, `device_properties_size`) and `workspace` / `workspace_size`,
+  sized with `az_iot_su_workspace_size()` or `AZ_IOT_SU_WORKSPACE_SIZE()`. The update copy, the
+  persisted-state records, the verification scratch (was the client's persist scratch), the
+  message body and the property strings live there; `az_iot_su_client` drops from
+  about 39 KiB to about 3.5 KiB and no longer depends on them. `max_update_size` defaults to
+  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). `max_message_size` is at
+  least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2048), which fits the largest status report. The workflow
+  record is serialized in place around the update copy, so the separate persist scratch is gone.
+  Removed: `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_PERSIST_BLOB_SIZE`,
+  `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()`. `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` takes the
+  limit. `az_iot_su_client_resume()` returns `AZ_IOT_ERR_BUSY` while a workflow is in progress. A
+  file URL longer than `scratch_size` is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 - Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
   4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
   decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
@@ -150,9 +171,39 @@
   MQTT adapters, including your own, must implement and read the view: see
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
   patched for it (`deps/az_mqtt/VENDORED.md`).
+- Software updates: a `FAILED` workflow offered again under the same `workflowId` is
+  retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
+  offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
+  restart; the persisted format moves to version 2, so version-1 records are ignored.
 
 ### Bugs Fixed
+
+- Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
+  `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
+  and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
+  (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
+- Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
+  e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
+- Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
+  `UPDATE_ACCOUNT_NOT_LINKED`; `DEVICE_NOT_PROVISIONED`, `MAX_DEVICE_CLASSES_EXCEEDED` and
+  `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
+  `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
+- Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
+  `409000`) now makes the client check for updates once, as the service requires, after raising
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
   `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.
+- Builds without Paho (`AZ_IOT_WITH_PAHO=OFF`): an MQTT adapter's header is installed only with
+  the adapter. `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, `AZ_IOT_BUILD_PKCS11_TESTS` without
+  Paho, and the `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`, fail the configure step
+  instead of building nothing.
+- Samples: each sample that connects is built once per MQTT adapter, Paho (`az_iot_sample_<...>`)
+  and az_mqtt (`az_iot_sample_<...>_az_mqtt`, in `az_mqtt/`); `main.c` selects the adapter with
+  `AZ_IOT_SAMPLE_ADAPTER_PAHO` or `AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`. Samples no longer drop out
+  without Paho; `AZ_IOT_BUILD_SAMPLES=ON` with neither adapter fails the configure step. The
+  SAS-key and Software Update samples use mbedTLS when the OpenSSL crypto backend is not built.
+- End-to-end tests: each suite that connects is built and run over Paho and over az_mqtt
+  (`<suite>_az_mqtt`).

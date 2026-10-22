@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Called before every connection attempt to IoT Hub. Providers should prepare any issued certificates here
         /// before returning the credentials to present. If preparation fails, the connection attempt fails.
         /// </remarks>
-        public abstract Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates);
+        public abstract Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)

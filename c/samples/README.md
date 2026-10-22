@@ -134,5 +134,16 @@ cmake --build --preset linux-gcc-debug
 ```
 
 Use `windows-msvc-debug` on Windows. Each README gives the single-sample target and the path of
-the binary: `build/<preset>/samples/<folder>/` (Windows: `.../<folder>/Debug/`). Samples need the
-Paho adapter (`AZ_IOT_WITH_PAHO=ON`, the default).
+the binary: `build/<preset>/samples/<folder>/` (Windows: `.../<folder>/Debug/`).
+
+Each sample that connects is built once per MQTT adapter in the build, from the same `main.c`:
+
+| Adapter | Option | Target | Binary |
+| --- | --- | --- | --- |
+| Paho | `AZ_IOT_WITH_PAHO=ON` (default) | `az_iot_sample_<...>` | `samples/<folder>/` |
+| az_mqtt | `AZ_IOT_WITH_AZ_MQTT=ON` | `az_iot_sample_<...>_az_mqtt` | `samples/<folder>/az_mqtt/` |
+
+`main.c` selects the adapter's header and factories with `AZ_IOT_SAMPLE_ADAPTER_PAHO` or
+`AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`, which the build defines. With samples on, at least one of the two
+adapters is required. The SAS-key and Software Update samples use the OpenSSL crypto backend, or
+mbedTLS when OpenSSL is not built (`AZ_IOT_SAMPLE_CRYPTO_OPENSSL`, `AZ_IOT_SAMPLE_CRYPTO_MBEDTLS`).

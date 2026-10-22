@@ -69,6 +69,72 @@ extern "C"
       const az_iot_retry_policy* policy,
       uint64_t* rng_state);
 
+  /**
+   * @brief As az_iot_retry_state__schedule(), also setting the Unix deadline.
+   *
+   * The deadline adds a second for the clock's unknown fraction, so a restart
+   * at it never shortens the wait.
+   *
+   * @param[in] unix_now_s Current Unix seconds; 0 when unknown (no deadline).
+   */
+  bool az_iot_retry_state__schedule_until(
+      az_iot_retry_state* state,
+      const az_iot_retry_policy* policy,
+      uint64_t* rng_state,
+      uint64_t unix_now_s);
+
+  /**
+   * @brief Set the Unix deadline of the scheduled retry, a second past due_ms.
+   *
+   * @param[in] unix_now_s Unix seconds read at @p mono_at_ms; 0 when unknown (no deadline).
+   * @param[in] mono_at_ms az_iot_time_mono_ms() when @p unix_now_s was read.
+   */
+  void az_iot_retry_state__set_unix_deadline(
+      az_iot_retry_state* state,
+      uint64_t unix_now_s,
+      uint64_t mono_at_ms);
+
+  /** @brief Milliseconds until the scheduled retry; 0 when none or due. Does not consume it. */
+  uint32_t az_iot_retry_state__remaining_ms(const az_iot_retry_state* state);
+
+/** @brief Bytes written by az_iot_retry_state__save(). */
+#define AZ_IOT_RETRY_STATE_RECORD_SIZE 16u
+
+  /**
+   * @brief Save the state for a restart: attempts, seconds left (rounded up) and
+   * the Unix deadline (low, high); each u32 little-endian.
+   *
+   * @param[out] out AZ_IOT_RETRY_STATE_RECORD_SIZE bytes.
+   */
+  void az_iot_retry_state__save(const az_iot_retry_state* state, uint8_t* out);
+
+  /**
+   * @brief Restore a state written by az_iot_retry_state__save().
+   *
+   * The wait is the saved deadline minus @p unix_now_s when both are known,
+   * else the saved seconds left; at most @p max_wait_ms. A deadline still
+   * usable after that is kept as saved, so restarts do not move it.
+   *
+   * @param[in] unix_now_s Current Unix seconds; 0 when unknown.
+   * @param[in] max_wait_ms Longest wait to restore.
+   */
+  void az_iot_retry_state__restore(
+      az_iot_retry_state* state,
+      const uint8_t* in,
+      uint64_t unix_now_s,
+      uint32_t max_wait_ms);
+
+  /**
+   * @brief As az_iot_retry_state__restore(), with @p unix_now_s read at monotonic
+   * @p mono_at_ms; the restored wait is measured from that instant.
+   */
+  void az_iot_retry_state__restore_at(
+      az_iot_retry_state* state,
+      const uint8_t* in,
+      uint64_t unix_now_s,
+      uint32_t max_wait_ms,
+      uint64_t mono_at_ms);
+
   /** @brief Hold the scheduled retry until at least @p not_before_ms (az_iot_time_mono_ms()). */
   void az_iot_retry_state__defer(az_iot_retry_state* state, uint64_t not_before_ms);
 

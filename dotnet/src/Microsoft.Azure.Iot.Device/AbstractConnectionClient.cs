@@ -40,6 +40,17 @@ namespace Microsoft.Azure.Iot.Device
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
 
+        /// <summary>
+        /// Raised, for informational purposes only, when this client starts re-provisioning the device through Device
+        /// Provisioning Service on its own to recover a connection.
+        /// </summary>
+        /// <remarks>
+        /// This is raised once when the re-provisioning recovery starts, not once for each registration attempt. Handlers
+        /// should return quickly because re-provisioning starts once they complete; any exception they throw is logged
+        /// and ignored.
+        /// </remarks>
+        public event Func<ReprovisioningStartedEventArgs, Task>? ReprovisioningStartedAsync;
+
         internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
 
         /// <summary>
@@ -751,7 +762,8 @@ namespace Microsoft.Azure.Iot.Device
             AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
                 connectPacketToEdit.HostName,
                 connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates).ConfigureAwait(false);
+                issuedClientCertificates,
+                cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
@@ -797,6 +809,30 @@ namespace Microsoft.Azure.Iot.Device
             }
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Raise an event that only informs the application, invoking each handler in turn so that one that throws
+        /// cannot stop the others from running or affect this client's own recovery.
+        /// </summary>
+        private static async Task RaiseInformationalEventAsync<TArgs>(Func<TArgs, Task>? handlers, TArgs args, string eventName)
+        {
+            if (handlers == null)
+            {
+                return;
+            }
+
+            foreach (Delegate handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    await ((Func<TArgs, Task>)handler).Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
+                }
+            }
         }
 
         private async Task HandleConnectionFaultedAsync(MqttConnectionFaultedEventArgs args)
@@ -910,6 +946,11 @@ namespace Microsoft.Azure.Iot.Device
                 try
                 {
                     Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
+
+                    await RaiseInformationalEventAsync(
+                        ReprovisioningStartedAsync,
+                        new ReprovisioningStartedEventArgs { Exception = args.Exception },
+                        nameof(ReprovisioningStartedAsync));
 
                     await ReprovisionWithRetryAsync(provisioningSettings, provisioningAuthentication, reprovisioningCancellation.Token);
                 }

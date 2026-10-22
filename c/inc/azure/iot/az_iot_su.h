@@ -49,7 +49,6 @@ extern "C"
 #define AZ_IOT_SU_RESULT_IN_PROGRESS 1
 #define AZ_IOT_SU_RESULT_REBOOT_REQUIRED 2
 #define AZ_IOT_SU_RESULT_ALREADY_INSTALLED 3
-#define AZ_IOT_SU_RESULT_CANCELLED 4
 #define AZ_IOT_SU_RESULT_FAILURE (-1)
 
 /* The agent "success" result code reported to the software updates service (software updates agent
@@ -92,25 +91,27 @@ extern "C"
 #define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 
-/* Scratch buffer (in-struct) that holds a COPY of the `updateMetadata`
- * payload for the current deployment. The channel's delivery buffer is only
- * valid during the subscriber callback, but the workflow is processed
- * asynchronously across many do_work() calls; the upstream parser stores spans
- * that point INTO this payload (and unescapes the manifest in place), so it must
- * outlive the callback. Holds the escaped manifest, its JWS signature and the
- * file URLs; a one-file offer is about 5 KiB. Override if your deployments are
- * larger. It also bounds the scratch the client verifies the signature in (see
- * AZ_IOT_SU_PERSIST_BLOB_SIZE). No heap is used. */
-#ifndef AZ_IOT_SU_REQUEST_BUFFER_SIZE
-#define AZ_IOT_SU_REQUEST_BUFFER_SIZE 16384
+/** @brief Default az_iot_su_limits::max_update_size: the service's 64 KiB response ceiling. */
+#ifndef AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE
+#define AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE 65536
+#endif
+
+/** @brief Smallest az_iot_su_limits::max_message_size: the largest status report the client
+ * builds fits, so no report is refused for its size. */
+#define AZ_IOT_SU_MIN_MESSAGE_SIZE 2048
+
+/** @brief Default az_iot_su_limits::max_message_size. */
+#ifndef AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE
+#define AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE 2048
 #endif
 
 /**
- * @brief Stack scratch az_iot_su_parse_update_request() decodes the manifest signature into.
+ * @brief Signature-verification scratch: the stack az_iot_su_parse_update_request() uses, and
+ * the default az_iot_su_limits::scratch_size.
  *
  * Holds the decoded JWS header (which embeds the signing key), the signing key and the
  * signatures. A signature that does not fit is rejected with AZ_IOT_ERR_AUTH and an error
- * log naming the part that is too large. The managed client does not use it.
+ * log naming the part that is too large.
  */
 #ifndef AZ_IOT_SU_VERIFY_SCRATCH_SIZE
 #define AZ_IOT_SU_VERIFY_SCRATCH_SIZE 8192
@@ -122,22 +123,17 @@ extern "C"
 /** @brief Largest opaque channel state (e.g. ETags) carried in the persisted blob. */
 #define AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE 256
 
-/* In-struct scratch used to (de)serialize the persisted workflow state passed to
- * persist_state_fn / load_state_fn: the request buffer plus the snapshot header
- * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then
- * length-prefixed workflow id, applied update id and channel state, 4 CRC).
- * Derived from the upstream step/file limits, so raising them grows it; a
- * compile-time assertion in su_client.c checks the exact serialized size fits.
- * Lives in the caller-allocated client struct, so no static or heap buffer. */
+/** @brief Persisted-state bytes beyond the update metadata: header (40 bytes) and trailer
+ * (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed workflow id, applied update
+ * id and channel state, 16 retry schedule, 4 CRC). Grows with the upstream step and file limits. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
 #define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
-  (76u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
    + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                    \
    + 16u                                                                   \
        * ((_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)                      \
           + (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)))
 #endif
-#define AZ_IOT_SU_PERSIST_BLOB_SIZE (AZ_IOT_SU_REQUEST_BUFFER_SIZE + AZ_IOT_SU_PERSIST_OVERHEAD)
 
 /**
  * @brief Largest decoded workflow `id` the client accepts, in bytes. It is kept for reporting,
@@ -171,8 +167,7 @@ extern "C"
  * A later write is still attempted once when needed; a tracked success resets
  * the count (the best-effort erase of a stale record does not).
  * While a workflow is held at a reboot boundary, a new workflow is deferred
- * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED) and a cancel waits; a cancel of an
- * installed step not yet applied rolls it back.
+ * (AZ_IOT_SU_EVENT_UPDATE_DEFERRED).
  */
 #ifndef AZ_IOT_SU_PERSIST_MAX_ATTEMPTS
 #define AZ_IOT_SU_PERSIST_MAX_ATTEMPTS 5
@@ -181,9 +176,11 @@ extern "C"
 #error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
-/** @brief Largest blob passed to persist_state_fn; size storage for this. The format
+/** @brief Largest blob passed to persist_state_fn for a client whose
+ * az_iot_su_limits::max_update_size is @p max_update_size; size storage for this. The format
  * version is internal and checked by az_iot_su_client_resume(). */
-#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE AZ_IOT_SU_PERSIST_BLOB_SIZE
+#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size) \
+  ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD)
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 
@@ -219,7 +216,6 @@ extern "C"
     /**
      * Download one file (called once per file, once per do_work iteration).
      * Return IN_PROGRESS to continue on the next do_work, SUCCESS when complete.
-     * The hook SHOULD check az_iot_su_is_cancelled() periodically.
      * Hash verification is performed by core with the connection client's
      * crypto backend.
      */
@@ -380,12 +376,10 @@ extern "C"
   } az_iot_su_device_properties;
 
 /**
- * @brief Default size, in bytes, of the device-properties cache buffer.
+ * @brief Default az_iot_su_limits::device_properties_size, in bytes.
  *
- * 512 covers the 448-byte maximum of property strings. Define a smaller value
- * before including to save memory, or size exactly with
- * az_iot_su_device_properties_buffer_size(). A larger value does not raise any
- * limit. The buffer holds strings only and needs no alignment.
+ * 512 covers the 448-byte maximum of property strings. Size exactly with
+ * az_iot_su_device_properties_buffer_size(). A larger value does not raise any limit.
  */
 #ifndef AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE
 #define AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE 512
@@ -415,21 +409,8 @@ extern "C"
  * deadline. */
 #define AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
 
-/**
- * @brief Declares a device-properties cache buffer of
- * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE bytes.
- *
- * @code
- * AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buf);
- * opts.device_properties_buffer = dp_buf;
- * opts.device_properties_buffer_size = sizeof(dp_buf);
- * @endcode
- */
-#define AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(name) \
-  uint8_t name[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE]
-
   /**
-   * @brief Exact device_properties_buffer size needed to cache @p device_properties.
+   * @brief Exact az_iot_su_limits::device_properties_size needed to cache @p device_properties.
    *
    * @param[in] device_properties Properties to size.
    * @return Bytes of packed NUL-terminated strings; 0 if @p device_properties is
@@ -457,7 +438,7 @@ extern "C"
     AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
     AZ_IOT_SU_OUTCOME_SUCCEEDED,
     AZ_IOT_SU_OUTCOME_FAILED,
-    AZ_IOT_SU_OUTCOME_CANCELED,
+    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service; the client never reports it. */
     AZ_IOT_SU_OUTCOME_SKIPPED,
   } az_iot_su_outcome;
 
@@ -612,7 +593,14 @@ extern "C"
      * (`service_error` names the cause, e.g. REPORT_CONFLICT or
      * UNKNOWN_WORKFLOW_ID): it is retired and never sent again. The
      * service's view is authoritative; call az_iot_su_client_request_update()
-     * to learn it. */
+     * to learn it.
+     *
+     * A report rejected with REPORT_CONFLICT, or with an untyped 409000, is
+     * the one case where the client checks for updates itself, after this
+     * event: on the route last requested (regular if none), with
+     * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS. No check is added while one is
+     * queued or in flight; that check's answer serves instead. Its answer
+     * arrives as for any check. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
     /* persist_state_fn failed. Raised on the first failure of an episode
@@ -636,34 +624,46 @@ extern "C"
      * installed or reported for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
-     * AZ_IOT_SU_REQUEST_BUFFER_SIZE; AZ_IOT_ERR_PROTOCOL when the payload
+     * az_iot_su_limits::max_update_size; AZ_IOT_ERR_PROTOCOL when the payload
      * cannot be decoded (not JSON, a required field missing or of the wrong
      * type, or an invalid string escape). Raised again on each redelivery. */
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
-     * current workflow may not be replaced (see az_iot_su_replacement_policy).
+     * current workflow may not be replaced (see az_iot_su_replacement_policy),
+     * or a due retry of a failed workflow was not started because that
+     * workflow's terminal report is not yet settled with the service.
      * Nothing was processed or reported for it. Carries `state` (unchanged)
      * and `reason` AZ_IOT_ERR_BUSY. Raised again on each redelivery. To take
      * it, request an update again once the current workflow has ended (Idle
-     * or Failed) and, when its last apply asked for a reboot, after that
-     * reboot. */
+     * or Failed) and its report is settled and, when its last apply asked for
+     * a reboot, after that reboot. */
     AZ_IOT_SU_EVENT_UPDATE_DEFERRED,
 
     /* An update check was answered with no update. Carries `state` and
      * `operation` (the route that asked). */
     AZ_IOT_SU_EVENT_NO_UPDATE,
 
-    /* A delivered update carried the workflow id of the current (or last
-     * finished) workflow and was ignored as a redelivery: nothing was
-     * processed or reported for it. Carries `state` (unchanged). Raised again
-     * on each redelivery. */
+    /* A delivered update carried the workflow id of the current workflow, or
+     * of the last one when it SUCCEEDED or was SKIPPED, and was ignored as a
+     * redelivery: nothing was processed or reported for it. Carries `state`
+     * (unchanged). Raised again on each redelivery. A FAILED workflow
+     * offered again is retried instead (see
+     * AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT). */
     AZ_IOT_SU_EVENT_UPDATE_DUPLICATE,
 
     /* The service accepted a status report. Carries `state` and
      * `report_terminal`. Once a terminal report is accepted, nothing more is
      * owed to the service for that workflow. */
-    AZ_IOT_SU_EVENT_REPORT_ACCEPTED
+    AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
+
+    /* The last workflow FAILED and was offered again before
+     * its retry wait elapsed, so it was not started: nothing was processed or
+     * reported for it. Carries `state` (unchanged) and `retry_after_ms`.
+     * Raised again on each early offer. The wait is 1 h after the first
+     * failure, doubling per consecutive failure up to 24 h, plus up to 10%
+     * jitter, and survives a restart when persistence is configured. */
+    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT
   } az_iot_su_event_kind;
 
   /**
@@ -743,6 +743,8 @@ extern "C"
     int32_t extended_result_code;
     /** REPORT_ACCEPTED: the report carried a terminal outcome. */
     bool report_terminal;
+    /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
+    uint32_t retry_after_ms;
   } az_iot_su_event;
 
   /**
@@ -771,7 +773,7 @@ extern "C"
       struct
       {
         void* pointers[24];
-        uint8_t bytes[3328];
+        uint8_t bytes[1280];
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;
@@ -792,7 +794,6 @@ extern "C"
       bool have_request;
       uint32_t current_step;
       uint32_t current_file;
-      bool cancel_requested;
       /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
       bool checkpoint_pending;
       /* Storage is believed to hold a checkpoint this client wrote or resumed
@@ -815,26 +816,40 @@ extern "C"
       /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
        */
       bool checkpoint_superseded;
+      /** The stored checkpoint is the retry record of a FAILED workflow. */
+      bool checkpoint_retry;
 
       /* Workflow id of the active (or last) deployment; a payload carrying it
-       * is a redelivery and is ignored. Retry timestamp and manifest CRC are
-       * not persisted and are otherwise unused. */
+       * is a redelivery and is ignored unless that workflow FAILED. Retry
+       * timestamp and manifest CRC are not persisted and are
+       * otherwise unused. */
       bool active_workflow_valid;
+      /** The workflow named by active_workflow_id has started and not yet ended. */
+      bool active_workflow_running;
+      /** Retry schedule of active_workflow_id after it FAILED. */
+      az_iot_retry_state workflow_retry;
+      /** Unix time source, from the connection client options; NULL uses time(). */
+      az_iot_unix_time_callback unix_time_fn;
+      void* unix_time_ctx; /**< Passed to unix_time_fn. */
       uint8_t active_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE];
       size_t active_workflow_id_len;
       uint8_t active_retry_timestamp[AZ_IOT_SU_RETRY_TIMESTAMP_SIZE];
       size_t active_retry_timestamp_len;
       uint32_t active_manifest_crc;
 
-      /* COPY of the service payload backing current_request/current_manifest
+      /* Workspace parts, laid out by init. The workflow record is serialized in
+       * place around request_buffer: persist_blob is its header, then the
+       * request, then the trailer. */
+      /** COPY of the service payload backing current_request/current_manifest
        * spans (the channel's delivery buffer is gone after the callback). */
-      uint8_t request_buffer[AZ_IOT_SU_REQUEST_BUFFER_SIZE];
+      uint8_t* request_buffer;
+      size_t request_buffer_size; /**< az_iot_su_limits::max_update_size. */
       size_t request_len;
-
-      /* Scratch for (de)serializing persisted workflow state (persist/resume).
-       * Per-instance so multiple software updates clients never share it; persist and resume
-       * never run concurrently, so one buffer serves both directions. */
-      uint8_t persist_scratch[AZ_IOT_SU_PERSIST_BLOB_SIZE];
+      uint8_t* persist_blob; /**< Workflow record and resume load buffer. */
+      size_t persist_blob_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE(request_buffer_size). */
+      uint8_t* terminal_blob; /**< Terminal record; AZ_IOT_SU_PERSIST_OVERHEAD bytes. */
+      uint8_t* scratch; /**< Decode and verification scratch. */
+      size_t scratch_size; /**< az_iot_su_limits::scratch_size. */
 
       /* The unescaped manifest text within request_buffer (decode_manifest
        * sets this; persistence/resume re-parses it). */
@@ -845,7 +860,7 @@ extern "C"
       az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
       int32_t step_results_count;
 
-      /** Caller's buffer holding the copied property strings. */
+      /** Workspace part holding the copied property strings. */
       uint8_t* device_properties_buffer;
       size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
       /** Copied properties; strings point into device_properties_buffer. */
@@ -897,7 +912,7 @@ extern "C"
 
       /* Terminal outcome for the active workflow, latched at the transition
        * that ends it. Reporting is keyed on workflowId, so the engine must be
-       * able to distinguish SUCCEEDED / CANCELED / SKIPPED after the workflow
+       * able to distinguish SUCCEEDED / SKIPPED after the workflow
        * state itself has returned to Idle. */
       az_iot_su_outcome pending_outcome;
 
@@ -924,7 +939,7 @@ extern "C"
       /** Backoff after retryable verdicts with no service delay; reset by any accepted operation.
        */
       az_iot_retry_state retry;
-      /** Jitter PRNG state for retry and persist_retry. */
+      /** Jitter PRNG state for retry, persist_retry and workflow_retry. */
       uint64_t retry_rng;
       /** pending_fetch was re-armed by a verdict that armed retry. */
       bool pending_fetch_paced;
@@ -934,6 +949,8 @@ extern "C"
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
+      /** Route of the application's last update request (pending_fetch encoding); 0 if none. */
+      uint8_t last_requested_fetch;
     } _internal;
   } az_iot_su_client;
 
@@ -959,9 +976,64 @@ extern "C"
   } az_iot_su_replacement_policy;
 
   /**
-   * Configuration for az_iot_su_client_init(). Obtain a zero-initialized
-   * instance from az_iot_su_client_config_options_default() and set the required
-   * fields before calling initialize.
+   * @brief Sizes of the parts of the application-provided workspace.
+   *
+   * Runtime values: the client struct does not depend on them.
+   */
+  typedef struct az_iot_su_limits
+  {
+    /** Largest update metadata accepted, in bytes; a larger one raises
+     * AZ_IOT_SU_EVENT_UPDATE_REFUSED. Also bounds the persisted state:
+     * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size). At least 256. */
+    size_t max_update_size;
+    /** Decode and signature-verification scratch, in bytes. A signature part or file
+     * URL that does not fit is refused. At least 256. */
+    size_t scratch_size;
+    /** Largest update-check or status-report body, in bytes. At least
+     * AZ_IOT_SU_MIN_MESSAGE_SIZE. */
+    size_t max_message_size;
+    /** Device-property strings, in bytes; see az_iot_su_device_properties_buffer_size(). */
+    size_t device_properties_size;
+  } az_iot_su_limits;
+
+/**
+ * @brief Workspace bytes for the given az_iot_su_limits fields, as a constant expression for
+ * static allocation. Equal to az_iot_su_workspace_size() for valid limits.
+ */
+#define AZ_IOT_SU_WORKSPACE_SIZE(                                                  \
+    max_update_size, scratch_size, max_message_size, device_properties_size)       \
+  ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size) \
+   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD)
+
+/** @brief Workspace bytes for az_iot_su_limits_default(). */
+#define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE  \
+  AZ_IOT_SU_WORKSPACE_SIZE(               \
+      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,  \
+      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,      \
+      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE, \
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+
+  /**
+   * @brief Returns the default limits: AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,
+   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE and
+   * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE.
+   *
+   * @return The default limits.
+   */
+  AZ_NODISCARD az_iot_su_limits az_iot_su_limits_default(void);
+
+  /**
+   * @brief Workspace bytes az_iot_su_client_init() needs for @p limits.
+   *
+   * @param[in] limits Limits to size.
+   * @return Bytes; 0 if @p limits is NULL or a limit is out of range.
+   */
+  AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits);
+
+  /**
+   * Configuration for az_iot_su_client_init(). Obtain an instance from
+   * az_iot_su_client_config_options_default() and set the required fields
+   * before calling initialize.
    */
   typedef struct az_iot_su_client_config_options
   {
@@ -974,22 +1046,25 @@ extern "C"
     size_t root_key_count; /**< Entries in root_keys; at most AZ_IOT_SU_MAX_ROOT_KEYS. */
     /** Required. Deep-copied; may be changed or freed after initialize. */
     const az_iot_su_device_properties* device_properties;
-    /** Required. Holds the copied strings; must outlive the client. */
-    uint8_t* device_properties_buffer;
-    size_t device_properties_buffer_size; /**< Size of device_properties_buffer. */
+    /** Sizes of the workspace parts. Default az_iot_su_limits_default(). */
+    az_iot_su_limits limits;
+    /** Required. The client's memory: update copy, persisted-state record, scratch, message
+     * body and device-property strings. At least az_iot_su_workspace_size(&limits) bytes, no
+     * alignment needed; must outlive the client. */
+    uint8_t* workspace;
+    size_t workspace_size; /**< Size of workspace. */
     /** What a new workflow id does to a workflow that may not be replaced.
      * Default AZ_IOT_SU_REPLACEMENT_DEFER. */
     az_iot_su_replacement_policy replacement_policy;
   } az_iot_su_client_config_options;
 
   /**
-   * @brief Returns zero-initialized options.
+   * @brief Returns options with az_iot_su_limits_default() and every other field zero.
    *
-   * Set hooks, root_keys, root_key_count, device_properties,
-   * device_properties_buffer and device_properties_buffer_size before
-   * az_iot_su_client_init().
+   * Set hooks, root_keys, root_key_count, device_properties, workspace and
+   * workspace_size before az_iot_su_client_init().
    *
-   * @return Zero-initialized options.
+   * @return The options.
    */
   AZ_NODISCARD az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
 
@@ -1006,13 +1081,14 @@ extern "C"
    * @return AZ_IOT_OK on success.
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
-   *   (including zero compatibility properties), or replacement_policy is not
-   *   an az_iot_su_replacement_policy value.
+   *   (including zero compatibility properties), replacement_policy is not
+   *   an az_iot_su_replacement_policy value, or a limit is out of range.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
    *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
    *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
-   *   limits, or the cache or update-check body is too small.
+   *   limits, the device_properties_size or max_message_size limit is too small
+   *   for them, or the workspace is smaller than az_iot_su_workspace_size().
    */
   AZ_NODISCARD az_iot_result az_iot_su_client_init(
       az_iot_su_client* client,
@@ -1039,7 +1115,8 @@ extern "C"
    *   record of this format when persist_state_fn is NULL (it could never be cleared);
    *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
-   *   AZ_IOT_ERR_DETACHED if the client is detached.
+   *   AZ_IOT_ERR_BUSY when a workflow is in progress (the record is loaded over its
+   *   update copy); AZ_IOT_ERR_DETACHED if the client is detached.
    */
   AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client);
 
@@ -1051,9 +1128,6 @@ extern "C"
    * AZ_NODISCARD: a pump whose result is typically observed via state, not return.
    */
   az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
-
-  /** Check if cancellation has been requested (called from within platform hooks). */
-  bool az_iot_su_is_cancelled(const az_iot_su_client* client);
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);

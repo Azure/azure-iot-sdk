@@ -30,7 +30,14 @@
 
 #include <azure/core/az_base64.h>
 
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 
 #include "sample_utils.h"
@@ -278,8 +285,13 @@ int main(void)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
   factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
@@ -313,8 +325,13 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
   az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   OPENSSL_cleanse(&ctx.store, sizeof(ctx.store));
   free(id_scope);
   free(reg_id);

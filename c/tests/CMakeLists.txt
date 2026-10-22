@@ -83,11 +83,21 @@ function(az_iot_add_cmocka_test name)
         list(REMOVE_ITEM sources NO_CTEST)
         set(register FALSE)
     endif()
+    # RACE: the test starts threads. Labelled "race" so CI runs it under
+    # helgrind and DRD (eng/run-race-detectors.sh).
+    set(race FALSE)
+    if("RACE" IN_LIST sources)
+        list(REMOVE_ITEM sources RACE)
+        set(race TRUE)
+    endif()
     add_executable(${name} ${sources})
     target_link_libraries(${name} PRIVATE az_iot_core cmocka)
     az_iot_apply_warnings(${name})
     if(register)
         add_test(NAME ${name} COMMAND ${name})
+        if(race)
+            set_tests_properties(${name} PROPERTIES LABELS race)
+        endif()
     endif()
     # If cmocka built as a shared lib (e.g. on Windows when something forced
     # BUILD_SHARED_LIBS=ON), copy the DLL next to the test exe.
@@ -170,6 +180,12 @@ az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# Concurrent writers and rotation in the file sink, which documents itself as
+# thread-safe. RACE: also run under helgrind and DRD.
+az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)
+if(UNIX)
+    target_link_libraries(az_iot_tests_log_file_race PRIVATE pthread)
+endif()
 # Diagnostic surface: the *_to_string helpers, version string, default
 # reconnection policy and the built-in stderr sink. Pulls internal headers for
 # the role/flavor helpers and the CSR request-id generator, which are internal
@@ -192,6 +208,9 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv5_custom_topic_client unit/mqttv5_custom_topic_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv5_custom_topic_client PRIVATE az_iot_test_support az_iot_mqttv5)
+# connection_test_harness.h includes internal headers.
+target_include_directories(az_iot_tests_mqttv5_custom_topic_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
@@ -451,11 +470,10 @@ if(AZ_IOT_WITH_PAHO)
     #
     # Same construction again -- the mock lets the test BE the Paho thread, so
     # the only concurrency in the binary is the concurrency under test. It
-    # runs in the ordinary suite, and CI additionally runs this one exe under
-    # helgrind, which is what actually adjudicates happens-before; memcheck
-    # and ASan cannot see a race at all. See the race-detector job in
-    # .github/workflows/ci-c.yml.
-    az_iot_add_cmocka_test(az_iot_tests_paho_event_queue_race
+    # runs in the ordinary suite, and RACE also runs it under helgrind and DRD
+    # (eng/run-race-detectors.sh), which adjudicate happens-before; memcheck
+    # and ASan cannot see a race at all.
+    az_iot_add_cmocka_test(az_iot_tests_paho_event_queue_race RACE
         unit/paho_event_queue_race_test.c
         support/mock_paho_async.c
         support/fake_paho_key_custody.c
@@ -868,15 +886,9 @@ endif()
 # Built only when AZ_IOT_BUILD_E2E is ON (the e2e CI workflow sets it). The
 # in-process cmocka suite (az_iot_tests_e2e) drives real-cloud scenarios against
 # an Azure IoT Hub/DPS instance, playing both the device (shipping SDK) and the
-# cloud (az_iot_e2e_service facade) halves. It needs a real MQTT adapter, so it
-# also requires AZ_IOT_WITH_PAHO.
+# cloud (az_iot_e2e_service facade) halves. It needs Paho or az_mqtt (checked in
+# cmake/az_iot_options.cmake); each suite that connects is built for each one.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E)
-    if(AZ_IOT_WITH_PAHO)
-        add_subdirectory(e2e)
-    else()
-        message(WARNING
-            "AZ_IOT_BUILD_E2E=ON but AZ_IOT_WITH_PAHO=OFF; skipping e2e tests "
-            "(they require the Paho MQTT adapter).")
-    endif()
+    add_subdirectory(e2e)
 endif()

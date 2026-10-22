@@ -148,6 +148,9 @@ extern "C"
   az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(
       az_iot_test_mqtt_version version,
       uint8_t code);
+  /* MQTT 5 PUBACK with reason @p code and, unless @p reason_string is NULL, a Reason String
+   * property. Carries a packet id. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string);
 
   /* Pin the packet id and clear the echo flag, for an acknowledgement that is
    * meant to answer something the client never sent. Does nothing to a packet

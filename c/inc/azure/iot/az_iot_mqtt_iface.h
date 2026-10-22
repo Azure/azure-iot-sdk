@@ -415,6 +415,14 @@ extern "C"
      * only; an adapter that has nothing to report leaves it 0 and stays
      * conformant. */
     int32_t transport_code;
+    /* AZ_IOT_MQTT_EVT_PUBLISH_ACK, MQTT 5: the PUBACK's Reason String, verbatim. UTF-8, not
+     * NUL-terminated, valid only during the callback. NULL: the PUBACK carried none; non-NULL with
+     * length 0: present and empty. Unused for other event kinds. An adapter must report it for a
+     * PUBACK reason code of 0x80 or above, except for an ack it holds past the receive buffer's
+     * lifetime; below 0x80 it may omit it (Paho's API does not expose it). Diagnostics: never
+     * branch on it. */
+    const char* reason_string;
+    size_t reason_string_len;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);
@@ -441,6 +449,8 @@ extern "C"
         const char* topic_filter,
         az_iot_mqtt_qos qos,
         uint16_t* out_packet_id);
+    /* An accepted unsubscribe ends in one AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK carrying
+     * *out_packet_id, unless the session ends first. */
     az_iot_result (
         *unsubscribe)(az_iot_mqtt_client* self, const char* topic_filter, uint16_t* out_packet_id);
     az_iot_result (*publish)(
@@ -544,8 +554,7 @@ extern "C"
 
   /**
    * @brief Map a PUBACK code onto the status an adapter reports with
-   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters should route every PUBACK through it; of the bundled
-   * adapters, only az_mqtt does.
+   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters must route every PUBACK through it.
    *
    * @param version Selects the code scheme.
    * @param puback_code MQTT 5 reason code; MQTT 3.1.1: 0. Negative: the adapter's own failure.
