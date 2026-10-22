@@ -4823,6 +4823,31 @@ static void the_retry_record_round_trips_through_the_blob(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
+/* The first step is no resume point: details set there during a retry write
+ * no position record over the retry record, and are reported. */
+static void step_result_details_set_at_a_retry_start_write_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fail_signed_patch(fx);
+  elapse_retry_wait(fx);
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+
+  int writes = fx->log.persist_calls;
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("retry text")),
+      AZ_IOT_OK);
+  assert_false(fx->su._internal.checkpoint_pending);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, writes);
+
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("retry text")));
+}
+
 /* A new workflow replaces an owed report of the one it supersedes. */
 static void a_new_workflow_supersedes_an_owed_report(void** state)
 {
@@ -8236,6 +8261,8 @@ int main(void)
         a_report_too_large_is_sent_without_step_details, setup, teardown),
     cmocka_unit_test_setup_teardown(details_set_from_is_installed_are_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_report_keeps_the_pending_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_set_at_a_retry_start_write_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         step_result_details_replaced_at_the_reboot_point_are_saved, setup, teardown),
     cmocka_unit_test_setup_teardown(
