@@ -91,7 +91,8 @@ FILE* sample_fopen_private(const char* path);
 FILE* sample_fopen_private_new(const char* path);
 
 /**
- * @brief Open @p path for binary reading; on POSIX a symbolic link is refused.
+ * @brief Open @p path for binary reading; on POSIX only a regular file, not
+ * through a symbolic link, is opened.
  *
  * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.

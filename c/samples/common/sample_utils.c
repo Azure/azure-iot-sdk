@@ -293,12 +293,18 @@ FILE* sample_fopen_read_nofollow(const char* path)
 #elif !defined(O_NOFOLLOW)
   return fopen(path, "rb");
 #else
-  int fd = open(path, O_RDONLY | O_NOFOLLOW);
+  /* O_NONBLOCK: opening a FIFO does not wait for a writer; it is then refused. */
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
   if (fd < 0)
   {
     return NULL;
   }
-  FILE* f = fdopen(fd, "rb");
+  struct stat st;
+  FILE* f = NULL;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+  {
+    f = fdopen(fd, "rb");
+  }
   if (!f)
   {
     (void)close(fd);
