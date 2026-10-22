@@ -1514,8 +1514,9 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   firmware.
 - **Runtime root-key rotation**, threshold-signature continuity across key rollover, and a
   persisted runtime key store.
-- **SDK-driven checks.** The application requests every update check and picks its route; the SDK
-  runs no polling cadence or post-install re-check of its own.
+- **SDK-driven checks.** The application requests update checks and picks their route; the SDK
+  runs no polling cadence or post-install re-check of its own. The one exception is the single
+  check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
 
