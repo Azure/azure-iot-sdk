@@ -16,6 +16,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/log_internal.h"
+#include "internal/span_writer.h"
 #include "internal/su_device_properties_internal.h"
 #include "internal/su_internal.h"
 #include "internal/su_protocol_internal.h"
@@ -176,29 +177,15 @@ bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__rep
 }
 
 /**
- * @brief Append @p src and its NUL at @p dst + *used, truncating to fit.
+ * @brief Copy @p src, NUL-terminated, into @p dst.
  *
- * @return false when @p src was truncated.
+ * @return false, leaving @p dst empty, when it does not fit.
  */
-static bool pack_cstr(char* dst, size_t cap, size_t* used, const char* src)
+static bool copy_cstr(char* dst, size_t cap, const char* src)
 {
-  if (src == NULL)
-  {
-    src = "";
-  }
-  size_t n = strlen(src);
-  bool fits = n + 1 <= cap - *used;
-  if (!fits)
-  {
-    n = cap - *used - 1;
-  }
-  if (n > 0)
-  {
-    memcpy(dst + *used, src, n);
-  }
-  dst[*used + n] = '\0';
-  *used += n + 1;
-  return fits;
+  const char* parts[1] = { src != NULL ? src : "" };
+  return az_iot_span_writer_build_str(az_span_create((uint8_t*)dst, (int32_t)cap), NULL, parts, 1)
+      == AZ_IOT_OK;
 }
 
 /**
@@ -217,24 +204,24 @@ static void keep_sent_terminal(
   t->outcome = report->outcome;
   t->failure_origin = report->failure_origin;
   t->result_code = report->result_code;
-  size_t used = 0;
-  (void)pack_cstr(t->workflow_id, sizeof(t->workflow_id), &used, report->workflow_id);
-  used = 0;
-  (void)pack_cstr(
-      t->extended_result_codes,
-      sizeof(t->extended_result_codes),
-      &used,
-      report->extended_result_codes);
+  (void)copy_cstr(t->workflow_id, sizeof(t->workflow_id), report->workflow_id);
+  (void)copy_cstr(
+      t->extended_result_codes, sizeof(t->extended_result_codes), report->extended_result_codes);
   t->has_installed = false;
-  if (report->installed_update_id != NULL)
+  const az_iot_su_report_update_id* id = report->installed_update_id;
+  if (id != NULL && id->provider != NULL && id->name != NULL && id->version != NULL)
   {
-    used = 0;
-    t->has_installed
-        = pack_cstr(
-              t->installed, sizeof(t->installed), &used, report->installed_update_id->provider)
-        && pack_cstr(t->installed, sizeof(t->installed), &used, report->installed_update_id->name)
-        && pack_cstr(
-              t->installed, sizeof(t->installed), &used, report->installed_update_id->version);
+    /* provider, name, version, each NUL-terminated; not kept unless all fit. */
+    az_iot_span_writer writer;
+    az_iot_span_writer_init(
+        &writer, az_span_create((uint8_t*)t->installed, (int32_t)sizeof(t->installed)));
+    az_iot_span_writer_append_str(&writer, id->provider);
+    az_iot_span_writer_append_u8(&writer, 0);
+    az_iot_span_writer_append_str(&writer, id->name);
+    az_iot_span_writer_append_u8(&writer, 0);
+    az_iot_span_writer_append_str(&writer, id->version);
+    az_iot_span_writer_append_u8(&writer, 0);
+    t->has_installed = az_iot_span_writer_end(&writer, NULL) == AZ_IOT_OK;
   }
   size_t d = SU_I(client).step_details_size;
   uint8_t* region = SU_I(client).sent_details

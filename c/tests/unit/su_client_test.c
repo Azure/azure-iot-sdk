@@ -923,6 +923,8 @@ typedef struct
   char accepted_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
   int32_t accepted_report_steps;
   char accepted_step_details[64];
+  bool accepted_has_installed;
+  char accepted_installed[3][AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
   az_iot_result last_refused_reason;
 
   int deferred_count;
@@ -1008,6 +1010,14 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
       copy_str(
           fx->accepted_workflow_id, sizeof(fx->accepted_workflow_id), event->report->workflow_id);
       fx->accepted_report_steps = event->report->step_results_count;
+      fx->accepted_has_installed = event->report->installed_update_id != NULL;
+      if (fx->accepted_has_installed)
+      {
+        const az_iot_su_report_update_id* id = event->report->installed_update_id;
+        copy_str(fx->accepted_installed[0], sizeof(fx->accepted_installed[0]), id->provider);
+        copy_str(fx->accepted_installed[1], sizeof(fx->accepted_installed[1]), id->name);
+        copy_str(fx->accepted_installed[2], sizeof(fx->accepted_installed[2]), id->version);
+      }
       fx->accepted_step_details[0] = '\0';
       if (event->report->step_results_count > 0)
       {
@@ -2649,6 +2659,65 @@ static void a_refused_report_keeps_the_pending_one(void** state)
   assert_int_equal(fx->accepted_report_count, 1);
   assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(fx->accepted_report_result_code, sent_code);
+}
+
+/* The largest installed update id the client accepts (its three parts and their
+ * terminators fill AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) reaches the accepted-report
+ * event whole, whichever part is long; one byte more is refused up front. */
+static void the_largest_installed_id_reaches_the_accepted_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+
+  enum
+  {
+    LONG = AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE - 5 /* two 1-byte parts, three NULs */
+  };
+  static char long_part[LONG + 2];
+  memset(long_part, 'p', LONG + 1);
+  long_part[LONG + 1] = '\0';
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "a";
+  dp.installed_update_id.name = "b";
+  dp.installed_update_id.version = long_part; /* one byte too many */
+  assert_int_not_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  long_part[LONG] = '\0';
+
+  const char* workflows[3] = { "aaaaaaaa-0000-0000-0000-00000000000a",
+                               "bbbbbbbb-0000-0000-0000-00000000000b",
+                               "cccccccc-0000-0000-0000-00000000000c" };
+  for (int i = 0; i < 3; ++i)
+  {
+    const char* parts[3] = { "a", "b", "c" };
+    parts[i] = long_part;
+    dp.installed_update_id.provider = parts[0];
+    dp.installed_update_id.name = parts[1];
+    dp.installed_update_id.version = parts[2];
+    assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+
+    inject_patch(fx, build_patch(workflows[i]));
+    pump(fx, 40);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+    int before = fx->accepted_report_count;
+    fx->chan.result_cb(
+        AZ_IOT_SU_OP_REPORT_STATUS,
+        AZ_IOT_OK,
+        AZ_IOT_SU_ERROR_ACTION_NONE,
+        NULL,
+        fx->chan.engine_ctx);
+    assert_int_equal(fx->accepted_report_count, before + 1);
+    assert_true(fx->accepted_has_installed);
+    for (int k = 0; k < 3; ++k)
+    {
+      assert_string_equal(fx->accepted_installed[k], parts[k]);
+    }
+  }
 }
 
 static void workspace_size_follows_the_limits(void** state)
@@ -8225,6 +8294,8 @@ int main(void)
         a_report_too_large_is_sent_without_step_details, setup, teardown),
     cmocka_unit_test_setup_teardown(details_set_from_is_installed_are_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_report_keeps_the_pending_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_largest_installed_id_reaches_the_accepted_report, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_string_over_the_scratch_is_refused_as_too_large, setup, teardown),
