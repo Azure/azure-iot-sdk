@@ -19,13 +19,17 @@ on the device changes.
   across sequential reads.
 - One proxy setting (`AZ_IOT_PROXY_*`) for both `copts.proxy` and the download; libcurl's
   proxy environment variables are overridden.
-- A transfer that stalls (under 1 byte/s for 60 s) or cannot connect within 60 s fails.
+- A transfer that stalls (under 1 byte/s for 60 s) or cannot connect within 60 s fails, and so
+  does one that sends more than the manifest's file size.
+- Only HTTP and HTTPS URLs are fetched, redirects included.
+- A file is restarted when a replacing workflow asks for another file mid-transfer.
 - Requires libcurl with asynchronous DNS (`AsynchDNS` in `curl --version`); without it the
   sample exits.
 - `install_fn` works in chunks (`SAMPLE_INSTALL_CHUNKS` calls per step), returning
   `AZ_IOT_SU_RESULT_IN_PROGRESS` between them.
 - Device failure codes from 0x100 up, so they never read as an `AZ_IOT_SU_RESULT_*`
-  value. A failed download reports `0x1000 + HTTP status` or `0x200 + CURLcode` in the
+  value. A failed download reports `0x1000 + HTTP status`, `0x200 + CURLcode`, `0x103` (more
+  data than the manifest size) or `0x104` (`SAMPLE_DOWNLOAD_PREFIX` + file id too long) in the
   low bits of the step's extended result code.
 - The regular route: checks at startup, again after each applied update, and every
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).

@@ -68,6 +68,8 @@
  * step's extendedResultCodes. */
 #define SAMPLE_ERR_FILE_OPEN 0x101
 #define SAMPLE_ERR_URL_TOO_LONG 0x102
+#define SAMPLE_ERR_TOO_LARGE 0x103 /* more data than the manifest's file size */
+#define SAMPLE_ERR_PATH_TOO_LONG 0x104
 #define SAMPLE_ERR_CURL 0x200 /* + CURLcode */
 #define SAMPLE_ERR_HTTP 0x1000 /* + HTTP status */
 
@@ -96,6 +98,11 @@ typedef struct
   FILE* file;
   char path[512];
   curl_off_t last_reported;
+  /* What it is fetching: a replacement workflow can ask for another file. */
+  char url[2048];
+  int64_t expected_size; /* the manifest's size_in_bytes */
+  int64_t written;
+  int too_large;
 
   /* The file the hash check is reading, kept open across sequential reads. */
   FILE* reader;
@@ -112,20 +119,25 @@ typedef struct
   int applied;
 } download_context;
 
-/** @brief Path of a downloaded file: the prefix and the manifest's file id. */
-static void file_path(
+/**
+ * @brief Path of a downloaded file: the prefix and the manifest's file id.
+ *
+ * @return 0 when it does not fit @p out: files would otherwise overwrite each other.
+ */
+static int file_path(
     const download_context* d,
     const az_iot_su_client_update_manifest_file* file,
     char* out,
     size_t out_size)
 {
-  (void)snprintf(
+  int n = snprintf(
       out,
       out_size,
       "%s%.*s",
       d->path_prefix,
       (int)az_span_size(file->id),
       (const char*)az_span_ptr(file->id));
+  return n >= 0 && (size_t)n < out_size;
 }
 
 /** @brief Close the hash check's reader, if open. */
@@ -138,10 +150,38 @@ static void reader_close(download_context* d)
   }
 }
 
-/** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's. */
+/**
+ * @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's.
+ *
+ * Refuses data past the manifest's file size, which a server could otherwise
+ * stream without end; returning short makes the transfer fail.
+ */
 static size_t download_write(char* data, size_t size, size_t count, void* user_data)
 {
-  return fwrite(data, 1, size * count, (FILE*)user_data);
+  download_context* d = (download_context*)user_data;
+  size_t n = size * count;
+  if ((uint64_t)n > (uint64_t)(d->expected_size - d->written))
+  {
+    d->too_large = 1;
+    return 0;
+  }
+  size_t done = fwrite(data, 1, n, d->file);
+  d->written += (int64_t)done;
+  return done;
+}
+
+/** @brief Allow HTTP and HTTPS only, for the URL and any redirect. */
+static int restrict_protocols(CURL* easy)
+{
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0: the _STR options */
+  return curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK
+      && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK;
+#else
+  return curl_easy_setopt(easy, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS))
+      == CURLE_OK
+      && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS))
+      == CURLE_OK;
+#endif
 }
 
 /** @brief Stop the transfer in progress and close its file. */
@@ -176,17 +216,34 @@ static int32_t download_file(
 {
   download_context* d = (download_context*)user_ctx;
 
+  if (az_span_size(url) <= 0 || (size_t)az_span_size(url) >= sizeof(d->url))
+  {
+    download_reset(d);
+    return SAMPLE_ERR_URL_TOO_LONG;
+  }
+  char path[sizeof(d->path)];
+  if (!file_path(d, file, path, sizeof(path)))
+  {
+    download_reset(d);
+    return SAMPLE_ERR_PATH_TOO_LONG;
+  }
+  /* A workflow that replaced the one being downloaded asks for another file:
+   * the transfer in progress is not that file's. */
+  if (d->easy != NULL
+      && (strcmp(path, d->path) != 0 || d->expected_size != file->size_in_bytes
+          || !az_span_is_content_equal(url, az_span_create_from_str(d->url))))
+  {
+    download_reset(d);
+  }
+
   if (d->easy == NULL)
   {
-    char url_text[2048];
-    if (az_span_size(url) <= 0 || (size_t)az_span_size(url) >= sizeof(url_text))
-    {
-      return SAMPLE_ERR_URL_TOO_LONG;
-    }
-    memcpy(url_text, az_span_ptr(url), (size_t)az_span_size(url));
-    url_text[az_span_size(url)] = '\0';
-
-    file_path(d, file, d->path, sizeof(d->path));
+    memcpy(d->url, az_span_ptr(url), (size_t)az_span_size(url));
+    d->url[az_span_size(url)] = '\0';
+    memcpy(d->path, path, sizeof(d->path));
+    d->expected_size = file->size_in_bytes;
+    d->written = 0;
+    d->too_large = 0;
     reader_close(d);
     d->file = sample_fopen_private(d->path);
     if (d->file == NULL)
@@ -199,9 +256,15 @@ static int32_t download_file(
       download_reset(d);
       return SAMPLE_ERR_CURL;
     }
-    (void)curl_easy_setopt(d->easy, CURLOPT_URL, url_text);
+    /* No file://, which could block on a FIFO, or any other scheme. */
+    if (!restrict_protocols(d->easy))
+    {
+      download_reset(d);
+      return SAMPLE_ERR_CURL + (int32_t)CURLE_UNSUPPORTED_PROTOCOL;
+    }
+    (void)curl_easy_setopt(d->easy, CURLOPT_URL, d->url);
     (void)curl_easy_setopt(d->easy, CURLOPT_WRITEFUNCTION, download_write);
-    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEDATA, d->file);
+    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEDATA, d);
     (void)curl_easy_setopt(d->easy, CURLOPT_FOLLOWLOCATION, 1L);
     (void)curl_easy_setopt(d->easy, CURLOPT_FAILONERROR, 1L);
     /* A stalled transfer fails rather than holding the workflow forever. */
@@ -258,8 +321,9 @@ static int32_t download_file(
     (void)curl_easy_getinfo(d->easy, CURLINFO_RESPONSE_CODE, &http_status);
     CURLcode cr = (msg != NULL) ? msg->data.result : CURLE_FAILED_INIT;
     fprintf(stderr, "Download failed: %s (HTTP %ld)\n", curl_easy_strerror(cr), http_status);
-    rc = (http_status >= 400) ? (int32_t)(SAMPLE_ERR_HTTP + http_status)
-                              : (int32_t)(SAMPLE_ERR_CURL + (int32_t)cr);
+    rc = d->too_large          ? SAMPLE_ERR_TOO_LARGE
+        : (http_status >= 400) ? (int32_t)(SAMPLE_ERR_HTTP + http_status)
+                               : (int32_t)(SAMPLE_ERR_CURL + (int32_t)cr);
   }
   download_reset(d);
   return rc;
@@ -277,8 +341,12 @@ static int32_t download_read_file(
 {
   (void)file_index;
   download_context* d = (download_context*)user_ctx;
-  char path[512];
-  file_path(d, file, path, sizeof(path));
+  char path[sizeof(d->path)];
+  if (!file_path(d, file, path, sizeof(path)))
+  {
+    reader_close(d);
+    return SAMPLE_ERR_PATH_TOO_LONG;
+  }
   /* The SDK reads sequentially: reopen only for another file or offset. */
   if (d->reader != NULL && (strcmp(path, d->reader_path) != 0 || offset != d->reader_offset))
   {
@@ -299,14 +367,16 @@ static int32_t download_read_file(
     }
   }
   *out_read = fread(buffer, 1, buffer_size, d->reader);
-  if (*out_read < buffer_size)
+  if (ferror(d->reader))
   {
-    int failed = ferror(d->reader);
     reader_close(d);
-    if (failed)
-    {
-      return SAMPLE_ERR_FILE_OPEN;
-    }
+    return SAMPLE_ERR_FILE_OPEN;
+  }
+  /* Kept open after a short read: the SDK reads once more for the 0-byte end,
+   * and reopening would need a seek that a 32-bit long cannot express. */
+  if (*out_read == 0)
+  {
+    reader_close(d);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   d->reader_offset = offset + *out_read;
