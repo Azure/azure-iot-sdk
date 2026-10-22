@@ -520,8 +520,16 @@ int main(void)
     goto cleanup;
   }
   su_ready = 1;
+  /* Each check is bounded to half the poll interval: a new request resets the
+   * deadline, so a longer bound would let an unanswered check outlive every
+   * poll and never be abandoned. */
+  uint32_t request_timeout_ms = AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
+  if (poll_interval_s > 0 && (uint64_t)poll_interval_s * 500u < request_timeout_ms)
+  {
+    request_timeout_ms = (uint32_t)poll_interval_s * 500u;
+  }
   if (az_iot_su_client_add_observer(&su, on_su_event, &flags) != AZ_IOT_OK
-      || az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS) != AZ_IOT_OK
+      || az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK
       || az_iot_connection_client_open(&connection) != AZ_IOT_OK)
   {
     goto cleanup;
@@ -568,7 +576,7 @@ int main(void)
         && (check_now || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
-      if (az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS) != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not request an update check.\n");
       }

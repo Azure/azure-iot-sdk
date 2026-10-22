@@ -451,8 +451,10 @@ the no-shared-ownership rule used elsewhere. Per step, the application sets it w
 manifest is verified (`is_installed_fn` included) and until the workflow ends. The text is copied into the workspace
 (`az_iot_su_limits::result_details_size` bytes per step, default 128; a longer one is refused with
 `AZ_IOT_ERR_NOT_ENOUGH_SPACE`), persisted with the step's result, and reported with the terminal
-result. A change made while the workflow waits for a reboot rewrites the saved record on the next
-`do_work()`, which holds the workflow until the write succeeds. A report that does not fit `max_message_size` is sent without step details. The terminal
+result. A change made while the workflow waits for a reboot rewrites the saved record from a later
+`do_work()`, which holds the workflow until the write succeeds. A failed write raises
+`AZ_IOT_SU_EVENT_PERSIST_FAILED` and is retried; until `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`, a reboot
+restores the previous details. A report that does not fit `max_message_size` is sent without step details. The terminal
 `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
 the channel. The client sets no details itself.
 

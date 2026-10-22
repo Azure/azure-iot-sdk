@@ -2624,6 +2624,43 @@ static void step_result_details_cleared_at_the_reboot_point_are_saved(void** sta
   change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_EMPTY);
 }
 
+/* A failed rewrite is reported and retried; the workflow waits, and the
+ * change is durable only after PERSIST_RECOVERED. */
+static void a_failed_details_rewrite_is_retried_before_the_workflow_goes_on(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  pump_to_checkpoint(fx);
+
+  fx->log.persist_failures = 1;
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("new text")),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->persist_failed_count, 1);
+  assert_int_equal(fx->persist_recovered_count, 0);
+  assert_true(fx->su._internal.checkpoint_pending);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->persist_recovered_count, 1);
+  assert_false(fx->su._internal.checkpoint_pending);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("new text")));
+}
+
 /* A report that does not fit the message limit goes out without step
  * details rather than not at all. */
 static void a_report_too_large_is_sent_without_step_details(void** state)
@@ -8364,6 +8401,8 @@ int main(void)
         step_result_details_replaced_at_the_reboot_point_are_saved, setup, teardown),
     cmocka_unit_test_setup_teardown(
         step_result_details_cleared_at_the_reboot_point_are_saved, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_details_rewrite_is_retried_before_the_workflow_goes_on, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_largest_installed_id_reaches_the_accepted_report, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),

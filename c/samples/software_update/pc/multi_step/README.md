@@ -23,6 +23,7 @@ reports for each one. Download and the hash read-back are simulated (zero-filled
   every step's outcome, codes and details.
 - The regular route: checks at startup, again after each applied update, and every
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).
+  Each check waits at most half the interval (60 s cap).
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 The update to deploy needs at least two inline steps, with compatibility
