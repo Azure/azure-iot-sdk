@@ -1578,12 +1578,12 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
   {
     return AZ_IOT_ERR_NOT_FOUND;
   }
-  if (!is_span_safe_cstr(c->opts.host) || !is_span_safe_cstr(c->opts.client_id))
+  if (!is_span_safe_cstr(c->opts.iothub_hostname) || !is_span_safe_cstr(c->opts.device_id))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   /* Checked before azure-sdk-for-c runs: its size preconditions never return. */
-  size_t ids = strlen(c->opts.host) + strlen(c->opts.client_id);
+  size_t ids = strlen(c->opts.iothub_hostname) + strlen(c->opts.device_id);
   size_t size = out_size > (size_t)INT32_MAX ? (size_t)INT32_MAX : out_size;
   if (ids > size || AZ_IOT_SAS_TOKEN_SIZE(ids) > size)
   {
@@ -1605,8 +1605,8 @@ az_iot_result az_iot_connection_client__sign_hub_sas_token(
   az_iot_hub_client_options hub_opts = az_iot_hub_client_options_default();
   if (az_result_failed(az_iot_hub_client_init(
           &hub,
-          az_span_create_from_str((char*)(uintptr_t)c->opts.host),
-          az_span_create_from_str((char*)(uintptr_t)c->opts.client_id),
+          az_span_create_from_str((char*)(uintptr_t)c->opts.iothub_hostname),
+          az_span_create_from_str((char*)(uintptr_t)c->opts.device_id),
           &hub_opts)))
   {
     return AZ_IOT_ERR_INVALID_ARG;

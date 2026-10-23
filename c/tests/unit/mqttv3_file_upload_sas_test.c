@@ -101,8 +101,8 @@ typedef struct
 static az_iot_connection_client_options sas_options(void)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.crypto = TEST_CRYPTO();
   opts.hub_auth.sas.primary_key_base64 = KEY_B64;
   opts.unix_time.get_time = fixed_time;

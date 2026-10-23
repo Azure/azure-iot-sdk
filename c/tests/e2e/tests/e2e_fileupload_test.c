@@ -57,8 +57,15 @@
 #include <string.h>
 #include <time.h>
 
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
@@ -751,7 +758,11 @@ static void test_sas_key_device_uploads_a_file(void** state)
   assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_sas_hub_state, &hub_state), AZ_IOT_OK);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
   time_t start = time(NULL);
@@ -811,7 +822,11 @@ static void test_sas_key_device_uploads_a_file(void** state)
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
   az_iot_connection_client_deinit(&conn);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory);
+#endif
   e2e_sas_config_free(&cfg);
 }
 
