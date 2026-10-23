@@ -523,6 +523,14 @@ int main(void)
     goto cleanup;
   }
   su_ready = 1;
+  /* Each check is bounded to half the poll interval: a new request resets the
+   * deadline, so a longer bound would let an unanswered check outlive every
+   * poll and never be abandoned. */
+  uint32_t request_timeout_ms = AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
+  if (poll_interval_s > 0 && (uint64_t)poll_interval_s * 500u < request_timeout_ms)
+  {
+    request_timeout_ms = (uint32_t)poll_interval_s * 500u;
+  }
 
   /* Observe before resume(): it reports a restored workflow through events. */
   if (az_iot_su_client_add_observer(&su, on_su_event, &observer) != AZ_IOT_OK)
@@ -536,7 +544,7 @@ int main(void)
   }
   /* A resumed workflow finishes first: a check now could deliver another one. */
   if (az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE
-      && az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS) != AZ_IOT_OK)
+      && az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -602,16 +610,23 @@ int main(void)
       rc = (flags.final_report == 1) ? 0 : 2;
       break;
     }
-    if (flags.connection_faulted && !flags.workflow_active)
+    /* FAULTED is settled: the SDK does not retry out of it, and a workflow in
+     * flight cannot report again, so it would never reach Idle. */
+    if (flags.connection_faulted)
     {
-      fprintf(stderr, "The connection faulted and will not recover on its own.\n");
+      fprintf(
+          stderr,
+          flags.workflow_active
+              ? "The connection faulted and will not recover on its own; the update in progress "
+                "stops here (a saved record, if any, resumes it on the next run).\n"
+              : "The connection faulted and will not recover on its own.\n");
       rc = 1;
       break;
     }
     if (!flags.workflow_active && poll_interval_s > 0 && sample_now_ms() >= next_check_ms)
     {
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
-      if (az_iot_su_client_request_update(&su, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS) != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not request an update check.\n");
       }
