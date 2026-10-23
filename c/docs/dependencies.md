@@ -10,7 +10,7 @@ Third-party libraries the C SDK builds against, and the known issues of each.
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Vendored in [deps/az_mqtt](../deps/az_mqtt/VENDORED.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
 | [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
-| [libcurl](https://curl.se/libcurl/) | Any | Samples only (file upload, DPS TPM, software update download) | Optional |
+| [libcurl](https://curl.se/libcurl/) | Any; 7.55.0+ for the software update download sample (`CURLINFO_SIZE_DOWNLOAD_T`) | Samples only (file upload, DPS TPM, software update download) | Optional |
 
 Exact commits are in [cgmanifest.json](../cgmanifest.json). How to use installed copies instead of
 the fetched ones: [Installed dependencies](client-configuration.md#installed-dependencies).
