@@ -93,7 +93,10 @@ typedef struct
   long reboot_step; /* 1-based */
   long persist_failures_left;
   int reboot_requested; /* a hook asked for a reboot in this run */
-  int persist_failing; /* between PERSIST_FAILED and PERSIST_RECOVERED */
+  /* Set by reboot_persist() itself: PERSIST_FAILED is raised only once per
+   * episode, so a later failure in it would go unseen. */
+  int write_failing; /* the last record write failed */
+  int erase_failing; /* the last erase failed */
   int persist_gave_up; /* the client stopped retrying the failing write */
 } reboot_context;
 
@@ -176,15 +179,14 @@ static int32_t reboot_apply(
 }
 
 /**
- * @brief persist_state_fn: save the workflow so it survives a reboot.
+ * @brief Save the workflow so it survives a reboot.
  *
  * Written to a temporary file and renamed over the old one, so a crash
  * mid-write leaves the previous record intact. A zero-length write erases
  * the record: the workflow ended and must not be resumed.
  */
-static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
+static int32_t reboot_persist_write(const uint8_t* blob, size_t len, reboot_context* c)
 {
-  reboot_context* c = (reboot_context*)user_ctx;
   if (len == 0)
   {
     if (remove(c->state_file) != 0 && errno != ENOENT)
@@ -231,6 +233,26 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
   printf("[persist] %zu bytes -> %s\n", len, c->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
+
+/** @brief persist_state_fn: reboot_persist_write(), recording whether it failed. */
+static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
+{
+  reboot_context* c = (reboot_context*)user_ctx;
+  int32_t r = reboot_persist_write(blob, len, c);
+  int failed = r != AZ_IOT_SU_RESULT_SUCCESS;
+  if (len == 0)
+  {
+    c->erase_failing = failed;
+  }
+  else
+  {
+    c->write_failing = failed;
+  }
+  return r;
+}
+
+/** @brief Whether the stored record may be missing or stale. */
+static int persist_failing(const reboot_context* c) { return c->write_failing || c->erase_failing; }
 
 /** @brief load_state_fn: read the saved workflow back; nonzero when there is none. */
 static int32_t reboot_load(uint8_t* blob, size_t capacity, size_t* out_len, void* user_ctx)
@@ -337,7 +359,6 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
       /* The workflow is held at the reboot boundary until a write succeeds. */
-      o->reboot->persist_failing = 1;
       o->reboot->persist_gave_up = !event->persist_retrying;
       fprintf(
           stderr,
@@ -346,7 +367,6 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           event->persist_retrying ? ", retrying" : ", giving up");
       break;
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
-      o->reboot->persist_failing = 0;
       o->reboot->persist_gave_up = 0;
       printf("State saved after %u failed writes\n", (unsigned)event->persist_attempts);
       break;
@@ -609,14 +629,14 @@ int main(void)
      * succeeds. Another outcome's write keeps its retry schedule: wait for it,
      * unless the client gave up on it. */
     int succeeded = flags.final_report == 1 || flags.dropped_succeeded;
-    if (report_settled && reboot.persist_failing && (succeeded || reboot.persist_gave_up)
+    if (report_settled && persist_failing(&reboot) && (succeeded || reboot.persist_gave_up)
         && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
     {
-      reboot.persist_failing = 0;
+      reboot.write_failing = 0; /* the record it was for is no longer needed */
     }
     /* The "reboot": exit once the state is saved. While writes fail the
      * workflow is held, and rebooting would lose it. */
-    if (reboot.reboot_requested && !reboot.persist_failing)
+    if (reboot.reboot_requested && !persist_failing(&reboot))
     {
       if (exit_after_workflow && report_settled)
       {
@@ -677,7 +697,7 @@ int main(void)
         printf("Installed: %s/%s/%s\n", installed_provider, installed_name, installed_version);
       }
     }
-    if (exit_after_workflow && report_settled && !reboot.persist_failing
+    if (exit_after_workflow && report_settled && !persist_failing(&reboot)
         && !reboot.reboot_requested)
     {
       rc = (flags.final_report == 1) ? 0 : 2;
