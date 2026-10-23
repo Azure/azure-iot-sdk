@@ -564,8 +564,10 @@ int main(void)
   {
     fprintf(stderr, "Nothing resumed: %s\n", az_iot_result_to_string(resumed));
   }
-  /* A restored final report settles before any check (see the loop). */
-  flags.awaiting_final_report = az_iot_su_client_is_terminal_report_owed(&su);
+  /* A restored final report settles before any check (see the loop); a
+   * resumed workflow's start already set the flag. */
+  flags.awaiting_final_report
+      = flags.awaiting_final_report || az_iot_su_client_is_terminal_report_owed(&su);
   /* A resumed workflow finishes first: a check now could deliver another one. */
   int check_due = 0;
   if (az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
@@ -635,6 +637,7 @@ int main(void)
       {
         fprintf(stderr, "Could not record the applied update as installed; not checking again.\n");
         poll_interval_s = 0;
+        check_due = 0;
       }
       else
       {
