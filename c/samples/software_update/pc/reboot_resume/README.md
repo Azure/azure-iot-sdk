@@ -35,7 +35,8 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   update does not refresh them again.
 - Each update check waits at most half of `AZ_IOT_SU_POLL_INTERVAL_S` (60 s cap).
 - Periodic checks pause from a workflow's start until its final report is accepted, so a check
-  never advertises the previous installed id.
+  never advertises the previous installed id. They resume if the client drops that report
+  (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`); it is not sent again.
 - A connection that faults for good ends the process (exit 1), even during an update; a saved
   record, if any, resumes it on the next run.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
@@ -52,7 +53,7 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 | `SAMPLE_REBOOT_AT` | no | `install:<n>` (default `install:1`) or `apply:<n>` |
 | `SAMPLE_STATE_FILE` | no | Saved workflow; default `./su_reboot_state.bin` |
 | `SAMPLE_PERSIST_FAIL_COUNT` | no | Number of state writes to fail first |
-| `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the final report is accepted: 0 when it succeeded, 2 otherwise |
+| `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the final report is accepted (0 when it succeeded, 2 otherwise) or dropped (2) |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400 |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |
 
