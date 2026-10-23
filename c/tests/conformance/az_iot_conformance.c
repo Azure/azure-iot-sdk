@@ -246,6 +246,8 @@ static unsigned k_step_timeout_seconds = 5;
  * query after 5s, per attempt and per search domain, and Paho's lookup is an
  * unbounded getaddrinfo() that connect_timeout_seconds does not cover. */
 static unsigned k_resolver_timeout_ms = 30000;
+/* AZ_IOT_TEST_TIMEOUT_SCALE, for waits not derived from the budgets above. */
+static unsigned g_timeout_scale = 1;
 
 /* ------------------------------------------------------------------------- */
 /* event recorder used by every test                                         */
@@ -2046,8 +2048,10 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
 
   /* Hold the broker's traffic for well under the 30 s keep-alive, so a
    * disconnect here would be the client giving up early rather than a
-   * legitimate keep-alive expiry. */
-  az_iot_test_proxy_stall(proxy, AZ_IOT_TEST_PROXY_B2C, 1500);
+   * legitimate keep-alive expiry. Scaled, capped at 10 s, so a slow run still
+   * gets the PUBLISH to the proxy while the stall holds. */
+  unsigned const stall_ms = (1500u * g_timeout_scale < 10000u) ? 1500u * g_timeout_scale : 10000u;
+  az_iot_test_proxy_stall(proxy, AZ_IOT_TEST_PROXY_B2C, stall_ms);
 
   static const uint8_t body[] = { 's', 't', 'a', 'l', 'l', 'e', 'd' };
   az_iot_mqtt_message msg = { 0 };
@@ -2058,9 +2062,15 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
   uint16_t pub_pid = 0;
   assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
 
-  /* Nothing may arrive while the link is held. */
-  assert_false(wait_until(c, &rec, saw_message, 700));
-  /* The bytes are buffered in the proxy, not lost. */
+  /* The broker's bytes are buffered in the proxy, not lost, and nothing
+   * arrives while the link is held. */
+  unsigned long const held_by = conf_now_ms() + stall_ms;
+  while (az_iot_test_proxy_queued_bytes(proxy, AZ_IOT_TEST_PROXY_B2C) == 0
+         && conf_now_ms() < held_by && !saw_message(&rec))
+  {
+    c->iface->process_loop(c, 10);
+  }
+  assert_false(saw_message(&rec));
   assert_true(az_iot_test_proxy_queued_bytes(proxy, AZ_IOT_TEST_PROXY_B2C) > 0);
 
   /* Once the stall lifts, the backlog is delivered intact. */
@@ -4167,6 +4177,7 @@ int az_iot_conformance_run_with_options(
 
   {
     unsigned const scale = az_iot_test_timeout_scale();
+    g_timeout_scale = scale;
     k_step_timeout_ms = 5000u * scale;
     k_step_timeout_seconds = 5u * scale;
     k_resolver_timeout_ms = 30000u * scale;
