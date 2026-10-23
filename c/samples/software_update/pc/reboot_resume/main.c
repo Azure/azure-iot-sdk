@@ -590,11 +590,12 @@ int main(void)
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
 
-    /* After the last apply the final report may be accepted or dropped before
-     * a failed write is retried, leaving the client nothing to save: any record
-     * left is stale, so erase it, and reboot only once that succeeds. */
-    if (reboot.reboot_requested && reboot.persist_failing
-        && (flags.final_report != 0 || flags.final_report_dropped) && !flags.workflow_active
+    int report_settled
+        = (flags.final_report != 0 || flags.final_report_dropped) && !flags.workflow_active;
+    /* The final report may be accepted or dropped before a failed write is
+     * retried: any record left is stale, so erase it, and reboot or exit only
+     * once that succeeds. */
+    if (report_settled && reboot.persist_failing
         && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
     {
       reboot.persist_failing = 0;
@@ -603,6 +604,10 @@ int main(void)
      * workflow is held, and rebooting would lose it. */
     if (reboot.reboot_requested && !reboot.persist_failing)
     {
+      if (exit_after_workflow && report_settled)
+      {
+        rc = (flags.final_report == 1) ? 0 : 2;
+      }
       printf(
           "Rebooting: the workflow is saved in %s. Run the sample again to resume.\n",
           reboot.state_file);
@@ -650,8 +655,8 @@ int main(void)
         printf("Installed: %s/%s/%s\n", installed_provider, installed_name, installed_version);
       }
     }
-    if (exit_after_workflow && (flags.final_report != 0 || flags.final_report_dropped)
-        && !flags.workflow_active && !reboot.reboot_requested)
+    if (exit_after_workflow && report_settled && !reboot.persist_failing
+        && !reboot.reboot_requested)
     {
       rc = (flags.final_report == 1) ? 0 : 2;
       break;
