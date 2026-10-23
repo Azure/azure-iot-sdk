@@ -205,7 +205,7 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
   }
-  FILE* f = sample_fopen_private(tmp);
+  FILE* f = sample_fopen_private(tmp, false);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
