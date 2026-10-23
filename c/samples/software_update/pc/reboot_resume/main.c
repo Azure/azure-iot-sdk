@@ -265,7 +265,9 @@ typedef struct
   int awaiting_final_report; /* a workflow started; its final report is not accepted yet */
   int final_report_dropped; /* the client retired the final report unaccepted */
   int resend_final_report; /* a lost session left the final report owed */
-  int installed_unadvertised; /* a dropped report's update succeeded; its id is not advertised */
+  int dropped_succeeded; /* the dropped final report was a succeeded one */
+  int installed_from_dropped; /* installed_pending came from a dropped report */
+  int installed_unadvertised; /* a dropped report's new installed id is not advertised */
   int connection_faulted;
   /* A succeeded report's installed update id, not yet in the device properties. */
   int installed_pending;
@@ -326,6 +328,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         o->flags->final_report = 0; /* a new workflow: its report is not in yet */
         o->flags->awaiting_final_report = 1;
         o->flags->final_report_dropped = 0;
+        o->flags->dropped_succeeded = 0;
       }
       if (event->state == AZ_IOT_SU_STATE_FAILED)
       {
@@ -372,6 +375,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         o->flags->final_report = (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED) ? 1 : 2;
         o->flags->awaiting_final_report = 0;
         note_installed(o->flags, event->report);
+        o->flags->installed_from_dropped = 0;
       }
       break;
     case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
@@ -400,9 +404,13 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         {
           o->flags->awaiting_final_report = 0;
           o->flags->final_report_dropped = 1;
-          /* Advertising its installed id would send the dropped report again. */
-          o->flags->installed_unadvertised
+          o->flags->dropped_succeeded
               = event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED;
+          if (event->report != NULL)
+          {
+            note_installed(o->flags, event->report);
+            o->flags->installed_from_dropped = o->flags->installed_pending;
+          }
           fprintf(stderr, "Final report dropped; it is not sent again.\n");
         }
       }
@@ -600,7 +608,7 @@ int main(void)
      * record left is stale: erase it, and reboot or exit only once that
      * succeeds. Another outcome's write keeps its retry schedule: wait for it,
      * unless the client gave up on it. */
-    int succeeded = flags.final_report == 1 || flags.installed_unadvertised;
+    int succeeded = flags.final_report == 1 || flags.dropped_succeeded;
     if (report_settled && reboot.persist_failing && (succeeded || reboot.persist_gave_up)
         && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
     {
@@ -626,6 +634,14 @@ int main(void)
         && strcmp(flags.installed_name, installed_name) == 0
         && strcmp(flags.installed_version, installed_version) == 0)
     {
+      flags.installed_pending = 0;
+    }
+    /* A new id from a dropped report is not advertised: that would send the
+     * dropped report again. */
+    if (flags.installed_from_dropped)
+    {
+      flags.installed_from_dropped = 0;
+      flags.installed_unadvertised = flags.installed_unadvertised || flags.installed_pending;
       flags.installed_pending = 0;
     }
     /* Sending the device properties again also re-sends an owed report. */
