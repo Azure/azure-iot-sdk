@@ -86,11 +86,13 @@ The conformance cases for this are written but not registered until the fix ship
 
 `Proxy_connect()` checks the `HTTP/1.x 200` status line before all of it has arrived, and has no
 defined end to its header read. A CONNECT response delivered in small segments can make the
-connect fail or stall. Fix submitted:
+connect fail, desynchronise the tunnel, or leave a Paho thread spinning in that read. The spin
+checks no timeout, so neither the connect timeout nor reconnection recovers it. Fix submitted:
 [eclipse-paho/paho.mqtt.c#1698](https://github.com/eclipse-paho/paho.mqtt.c/pull/1698).
 
-**Mitigation:** none in the SDK. The connect timeout and reconnection policy bound and retry the
-attempt.
+**Mitigation:** none in the SDK. Where the proxy may split its response, build Paho with that fix
+(`PAHO_C_REPO` and `PAHO_C_TAG` can point at a patched tree), or use the az_mqtt adapter, which
+does not use Paho's proxy code.
 
 ### `httpProxy` alone rejected on SSL builds
 
