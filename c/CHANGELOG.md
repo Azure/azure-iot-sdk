@@ -188,6 +188,11 @@
   `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
   and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
   (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
+- mqttv5 direct methods: a probe-ack, result or abandon that cannot be published because the hub is
+  not `CONNECTED` (for example between CONNACK and the birth-ack) is held with its ready token or
+  slot and published on the next `CONNECTED`, instead of being dropped. `respond()` returns
+  `AZ_IOT_OK` for a held result. The client now holds one result buffer per
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot.
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
