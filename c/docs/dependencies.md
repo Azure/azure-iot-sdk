@@ -61,13 +61,14 @@ Paho computes `connectTimeout * 1000` in `int`, which overflows above `INT_MAX /
 Paho runs its own send and receive threads. Some of their shared state is read and written without
 a lock: `MQTTAsync_tostop` and `sendThread_state` (`MQTTAsync_connect`, `MQTTAsync_stop`,
 `MQTTAsync_sendThread`) and `sendThread_id` / `receiveThread_id` (`MQTTAsync_inCallback`).
-helgrind and DRD report these. Paho runs callbacks and `MQTTAsync_destroy()` under one global
+helgrind, DRD and ThreadSanitizer report these. Paho runs callbacks and `MQTTAsync_destroy()` under one global
 mutex, so no callback reaches the adapter after `destroy()` returns.
 
 **Mitigation:** call the SDK from one thread, as documented in
 [Architecture](architecture.md). The adapter hands Paho's callbacks to that thread through a
 locked queue. The race CI suppresses only these Paho frames
-([drd.supp](../eng/sanitizers/drd.supp), [helgrind.supp](../eng/sanitizers/helgrind.supp)); see
+([drd.supp](../eng/sanitizers/drd.supp), [helgrind.supp](../eng/sanitizers/helgrind.supp),
+[tsan.supp](../eng/sanitizers/tsan.supp)); see
 [Race detection](eng/building.md#race-detection).
 
 ### WebSocket handshake split across TCP segments
@@ -96,11 +97,14 @@ does not use Paho's proxy code.
 
 ### `httpProxy` alone rejected on SSL builds
 
-When only `httpProxy` is set, `MQTTProtocol_connect()` reuses it as the HTTPS proxy and rejects it
-if it has no scheme, so a plain `tcp://` connection fails. Fix submitted:
+When only `httpProxy` (or, with `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE`, only `http_proxy`) is set,
+`MQTTProtocol_connect()` reuses it as the HTTPS proxy and rejects it if it has no scheme, so even a
+plain `tcp://` connection fails. Fix submitted:
 [eclipse-paho/paho.mqtt.c#1699](https://github.com/eclipse-paho/paho.mqtt.c/pull/1699).
 
-**Mitigation:** none needed. The adapter sets both slots, each with an `http://` scheme.
+**Mitigation:** with `proxy` set in the connection options, none needed: the adapter sets both
+slots, each with an `http://` scheme. With the environment instead, give `http_proxy` an `http://`
+prefix (or also set `https_proxy`).
 
 ### Headers under `-pedantic`
 
