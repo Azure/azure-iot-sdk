@@ -263,6 +263,7 @@ typedef struct
   int final_report; /* 0 none yet, 1 succeeded, 2 another outcome */
   int awaiting_final_report; /* a workflow started; its final report is not accepted yet */
   int final_report_dropped; /* the client retired the final report unaccepted */
+  int resend_final_report; /* a lost session left the final report owed */
   int connection_faulted;
   /* A succeeded report's installed update id, not yet in the device properties. */
   int installed_pending;
@@ -288,6 +289,21 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     flags->connection_faulted = 1;
+  }
+}
+
+/* Notes a succeeded terminal report's installed update id for the device properties. */
+static void note_installed(sample_flags* flags, const az_iot_su_report* report)
+{
+  /* Copied: the report is valid only during the callback. */
+  const az_iot_su_report_update_id* id = report->installed_update_id;
+  if (report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED && id != NULL)
+  {
+    flags->installed_pending
+        = sample_copy_str(
+              flags->installed_provider, sizeof(flags->installed_provider), id->provider)
+        && sample_copy_str(flags->installed_name, sizeof(flags->installed_name), id->name)
+        && sample_copy_str(flags->installed_version, sizeof(flags->installed_version), id->version);
   }
 }
 
@@ -351,20 +367,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         }
         o->flags->final_report = (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED) ? 1 : 2;
         o->flags->awaiting_final_report = 0;
-        /* Copied: the report is valid only during the callback. */
-        const az_iot_su_report_update_id* id = event->report->installed_update_id;
-        if (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED && id != NULL)
-        {
-          o->flags->installed_pending
-              = sample_copy_str(
-                    o->flags->installed_provider,
-                    sizeof(o->flags->installed_provider),
-                    id->provider)
-              && sample_copy_str(
-                    o->flags->installed_name, sizeof(o->flags->installed_name), id->name)
-              && sample_copy_str(
-                    o->flags->installed_version, sizeof(o->flags->installed_version), id->version);
-        }
+        note_installed(o->flags, event->report);
       }
       break;
     case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
@@ -380,18 +383,23 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           su_sample_operation_name(event->operation),
           az_iot_result_to_string(event->reason),
           (int)event->service_error.code);
-      /* Stop waiting for the final report. A lost session keeps it owed (sent
-       * again later); any other verdict retires it. */
+      /* A lost session keeps the final report owed: send it again. Any other
+       * verdict retires it; the update it reports is still installed. */
       if (event->operation == AZ_IOT_SU_OP_REPORT_STATUS && event->report_terminal)
       {
-        o->flags->awaiting_final_report = 0;
         if (event->reason == AZ_IOT_ERR_NOT_CONNECTED)
         {
-          fprintf(stderr, "Final report not delivered; it is sent again later.\n");
+          o->flags->resend_final_report = 1;
+          fprintf(stderr, "Final report not delivered; sending it again.\n");
         }
         else
         {
+          o->flags->awaiting_final_report = 0;
           o->flags->final_report_dropped = 1;
+          if (event->report != NULL)
+          {
+            note_installed(o->flags, event->report);
+          }
           fprintf(stderr, "Final report dropped; it is not sent again.\n");
         }
       }
@@ -556,11 +564,17 @@ int main(void)
   {
     fprintf(stderr, "Nothing resumed: %s\n", az_iot_result_to_string(resumed));
   }
+  /* A restored final report settles before any check (see the loop). */
+  flags.awaiting_final_report = az_iot_su_client_is_terminal_report_owed(&su);
   /* A resumed workflow finishes first: a check now could deliver another one. */
-  if (az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE
-      && az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
+  int check_due = 0;
+  if (az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
   {
-    goto cleanup;
+    check_due = flags.awaiting_final_report;
+    if (!check_due && az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
+    {
+      goto cleanup;
+    }
   }
   if (az_iot_connection_client_open(&connection) != AZ_IOT_OK)
   {
@@ -600,6 +614,15 @@ int main(void)
         && strcmp(flags.installed_version, installed_version) == 0)
     {
       flags.installed_pending = 0;
+    }
+    /* Sending the device properties again also re-sends an owed report. */
+    if (flags.resend_final_report)
+    {
+      flags.resend_final_report = 0;
+      if (az_iot_su_client_update_device_properties(&su, &dp) != AZ_IOT_OK)
+      {
+        fprintf(stderr, "Could not send the final report again.\n");
+      }
     }
     if (flags.installed_pending)
     {
@@ -645,9 +668,10 @@ int main(void)
     }
     /* Until the final report is accepted, a check would advertise the
      * previous installed id and could be offered the same update again. */
-    if (!flags.workflow_active && !flags.awaiting_final_report && poll_interval_s > 0
-        && sample_now_ms() >= next_check_ms)
+    if (!flags.workflow_active && !flags.awaiting_final_report
+        && (check_due || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
+      check_due = 0;
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
       if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
       {
