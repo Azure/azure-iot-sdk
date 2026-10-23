@@ -348,11 +348,15 @@ if(AZ_IOT_WITH_PAHO)
     # Paho 1.3.14+ takes const MQTTProperties* in its getters; the MQTTAsync
     # mock (support/mock_paho_async.c) must match the headers in use.
     include(CheckCSourceCompiles)
-    set(CMAKE_REQUIRED_INCLUDES ${AZ_IOT_PAHO_INCLUDE_DIRS})
     set(CMAKE_REQUIRED_QUIET ON)
+    set(CMAKE_REQUIRED_INCLUDES ${AZ_IOT_PAHO_INCLUDE_DIRS})
     # MSVC only warns (C4028) on a parameter that differs from the declaration.
+    # Elsewhere, Paho 1.3.16's anonymous unions would fail a -pedantic -Werror
+    # build; the tests include those headers as system headers.
     if(MSVC)
         set(CMAKE_REQUIRED_FLAGS "/we4028")
+    else()
+        set(CMAKE_REQUIRED_FLAGS "-Wno-pedantic")
     endif()
     unset(AZ_IOT_TEST_PAHO_CONST_PROPERTIES CACHE)
     check_c_source_compiles("
