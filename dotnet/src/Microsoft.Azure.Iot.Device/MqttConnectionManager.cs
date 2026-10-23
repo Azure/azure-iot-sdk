@@ -320,15 +320,19 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            if (DisconnectedAsync != null)
+            Func<MqttClientDisconnectedEventArgs, Task>? disconnectedHandlers = DisconnectedAsync;
+            if (disconnectedHandlers != null)
             {
-                try
+                foreach (Delegate disconnectedHandler in disconnectedHandlers.GetInvocationList())
                 {
-                    await DisconnectedAsync.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
+                    try
+                    {
+                        await ((Func<MqttClientDisconnectedEventArgs, Task>)disconnectedHandler)(args);
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
+                    }
                 }
             }
         }

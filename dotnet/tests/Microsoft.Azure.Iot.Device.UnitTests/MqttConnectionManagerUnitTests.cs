@@ -306,6 +306,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
                 connectAttemptsAfterHandler.TrySetResult(mqttClient.ConnectAttemptCount);
             };
+            connectionManager.DisconnectedAsync += _ => Task.CompletedTask;
 
             await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
 

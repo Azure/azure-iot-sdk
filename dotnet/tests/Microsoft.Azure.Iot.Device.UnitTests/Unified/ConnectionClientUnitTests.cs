@@ -979,7 +979,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await presenceFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
                 await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
-                await connectionClient.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                await connectionClient.ProvisionAndConnectAsync(
+                    new ProvisioningSettings("someIdScope"),
+                    context.AuthenticationProvider,
+                    cancellationToken: TestContext.Current.CancellationToken);
                 releaseFirstAttempt.TrySetResult();
 
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -1068,7 +1071,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await presenceFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 await deliberateDisconnect!.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 await disconnection!.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-                await connectionClient.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                await connectionClient.ProvisionAndConnectAsync(
+                    new ProvisioningSettings("someIdScope"),
+                    context.AuthenticationProvider,
+                    cancellationToken: TestContext.Current.CancellationToken);
 
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(
                     () => pendingOperation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
