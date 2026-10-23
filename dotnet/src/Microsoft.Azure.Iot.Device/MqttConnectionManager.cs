@@ -45,8 +45,16 @@ namespace Microsoft.Azure.Iot.Device
         public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
 
         /// <summary>
-        /// Raised anytime this layer detects a disconnection.
+        /// Raised exactly once for each connection that <see cref="ConnectedAsync"/> reported, once that connection has
+        /// been lost.
         /// </summary>
+        /// <remarks>
+        /// The underlying client's own disconnect callback is not trusted as is: it may be raised for a connect attempt
+        /// that never connected, more than once for one disconnection, or late, after a newer connection is already up.
+        /// Such callbacks are filtered out, so this is never raised spuriously. It is always raised for a connection
+        /// before <see cref="ConnectedAsync"/> is raised for the next one, and before this layer starts reconnecting, so
+        /// that handlers can abandon work that belonged to the lost connection without affecting the next one.
+        /// </remarks>
         public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
 
         /// <summary>
@@ -136,9 +144,20 @@ namespace Microsoft.Azure.Iot.Device
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
 
-        // Incremented each time the underlying client reports a disconnection, so that an operation can tell whether the
-        // connection it was sent over was lost before its acknowledgement arrived.
+        // Incremented each time a connection is lost, so that an operation can tell whether the connection it was sent
+        // over was lost before its acknowledgement arrived.
         private long _disconnectionCount;
+
+        // Guards _isConnectionUp and _connectionLossNotification, so that each connection that came up is reported as
+        // lost exactly once.
+        private readonly object _connectionStateLock = new();
+
+        // Whether a connection has been reported through ConnectedAsync and not yet through DisconnectedAsync.
+        private bool _isConnectionUp;
+
+        // Completes once the most recent connection loss has been reported through DisconnectedAsync. The next
+        // connection is only reported through ConnectedAsync after that.
+        private Task _connectionLossNotification = Task.CompletedTask;
 
         private readonly IMqttClient _underlyingMqttClient;
 
@@ -148,11 +167,9 @@ namespace Microsoft.Azure.Iot.Device
             _connectionAttemptTimeout = connectionAttemptTimeout;
             _connectionRetryPolicy = retryPolicy;
 
-            _underlyingMqttClient.DisconnectedAsync += InternalDisconnectedAsync;
-
-            _underlyingMqttClient.DisconnectedAsync += DelegateDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync += HandleUnderlyingDisconnectedAsync;
             _underlyingMqttClient.ConnectingAsync += DelegateConnectingAsync;
-            _underlyingMqttClient.ConnectedAsync += DelegateConnectedAsync;
+            _underlyingMqttClient.ConnectedAsync += HandleUnderlyingConnectedAsync;
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
         }
 
@@ -170,6 +187,95 @@ namespace Microsoft.Azure.Iot.Device
                     Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
                 }
             }
+        }
+
+        private async Task HandleUnderlyingConnectedAsync(MqttClientConnectedEventArgs args)
+        {
+            TaskCompletionSource? lateLossNotified = null;
+            Task previousLossNotification;
+            lock (_connectionStateLock)
+            {
+                previousLossNotification = _connectionLossNotification;
+
+                if (_isConnectionUp)
+                {
+                    // The previous connection's disconnect callback has not arrived yet, so report its loss now, before
+                    // this connection. The late callback will then find this connection up and be dropped.
+                    lateLossNotified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _connectionLossNotification = lateLossNotified.Task;
+                }
+
+                _isConnectionUp = true;
+            }
+
+            // Handlers of the previous connection's loss must finish before handlers of this connection start, so that
+            // abandoning the previous connection's work cannot affect this one's.
+            await previousLossNotification;
+
+            if (lateLossNotified != null)
+            {
+                try
+                {
+                    await NotifyConnectionLostAsync(new MqttClientDisconnectedEventArgs()
+                    {
+                        Reason = MqttDisconnectReason.UnspecifiedError,
+                        ReasonString = "The previous connection was lost before this connection was established.",
+                    });
+                }
+                finally
+                {
+                    lateLossNotified.SetResult();
+                }
+            }
+
+            await DelegateConnectedAsync(args);
+        }
+
+        /// <summary>
+        /// Report a connection loss from the underlying client, unless no connection that came up was actually lost.
+        /// </summary>
+        /// <remarks>
+        /// The underlying client may raise its disconnect callback for a connect attempt that never connected, more than
+        /// once for one disconnection, or late, after a newer connection is already up. Only the first callback after a
+        /// connection came up, and while the underlying client is not connected, is a connection loss.
+        /// </remarks>
+        private async Task HandleUnderlyingDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        {
+            var lossNotified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task previousLossNotification;
+            lock (_connectionStateLock)
+            {
+                if (!_isConnectionUp || _underlyingMqttClient.IsConnected())
+                {
+                    Trace.TraceInformation("Ignoring a disconnect callback that does not correspond to a lost connection. Disconnect reason: {0}", args.Reason);
+                    return;
+                }
+
+                _isConnectionUp = false;
+                previousLossNotification = _connectionLossNotification;
+                _connectionLossNotification = lossNotified.Task;
+            }
+
+            try
+            {
+                await previousLossNotification;
+                await NotifyConnectionLostAsync(args);
+            }
+            finally
+            {
+                lossNotified.SetResult();
+            }
+
+            // Only start reconnecting once handlers have abandoned the lost connection's work. Reconnection is not awaited
+            // because it may retry for as long as the retry policy allows, and the underlying client's callback must not
+            // be held up for that long.
+            _ = InternalDisconnectedAsync(args);
+        }
+
+        private async Task NotifyConnectionLostAsync(MqttClientDisconnectedEventArgs args)
+        {
+            Interlocked.Increment(ref _disconnectionCount);
+            await DelegateDisconnectedAsync(args);
         }
 
         private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
@@ -340,10 +446,9 @@ namespace Microsoft.Azure.Iot.Device
             _isClosing = true;
             _isDesiredConnected = false;
 
-            _underlyingMqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
-            _underlyingMqttClient.DisconnectedAsync -= DelegateDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync -= HandleUnderlyingDisconnectedAsync;
             _underlyingMqttClient.ConnectingAsync -= DelegateConnectingAsync;
-            _underlyingMqttClient.ConnectedAsync -= DelegateConnectedAsync;
+            _underlyingMqttClient.ConnectedAsync -= HandleUnderlyingConnectedAsync;
             _underlyingMqttClient.PublishReceivedAsync -= DelegatePublishReceivedAsync;
 
             _reconnectionCancellationToken?.Cancel();
@@ -359,10 +464,8 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task InternalDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            // Counted before waiting for the lock so that an operation failing because of this disconnection sees it.
-            Interlocked.Increment(ref _disconnectionCount);
-
-            // MQTTNet's client often triggers the same "OnDisconnect" callback more times than expected, so only start reconnection once
+            // Serialized with the initial connect, which holds this lock while it retries, so that a connection lost
+            // right after being established is reconnected by only one of them.
             await _disconnectedEventLock.WaitAsync();
 
             try
