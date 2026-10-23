@@ -1,6 +1,6 @@
 # Dependencies
 
-Third-party libraries the C SDK builds against, and the known issues of each.
+Libraries the C SDK builds against, and the known issues of each.
 
 | Library | Version | Used by | Needed |
 | --- | --- | --- | --- |
@@ -8,7 +8,7 @@ Third-party libraries the C SDK builds against, and the known issues of each.
 | [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
 | [OpenSSL](https://www.openssl.org/) | Any Paho supports for Paho TLS; 3.0+ for Paho key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend and the managed certificate provider | Those components | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
-| az_mqtt | Vendored in [deps/az_mqtt](../deps/az_mqtt/VENDORED.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
+| az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
 | [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
 | [libcurl](https://curl.se/libcurl/) | Any; 7.55.0+ for the software update download sample (`CURLINFO_SIZE_DOWNLOAD_T`) | Samples (file upload, DPS TPM, software update download); software updates e2e offer suite | Optional for samples; required by `AZ_IOT_BUILD_E2E_SU` on non-Windows |
 
@@ -69,6 +69,36 @@ mutex, so no callback reaches the adapter after `destroy()` returns.
 locked queue. The race CI suppresses only these Paho frames
 ([drd.supp](../eng/sanitizers/drd.supp), [helgrind.supp](../eng/sanitizers/helgrind.supp)); see
 [Race detection](eng/building.md#race-detection).
+
+### WebSocket handshake split across TCP segments
+
+With `AZ_IOT_MQTT_TRANSPORT_WEBSOCKET`, the connection can stall without an error when the server's
+HTTP 101 response arrives in small segments: `WebSocket_upgrade()` retries a short read from a
+position already advanced past the bytes it read. It also needs the end of the headers to fall at
+the end of one 1024-byte read. Present in 1.3.13 and 1.3.16. Fix submitted:
+[eclipse-paho/paho.mqtt.c#1697](https://github.com/eclipse-paho/paho.mqtt.c/pull/1697).
+
+**Mitigation:** none in the SDK. Use the TCP transport (the default) where the network allows it.
+The connection client's connect timeout and reconnection policy end and retry a stalled attempt.
+The conformance cases for this are written but not registered until the fix ships.
+
+### Proxy CONNECT response split across TCP segments
+
+`Proxy_connect()` checks the `HTTP/1.x 200` status line before all of it has arrived, and has no
+defined end to its header read. A CONNECT response delivered in small segments can make the
+connect fail or stall. Fix submitted:
+[eclipse-paho/paho.mqtt.c#1698](https://github.com/eclipse-paho/paho.mqtt.c/pull/1698).
+
+**Mitigation:** none in the SDK. The connect timeout and reconnection policy bound and retry the
+attempt.
+
+### `httpProxy` alone rejected on SSL builds
+
+When only `httpProxy` is set, `MQTTProtocol_connect()` reuses it as the HTTPS proxy and rejects it
+if it has no scheme, so a plain `tcp://` connection fails. Fix submitted:
+[eclipse-paho/paho.mqtt.c#1699](https://github.com/eclipse-paho/paho.mqtt.c/pull/1699).
+
+**Mitigation:** none needed. The adapter sets both slots, each with an `http://` scheme.
 
 ### Headers under `-pedantic`
 
