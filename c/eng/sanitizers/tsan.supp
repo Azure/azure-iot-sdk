@@ -1,0 +1,26 @@
+# ThreadSanitizer suppressions for the tsan job in ci-c.yml. Policy (enforced by
+# eng/check-race-suppressions.sh):
+# - Third-party code only. Never SDK code.
+# - race: entries name a third-party global variable, never a function:
+#   TSan matches a function name anywhere in either stack, and Paho's threads
+#   call into the SDK (callbacks), so a function entry could hide an SDK race.
+# - Only globals in tsan_reviewed (eng/check-race-suppressions.sh), and no
+#   substring of SDK code: TSan matches patterns as substrings.
+# - Each entry follows a comment giving the upstream file:line and, for Paho,
+#   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
+
+# Paho MQTTAsync.c:684 and MQTTAsyncUtils.c:1842,2438 (v1.3.16): written by
+# MQTTAsync_connect/MQTTAsync_stop, read by the send thread, no common lock.
+race:MQTTAsync_tostop
+
+# Paho MQTTAsync.c:687 and MQTTAsyncUtils.c:1839-1865 (v1.3.16): written by
+# MQTTAsync_connect and the send thread without a common lock.
+race:sendThread_state
+
+# Paho MQTTAsync.c:1013 (v1.3.16): read by MQTTAsync_inCallback without a
+# lock; the send thread writes it (MQTTAsyncUtils.c:1840,1866).
+race:sendThread_id
+
+# Paho MQTTAsync.c:1013 (v1.3.16): as above; the receive thread writes it
+# (MQTTAsyncUtils.c:2080,2390).
+race:receiveThread_id

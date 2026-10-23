@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
@@ -27,7 +28,28 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public const string MessagePropertyContentType = "$.ct";
         public const string MessagePropertyContentEncoding = "$.ce";
 
-        public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync;
+        private event Func<CloudToDeviceTelemetry, Task>? _cloudToDeviceTelemetryReceivedAsync;
+
+        /// <summary>
+        /// An event that executes whenever this device receives a cloud-to-device message from IoT hub.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">Thrown when adding a handler if the connection client opted out of cloud-to-device messages (see <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>).</exception>
+        public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync
+        {
+            add
+            {
+                if (!_connection.AreCloudToDeviceMessagesEnabled)
+                {
+                    throw new InvalidOperationException($"The connection client opted out of cloud-to-device messages. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableCloudToDeviceMessages)} to true to receive them.");
+                }
+
+                _cloudToDeviceTelemetryReceivedAsync += value;
+            }
+            remove
+            {
+                _cloudToDeviceTelemetryReceivedAsync -= value;
+            }
+        }
 
         /// <summary>
         /// Construct a new <see cref="TelemetryClient"/> instance.
@@ -131,7 +153,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
 
             if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
             {
-                if (CloudToDeviceTelemetryReceivedAsync != null)
+                if (_cloudToDeviceTelemetryReceivedAsync != null)
                 {
                     var receivedCloudToDeviceMessage = new CloudToDeviceTelemetry(args.Publish.Payload);
 
@@ -176,7 +198,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                         }
                     }
 
-                    await CloudToDeviceTelemetryReceivedAsync.Invoke(receivedCloudToDeviceMessage);
+                    await _cloudToDeviceTelemetryReceivedAsync.Invoke(receivedCloudToDeviceMessage);
 
                     await args.AcknowledgeAsync(CancellationToken.None);
                 }

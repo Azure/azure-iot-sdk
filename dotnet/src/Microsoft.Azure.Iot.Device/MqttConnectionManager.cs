@@ -132,6 +132,17 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public bool IsConnectionLifecycleActive => _isDesiredConnected || (!_isClosing && _mostRecentConnect != null);
 
+        internal CancellationToken ConnectionLifetimeCancellationToken
+        {
+            get
+            {
+                lock (_connectionLifetimeCancellationTokenLock)
+                {
+                    return _connectionLifetimeCancellationToken.Token;
+                }
+            }
+        }
+
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
 
@@ -141,6 +152,10 @@ namespace Microsoft.Azure.Iot.Device
         // Cancels whatever connection maintenance is currently in flight, whether that is the initial connect's retry
         // loop or a reconnection's. DisconnectAsync(desireReconnection: false) cancels this to abandon retrying.
         private CancellationTokenSource? _reconnectionCancellationToken;
+
+        // Cancels operations waiting for this connection to return when the user deliberately disconnects.
+        private CancellationTokenSource _connectionLifetimeCancellationToken = new();
+        private readonly object _connectionLifetimeCancellationTokenLock = new();
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
 
@@ -373,6 +388,14 @@ namespace Microsoft.Azure.Iot.Device
             _mostRecentConnect = connect;
             _isClosing = false;
 
+            lock (_connectionLifetimeCancellationTokenLock)
+            {
+                CancellationTokenSource previousConnectionLifetimeCancellationToken = _connectionLifetimeCancellationToken;
+                _connectionLifetimeCancellationToken = new CancellationTokenSource();
+                previousConnectionLifetimeCancellationToken.Cancel();
+                previousConnectionLifetimeCancellationToken.Dispose();
+            }
+
             // Link the caller's token with this layer's own token so that DisconnectAsync(desireReconnection: false)
             // can abandon the initial connect's retry loop just as it abandons a reconnection's.
             _reconnectionCancellationToken?.Dispose();
@@ -430,6 +453,10 @@ namespace Microsoft.Azure.Iot.Device
                 _isClosing = true;
                 _isDesiredConnected = false;
                 _reconnectionCancellationToken?.Cancel();
+                lock (_connectionLifetimeCancellationTokenLock)
+                {
+                    _connectionLifetimeCancellationToken.Cancel();
+                }
             }
 
             await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
@@ -453,6 +480,11 @@ namespace Microsoft.Azure.Iot.Device
 
             _reconnectionCancellationToken?.Cancel();
             _reconnectionCancellationToken?.Dispose();
+            lock (_connectionLifetimeCancellationTokenLock)
+            {
+                _connectionLifetimeCancellationToken.Cancel();
+                _connectionLifetimeCancellationToken.Dispose();
+            }
             _disconnectedEventLock.Dispose();
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it

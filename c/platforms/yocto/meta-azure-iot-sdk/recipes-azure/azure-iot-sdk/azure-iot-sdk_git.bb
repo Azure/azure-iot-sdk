@@ -27,8 +27,8 @@ SRC_URI += " \
 "
 # 1.5.0
 SRCREV_azure-sdk-for-c = "6d6e634a3bb7f4d6bb5666ec8e1005ecd248e635"
-# v1.3.13
-SRCREV_paho = "07a875788d8cc6f5833b12581d6e3e349b34d719"
+# v1.3.16
+SRCREV_paho = "4a939ddb01eea581a32fd6f0adcfee51b91d2601"
 SRCREV_FORMAT = "sdk_azure-sdk-for-c_paho"
 
 S = "${WORKDIR}/git/c"

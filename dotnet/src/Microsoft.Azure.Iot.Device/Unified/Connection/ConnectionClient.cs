@@ -27,6 +27,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
+        /// <inheritdoc/>
+        public bool IsTwinEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreDirectMethodsEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreCloudToDeviceMessagesEnabled { get; }
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -41,6 +50,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
             options ??= new ConnectionClientOptions();
+
+            // Snapshot the opt-outs so that later changes to the options object cannot change which topics the
+            // presence flow subscribes to out from under feature clients that already checked them.
+            IsTwinEnabled = options.EnableTwin;
+            AreDirectMethodsEnabled = options.EnableDirectMethods;
+            AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
@@ -71,7 +86,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
-            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
+            // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
             if (args.ConnectAck.IsSessionPresent)
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
@@ -80,10 +95,30 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             MqttSubscribe mqttSubscribe = new();
-            mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
-            mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            if (AreCloudToDeviceMessagesEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+
+            if (IsTwinEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+
+            if (AreDirectMethodsEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+
+            if (mqttSubscribe.TopicFilters.Count == 0)
+            {
+                // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+
+                return;
+            }
+
             string deviceBoundMessagesTopic = string.Empty;
             var suback = await ManagedMqttConnection.BuildAndSubscribeAsync(ConnectionEndpoint.IotHub, () =>
             {

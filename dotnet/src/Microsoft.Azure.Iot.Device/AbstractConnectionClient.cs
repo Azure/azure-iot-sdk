@@ -91,6 +91,8 @@ namespace Microsoft.Azure.Iot.Device
         private bool _isUserSuppliedMqttClient = false;
 
         internal MqttConnectionManager ManagedMqttConnection;
+        private CancellationTokenSource _operationLifetimeCancellation = new();
+        private readonly object _operationLifetimeCancellationLock = new();
 
         internal abstract bool DoesClientSupportHubType(ConnectionProfile connectionProfile);
 
@@ -280,6 +282,7 @@ namespace Microsoft.Azure.Iot.Device
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            StartOperationLifetime();
 
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
@@ -424,8 +427,11 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             // The application is closing this connection deliberately, so any recovery that an earlier identity fault
             // started is no longer wanted.
+            CancelOperationLifetime();
             CancelCurrentReprovisioning();
 
             await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
@@ -440,6 +446,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public virtual void Dispose(bool disposing)
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             if (disposing)
@@ -459,6 +466,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         public virtual void Dispose()
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             ManagedMqttConnection.Dispose();
@@ -1587,6 +1595,10 @@ namespace Microsoft.Azure.Iot.Device
             // Counts the connection events that release the latch, so that an event which fires after an attempt started
             // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
             int connectionEventCount = 0;
+            using CancellationTokenSource connectionLifetimeCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    GetOperationLifetimeCancellationToken());
 
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
@@ -1625,6 +1637,7 @@ namespace Microsoft.Azure.Iot.Device
                         {
                             // The device became present again (or this client faulted) after this attempt started, so
                             // that release must not be waited for again. Re-evaluate straight away.
+                            connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                             ThrowIfUnrecoverablyFaulted();
                             continue;
                         }
@@ -1646,7 +1659,7 @@ namespace Microsoft.Azure.Iot.Device
 
                         try
                         {
-                            latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
+                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device birth flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {
@@ -1661,6 +1674,33 @@ namespace Microsoft.Azure.Iot.Device
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
                 UnrecoverablyFaulted -= HandleUnrecoverableFault;
+            }
+        }
+
+        private void StartOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                if (_operationLifetimeCancellation.IsCancellationRequested)
+                {
+                    _operationLifetimeCancellation = new CancellationTokenSource();
+                }
+            }
+        }
+
+        private CancellationToken GetOperationLifetimeCancellationToken()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                return _operationLifetimeCancellation.Token;
+            }
+        }
+
+        private void CancelOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                _operationLifetimeCancellation.Cancel();
             }
         }
     }

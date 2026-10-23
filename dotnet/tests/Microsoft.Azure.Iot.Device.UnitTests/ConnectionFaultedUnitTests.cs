@@ -1048,6 +1048,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using MockConnectionMqttClient mockMqttClient = new();
             MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
 
+            TaskCompletionSource reprovisioningRegistrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseReprovisioningRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockDps.RegistrationRequested += async registrationCount =>
+            {
+                if (registrationCount == 2)
+                {
+                    reprovisioningRegistrationStarted.TrySetResult();
+                    await releaseReprovisioningRegistration.Task;
+                }
+            };
+
             string? currentHubHostName = null;
             int firstHubConnects = 0;
             mockMqttClient.OnConnect = connect =>
@@ -1130,9 +1141,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 },
                 TestContext.Current.CancellationToken);
 
-            await pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await reprovisioningRegistrationStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             await disconnection!.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            bool operationRemainedPendingDuringRegistration = !pendingOperation.IsCompleted;
+            releaseReprovisioningRegistration.TrySetResult();
+            await pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
+            Assert.True(operationRemainedPendingDuringRegistration);
             Assert.Equal(2, mockDps.RegistrationCount);
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
             lock (hubsAttempted)

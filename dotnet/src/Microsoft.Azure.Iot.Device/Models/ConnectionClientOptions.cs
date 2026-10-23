@@ -42,5 +42,36 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// <see cref="MqttNetClient"/> will be created for you.
         /// </remarks>
         public IMqttClient? MqttClient { get; set; }
+
+        /// <summary>
+        /// True (the default) if this device uses twins. False to opt out of twins.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the twin response or desired property update
+        /// topics, and constructing a <see cref="Unified.Twin.TwinClient"/> with this connection client throws an
+        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableTwin { get; set; } = true;
+
+        /// <summary>
+        /// True (the default) if this device receives direct methods. False to opt out of direct methods.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the direct method request topic, and constructing a
+        /// <see cref="Unified.DirectMethods.DirectMethodClient"/> with this connection client throws an
+        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableDirectMethods { get; set; } = true;
+
+        /// <summary>
+        /// True (the default) if this device receives cloud-to-device messages. False to opt out of cloud-to-device messages.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the cloud-to-device message topic, and adding a handler
+        /// to <see cref="Unified.Telemetry.TelemetryClient.CloudToDeviceTelemetryReceivedAsync"/> on a telemetry client that
+        /// uses this connection client throws an <see cref="InvalidOperationException"/>. Sending device-to-cloud telemetry
+        /// is unaffected. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableCloudToDeviceMessages { get; set; } = true;
     }
 }
