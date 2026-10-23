@@ -264,6 +264,7 @@ typedef struct
   int awaiting_final_report; /* a workflow started; its final report is not accepted yet */
   int final_report_dropped; /* the client retired the final report unaccepted */
   int resend_final_report; /* a lost session left the final report owed */
+  int installed_unadvertised; /* a dropped report's update succeeded; its id is not advertised */
   int connection_faulted;
   /* A succeeded report's installed update id, not yet in the device properties. */
   int installed_pending;
@@ -396,10 +397,9 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         {
           o->flags->awaiting_final_report = 0;
           o->flags->final_report_dropped = 1;
-          if (event->report != NULL)
-          {
-            note_installed(o->flags, event->report);
-          }
+          /* Advertising its installed id would send the dropped report again. */
+          o->flags->installed_unadvertised
+              = event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED;
           fprintf(stderr, "Final report dropped; it is not sent again.\n");
         }
       }
@@ -671,6 +671,12 @@ int main(void)
     }
     /* Until the final report is accepted, a check would advertise the
      * previous installed id and could be offered the same update again. */
+    if (flags.installed_unadvertised && (poll_interval_s > 0 || check_due))
+    {
+      fprintf(stderr, "The applied update's id is not advertised; not checking again.\n");
+      poll_interval_s = 0;
+      check_due = 0;
+    }
     if (!flags.workflow_active && !flags.awaiting_final_report
         && (check_due || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
