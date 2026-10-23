@@ -51,6 +51,26 @@ jobs:
             workflow:
               - '.github/workflows/ci-dotnet-build.yml'
 
+  build-gate:
+    name: build + unit tests gate
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check build and test outcomes
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::Change detection did not succeed ($CHANGES_RESULT)"
+            exit 1
+          fi
+          if [ "$BUILD_RESULT" != "success" ] && [ "$BUILD_RESULT" != "skipped" ]; then
+            echo "::error::Build or unit tests did not succeed ($BUILD_RESULT)"
+            exit 1
+          fi
+
   build:
     name: build + unit tests (${{ matrix.os }})
     needs: changes
