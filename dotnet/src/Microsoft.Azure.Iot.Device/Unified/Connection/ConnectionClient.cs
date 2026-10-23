@@ -97,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             topicFilter.QualityOfServiceLevel)
                         : topicFilter)
                     .ToList());
-            });
+            }, CurrentReprovisioningCancellationToken);
 
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)

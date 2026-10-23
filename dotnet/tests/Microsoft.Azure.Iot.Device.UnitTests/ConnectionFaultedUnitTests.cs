@@ -1437,6 +1437,45 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ExplicitDisconnectWhileRecoveryHubSubscriptionIsPendingStopsReprovisioning()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            TaskCompletionSource recoveryHubSubscriptionStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<MqttSubscribeAck> releaseRecoveryHubSubscription = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            int hubSubscriptionCount = 0;
+            mockMqttClient.OnSubscribe = async subscribe =>
+            {
+                if (subscribe.TopicFilters.Any(filter => filter.Topic.StartsWith("devices/", StringComparison.Ordinal))
+                    && Interlocked.Increment(ref hubSubscriptionCount) == 1)
+                {
+                    recoveryHubSubscriptionStarted.TrySetResult();
+                    return await releaseRecoveryHubSubscription.Task;
+                }
+
+                return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await recoveryHubSubscriptionStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.False(mockMqttClient.IsConnected());
+            Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
+        }
+
+        [Fact]
         public async Task ExplicitDisconnectDuringHubReconnectionReleasesWaitingOperationsAndStopsReconnecting()
         {
             using MockConnectionMqttClient mockMqttClient = new();

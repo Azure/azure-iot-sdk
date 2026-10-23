@@ -33,6 +33,16 @@ namespace Microsoft.Azure.Iot.Device
     /// </remarks>
     public abstract class AbstractConnectionClient
     {
+        private sealed class CancellationTokenHolder
+        {
+            public CancellationTokenHolder(CancellationToken token)
+            {
+                Token = token;
+            }
+
+            public CancellationToken Token { get; }
+        }
+
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
@@ -170,6 +180,7 @@ namespace Microsoft.Azure.Iot.Device
         /// runs on its own, it is only abandoned when this client is deliberately disconnected or disposed.
         /// </summary>
         private CancellationTokenSource? _currentReprovisioningCancellation;
+        private CancellationTokenHolder? _currentReprovisioningCancellationToken;
 
         /// <summary>
         /// The fault that ended connection maintenance without anything left to bring the connection back, if this
@@ -293,6 +304,11 @@ namespace Microsoft.Azure.Iot.Device
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!_isOnReprovisioningFlow.Value)
+            {
+                Volatile.Write(ref _currentReprovisioningCancellationToken, null);
+            }
 
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
@@ -917,6 +933,7 @@ namespace Microsoft.Azure.Iot.Device
 
             var reprovisioningCancellation = new CancellationTokenSource();
             Interlocked.Exchange(ref _currentReprovisioningCancellation, reprovisioningCancellation);
+            Volatile.Write(ref _currentReprovisioningCancellationToken, new(reprovisioningCancellation.Token));
 
             if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
                 || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0
@@ -927,6 +944,7 @@ namespace Microsoft.Azure.Iot.Device
                 // disconnect takes precedence, so do not start.
                 Trace.TraceInformation("Not re-provisioning because this client was deliberately disconnected.");
                 Interlocked.CompareExchange(ref _currentReprovisioningCancellation, null, reprovisioningCancellation);
+                Volatile.Write(ref _currentReprovisioningCancellationToken, null);
                 reprovisioningCancellation.Dispose();
                 Volatile.Write(ref _isReprovisioning, 0);
                 reprovisioningCompletion.SetResult();
@@ -1161,6 +1179,11 @@ namespace Microsoft.Azure.Iot.Device
             {
                 // The attempt already ended and disposed its own cancellation source, so there is nothing left to cancel.
             }
+        }
+
+        internal CancellationToken CurrentReprovisioningCancellationToken
+        {
+            get => Volatile.Read(ref _currentReprovisioningCancellationToken)?.Token ?? CancellationToken.None;
         }
 
         /// <summary>
