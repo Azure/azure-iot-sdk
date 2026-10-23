@@ -3983,7 +3983,7 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
   return SU_I(client).state;
 }
 
-bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client)
+AZ_NODISCARD bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client)
 {
   return client != NULL && !SU_I(client).detached && SU_I(client).report_owed;
 }
