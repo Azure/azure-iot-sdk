@@ -1221,6 +1221,11 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
       n += proxy_cred_encoded_len(pass);
     }
   }
+  /* Only an overflowing length sum can fail this. */
+  if (n <= sizeof(PAHO_PROXY_SCHEME))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
   char* uri = (char*)malloc(n);
   if (!uri)
