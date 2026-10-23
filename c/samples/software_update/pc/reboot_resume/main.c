@@ -94,6 +94,7 @@ typedef struct
   long persist_failures_left;
   int reboot_requested; /* a hook asked for a reboot in this run */
   int persist_failing; /* between PERSIST_FAILED and PERSIST_RECOVERED */
+  int persist_gave_up; /* the client stopped retrying the failing write */
 } reboot_context;
 
 /** @brief Set the resultDetails reported for @p step. */
@@ -334,6 +335,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
       /* The workflow is held at the reboot boundary until a write succeeds. */
       o->reboot->persist_failing = 1;
+      o->reboot->persist_gave_up = !event->persist_retrying;
       fprintf(
           stderr,
           "State not saved (%u failed writes)%s; not rebooting\n",
@@ -342,6 +344,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       break;
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
       o->reboot->persist_failing = 0;
+      o->reboot->persist_gave_up = 0;
       printf("State saved after %u failed writes\n", (unsigned)event->persist_attempts);
       break;
     case AZ_IOT_SU_EVENT_UPDATE_DEFERRED:
@@ -593,9 +596,12 @@ int main(void)
     int report_settled
         = (flags.final_report != 0 || flags.final_report_dropped) && !flags.workflow_active;
     /* The final report may be accepted or dropped before a failed write is
-     * retried: any record left is stale, so erase it, and reboot or exit only
-     * once that succeeds. */
-    if (report_settled && reboot.persist_failing
+     * retried. After a success the client has nothing left to save, so any
+     * record left is stale: erase it, and reboot or exit only once that
+     * succeeds. Another outcome's write keeps its retry schedule: wait for it,
+     * unless the client gave up on it. */
+    int succeeded = flags.final_report == 1 || flags.installed_unadvertised;
+    if (report_settled && reboot.persist_failing && (succeeded || reboot.persist_gave_up)
         && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
     {
       reboot.persist_failing = 0;

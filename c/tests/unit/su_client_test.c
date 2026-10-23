@@ -901,6 +901,7 @@ typedef struct
   az_iot_su_operation last_abandoned_operation;
   bool last_abandoned_report_terminal;
   bool last_abandoned_has_report;
+  bool last_abandoned_report_owed;
   az_iot_su_outcome last_abandoned_outcome;
   int32_t last_error_code;
   char last_error_text[64];
@@ -963,6 +964,7 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->last_abandoned_operation = event->operation;
     fx->last_abandoned_report_terminal = event->report_terminal;
     fx->last_abandoned_has_report = event->report != NULL;
+    fx->last_abandoned_report_owed = az_iot_su_client_is_terminal_report_owed(&fx->su);
     if (event->report != NULL)
     {
       fx->last_abandoned_outcome = event->report->outcome;
@@ -4338,6 +4340,8 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   assert_true(fresh->last_abandoned_report_terminal);
   assert_true(fresh->last_abandoned_has_report);
   assert_int_equal(fresh->last_abandoned_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  /* Already retired when the observer is told. */
+  assert_false(fresh->last_abandoned_report_owed);
   assert_false(az_iot_su_client_is_terminal_report_owed(&fresh->su));
   assert_int_equal(teardown(&fresh_state), 0);
 }
