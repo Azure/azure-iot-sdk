@@ -205,7 +205,7 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
   }
-  FILE* f = sample_fopen_private(tmp, false);
+  FILE* f = sample_fopen_private(tmp, true);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -251,6 +251,19 @@ static int32_t reboot_load(uint8_t* blob, size_t capacity, size_t* out_len, void
   *out_len = n;
   printf("[load] %zu bytes <- %s\n", n, c->state_file);
   return 0;
+}
+
+/** @brief Whether a saved record may remain at @p path; only a missing file is no. */
+static int state_record_exists(const char* path)
+{
+  errno = 0;
+  FILE* f = fopen(path, "rb");
+  if (f != NULL)
+  {
+    (void)fclose(f);
+    return 1;
+  }
+  return errno != ENOENT;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -301,6 +314,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
       o->flags->workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
+      if (event->previous_state == AZ_IOT_SU_STATE_IDLE && event->state != AZ_IOT_SU_STATE_IDLE)
+      {
+        o->flags->final_report = 0; /* a new workflow: its report is not in yet */
+      }
       if (event->state == AZ_IOT_SU_STATE_FAILED)
       {
         o->reboot->reboot_requested = 0; /* nothing left to activate */
@@ -543,8 +560,13 @@ int main(void)
     (void)az_iot_su_client_do_work(&su);
 
     /* The "reboot": exit once the state is saved. While writes fail the
-     * workflow is held, and rebooting would lose it. */
-    if (reboot.reboot_requested && !reboot.persist_failing)
+     * workflow is held, and rebooting would lose it. After the last apply the
+     * final report may be accepted first, leaving nothing to rewrite: the
+     * reboot is then safe once no saved record remains. */
+    if (reboot.reboot_requested
+        && (!reboot.persist_failing
+            || (flags.final_report != 0 && !flags.workflow_active
+                && !state_record_exists(reboot.state_file))))
     {
       printf(
           "Rebooting: the workflow is saved in %s. Run the sample again to resume.\n",
@@ -552,6 +574,14 @@ int main(void)
       break;
     }
     /* After a succeeded update, checks advertise what it installed. */
+    /* A repeated report of the same update changes nothing: refreshing again
+     * would send that report once more. */
+    if (flags.installed_pending && strcmp(flags.installed_provider, installed_provider) == 0
+        && strcmp(flags.installed_name, installed_name) == 0
+        && strcmp(flags.installed_version, installed_version) == 0)
+    {
+      flags.installed_pending = 0;
+    }
     if (flags.installed_pending)
     {
       flags.installed_pending = 0;
