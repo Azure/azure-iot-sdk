@@ -726,6 +726,7 @@ int main(void)
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = g_su_workspace;
   su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&su, &connection, &su_opts) != AZ_IOT_OK)
