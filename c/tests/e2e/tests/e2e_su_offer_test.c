@@ -30,8 +30,9 @@
  *
  * A missing variable fails the scenario that needs it.
  *
- * E2E-PLACEHOLDER: scenarios not written yet, each blocked on the client:
- *   - operational route (az_iot_su_client_request_update() after registration)
+ * E2E-PLACEHOLDER: scenarios not written yet:
+ *   - operational route (az_iot_su_client_request_update() after registration);
+ *     the client supports it, the e2e scripts stage only onboarding jobs
  *   - multi-step update (reports with more than one step are unmeasured)
  *   - reboot and resume() mid-workflow (reboot-safe reporting)
  */

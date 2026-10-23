@@ -1368,7 +1368,8 @@ extern "C"
   /**
    * @brief Builds the agent-state report payload without the state machine or a channel.
    *
-   * Emits the same reported-property JSON the managed client publishes.
+   * Emits the device-twin agent-state JSON of azure-sdk-for-c's ADU client. This
+   * is not the `reportUpdateStatus` body the managed client sends over DPS.
    *
    * @param[in] device_properties Manufacturer, model, installed update ID and custom
    *   properties. Only read during the call.

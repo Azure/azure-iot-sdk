@@ -517,7 +517,7 @@ checked before backoff is scheduled.
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
-| Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
+| Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
 | In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once, a session end before the PUBACK does not. |
@@ -608,11 +608,11 @@ gateway it already talks to, reusing the credential it already has; the gateway 
 pass-through to the update service. The device needs no update-specific credential, and there is no
 subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (on the wire) |
-| --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` |
-| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` |
-| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` |
+| Phase | Gateway | Operation | DPS `{operation}` on the wire |
+| --- | --- | --- | --- |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `iotdps-get-onboarding-deviceupdate` |
+| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` | `iotdps-get-deviceupdate` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `iotdps-report-deviceupdatestatus` |
 
 All three are requests under the device's own registration on the gateway's device endpoint; see
 [software-updates.md](software-updates.md#2-device-contract) for the request and response shapes.
@@ -682,8 +682,9 @@ sequenceDiagram
     participant Store as Durable software updates state
 
     Conn-->>SU: DPS:CONNECTED
+    Note over SU,Store: on resume(), called by the application at startup
     SU->>Store: load_state()
-    Store-->>SU: installedUpdateId, ETags, unsent report
+    Store-->>SU: workflow record, if any (unsent report, ETags)
     opt report pending from a previous session
         SU->>GW: reportUpdateStatus (workflowId, installResult)
     end
@@ -704,7 +705,7 @@ sequenceDiagram
     Conn--xSU: DPS session drop
     Note over SU: install continues, report held in durable storage
     Conn-->>SU: DPS:CONNECTED again
-    SU->>GW: retry the report until acked, then resume polling
+    SU->>GW: re-send the report until accepted or rejected; checks continue when the agent asks
 ```
 
 `installResult` carries the outcome, its failure origin and the hex
@@ -720,8 +721,10 @@ reports include complete per-step outcomes when steps are available — see
   report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
-  honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
-  report is a durable write and must not be lost.
+  honours `Retry-After` on throttling and retries `reportUpdateStatus` until the service accepts
+  or permanently rejects it — a terminal report is a durable write and must not be lost. A terminal
+  report given up after repeated session loss stays owed (stored, with persistence) and is re-sent
+  later; an in-progress report is not replayed.
 - **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
   workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
   consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
