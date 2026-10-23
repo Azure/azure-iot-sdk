@@ -900,6 +900,8 @@ typedef struct
   az_iot_result last_abandoned_reason;
   az_iot_su_operation last_abandoned_operation;
   bool last_abandoned_report_terminal;
+  bool last_abandoned_has_report;
+  az_iot_su_outcome last_abandoned_outcome;
   int32_t last_error_code;
   char last_error_text[64];
   char last_tracking_id[64];
@@ -960,6 +962,11 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->last_abandoned_reason = event->reason;
     fx->last_abandoned_operation = event->operation;
     fx->last_abandoned_report_terminal = event->report_terminal;
+    fx->last_abandoned_has_report = event->report != NULL;
+    if (event->report != NULL)
+    {
+      fx->last_abandoned_outcome = event->report->outcome;
+    }
     fx->last_error_code = event->service_error.code;
     snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", event->service_error.message);
     snprintf(
@@ -4282,6 +4289,8 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   fixture* fx = (fixture*)*state;
   finish_with_report_unacknowledged(fx);
   int sent = fx->chan.report_count;
+  assert_false(az_iot_su_client_is_terminal_report_owed(NULL));
+  assert_true(az_iot_su_client_is_terminal_report_owed(&fx->su));
 
   fx->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
@@ -4302,6 +4311,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       fx->chan.engine_ctx);
   assert_true(fx->log.have_persist);
   assert_true(fx->su._internal.report_owed);
+  assert_true(az_iot_su_client_is_terminal_report_owed(&fx->su));
   fx->su._internal.persist_retry._internal.due_ms = 0;
   pump(fx, 3);
   assert_true(fx->log.have_persist);
@@ -4312,6 +4322,7 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
   fresh->abandoned_count = 0;
   assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_true(az_iot_su_client_is_terminal_report_owed(&fresh->su));
   assert_int_equal(az_iot_su_client_do_work(&fresh->su), AZ_IOT_OK);
   assert_int_equal(fresh->chan.report_count, 1);
   fresh->chan.result_cb(
@@ -4325,6 +4336,9 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   assert_int_equal(fresh->abandoned_count, 1);
   assert_int_equal(fresh->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_true(fresh->last_abandoned_report_terminal);
+  assert_true(fresh->last_abandoned_has_report);
+  assert_int_equal(fresh->last_abandoned_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_false(az_iot_su_client_is_terminal_report_owed(&fresh->su));
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
@@ -6595,6 +6609,7 @@ static void a_report_conflict_rechecks_on_the_last_requested_route(void** state)
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_false(fx->last_abandoned_report_terminal);
+  assert_false(fx->last_abandoned_has_report);
   assert_string_equal(fx->last_error_text, "REPORT_CONFLICT");
   assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_ONBOARDING);
   assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, deadline);

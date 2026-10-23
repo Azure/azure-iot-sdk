@@ -935,7 +935,7 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     that is the intended response, which is why the event carries the route:
  *     a lost status report is not a lost update check, and the onboarding and
  *     regular fetches are asked for separately. For a status report,
- *     `report_terminal` marks the workflow's final one.
+ *     `report_terminal` marks the workflow's final one, and `report` carries it.
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
@@ -1023,6 +1023,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
  * Get the current software updates agent state.
  */
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+/**
+ * Whether a terminal report is owed: neither accepted nor retired yet. Also
+ * true after resume() restores an unsent one, so the application can hold its
+ * update checks until it settles.
+ */
+bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client);
 
 /**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no

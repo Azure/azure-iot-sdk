@@ -35,10 +35,12 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   (`az_iot_su_client_update_device_properties()`), once per id: a repeated report of the same
   update does not refresh them again.
 - Each update check waits at most half of `AZ_IOT_SU_POLL_INTERVAL_S` (60 s cap).
-- Periodic checks pause from a workflow's start until its final report is accepted, so a check
-  never advertises the previous installed id. They resume if the client abandons that report
-  (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with `report_terminal`): a lost session keeps it owed (sent
-  again later); any other verdict drops it.
+- Update checks pause from a workflow's start, or from a resumed unsent final report
+  (`az_iot_su_client_is_terminal_report_owed()`), until that report settles, so a check never
+  advertises the previous installed id. A report accepted, or dropped by the client
+  (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with `report_terminal`), settles it; either way a
+  succeeded update's id is advertised. A report abandoned for a lost session stays owed and is sent
+  again (`az_iot_su_client_update_device_properties()`).
 - A connection that faults for good ends the process (exit 1), even during an update; a saved
   record, if any, resumes it on the next run.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
