@@ -186,15 +186,24 @@ static void a_zero_connect_timeout_keeps_the_paho_default(void** state)
   assert_int_equal(mock_paho_last_connect_timeout(), 30);
 }
 
+/* Paho multiplies by 1000 in int: the largest value it can take is passed
+ * through, anything above is clamped to it. */
 static void a_huge_connect_timeout_is_clamped(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqtt_connect_options opts;
   base_options(&opts);
-  opts.connect_timeout_seconds = UINT32_MAX;
-
+  opts.connect_timeout_seconds = (uint32_t)(INT_MAX / 1000);
   assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
-  assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX);
+  assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX / 1000);
+
+  opts.connect_timeout_seconds = (uint32_t)(INT_MAX / 1000) + 1u;
+  assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX / 1000);
+
+  opts.connect_timeout_seconds = UINT32_MAX;
+  assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX / 1000);
 }
 
 static void the_connect_timeout_reaches_paho_on_v5(void** state)

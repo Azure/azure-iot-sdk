@@ -1266,13 +1266,14 @@ static void paho_apply_proxy(MQTTAsync_connectOptions* conn, const char* proxy_u
 /**
  * @brief Apply az_iot_mqtt_connect_options::connect_timeout_seconds.
  *
- * 0 keeps Paho's default (30 s). Larger than INT_MAX is clamped.
+ * 0 keeps Paho's default (30 s). Clamped to INT_MAX / 1000: Paho computes
+ * connectTimeout * 1000 in int.
  */
 static void paho_apply_connect_timeout(MQTTAsync_connectOptions* conn, uint32_t seconds)
 {
   if (seconds != 0)
   {
-    conn->connectTimeout = (seconds > (uint32_t)INT_MAX) ? INT_MAX : (int)seconds;
+    conn->connectTimeout = (seconds > (uint32_t)(INT_MAX / 1000)) ? (INT_MAX / 1000) : (int)seconds;
   }
 }
 
