@@ -444,9 +444,19 @@ Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
 `AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
 otherwise.
 
-**`result_details`.** OPTIONAL free-form string. When set, it MUST be a copy into
-a client-owned buffer (no pointer into hook-owned memory), consistent with the
-no-shared-ownership rule used elsewhere.
+**`result_details`.** OPTIONAL free-form string (the service allows 1024 characters). When set,
+it MUST be a copy into a client-owned buffer (no pointer into hook-owned memory), consistent with
+the no-shared-ownership rule used elsewhere. Per step, the application sets it with
+`az_iot_su_client_set_step_result_details()`, from a hook or between `do_work()` calls, once the
+manifest is verified (`is_installed_fn` included) and until the workflow ends. The text is copied into the workspace
+(`az_iot_su_limits::result_details_size` bytes per step, default 128; a longer one is refused with
+`AZ_IOT_ERR_NOT_ENOUGH_SPACE`), persisted with the step's result, and reported with the terminal
+result. A change made while the workflow waits for a reboot rewrites the saved record from a later
+`do_work()`, which holds the workflow until the write succeeds. A failed write raises
+`AZ_IOT_SU_EVENT_PERSIST_FAILED` and is retried; until `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`, a reboot
+restores the previous details. A report that does not fit `max_message_size` is sent without step details. The terminal
+`AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
+the channel. The client sets no details itself.
 
 ### Multi-Step Support
 
@@ -473,6 +483,9 @@ indexed by step number. As the machine progresses:
   failing step (the root cause), not a later rollback outcome.
 - `step_results_count` MUST equal the number of manifest steps for terminal
   reports.
+- `resultDetails` per step: only what the application set (see Result-Code Mapping).
+- The terminal report, step results included, is handed to observers on
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`event->report`, terminal acceptance only).
 
 #### Partial-Failure Rollback
 
@@ -554,8 +567,8 @@ internal and may change between SDK versions.
   header just before it, its trailer just after. A terminal record has no request and is built
   in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
   the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
-- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 2). A
-  record of any other magic or version (version 1 included) is ignored. All integers are
+- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 3). A
+  record of any other magic or version (versions 1 and 2 included) is ignored. All integers are
   little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (have-request,
@@ -936,7 +949,7 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *   UPDATE_DUPLICATE       -- a delivered update repeats the current workflow
  *     id, or a SUCCEEDED / SKIPPED one, and was ignored.
  *   REPORT_ACCEPTED        -- the service accepted a status report;
- *     `report_terminal` marks the workflow's final one.
+ *     `report_terminal` marks the workflow's final one, and `report` carries it.
  *   UPDATE_RETRY_WAIT      -- a FAILED workflow was offered again
  *     before its retry wait elapsed; `retry_after_ms` is the time left.
  *
@@ -1433,6 +1446,7 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 | [`pc/simulated_onboarding`](../../samples/software_update/pc/simulated_onboarding/README.md) | The onboarding route on a device with no IoT Hub (`dps.provision_only`), with simulated install. |
 | [`pc/simulated_regular`](../../samples/software_update/pc/simulated_regular/README.md) | The operational route, polled, on a registered device, with simulated install. |
 | [`pc/http_download`](../../samples/software_update/pc/http_download/README.md) | The application-owned download: libcurl, non-blocking, through the connection's proxy; real hash check; chunked simulated install. |
+| [`pc/multi_step`](../../samples/software_update/pc/multi_step/README.md) | A multi-step update: per-step backup/install/apply/restore, reverse rollback, device failure codes, `az_iot_su_client_set_step_result_details()` and the final report from `REPORT_ACCEPTED`. |
 | [`esp32`](../../samples/software_update/esp32/README.md) | A real OTA install on ESP32: onboarding route until registered, operational after. |
 
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
