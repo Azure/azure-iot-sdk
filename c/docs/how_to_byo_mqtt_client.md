@@ -103,6 +103,10 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 
 **On any acknowledgement that carries a code** — also set `protocol_code` on the `az_iot_mqtt_event` to that verbatim wire value, and leave it 0 only when there is none. A non-zero value is always the wire code, including the granted QoS on a SUBACK that succeeded. `status` is what the SDK branches on; `protocol_code` is what a log line and a support engineer read, and it is the only way a code newer than this SDK survives the trip into C. Do not substitute your own numbering for it.
 
+**On a v5 PUBACK with a Reason String** — set `reason_string` and `reason_string_len` to it, verbatim; an empty one is non-NULL with length 0, an absent one NULL. Required for a reason code of `0x80` or above, optional below it. It must stay valid until the callback returns; an adapter that delivers from another thread copies it (Paho's adapter does). Applications receive it in their publish callback: it is often the only account of why the hub refused a message. Conformance: `a_refused_publish_is_reported`, `a_refused_publish_with_an_empty_reason_string_is_reported`.
+
+**On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned, in both versions. Conformance: `publish_subscribe_roundtrip`.
+
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
 ### The single-thread contract (important)
@@ -114,6 +118,8 @@ If your library has its own I/O thread (Paho does), the recommended pattern is:
 2. Drain the FIFO and invoke `set_inbound_cb`'s callback inside `process_loop`.
 
 The Paho adapter implements exactly this in [adapters/paho/az_iot_mqtt_paho.c](../adapters/paho/az_iot_mqtt_paho.c) (search for `q_push` / `q_pop`).
+
+The application makes every SDK call from one thread or serializes them ([architecture](architecture.md)), so the SDK calls your adapter from one thread at a time. Lock only the state your own I/O threads share with it, as the FIFO above. `tls.sign` follows the same rule (see [TLS](#tls-what-the-adapter-must-do)): call it only from inside `connect()` or `process_loop()`.
 
 ### Concrete client struct
 
@@ -140,7 +146,7 @@ Two obligations, and only one of them is a choice.
 >
 > An adapter still reading `opts.tls.verify_server` **will not compile**, and that is deliberate: a source alias would let such an adapter keep gating verification on a field that no longer means verification, so a caller who set only a certificate would get an *unverified* TLS session. The compile error puts the decision in front of you. The fix is to verify unconditionally and use `use_tls` solely as one of the TLS triggers.
 
-**Copy TLS material during `connect()`.** Like `username` and `password`, the `tls` strings are valid only while `connect()` runs: the SDK then releases them to the certificate provider, which may wipe `client_key_pem` and `client_key_password`. `tls.sign` and `tls.sign_ctx` are the exception: they stay valid until the adapter client is destroyed, so the handshake may call `sign()` after `connect()` returns. Conformance: `mutual_tls_does_not_read_paths_after_returning`, and `mutual_tls_does_not_read_pem_after_returning` for `AZ_IOT_CONFORMANCE_CAP_TLS_PEM` (4.5).
+**Copy TLS material during `connect()`.** Like `username` and `password`, the `tls` strings are valid only while `connect()` runs: the SDK then releases them to the certificate provider, which may wipe `client_key_pem` and `client_key_password`. `tls.sign` and `tls.sign_ctx` are the exception: they stay valid until the adapter client is destroyed, so the handshake may call `sign()` after `connect()` returns. Call `sign()` only from inside `connect()` or `process_loop()`, on the thread that drives the client; a client whose handshake runs on its own thread must not accept a `sign()`-only credential. Conformance: `mutual_tls_does_not_read_paths_after_returning`, and `mutual_tls_does_not_read_pem_after_returning` for `AZ_IOT_CONFORMANCE_CAP_TLS_PEM` (4.5).
 
 **Non-extractable keys.** If `tls.client_key_uri` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 

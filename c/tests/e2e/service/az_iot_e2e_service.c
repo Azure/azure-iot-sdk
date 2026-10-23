@@ -762,6 +762,17 @@ int az_iot_e2e_service_request_poll_handle(
   return poll_slot(svc, handle, out_http_status, resp_buf, resp_buf_size);
 }
 
+bool az_iot_e2e_service_request_is_sent(const az_iot_e2e_service* svc, int handle)
+{
+  if (svc == NULL || handle < 1 || handle >= AZ_IOT_E2E_SERVICE_MAX_REQUESTS
+      || svc->http[handle] == NULL)
+  {
+    return false;
+  }
+  const e2e_http_request* r = svc->http[handle];
+  return r->phase == E2E_HTTP_PHASE_READING || r->phase == E2E_HTTP_PHASE_DONE;
+}
+
 void az_iot_e2e_service_request_cancel(az_iot_e2e_service* svc, int handle)
 {
   if (handle >= 1 && handle < AZ_IOT_E2E_SERVICE_MAX_REQUESTS)

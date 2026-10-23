@@ -21,7 +21,8 @@
 - mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
   templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
   `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
-  Topics the hub would refuse are rejected locally. Publish only. Sample:
+  Topics the hub would refuse are rejected locally. Publish only. At QoS 1 the completion
+  (`az_iot_publish_result`) carries the hub's PUBACK reason code and Reason String. Sample:
   [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
@@ -89,6 +90,13 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Software updates: `az_iot_su_client_set_step_result_details()` sets the `resultDetails` reported
+  for a step, from a hook or between `do_work()` calls. The text is copied into the workspace
+  (`az_iot_su_limits::result_details_size`, default 128 bytes per step, at most 1024), persisted with
+  the step (persisted-state format 3; earlier-format records are ignored) and reported with the terminal
+  result; a report over `max_message_size` is sent without step details.
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries the accepted terminal report, as sent, in `event->report`.
+  `AZ_IOT_SU_WORKSPACE_SIZE()` and `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `result_details_size`.
 - Breaking: software updates memory comes from one application-provided workspace.
   `az_iot_su_client_config_options` replaces `device_properties_buffer` /
   `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
@@ -174,9 +182,24 @@
   retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
   offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
   restart; the persisted format moves to version 2, so version-1 records are ignored.
+- Threading contract documented: the SDK does not lock its state against other threads, so every
+  SDK call in a process must come from one thread or be serialized by the application
+  ([docs/architecture.md](docs/architecture.md)). `tls.sign` and the certificate provider's
+  `sign()` are called only on that thread. Sample
+  [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
+  readings from other threads to the SDK thread.
 
 ### Bugs Fixed
 
+- Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
+  `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
+  and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
+  (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
+- mqttv5 direct methods: a probe-ack, result or abandon that cannot be published because the hub is
+  not `CONNECTED` (for example between CONNACK and the birth-ack) is held with its ready token or
+  slot and published on the next `CONNECTED`, instead of being dropped. `respond()` returns
+  `AZ_IOT_OK` for a held result. The client now holds one result buffer per
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot.
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
@@ -184,6 +207,9 @@
   `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
   `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
+- Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
+  `409000`) now makes the client check for updates once, as the service requires, after raising
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses

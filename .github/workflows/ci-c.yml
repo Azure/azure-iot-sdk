@@ -128,7 +128,8 @@ jobs:
         # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
         # fails the configure step outright when OpenSSL is missing instead of
         # dropping the certificate-validation tests.
-        # libcurl: the samples that use it (dps_tpm, file_upload's upload path)
+        # libcurl: the samples that use it (dps_tpm, file_upload's upload path,
+        # software_update/pc/http_download)
         # are expected to build.
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
@@ -145,7 +146,7 @@ jobs:
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
           "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
           "-DEXPECT_SAMPLES=${{ matrix.with_paho == 'OFF' && 'az_mqtt' || 'paho;az_mqtt' }}"
-          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;hsm_pkcs11:az_mqtt' || '' }}"
+          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;http_download;hsm_pkcs11:az_mqtt' || '' }}"
           -P eng/check-dependencies.cmake
       - name: Check dependencies (negative control)
         if: matrix.with_paho == 'ON'
@@ -697,7 +698,7 @@ jobs:
           cmake -DBUILD_DIR=build/isolation -DINSTALL_PREFIX="$RUNNER_TEMP/az-iot-sdk"
           "-DFORBID=paho;rust_mqtt;openssl;curl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
@@ -1175,7 +1176,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '59'
+      EXPECTED_TESTS: '60'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

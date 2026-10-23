@@ -187,7 +187,7 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE);
+  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, false);
   bool ok = f != NULL
       && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
       && sync_file(f);
