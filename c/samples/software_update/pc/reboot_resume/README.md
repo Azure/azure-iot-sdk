@@ -26,9 +26,9 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   workflow runs.
 - `SAMPLE_PERSIST_FAIL_COUNT=<n>` fails the first `n` writes. The client holds the workflow and
   retries (`AZ_IOT_SU_EVENT_PERSIST_FAILED`, then `_RECOVERED`), and the sample does not
-  "reboot" while a write is failing. After the last apply, a final report accepted before the
-  retry also allows the "reboot", once any record left (stale by then) is erased; so does one the
-  client drops.
+  "reboot" while a write is failing. A final report accepted or dropped before the retry also
+  allows the "reboot" or the `AZ_IOT_SU_EXIT_AFTER_WORKFLOW` exit, once any record left (stale by
+  then) is erased.
 - Step result details set before the reboot are reported in the final report after it.
 - A failed workflow cancels the pending "reboot".
 - After a succeeded update, later checks advertise its id as installed
@@ -58,7 +58,7 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 | `SAMPLE_REBOOT_AT` | no | `install:<n>` (default `install:1`) or `apply:<n>` |
 | `SAMPLE_STATE_FILE` | no | Saved workflow; default `./su_reboot_state.bin` |
 | `SAMPLE_PERSIST_FAIL_COUNT` | no | Number of state writes to fail first |
-| `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the final report is accepted (0 when it succeeded, 2 otherwise) or dropped (2) |
+| `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the final report is accepted (0 when it succeeded, 2 otherwise) or dropped (2); a "reboot" after it exits with the same code |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400 |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |
 
