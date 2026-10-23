@@ -6,7 +6,7 @@ Third-party libraries the C SDK builds against, and the known issues of each.
 | --- | --- | --- | --- |
 | [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core, mqttv3 and mqttv5 clients | Always |
 | [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
-| [OpenSSL](https://www.openssl.org/) | 3.0+ | Paho TLS and key custody, az_mqtt TLS, OpenSSL crypto backend, managed certificate provider | When TLS or these components are built |
+| [OpenSSL](https://www.openssl.org/) | Any Paho supports for Paho TLS; 3.0+ for Paho key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend and the managed certificate provider | Those components | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Vendored in [deps/az_mqtt](../deps/az_mqtt/VENDORED.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
 | [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
@@ -44,8 +44,10 @@ environment. See [Network: WebSockets and proxies](connecting.md#network-websock
 Paho splits the proxy string at the first `@` and decodes `%XX`. A `%` not followed by two hex
 digits makes its decoder loop without advancing (`Proxy_specialChars`), and the connect hangs.
 
-**Mitigation:** none needed. The adapter percent-encodes `%` and `@` in the user name and password,
-and refuses a `:` in the user name (`AZ_IOT_ERR_INVALID_ARG`), which HTTP Basic cannot represent.
+**Mitigation:** with `proxy` set in the connection options, none needed: the adapter percent-encodes
+`%` and `@` in the user name and password, and refuses a `:` in the user name
+(`AZ_IOT_ERR_INVALID_ARG`), which HTTP Basic cannot represent. A proxy URL taken from the
+environment reaches Paho unchanged: write `%` as `%25` and `@` as `%40` in its credentials.
 
 ### Connect timeout
 
