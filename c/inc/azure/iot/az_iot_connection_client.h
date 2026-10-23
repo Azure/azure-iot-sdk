@@ -1837,6 +1837,9 @@ extern "C"
       uint8_t pass_from_x509_index;
       bool x509_available;
       uint8_t x509_role; /* az_iot_cert_role */
+      /* Hub only: the last attempt's source, kept once the next clears
+       * source (NONE: none yet). */
+      az_iot_auth_source last_source;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;

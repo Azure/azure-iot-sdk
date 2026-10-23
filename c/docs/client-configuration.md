@@ -39,7 +39,8 @@ Options for the test suites, coverage and static analysis are described in [docs
 
 ### Installed dependencies
 
-azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. To use installed
+azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. Versions and known
+issues: [Dependencies](dependencies.md). To use installed
 copies instead (e.g. from vcpkg or a package feed), turn on `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C`
 and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`:
 
@@ -188,6 +189,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
 | `AZ_IOT_FILE_UPLOAD_CORR_ID_MAX` | 192 | File-upload correlation ID. |
+| `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX` | 1024 | Hub SAS token passed to the file-upload HTTP hook; at least `AZ_IOT_SAS_TOKEN_SIZE()` of the hub host and device ID lengths (267 bytes together by default). |
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
@@ -302,4 +304,5 @@ Supported environment variables. The samples read their own; each sample's READM
 | --- | --- | --- |
 | `AZ_IOT_PAHO_TRACE` | Paho adapter | Turns on Paho's trace and detailed OpenSSL errors on a failed TLS handshake. Values, least to most verbose: `error`, `protocol`, `minimum` (or `min`), `medium`, `maximum` (or `max`); any other non-empty value means `minimum`. The trace is logged at `TRACE`, so set the log sink to `AZ_IOT_LOG_LEVEL_TRACE` to see it. Proxy credentials are redacted. |
 | `TMPDIR` | Paho adapter, key custody (not Windows) | Directory for the short-lived key-reference file. Default `/tmp`. |
-| `http_proxy`, `https_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none. Lowercase only. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |
+| `PAHO_C_CLIENT_USE_HTTP_PROXY` | Eclipse Paho C | `TRUE` lets Paho read `http_proxy` / `https_proxy` when the connection options set no proxy. See [Dependencies](dependencies.md#proxy-from-the-environment-is-opt-in). |
+| `http_proxy`, `https_proxy`, `no_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none and `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE`. Lowercase only; `https_proxy` needs an `http://` or `https://` scheme. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |
