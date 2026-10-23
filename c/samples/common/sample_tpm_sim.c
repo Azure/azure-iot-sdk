@@ -316,7 +316,7 @@ static EVP_PKEY* key_load_or_create(const char* dir, const char* file)
   if (pkey != NULL && dir != NULL)
   {
     /* Owner-only: the files hold the device's private keys. */
-    FILE* f = sample_fopen_private(path);
+    FILE* f = sample_fopen_private(path, false);
     BIO* out = f != NULL ? BIO_new_fp(f, BIO_CLOSE) : NULL;
     if (out == NULL && f != NULL)
     {

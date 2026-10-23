@@ -90,9 +90,9 @@ With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_software_update
 
 | What | Where |
 |---|---|
-| Non-blocking download | `download_file()` |
-| Hash read-back | `download_read_file()` |
-| Chunked install | `download_install()` |
-| Proxy for MQTT and download | `copts.proxy` and `CURLOPT_PROXY` in `main()` / `download_file()` |
+| Non-blocking download | `fetch_update_file()` |
+| Hash read-back | `read_back_downloaded_file()` |
+| Chunked install | `install_update_step()` |
+| Proxy for MQTT and download | `copts.proxy` and `CURLOPT_PROXY` in `main()` / `fetch_update_file()` |
 | Limits and workspace | `su_opts.limits`, `g_su_workspace` |
 | Check after an applied update | the main loop |

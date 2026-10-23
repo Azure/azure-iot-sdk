@@ -206,57 +206,17 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
-FILE* sample_fopen_private(const char* path)
+FILE* sample_fopen_private(const char* path, bool replace)
 {
   FILE* f = NULL;
   int fd;
-  if (!path)
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
   {
     return NULL;
   }
 #ifdef _WIN32
-  if (_sopen_s(
-          &fd, path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE)
-      != 0)
-  {
-    return NULL;
-  }
-  f = _fdopen(fd, "wb");
-  if (!f)
-  {
-    (void)_close(fd);
-  }
-#else
-  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-  if (fd < 0)
-  {
-    return NULL;
-  }
-  /* open() keeps the mode of a file that already exists. */
-  if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
-  {
-    f = fdopen(fd, "wb");
-  }
-  if (!f)
-  {
-    (void)close(fd);
-  }
-#endif
-  return f;
-}
-
-FILE* sample_fopen_private_new(const char* path)
-{
-  FILE* f = NULL;
-  int fd;
-  if (!path || (remove(path) != 0 && errno != ENOENT))
-  {
-    return NULL;
-  }
-#ifdef _WIN32
-  if (_sopen_s(
-          &fd, path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE)
-      != 0)
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
   {
     return NULL;
   }
@@ -267,12 +227,16 @@ FILE* sample_fopen_private_new(const char* path)
   }
 #else
   /* O_EXCL fails on any existing name, a symbolic link included. */
-  fd = open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
   if (fd < 0)
   {
     return NULL;
   }
-  f = fdopen(fd, "wb");
+  /* open() keeps the mode of a file that already exists. */
+  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
   if (!f)
   {
     (void)close(fd);

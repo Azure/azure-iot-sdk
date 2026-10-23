@@ -77,7 +77,7 @@
 #define SAMPLE_DOWNLOAD_STALL_S 60L
 
 static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
+static void request_stop_on_sigint(int signo)
 {
   (void)signo;
   g_stop = 1;
@@ -124,7 +124,7 @@ typedef struct
  *
  * @return 0 when it does not fit @p out: files would otherwise overwrite each other.
  */
-static int file_path(
+static int build_download_path(
     const download_context* d,
     const az_iot_su_client_update_manifest_file* file,
     char* out,
@@ -141,7 +141,7 @@ static int file_path(
 }
 
 /** @brief Close the hash check's reader, if open. */
-static void reader_close(download_context* d)
+static void close_hash_reader(download_context* d)
 {
   if (d->reader != NULL)
   {
@@ -156,7 +156,7 @@ static void reader_close(download_context* d)
  * Refuses data past the manifest's file size, which a server could otherwise
  * stream without end; returning short makes the transfer fail.
  */
-static size_t download_write(char* data, size_t size, size_t count, void* user_data)
+static size_t write_received_chunk(char* data, size_t size, size_t count, void* user_data)
 {
   download_context* d = (download_context*)user_data;
   size_t n = size * count;
@@ -171,7 +171,7 @@ static size_t download_write(char* data, size_t size, size_t count, void* user_d
 }
 
 /** @brief Allow HTTP and HTTPS only, for the URL and any redirect. */
-static int restrict_protocols(CURL* easy)
+static int allow_only_http_protocols(CURL* easy)
 {
 #if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0: the _STR options */
   return curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK
@@ -185,7 +185,7 @@ static int restrict_protocols(CURL* easy)
 }
 
 /** @brief Stop the transfer in progress and close its file. */
-static void download_reset(download_context* d)
+static void stop_transfer_and_close_file(download_context* d)
 {
   if (d->easy != NULL)
   {
@@ -205,9 +205,9 @@ static void download_reset(download_context* d)
  *
  * Returns AZ_IOT_SU_RESULT_IN_PROGRESS until the transfer ends, so do_work()
  * never blocks on the network. The SDK then checks the file's SHA-256 through
- * download_read_file().
+ * read_back_downloaded_file().
  */
-static int32_t download_file(
+static int32_t fetch_update_file(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
@@ -218,13 +218,13 @@ static int32_t download_file(
 
   if (az_span_size(url) <= 0 || (size_t)az_span_size(url) >= sizeof(d->url))
   {
-    download_reset(d);
+    stop_transfer_and_close_file(d);
     return SAMPLE_ERR_URL_TOO_LONG;
   }
   char path[sizeof(d->path)];
-  if (!file_path(d, file, path, sizeof(path)))
+  if (!build_download_path(d, file, path, sizeof(path)))
   {
-    download_reset(d);
+    stop_transfer_and_close_file(d);
     return SAMPLE_ERR_PATH_TOO_LONG;
   }
   /* A workflow that replaced the one being downloaded asks for another file:
@@ -233,7 +233,7 @@ static int32_t download_file(
       && (strcmp(path, d->path) != 0 || d->expected_size != file->size_in_bytes
           || !az_span_is_content_equal(url, az_span_create_from_str(d->url))))
   {
-    download_reset(d);
+    stop_transfer_and_close_file(d);
   }
 
   if (d->easy == NULL)
@@ -244,8 +244,8 @@ static int32_t download_file(
     d->expected_size = file->size_in_bytes;
     d->written = 0;
     d->too_large = 0;
-    reader_close(d);
-    d->file = sample_fopen_private_new(d->path);
+    close_hash_reader(d);
+    d->file = sample_fopen_private(d->path, true);
     if (d->file == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -253,17 +253,17 @@ static int32_t download_file(
     d->easy = curl_easy_init();
     if (d->easy == NULL)
     {
-      download_reset(d);
+      stop_transfer_and_close_file(d);
       return SAMPLE_ERR_CURL;
     }
     /* No file://, which could block on a FIFO, or any other scheme. */
-    if (!restrict_protocols(d->easy))
+    if (!allow_only_http_protocols(d->easy))
     {
-      download_reset(d);
+      stop_transfer_and_close_file(d);
       return SAMPLE_ERR_CURL + (int32_t)CURLE_UNSUPPORTED_PROTOCOL;
     }
     (void)curl_easy_setopt(d->easy, CURLOPT_URL, d->url);
-    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEFUNCTION, download_write);
+    (void)curl_easy_setopt(d->easy, CURLOPT_WRITEFUNCTION, write_received_chunk);
     (void)curl_easy_setopt(d->easy, CURLOPT_WRITEDATA, d);
     (void)curl_easy_setopt(d->easy, CURLOPT_FOLLOWLOCATION, 1L);
     (void)curl_easy_setopt(d->easy, CURLOPT_FAILONERROR, 1L);
@@ -286,7 +286,7 @@ static int32_t download_file(
     }
     if (curl_multi_add_handle(d->multi, d->easy) != CURLM_OK)
     {
-      download_reset(d);
+      stop_transfer_and_close_file(d);
       return SAMPLE_ERR_CURL;
     }
     d->last_reported = 0;
@@ -296,7 +296,7 @@ static int32_t download_file(
   int running = 0;
   if (curl_multi_perform(d->multi, &running) != CURLM_OK)
   {
-    download_reset(d);
+    stop_transfer_and_close_file(d);
     return SAMPLE_ERR_CURL;
   }
 
@@ -325,12 +325,12 @@ static int32_t download_file(
         : (http_status >= 400) ? (int32_t)(SAMPLE_ERR_HTTP + http_status)
                                : (int32_t)(SAMPLE_ERR_CURL + (int32_t)cr);
   }
-  download_reset(d);
+  stop_transfer_and_close_file(d);
   return rc;
 }
 
 /** @brief read_file_fn: stream a downloaded file back for the SHA-256 check. */
-static int32_t download_read_file(
+static int32_t read_back_downloaded_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
     size_t offset,
@@ -342,15 +342,15 @@ static int32_t download_read_file(
   (void)file_index;
   download_context* d = (download_context*)user_ctx;
   char path[sizeof(d->path)];
-  if (!file_path(d, file, path, sizeof(path)))
+  if (!build_download_path(d, file, path, sizeof(path)))
   {
-    reader_close(d);
+    close_hash_reader(d);
     return SAMPLE_ERR_PATH_TOO_LONG;
   }
   /* The SDK reads sequentially: reopen only for another file or offset. */
   if (d->reader != NULL && (strcmp(path, d->reader_path) != 0 || offset != d->reader_offset))
   {
-    reader_close(d);
+    close_hash_reader(d);
   }
   if (d->reader == NULL)
   {
@@ -362,7 +362,7 @@ static int32_t download_read_file(
     (void)snprintf(d->reader_path, sizeof(d->reader_path), "%s", path);
     if (offset > (size_t)LONG_MAX || fseek(d->reader, (long)offset, SEEK_SET) != 0)
     {
-      reader_close(d);
+      close_hash_reader(d);
       return SAMPLE_ERR_FILE_OPEN;
     }
   }
@@ -371,7 +371,7 @@ static int32_t download_read_file(
   uint64_t size = file->size_in_bytes > 0 ? (uint64_t)file->size_in_bytes : 0u;
   if ((uint64_t)offset > size)
   {
-    reader_close(d);
+    close_hash_reader(d);
     return SAMPLE_ERR_TOO_LARGE;
   }
   size_t want = buffer_size;
@@ -382,19 +382,19 @@ static int32_t download_read_file(
   *out_read = fread(buffer, 1, want, d->reader);
   if (ferror(d->reader))
   {
-    reader_close(d);
+    close_hash_reader(d);
     return SAMPLE_ERR_FILE_OPEN;
   }
   if ((uint64_t)offset + *out_read > size)
   {
-    reader_close(d);
+    close_hash_reader(d);
     return SAMPLE_ERR_TOO_LARGE;
   }
   /* Kept open after a short read: the SDK reads once more for the 0-byte end,
    * and reopening would need a seek that a 32-bit long cannot express. */
   if (*out_read == 0)
   {
-    reader_close(d);
+    close_hash_reader(d);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   d->reader_offset = offset + *out_read;
@@ -402,7 +402,7 @@ static int32_t download_read_file(
 }
 
 /** @brief is_installed_fn: the offer is already installed when its id matches. */
-static int32_t download_is_installed(
+static int32_t is_offered_update_installed(
     const az_iot_su_client_update_manifest* manifest,
     void* user_ctx)
 {
@@ -424,7 +424,7 @@ static int32_t download_is_installed(
  * AZ_IOT_SU_RESULT_IN_PROGRESS gives do_work() back between pieces, so the
  * connection stays serviced. Simulated: nothing is written.
  */
-static int32_t download_install(
+static int32_t install_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step_index,
     void* user_ctx)
@@ -442,7 +442,7 @@ static int32_t download_install(
 }
 
 /** @brief apply_fn: simulated; the last step records the update as installed. */
-static int32_t download_apply(
+static int32_t apply_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step_index,
     void* user_ctx)
@@ -487,7 +487,7 @@ typedef struct
   int connection_faulted;
 } sample_flags;
 
-static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void track_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   sample_flags* flags = (sample_flags*)user_ctx;
   printf(
@@ -501,7 +501,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   }
 }
 
-static void on_su_event(const az_iot_su_event* event, void* user_ctx)
+static void track_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_flags* flags = (sample_flags*)user_ctx;
   switch (event->kind)
@@ -568,7 +568,7 @@ int main(void)
 {
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
-  (void)signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, request_stop_on_sigint);
 
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
   {
@@ -690,7 +690,7 @@ int main(void)
   factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
   factory_v5 = az_iot_az_mqtt_factory_create_v5();
 #endif
-  if (az_iot_connection_client_add_state_observer(&connection, on_connection_state, &flags)
+  if (az_iot_connection_client_add_state_observer(&connection, track_connection_state, &flags)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&connection, factory_v3) != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&connection, factory_v5) != AZ_IOT_OK)
@@ -700,11 +700,11 @@ int main(void)
 
   /* Software updates client: the hooks this sample is about. */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = download_file;
-  hooks.read_file_fn = download_read_file;
-  hooks.is_installed_fn = download_is_installed;
-  hooks.install_fn = download_install;
-  hooks.apply_fn = download_apply;
+  hooks.download_fn = fetch_update_file;
+  hooks.read_file_fn = read_back_downloaded_file;
+  hooks.is_installed_fn = is_offered_update_installed;
+  hooks.install_fn = install_update_step;
+  hooks.apply_fn = apply_update_step;
   hooks.user_ctx = &dl;
 
   az_iot_su_device_properties dp = { 0 };
@@ -742,7 +742,7 @@ int main(void)
   {
     request_timeout_ms = (uint32_t)poll_interval_s * 500u;
   }
-  if (az_iot_su_client_add_observer(&su, on_su_event, &flags) != AZ_IOT_OK
+  if (az_iot_su_client_add_observer(&su, track_su_event, &flags) != AZ_IOT_OK
       || az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK
       || az_iot_connection_client_open(&connection) != AZ_IOT_OK)
   {
@@ -821,8 +821,8 @@ cleanup:
 #endif
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
-  download_reset(&dl);
-  reader_close(&dl);
+  stop_transfer_and_close_file(&dl);
+  close_hash_reader(&dl);
   if (dl.multi != NULL)
   {
     (void)curl_multi_cleanup(dl.multi);
