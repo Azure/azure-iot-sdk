@@ -1157,7 +1157,7 @@ static size_t proxy_cred_encoded_len(const char* s)
 /* Percent-encode '%' and '@' into `dst`, returning the end of what was written.
  *
  * Those two characters and no others, because those two are what Paho's parser
- * acts on (MQTTProtocol_setHTTPProxy / MQTTProtocol_specialChars in 1.3.13):
+ * acts on (Proxy_setHTTPProxy / Proxy_specialChars in 1.3.16):
  * it splits the proxy string at the FIRST '@', so an '@' anywhere in a
  * credential silently moves the host; and it decodes %XX back to a byte, so a
  * literal '%' would be eaten or -- when the next two characters are not hex
@@ -1183,7 +1183,9 @@ static char* proxy_cred_encode(char* dst, const char* s)
   return dst;
 }
 
-/* Render the proxy as the "[user:password@]host:port" string Paho expects.
+#define PAHO_PROXY_SCHEME "http://"
+
+/* Render the proxy as the "http://[user:password@]host:port" string Paho expects.
  *
  * *out_uri is NULL when no proxy is configured, which is not an error. */
 static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, char** out_uri)
@@ -1205,7 +1207,9 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  size_t n = strlen(proxy->host) + 1 + 5 + 1; /* host + ':' + port + NUL */
+  /* "http://" + host + ':' + port + NUL. Paho 1.3.14+ refuses an httpsProxy
+   * without a scheme, and the proxy itself is always plain HTTP. */
+  size_t n = sizeof(PAHO_PROXY_SCHEME) - 1u + strlen(proxy->host) + 1 + 5 + 1;
   if (user != NULL)
   {
     /* user + ':' + password + '@'. The colon is unconditional: Basic auth with
@@ -1225,6 +1229,8 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
   }
 
   char* p = uri;
+  memcpy(p, PAHO_PROXY_SCHEME, sizeof(PAHO_PROXY_SCHEME) - 1u);
+  p += sizeof(PAHO_PROXY_SCHEME) - 1u;
   if (user != NULL)
   {
     p = proxy_cred_encode(p, user);

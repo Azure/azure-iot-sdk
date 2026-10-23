@@ -192,7 +192,7 @@ With `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` the real-stack tests are labelled `ra
 conformance suites, `az_iot_reconnect_integration` and `az_iot_paho_teardown_race`. They need the
 broker described under the conformance suite below. The tools slow them ~10-50x, so set
 `AZ_IOT_TEST_TIMEOUT_SCALE` (1-100, default 1): it multiplies their wait budgets and nothing else.
-CI sets 30. Paho 1.3.13 reads and writes some thread flags and connection state without its own lock;
+CI sets 30. Paho 1.3.16 reads and writes some thread flags and thread ids without its own lock;
 the entries in `drd.supp` and `helgrind.supp` cover those frames only.
 
 The tools see pthread locks only. The file sink's atomic spin lock is described to them by

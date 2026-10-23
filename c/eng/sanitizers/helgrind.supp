@@ -5,7 +5,7 @@
 #   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
 # - The first frame is a concrete fun: or obj: line, never "...".
 
-# Paho MQTTAsync.c:657,660 (v1.3.13): MQTTAsync_tostop and sendThread_state
+# Paho MQTTAsync.c:684,687 (v1.3.16): MQTTAsync_tostop and sendThread_state
 # written without mqttasync_mutex; read by the send thread.
 {
    paho-connect-thread-flags
@@ -13,14 +13,14 @@
    fun:MQTTAsync_connect
 }
 
-# Paho MQTTAsyncUtils.c:2375 (v1.3.13): MQTTAsync_tostop written without a lock.
+# Paho MQTTAsyncUtils.c:2438 (v1.3.16): MQTTAsync_tostop written without a lock.
 {
    paho-stop-tostop
    Helgrind:Race
    fun:MQTTAsync_stop
 }
 
-# Paho MQTTAsyncUtils.c:1788-1819 (v1.3.13): sendThread_state and
+# Paho MQTTAsyncUtils.c:1839-1865 (v1.3.16): sendThread_state and
 # MQTTAsync_tostop accessed by the send thread without a lock.
 {
    paho-send-thread-flags
@@ -28,42 +28,25 @@
    fun:MQTTAsync_sendThread
 }
 
-# Paho MQTTAsync.c:1209 (v1.3.13): Clients.connected read without a lock.
+# Paho MQTTAsync.c:1013 (v1.3.16): receiveThread_id and sendThread_id read
+# without a lock; the receive thread writes them (MQTTAsyncUtils.c:2080).
 {
-   paho-send-connected
+   paho-incallback-thread-ids
    Helgrind:Race
-   fun:MQTTAsync_send
+   fun:MQTTAsync_inCallback
 }
 
-# Paho MQTTAsyncUtils.c:2662 (v1.3.13): Clients.connected read without a lock.
+# Paho Thread.c:338 (v1.3.16): helgrind intercepts a condvar signal made inside
+# glibc's pthread_cond_timedwait (pthread_cond_wait.c:516) after the mutex was
+# released, and reports it as "dubious". The wait is the send thread's own; no
+# SDK frame is involved. Seen intermittently.
 {
-   paho-disconnect1-connected
-   Helgrind:Race
-   fun:MQTTAsync_disconnect1
-}
-
-# Paho Thread.c:463-467 (v1.3.13): Thread_wait_cond adds instead of subtracting
-# on the tv_nsec carry, so pthread_cond_timedwait can get tv_nsec >= 1e9 and
-# return EINVAL. The send thread logs it and loops.
-{
-   paho-wait-cond-nsec-carry
-   Helgrind:PthAPIerror
-   obj:*/vgpreload_helgrind-*.so
-   fun:Thread_wait_cond
-   fun:MQTTAsync_sendThread
-}
-
-# Paho Thread.c:471 (v1.3.13): helgrind intercepts a condvar signal made inside
-# glibc's pthread_cond_timedwait (pthread_cond_wait.c:516) after the mutex
-# was released, and reports it as "dubious". The wait is the send thread's own;
-# no SDK frame is involved. Seen intermittently.
-{
-   paho-wait-cond-glibc-internal-signal
+   paho-wait-evt-glibc-internal-signal
    Helgrind:Misc
    obj:*/vgpreload_helgrind-*.so
    fun:__pthread_cond_wait_common
    fun:pthread_cond_timedwait*
    obj:*/vgpreload_helgrind-*.so
-   fun:Thread_wait_cond
+   fun:Thread_wait_evt
    fun:MQTTAsync_sendThread
 }

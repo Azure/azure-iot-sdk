@@ -23,7 +23,7 @@ if(AZ_IOT_USE_INSTALLED_PAHO)
             list(APPEND _paho_inherited eclipse-paho-mqtt-c::${_pt})
         endif()
     endforeach()
-    find_package(eclipse-paho-mqtt-c 1.3.13 CONFIG REQUIRED)
+    find_package(eclipse-paho-mqtt-c 1.3.14 CONFIG REQUIRED)
     # The asynchronous API; static if available, SSL-capable if OpenSSL was found.
     set(_paho_candidates paho-mqtt3a-static paho-mqtt3a)
     if(OPENSSL_FOUND)
@@ -61,10 +61,10 @@ else()
     include(FetchContent)
 
     # Keep the commit for this tag in c/cgmanifest.json.
-    set(PAHO_C_TAG  "v1.3.13" CACHE STRING "Eclipse Paho MQTT C git tag")
+    set(PAHO_C_TAG  "v1.3.16" CACHE STRING "Eclipse Paho MQTT C git tag")
     set(PAHO_C_REPO "https://github.com/eclipse/paho.mqtt.c.git" CACHE STRING "Eclipse Paho MQTT C git repository")
 
-    # Paho 1.3.13's top-level CMakeLists.txt declares cmake_minimum_required <3.5,
+    # Paho before 1.3.14 declares cmake_minimum_required <3.5 (PAHO_C_TAG may select one),
     # which CMake >= 4.0 refuses outright. Override the floor so the upstream
     # scripts run unmodified.
     set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "" FORCE)

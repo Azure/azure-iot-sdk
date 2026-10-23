@@ -2048,9 +2048,9 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
 
   /* Hold the broker's traffic for well under the 30 s keep-alive, so a
    * disconnect here would be the client giving up early rather than a
-   * legitimate keep-alive expiry. Scaled, capped at 10 s, so a slow run still
+   * legitimate keep-alive expiry. Scaled, capped at 20 s, so a slow run still
    * gets the PUBLISH to the proxy while the stall holds. */
-  unsigned const stall_ms = (1500u * g_timeout_scale < 10000u) ? 1500u * g_timeout_scale : 10000u;
+  unsigned const stall_ms = (1500u * g_timeout_scale < 20000u) ? 1500u * g_timeout_scale : 20000u;
   az_iot_test_proxy_stall(proxy, AZ_IOT_TEST_PROXY_B2C, stall_ms);
 
   static const uint8_t body[] = { 's', 't', 'a', 'l', 'l', 'e', 'd' };
