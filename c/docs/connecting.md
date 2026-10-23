@@ -258,7 +258,7 @@ silently connect another way.
 With the Paho adapter, leaving `proxy` unset lets Paho use the lowercase `https_proxy` /
 `http_proxy` environment variables only when `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set; it then
 honours `no_proxy`, and `https_proxy` must start with `http://` or `https://`. Set `proxy` explicitly
-to avoid depending on the environment.
+to avoid depending on the environment. Other Paho limitations: [Dependencies](dependencies.md#eclipse-paho-mqtt-c).
 
 Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 [`samples/unified/proxy`](../samples/unified/proxy/main.c).
