@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public const string MessagePropertyContentType = "$.ct";
         public const string MessagePropertyContentEncoding = "$.ce";
 
-        private Func<CloudToDeviceTelemetry, Task>? _cloudToDeviceTelemetryReceivedAsync;
+        private event Func<CloudToDeviceTelemetry, Task>? _cloudToDeviceTelemetryReceivedAsync;
 
         /// <summary>
         /// An event that executes whenever this device receives a cloud-to-device message from IoT hub.
