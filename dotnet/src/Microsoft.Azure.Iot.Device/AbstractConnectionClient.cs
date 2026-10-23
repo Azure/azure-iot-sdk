@@ -43,6 +43,15 @@ namespace Microsoft.Azure.Iot.Device
             public CancellationToken Token { get; }
         }
 
+        private sealed class ReprovisioningCallbackScope
+        {
+            private int _isActive = 1;
+
+            public bool IsActive => Volatile.Read(ref _isActive) != 0;
+
+            public void Close() => Volatile.Write(ref _isActive, 0);
+        }
+
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
         public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
@@ -224,9 +233,10 @@ namespace Microsoft.Azure.Iot.Device
         // disconnect can wait for it rather than racing it for this client's connection.
         private Task _reprovisioningCompletion = Task.CompletedTask;
 
-        // Set on the flow of a re-provisioning attempt (and everything it calls back into), so that a deliberate
-        // disconnect issued from within that flow does not wait for the attempt that is waiting for it.
+        // Set on the flow of a re-provisioning attempt, so that callbacks can identify when they may need to avoid
+        // waiting for that same attempt.
         private readonly AsyncLocal<bool> _isOnReprovisioningFlow = new();
+        private readonly AsyncLocal<ReprovisioningCallbackScope?> _reprovisioningCallbackScope = new();
 
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
@@ -491,9 +501,9 @@ namespace Microsoft.Azure.Iot.Device
                 CancelCurrentReprovisioning();
 
                 // Wait for the cancelled re-provisioning attempt to stop, so that it cannot re-establish a connection
-                // (or change the endpoint this client targets) after this disconnect completes. This is skipped when the
-                // disconnect is issued from within that attempt's own flow, which would otherwise wait on itself.
-                if (!_isOnReprovisioningFlow.Value)
+                // (or change the endpoint this client targets) after this disconnect completes. This is skipped only
+                // while an awaited callback on that attempt is executing, which would otherwise wait on itself.
+                if (_reprovisioningCallbackScope.Value?.IsActive != true)
                 {
                     await Volatile.Read(ref _reprovisioningCompletion).WaitAsync(cancellationToken);
                 }
@@ -837,7 +847,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Raise an event that only informs the application, invoking each handler in turn so that one that throws
         /// cannot stop the others from running or affect this client's own recovery.
         /// </summary>
-        private static async Task RaiseInformationalEventAsync<TArgs>(Func<TArgs, Task>? handlers, TArgs args, string eventName)
+        private async Task RaiseInformationalEventAsync<TArgs>(Func<TArgs, Task>? handlers, TArgs args, string eventName)
         {
             if (handlers == null)
             {
@@ -848,12 +858,35 @@ namespace Microsoft.Azure.Iot.Device
             {
                 try
                 {
-                    await ((Func<TArgs, Task>)handler).Invoke(args);
+                    await InvokeReprovisioningCallbackAsync(() => ((Func<TArgs, Task>)handler).Invoke(args));
                 }
                 catch (Exception e)
                 {
                     Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
                 }
+            }
+        }
+
+        private async Task InvokeReprovisioningCallbackAsync(Func<Task> callback)
+        {
+            if (!_isOnReprovisioningFlow.Value)
+            {
+                await callback();
+                return;
+            }
+
+            ReprovisioningCallbackScope? previousScope = _reprovisioningCallbackScope.Value;
+            ReprovisioningCallbackScope scope = new();
+            _reprovisioningCallbackScope.Value = scope;
+
+            try
+            {
+                await callback();
+            }
+            finally
+            {
+                scope.Close();
+                _reprovisioningCallbackScope.Value = previousScope;
             }
         }
 
@@ -1166,7 +1199,8 @@ namespace Microsoft.Azure.Iot.Device
             // again itself if it wants to keep using this client.
             if (ConnectionFaultedAsync != null)
             {
-                await ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault });
+                await InvokeReprovisioningCallbackAsync(
+                    () => ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault }));
             }
         }
 
