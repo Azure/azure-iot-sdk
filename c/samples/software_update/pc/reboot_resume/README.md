@@ -26,9 +26,10 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   workflow runs.
 - `SAMPLE_PERSIST_FAIL_COUNT=<n>` fails the first `n` writes. The client holds the workflow and
   retries (`AZ_IOT_SU_EVENT_PERSIST_FAILED`, then `_RECOVERED`), and the sample does not
-  "reboot" while a write is failing. A final report accepted or dropped before the retry also
-  allows the "reboot" or the `AZ_IOT_SU_EXIT_AFTER_WORKFLOW` exit, once any record left (stale by
-  then) is erased.
+  "reboot" while a write is failing. A succeeded final report accepted or dropped before the retry
+  also allows the "reboot" or the `AZ_IOT_SU_EXIT_AFTER_WORKFLOW` exit, once any record left (stale
+  by then) is erased. Another outcome waits for its retry record to be saved, unless the client gives
+  up on it.
 - Step result details set before the reboot are reported in the final report after it.
 - A failed workflow cancels the pending "reboot".
 - After a succeeded update, later checks advertise its id as installed

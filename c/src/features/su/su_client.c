@@ -2146,16 +2146,18 @@ static void on_channel_result(
     az_iot_su_report sent;
     az_iot_su_report_update_id sent_installed;
     bool have_view = terminal && az_iot_su__sent_terminal_report(client, &sent, &sent_installed);
-    if (result != AZ_IOT_OK
+    bool abandoned = result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
-    {
-      raise_abandoned(client, operation, result, service_error, have_view ? &sent : NULL);
-    }
+            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK);
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
+      /* Settled first, so an observer sees the report's final standing. */
       SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
+      if (abandoned)
+      {
+        raise_abandoned(client, operation, result, service_error, have_view ? &sent : NULL);
+      }
       if (result == AZ_IOT_OK)
       {
         raise_simple(
@@ -2166,6 +2168,10 @@ static void on_channel_result(
         queue_conflict_recheck(client);
       }
       return;
+    }
+    if (abandoned)
+    {
+      raise_abandoned(client, operation, result, service_error, NULL);
     }
     /* The request is over -- but only ITS deadline goes with it. A newer
      * request may already be queued, holding the slot with its own deadline;

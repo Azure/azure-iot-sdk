@@ -1208,7 +1208,8 @@ extern "C"
    *
    * True from a workflow's end, or from az_iot_su_client_resume() restoring an
    * unsent terminal report, until AZ_IOT_SU_EVENT_REPORT_ACCEPTED or an
-   * AZ_IOT_SU_EVENT_OPERATION_ABANDONED that retires it (see that event).
+   * AZ_IOT_SU_EVENT_OPERATION_ABANDONED that retires it (see that event); already false
+   * when either is raised.
    *
    * @param[in] client Initialized client.
    * @return false if @p client is NULL or detached.
