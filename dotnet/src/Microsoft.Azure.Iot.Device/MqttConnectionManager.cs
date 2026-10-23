@@ -359,6 +359,11 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task InternalDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            if (_underlyingMqttClient.IsConnected())
+            {
+                return;
+            }
+
             // Counted before waiting for the lock so that an operation failing because of this disconnection sees it.
             Interlocked.Increment(ref _disconnectionCount);
 

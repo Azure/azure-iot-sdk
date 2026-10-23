@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
@@ -170,6 +171,41 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // With nothing left in flight, a later switch completes straight away.
             await connectionManager.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+        }
+
+        /// <summary>
+        /// A spurious disconnect callback while the connection is active must not make an acknowledgement timeout look
+        /// like a connection loss.
+        /// </summary>
+        [Fact]
+        public async Task SpuriousDisconnectCallbackDoesNotMisclassifyAcknowledgementTimeout()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            TaskCompletionSource publishReachedClient = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource timeOutAcknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mqttClient.OnPublish = async _ =>
+            {
+                publishReachedClient.TrySetResult();
+                await timeOutAcknowledgement.Task;
+                throw new TimeoutException("The mock acknowledgement timed out.");
+            };
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+            await connectionManager.SwitchEndpointAsync(ConnectionEndpoint.IotHub, TestContext.Current.CancellationToken);
+
+            Task<MqttPublishAck> publish = connectionManager.PublishAsync(
+                ConnectionEndpoint.IotHub,
+                new MqttPublish() { Topic = "devices/d/messages/events/", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+            await publishReachedClient.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+            timeOutAcknowledgement.TrySetResult();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                () => publish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.IsType<TimeoutException>(exception.InnerException);
         }
 
         private class RecordingRetryPolicy : IRetryPolicy
