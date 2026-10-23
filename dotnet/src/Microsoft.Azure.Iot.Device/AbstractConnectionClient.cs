@@ -305,10 +305,14 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (!_isOnReprovisioningFlow.Value)
-            {
-                Volatile.Write(ref _currentReprovisioningCancellationToken, null);
-            }
+            Volatile.Write(ref _currentReprovisioningCancellationToken, null);
+
+            return await ProvisionAndConnectCoreAsync(provisioningSettings, authentication, forceProvisioning, cancellationToken);
+        }
+
+        private async Task<ConnectionContext> ProvisionAndConnectCoreAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             // Remember what this device was asked to provision with before attempting either path, so that a connection
             // established directly from a cached assignment -- not only one established after provisioning -- can still
@@ -1027,7 +1031,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
                     // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
+                    await ProvisionAndConnectCoreAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
                     return;

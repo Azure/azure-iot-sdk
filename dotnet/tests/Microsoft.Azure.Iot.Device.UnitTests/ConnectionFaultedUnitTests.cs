@@ -1839,6 +1839,62 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisionAndConnectFromRecoveryFaultHandlerStartsANewHubSession()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub)
+            {
+                TerminalRegistrationResultSelector = registrationCount => registrationCount == 2
+                    ? new DeviceRegistrationResult()
+                    {
+                        RegistrationId = RegistrationId,
+                        Status = ProvisioningRegistrationStatus.Failed,
+                    }
+                    : null,
+            };
+
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new AbandonRetryPolicy(),
+            });
+
+            TaskCompletionSource<ConnectionContext> reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += async _ =>
+            {
+                try
+                {
+                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
+                        CreateProvisioningSettings(),
+                        CreateAuthenticationProvider(),
+                        cancellationToken: TestContext.Current.CancellationToken);
+                    reconnected.TrySetResult(context);
+                }
+                catch (Exception e)
+                {
+                    reconnected.TrySetException(e);
+                }
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            // The identity fault starts recovery. Its registration fails permanently, so the fault callback explicitly
+            // disconnects and provisions again; that fresh hub session must not inherit recovery's canceled token.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            ConnectionContext reconnectedContext = await reconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(FirstAssignedHub, reconnectedContext.IotHubHostName);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+        }
+
+        [Fact]
         public async Task ReprovisioningBackoffHonorsTheServiceRetryAfterAsAFloor()
         {
             using MockConnectionMqttClient mockMqttClient = new();
