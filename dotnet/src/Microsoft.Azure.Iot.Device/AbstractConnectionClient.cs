@@ -1619,6 +1619,7 @@ namespace Microsoft.Azure.Iot.Device
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
                 {
+                    connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                     int connectionEventCountBeforeAttempt = Volatile.Read(ref connectionEventCount);
 
                     try
