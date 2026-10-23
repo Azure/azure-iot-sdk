@@ -934,7 +934,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     CLIENT re-arming it. It does NOT mean the application may not ask again;
  *     that is the intended response, which is why the event carries the route:
  *     a lost status report is not a lost update check, and the onboarding and
- *     regular fetches are asked for separately.
+ *     regular fetches are asked for separately. For a status report,
+ *     `report_terminal` marks the workflow's final one.
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).

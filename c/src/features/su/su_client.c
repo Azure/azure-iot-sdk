@@ -1838,6 +1838,7 @@ static void raise_abandoned(
     .operation = operation,
     .reason = reason,
     .service_error = k_no_service_error,
+    .report_terminal = operation == AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).report_sent_terminal,
   };
   if (service_error != NULL)
   {

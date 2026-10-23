@@ -27,7 +27,8 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 - `SAMPLE_PERSIST_FAIL_COUNT=<n>` fails the first `n` writes. The client holds the workflow and
   retries (`AZ_IOT_SU_EVENT_PERSIST_FAILED`, then `_RECOVERED`), and the sample does not
   "reboot" while a write is failing. After the last apply, a final report accepted before the
-  retry also allows the "reboot", once any record left (stale by then) is erased.
+  retry also allows the "reboot", once any record left (stale by then) is erased; so does one the
+  client drops.
 - Step result details set before the reboot are reported in the final report after it.
 - A failed workflow cancels the pending "reboot".
 - After a succeeded update, later checks advertise its id as installed
@@ -35,8 +36,9 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   update does not refresh them again.
 - Each update check waits at most half of `AZ_IOT_SU_POLL_INTERVAL_S` (60 s cap).
 - Periodic checks pause from a workflow's start until its final report is accepted, so a check
-  never advertises the previous installed id. They resume if the client drops that report
-  (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`); it is not sent again.
+  never advertises the previous installed id. They resume if the client abandons that report
+  (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with `report_terminal`): a lost session keeps it owed (sent
+  again later); any other verdict drops it.
 - A connection that faults for good ends the process (exit 1), even during an update; a saved
   record, if any, resumes it on the next run.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.

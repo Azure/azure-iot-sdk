@@ -572,7 +572,8 @@ extern "C"
     AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED = 0,
 
     /* An operation was ABANDONED: it reached a verdict that stops the client
-     * re-arming it. Carries `operation`, `reason` and the service diagnosis.
+     * re-arming it. Carries `operation`, `reason`, the service diagnosis
+     * and, for a status report, `report_terminal`.
      *
      * "Retry" here means the CLIENT's own re-arming, which the application
      * cannot see: on a retryable failure the engine puts the request back and
@@ -749,7 +750,8 @@ extern "C"
      * parsed, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
      * included). 0 for other events. */
     int32_t extended_result_code;
-    /** REPORT_ACCEPTED: the report carried a terminal outcome. */
+    /** REPORT_ACCEPTED, and OPERATION_ABANDONED of a status report: the report
+     * carried a terminal outcome. */
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
