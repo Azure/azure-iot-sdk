@@ -33,6 +33,9 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
 - After a succeeded update, later checks advertise its id as installed
   (`az_iot_su_client_update_device_properties()`), once per id: a repeated report of the same
   update does not refresh them again.
+- Each update check waits at most half of `AZ_IOT_SU_POLL_INTERVAL_S` (60 s cap).
+- A connection that faults for good ends the process (exit 1), even during an update; a saved
+  record, if any, resumes it on the next run.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 ## Configure
