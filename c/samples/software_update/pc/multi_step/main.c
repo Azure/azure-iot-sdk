@@ -566,9 +566,16 @@ int main(void)
       }
       check_now = 1;
     }
-    if (flags.connection_faulted && !flags.workflow_active)
+    /* FAULTED is settled: the SDK does not retry out of it, and a workflow in
+     * flight cannot report again, so it would never reach Idle. */
+    if (flags.connection_faulted)
     {
-      fprintf(stderr, "The connection faulted and will not recover on its own.\n");
+      fprintf(
+          stderr,
+          flags.workflow_active
+              ? "The connection faulted and will not recover on its own; the update in progress "
+                "is abandoned.\n"
+              : "The connection faulted and will not recover on its own.\n");
       rc = 1;
       break;
     }
