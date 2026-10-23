@@ -76,8 +76,8 @@ if [[ "${components}" == *" azure-sdk-for-c "* ]]; then
 fi
 
 if [[ "${components}" == *" paho "* ]]; then
-    clone paho https://github.com/eclipse/paho.mqtt.c v1.3.13
-    # CMAKE_POLICY_VERSION_MINIMUM: Paho 1.3.13 declares cmake_minimum_required < 3.5.
+    clone paho https://github.com/eclipse/paho.mqtt.c v1.3.16
+    # CMAKE_POLICY_VERSION_MINIMUM: Paho before 1.3.14 declares cmake_minimum_required < 3.5.
     cmake -S "${work}/paho" -B "${work}/paho-build" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="${prefix}" \

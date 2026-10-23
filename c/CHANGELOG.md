@@ -191,6 +191,13 @@
 
 ### Bugs Fixed
 
+- Paho adapter: `az_iot_mqtt_connect_options::connect_timeout_seconds` is passed to Paho; it was
+  ignored, so every connect attempt used Paho's 30 s default. 0 still selects that default.
+- Paho: the bundled Eclipse Paho C is now v1.3.16 (was v1.3.13), and an installed Paho must be
+  1.3.14 or later. 1.3.13 leaked the topic and payload of publishes still queued when the client was
+  destroyed. The adapter now passes the HTTP proxy as `http://...`, which Paho 1.3.14+ requires.
+  With `proxy` unset, Paho now reads `http_proxy` / `https_proxy` only when
+  `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set (it then honours `no_proxy`); 1.3.13 read them always.
 - Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
   `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
   and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
