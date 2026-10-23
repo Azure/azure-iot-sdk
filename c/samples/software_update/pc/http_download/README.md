@@ -23,8 +23,11 @@ on the device changes.
   does one that sends more than the manifest's file size.
 - Only HTTP and HTTPS URLs are fetched, redirects included.
 - A file is restarted when a replacing workflow asks for another file mid-transfer.
-- Each download replaces any file or link at its path (removed, then created exclusively, owner-only);
-  the read-back refuses a link, a non-regular file, and a file larger than the manifest size.
+- Each download replaces any file or link at its path (removed, then created exclusively), and
+  the read-back refuses a file larger than the manifest size. On POSIX the file is owner-only
+  (0600) and, where `O_NOFOLLOW` exists, the read-back also refuses a link or a non-regular file.
+  On Windows the file keeps the directory's inherited ACL and the read-back has no such checks:
+  use a download directory only the application can write.
 - Requires libcurl with asynchronous DNS (`AsynchDNS` in `curl --version`); without it the
   sample exits.
 - `install_fn` works in chunks (`SAMPLE_INSTALL_CHUNKS` calls per step), returning
