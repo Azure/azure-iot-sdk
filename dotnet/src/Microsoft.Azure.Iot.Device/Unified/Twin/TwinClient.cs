@@ -70,8 +70,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
+        /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection)
         {
+            if (!connection.IsTwinEnabled)
+            {
+                throw new InvalidOperationException($"The provided connection client opted out of twins. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableTwin)} to true to use a {nameof(TwinClient)}.");
+            }
+
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
