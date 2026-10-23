@@ -94,7 +94,6 @@ typedef struct
   long persist_failures_left;
   int reboot_requested; /* a hook asked for a reboot in this run */
   int persist_failing; /* between PERSIST_FAILED and PERSIST_RECOVERED */
-  int record_stored; /* a saved record may remain: set by the persist and load hooks */
 } reboot_context;
 
 /** @brief Set the resultDetails reported for @p step. */
@@ -191,7 +190,6 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
     {
       return AZ_IOT_SU_RESULT_FAILURE;
     }
-    c->record_stored = 0;
     printf("[persist] erased %s\n", c->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
@@ -229,7 +227,6 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
     (void)remove(tmp);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  c->record_stored = 1;
   printf("[persist] %zu bytes -> %s\n", len, c->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
@@ -238,11 +235,9 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
 static int32_t reboot_load(uint8_t* blob, size_t capacity, size_t* out_len, void* user_ctx)
 {
   reboot_context* c = (reboot_context*)user_ctx;
-  errno = 0;
   FILE* f = fopen(c->state_file, "rb");
   if (f == NULL)
   {
-    c->record_stored = (errno != ENOENT); /* only a missing file is no record */
     return 1;
   }
   size_t n = fread(blob, 1, capacity, f);
@@ -408,7 +403,6 @@ int main(void)
   sample_config config = { 0 };
   sample_flags flags = { 0 };
   reboot_context reboot = { 0 };
-  reboot.record_stored = 1; /* until load_state_fn finds none */
   observer_context observer = { &flags, &reboot };
   az_iot_certificate_provider_pem certs = { 0 };
   az_iot_connection_client connection;
@@ -560,13 +554,17 @@ int main(void)
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
 
+    /* After the last apply the final report may be accepted before a failed
+     * write is retried, leaving the client nothing to save: any record left
+     * is stale, so erase it, and reboot only once that succeeds. */
+    if (reboot.reboot_requested && reboot.persist_failing && flags.final_report != 0
+        && !flags.workflow_active && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      reboot.persist_failing = 0;
+    }
     /* The "reboot": exit once the state is saved. While writes fail the
-     * workflow is held, and rebooting would lose it. After the last apply the
-     * final report may be accepted first, leaving nothing to rewrite: the
-     * reboot is then safe once no saved record remains. */
-    if (reboot.reboot_requested
-        && (!reboot.persist_failing
-            || (flags.final_report != 0 && !flags.workflow_active && !reboot.record_stored)))
+     * workflow is held, and rebooting would lose it. */
+    if (reboot.reboot_requested && !reboot.persist_failing)
     {
       printf(
           "Rebooting: the workflow is saved in %s. Run the sample again to resume.\n",
@@ -605,7 +603,8 @@ int main(void)
         printf("Installed: %s/%s/%s\n", installed_provider, installed_name, installed_version);
       }
     }
-    if (exit_after_workflow && flags.final_report != 0 && !flags.workflow_active)
+    if (exit_after_workflow && flags.final_report != 0 && !flags.workflow_active
+        && !reboot.reboot_requested)
     {
       rc = (flags.final_report == 1) ? 0 : 2;
       break;
