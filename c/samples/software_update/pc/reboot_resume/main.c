@@ -261,6 +261,7 @@ typedef struct
 {
   int workflow_active;
   int final_report; /* 0 none yet, 1 succeeded, 2 another outcome */
+  int awaiting_final_report; /* a workflow started; its final report is not accepted yet */
   int connection_faulted;
   /* A succeeded report's installed update id, not yet in the device properties. */
   int installed_pending;
@@ -304,6 +305,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       if (event->previous_state == AZ_IOT_SU_STATE_IDLE && event->state != AZ_IOT_SU_STATE_IDLE)
       {
         o->flags->final_report = 0; /* a new workflow: its report is not in yet */
+        o->flags->awaiting_final_report = 1;
       }
       if (event->state == AZ_IOT_SU_STATE_FAILED)
       {
@@ -346,6 +348,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
                                                   : "");
         }
         o->flags->final_report = (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED) ? 1 : 2;
+        o->flags->awaiting_final_report = 0;
         /* Copied: the report is valid only during the callback. */
         const az_iot_su_report_update_id* id = event->report->installed_update_id;
         if (event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED && id != NULL)
@@ -622,7 +625,10 @@ int main(void)
       rc = 1;
       break;
     }
-    if (!flags.workflow_active && poll_interval_s > 0 && sample_now_ms() >= next_check_ms)
+    /* Until the final report is accepted, a check would advertise the
+     * previous installed id and could be offered the same update again. */
+    if (!flags.workflow_active && !flags.awaiting_final_report && poll_interval_s > 0
+        && sample_now_ms() >= next_check_ms)
     {
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
       if (az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK)
